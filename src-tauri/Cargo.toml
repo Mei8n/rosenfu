@@ -1,0 +1,11 @@
+[package]
+name = "rosenfu-desktop"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rosenfu-core = { path = "../crates/rosenfu-core" }
+tauri = { version = "2", features = [] }

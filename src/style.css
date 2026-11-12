@@ -1,0 +1,49 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #e8edf2;
+  background: #122129;
+  line-height: 1.7;
+}
+body {
+  margin: 0;
+}
+main {
+  max-width: 760px;
+  margin: 10vh auto;
+  padding: 24px;
+}
+h1 {
+  font-size: clamp(40px, 8vw, 72px);
+  margin: 0;
+  letter-spacing: -0.04em;
+}
+h2 {
+  font-size: 20px;
+}
+.eyebrow {
+  color: #83d9c2;
+  letter-spacing: 0.12em;
+}
+section {
+  background: #1c323c;
+  border: 1px solid #45606a;
+  border-radius: 12px;
+  padding: 20px 28px;
+  margin: 40px 0 24px;
+}
+.note {
+  color: #b4c4cc;
+}
+button {
+  background: #83d9c2;
+  color: #122129;
+  border: 0;
+  border-radius: 6px;
+  padding: 12px 20px;
+  font: inherit;
+  cursor: pointer;
+}
+button:focus-visible {
+  outline: 3px solid white;
+  outline-offset: 4px;
+}
