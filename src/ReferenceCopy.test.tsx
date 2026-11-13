@@ -56,3 +56,27 @@ test('reference plan station is session-only and included in atomic provenance-p
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_alignment_with_stations',expect.objectContaining({stations:[expect.objectContaining({lengthM:60,widthM:12})],reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})));
  await waitFor(()=>expect(map.querySelectorAll('.planned-station')).toHaveLength(0));
 });
+
+test('reference following requires an explicit endpoint target and sends source and extension atomically',async()=>{
+ const bundle=fixture(),dx=DEFAULT_CAMERA.longitude-135,dy=DEFAULT_CAMERA.latitude-35;
+ bundle.graph.nodes=bundle.graph.nodes.map(n=>({...n,latitude:n.latitude+dy,longitude:n.longitude+dx}));
+ bundle.graph.dataset.bounds={west:DEFAULT_CAMERA.longitude-.01,east:DEFAULT_CAMERA.longitude+.01,south:DEFAULT_CAMERA.latitude-.01,north:DEFAULT_CAMERA.latitude+.01};
+ const anchor={latitude:start.latitude+dy,longitude:start.longitude+dx};
+ const alignment={id:'10',owner:'2',name:'existing',track_type:'normal',points:[{...anchor,longitude:anchor.longitude-.001},anchor]};
+ const world={...empty,alignments:[alignment,{...alignment,id:'11'}]};
+ vi.mocked(readReferenceGraphBundle).mockResolvedValue(bundle);
+ vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'reference-extension-test'}:world);
+ const view=render(<App/>);await screen.findByText(/reference-extension-test/);
+ fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});
+ await screen.findByText(/synthetic-test/);
+ await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
+ const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.click(map,{clientX:point.x,clientY:point.y});fireEvent.click(await copyPanel().findByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
+ await pick(start,'0');await pick(end,'1');
+ const method=copyPanel().getByLabelText('敷設方法') as HTMLSelectElement;
+ expect(method.value).toBe('');expect(method.options).toHaveLength(3);
+ fireEvent.change(method,{target:{value:'11:end'}});
+ fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内に新しい線路を敷設します'));
+ fireEvent.click(copyPanel().getByRole('button',{name:'参考形状を明示着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expect.objectContaining({extension:{alignmentId:'11',endpoint:'end'},reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})]})));
+});
