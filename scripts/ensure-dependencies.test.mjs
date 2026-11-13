@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { ensureDependencies } from './ensure-dependencies.mjs';
 
 const roots = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllGlobals(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'rosenfu-deps-'));
   roots.push(root);
@@ -22,9 +22,20 @@ describe('debug dependency synchronization', () => {
   it('installs dev dependencies on first launch and skips unchanged later launches', () => {
     const { root, run } = fixture();
     expect(ensureDependencies(root, run)).toBe(true);
-    expect(run).toHaveBeenCalledWith(expect.any(String), ['ci', '--include=dev'], expect.objectContaining({ cwd: root }));
+    expect(run).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.objectContaining({ cwd: root }));
     expect(ensureDependencies(root, run)).toBe(false);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+  it.each(['win32', 'linux', 'darwin'])('uses a fixed npm command on %s', (platform) => {
+    vi.stubGlobal('process', { ...process, platform });
+    const { root, run } = fixture();
+    ensureDependencies(root, run);
+    const windows = platform === 'win32';
+    expect(run).toHaveBeenCalledWith(
+      windows ? 'npm.cmd ci --include=dev' : 'npm',
+      windows ? [] : ['ci', '--include=dev'],
+      { cwd: root, stdio: 'inherit', shell: windows },
+    );
   });
   it.each(['package.json', 'package-lock.json'])('resynchronizes after pulling a changed %s', (file) => {
     const { root, run } = fixture();

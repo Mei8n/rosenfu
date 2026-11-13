@@ -140,3 +140,28 @@ VS Codeのデバッグ／リリースビルドとhot reloadタスクは、先に
 更新後はアプリとデバッグを終了してから`git pull --ff-only`し、再度F5を実行する。ローカル変更がある場合は先に保全し、強制リセットしない。
 ビルド失敗時は「デバッグを続行」せず、タスクのターミナルにある最初のエラーを確認する（以前の実行ファイルを起動してしまうため）。
 macOS / Linuxの起動構成は追加したが、IDEからの実機起動・ブレークポイント停止は未検証。CIのビルド成功とは区別する。
+
+## npm の監査・警告
+
+テスト用依存は Vitest 4.1.12 以降を使用します。以前の Vitest 3 系が含む
+`@vitest/mocker` の開発サーバー向け脆弱性と `tinypool` の prototype pollution
+関連脆弱性を避けるための更新です。アプリの実行時依存とは分けて確認します。
+
+```sh
+npm audit
+npm audit --omit=dev
+```
+
+`npm audit fix --force` は破壊的なメジャー更新を含むため、警告が出ても機械的に
+実行せず、対象・修正版・テスト結果を確認して依存関係を更新してください。
+
+npm の `allow-scripts` に関する `esbuild` 警告は、インストールスクリプトの
+許可方針に関する通知です。脆弱性の件数やビルド失敗とは別です。
+全依存スクリプトの一括許可や保護設定の無効化で消さず、使用している npm の
+バージョンと方針を確認し、必要なパッケージだけを個別にレビューしてください。
+
+参考: [Vitest の任意ファイル読み取り](https://github.com/advisories/GHSA-82fw-gwwq-j7x9)、
+[モック登録時のコード注入](https://github.com/advisories/GHSA-qxg6-89mg-rqv8)、
+[tinypool の worker options](https://github.com/advisories/GHSA-5gmw-xhrv-c9v3)・
+[run options](https://github.com/advisories/GHSA-85c8-ppgw-ccpr)、
+[npm のスクリプト方針](https://docs.npmjs.com/cli/v11/using-npm/config/)

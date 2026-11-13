@@ -23,7 +23,7 @@
     "jsdom": "^26",
     "typescript": "^5",
     "vite": "^7",
-    "vitest": "^3",
+    "vitest": "^4.1.12",
     "saxes": "6.0.0"
   }
 }
