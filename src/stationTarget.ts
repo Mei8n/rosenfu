@@ -1,7 +1,7 @@
 import {alignmentLength, nearestOnAlignment, pointOnAlignment, stationPolygon, type GeoPoint} from "./alignment";
 import {project, type Camera} from "./map";
 
-export type StationLine = {id:string; points:GeoPoint[]; planId?:number; invalid?:boolean};
+export type StationLine = {id:string; points:GeoPoint[]; pathId?:number; invalid?:boolean};
 export function stationTarget(lines:StationLine[], point:GeoPoint, lengthM:number, camera:Camera, scale:number) {
   const cursor=project(point.latitude,point.longitude,camera);
   const candidates=lines.filter(line=>line.points.length>1).map(line=>{

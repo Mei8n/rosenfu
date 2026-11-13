@@ -83,6 +83,16 @@ fn build_alignment_with_stations(
         .build_alignment_with_stations(name, points, track_type, stations, reference)
 }
 #[tauri::command]
+fn build_plan(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignments: Vec<session::PlannedAlignment>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .build_plan(alignments)
+}
+#[tauri::command]
 fn place_station_on_alignment(
     editor: State<'_, Mutex<WorldEditor>>,
     name: String,
@@ -363,6 +373,7 @@ fn main() {
             build_alignment_from_reference,
             build_alignment,
             build_alignment_with_stations,
+            build_plan,
             update_station_placement,
             place_station_on_alignment,
             add_track,
