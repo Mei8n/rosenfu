@@ -21,9 +21,10 @@ export function ensureDependencies(root, run = spawnSync) {
   // Invalidate first so a failed/interrupted install cannot be mistaken for success.
   if (existsSync(marker)) unlinkSync(marker);
   console.log('Rosenfu: 依存関係をロックファイルに同期します (npm ci --include=dev)');
-  // npm.cmd needs cmd.exe on Windows; the command/arguments are fixed, not user input.
+  // npm.cmd needs cmd.exe on Windows. Use one fixed shell command, without
+  // an args array concatenated by Node (DEP0190); never interpolate user input.
   const windows = process.platform === 'win32';
-  const result = run(windows ? 'npm.cmd' : 'npm', ['ci', '--include=dev'], {
+  const result = run(windows ? 'npm.cmd ci --include=dev' : 'npm', windows ? [] : ['ci', '--include=dev'], {
     cwd: root, stdio: 'inherit', shell: windows,
   });
   if (result.error || result.status !== 0) {
