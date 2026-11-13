@@ -71,6 +71,25 @@ fn resolve(
     Ok(occurrences)
 }
 impl WorldDraft {
+    /// Only for the endpoint-extension command, which preserves old geometry and
+    /// coordinates by construction. No service definitions or occurrences may change.
+    pub(super) fn preserve_service_traversals(&self, old: &Self) -> Result<(), WorldError> {
+        if self.services != old.services || self.service_paths != old.service_paths {
+            return Err(WorldError::ServicePathEditUnsupported);
+        }
+        for path in &old.service_paths {
+            let service = old
+                .services
+                .iter()
+                .find(|s| s.id == path.service_id)
+                .ok_or(WorldError::InvalidServicePath)?;
+            if resolve(self, service.start, &path.legs)? != resolve(old, service.start, &path.legs)?
+            {
+                return Err(WorldError::ServicePathEditUnsupported);
+            }
+        }
+        Ok(())
+    }
     pub(super) fn validate_service_paths(&self) -> Result<(), WorldError> {
         let mut ids = BTreeSet::new();
         for path in &self.service_paths {

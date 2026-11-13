@@ -303,13 +303,15 @@ fn referenced_track_endpoint_edits_are_rejected_even_if_traversal_is_equivalent(
 }
 
 #[test]
-fn extension_rejects_service_in_use_without_any_mutation() {
-    let (mut w, c, a, stations, segments) = sample();
-    let stops = all(&w, stations[0], segments.clone());
-    w.add_service_path(c, "S".into(), stations[0], segments, stops)
-        .unwrap();
-    let before = w.snapshot().clone();
+fn extension_preserves_service_traversal_and_general_edit_protection() {
     for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+        let (mut w, c, a, stations, segments) = sample();
+        let stops = all(&w, stations[0], segments.clone());
+        let service = w
+            .add_service_path(c, "S".into(), stations[0], segments, stops)
+            .unwrap();
+        let before = w.snapshot().clone();
+        let occurrences = w.service_path_occurrences(service).unwrap();
         let old = &before.alignments[0];
         let anchor = if endpoint == AlignmentEndpoint::Start {
             old.points[0]
@@ -325,10 +327,29 @@ fn extension_rejects_service_in_use_without_any_mutation() {
                     0.01
                 },
         };
+        w.extend_alignment(c, a, endpoint, vec![anchor, next])
+            .unwrap();
+        assert_eq!(w.service_path_occurrences(service).unwrap(), occurrences);
+        let after = w.snapshot().clone();
+        assert_eq!(after.services, before.services);
+        assert_eq!(after.service_paths, before.service_paths);
+        assert_eq!(after.stations, before.stations);
+        assert_eq!(after.routes, before.routes);
+        let old_gap = (before.station_placements[2].position
+            - before.station_placements[0].position)
+            * old.length_m();
+        let new_gap = (after.station_placements[2].position - after.station_placements[0].position)
+            * after.alignments[0].length_m();
+        assert!((old_gap - new_gap).abs() < 1e-6);
         assert_eq!(
-            w.extend_alignment(c, a, endpoint, vec![anchor, next]),
+            w.replace(before.clone()),
             Err(WorldError::ServicePathEditUnsupported)
         );
-        assert_eq!(w.snapshot(), &before);
+        assert_eq!(w.snapshot(), &after);
+        // A second request based on a stale endpoint must not duplicate the extension.
+        assert!(w
+            .extend_alignment(c, a, endpoint, vec![anchor, next])
+            .is_err());
+        assert_eq!(w.snapshot(), &after);
     }
 }

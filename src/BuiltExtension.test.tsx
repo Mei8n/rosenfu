@@ -60,3 +60,10 @@ test('straight extension rejects an invalid join in preview without altering ord
  fireEvent.click(map,{clientX:310,clientY:130});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
 });
+
+test('an alignment used by a service can start and submit an extension',async()=>{
+ const map=await start({service_paths:[{service_id:"8",next_leg_key:"2",legs:[{key:"1",segment:{kind:"alignment",alignment_id:"3",from:"4",to:"5"}}],stops:[]}]});
+ fireEvent.click(map,{clientX:250,clientY:130});expect(screen.getByText(/から延伸を計画しています/)).toBeTruthy();
+ fireEvent.click(map,{clientX:310,clientY:130});vi.mocked(invoke).mockResolvedValueOnce(world);
+ fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({extension:{alignmentId:'3',endpoint:'end'}})])})));
+});

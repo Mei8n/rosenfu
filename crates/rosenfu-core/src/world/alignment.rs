@@ -132,7 +132,7 @@ pub enum AlignmentEndpoint {
 
 impl World {
     /// Extend a free-drawn alignment without moving any existing station.
-    /// Existing service-path and source-provenance edit protections remain active.
+    /// Service traversals must remain identical; source-provenance protection remains active.
     pub fn extend_alignment(
         &mut self,
         owner: CompanyId,
@@ -201,7 +201,14 @@ impl World {
                 placement.position = (offset + placement.position * old_length) / new_length;
             }
         }
-        self.replace(data)
+        // This command alone constructs an append/prepend-only candidate: no old
+        // geometry, station coordinates, routes, service legs or IDs are editable.
+        // Generic replace deliberately retains its stronger edit prohibition.
+        data.validate()?;
+        data.preserve_provenance(&self.data)?;
+        data.preserve_service_traversals(&self.data)?;
+        self.data = data;
+        Ok(())
     }
 }
 

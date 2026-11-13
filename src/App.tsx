@@ -601,9 +601,6 @@ export function App() {
           if(world?.alignment_provenance?.some(p=>p.alignment_id===target.alignment.id)){
             setError("実在データの出典付き線路の延伸はまだ対応していません。");return;
           }
-          if(world?.service_paths?.some(path=>path.legs.some(leg=>leg.segment.kind==="alignment"&&leg.segment.alignment_id===target.alignment.id))){
-            setError("系統で使用中の線路の延伸はまだ対応していません。");return;
-          }
           if(target.alignment.owner!==world?.companies[0]?.id){setError("他社の線路は延伸できません。");return;}
           if(draftFinished)newPath();
           setDraftExtension({alignmentId:target.alignment.id,endpoint:target.endpoint});

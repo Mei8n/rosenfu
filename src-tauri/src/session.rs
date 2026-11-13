@@ -281,7 +281,7 @@ impl WorldEditor {
                     "実在データの出典付き線路の延伸はまだ対応していません。".to_owned()
                 }
                 rosenfu_core::world::WorldError::ServicePathEditUnsupported => {
-                    "系統で使用中の線路の延伸はまだ対応していません。".to_owned()
+                    "延伸によって既存の系統経路が変わるため実行できません。".to_owned()
                 }
                 _ => e.to_string(),
             })?;
@@ -2425,6 +2425,105 @@ mod tests {
             let path = dir.path().join("extension.rosenfu");
             editor.save(&path).unwrap();
             assert_eq!(WorldEditor::new().load(&path).unwrap(), after);
+        }
+    }
+    #[test]
+    fn in_service_extension_roundtrips_and_batch_failure_is_atomic() {
+        use rosenfu_core::world::{AlignmentEndpoint, RouteSegment};
+        for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+            let mut editor = WorldEditor::new();
+            let initial = editor.build_plan(vec![planned_path(0.0)]).unwrap();
+            let a = initial.alignments[0].id;
+            editor
+                .place_station_on_alignment("Second".into(), a, 0.8, 100.0, 12.0)
+                .unwrap();
+            let snapshot = editor.snapshot();
+            let segments = vec![RouteSegment::Alignment {
+                alignment_id: a,
+                from: snapshot.stations[0].id,
+                to: snapshot.stations[1].id,
+            }];
+            let preview = editor
+                .preview_service_path(snapshot.stations[0].id, segments.clone())
+                .unwrap();
+            editor
+                .create_service_path(
+                    "Service".into(),
+                    snapshot.stations[0].id,
+                    segments,
+                    preview
+                        .occurrences
+                        .iter()
+                        .map(|o| o.reference.clone())
+                        .collect(),
+                )
+                .unwrap();
+            let before = editor.snapshot();
+            let anchor = if endpoint == AlignmentEndpoint::Start {
+                before.alignments[0].points[0]
+            } else {
+                *before.alignments[0].points.last().unwrap()
+            };
+            let extension = || PlannedAlignment {
+                name: "Extension".into(),
+                points: vec![
+                    anchor,
+                    GeoPoint {
+                        latitude: anchor.latitude,
+                        longitude: anchor.longitude
+                            + if endpoint == AlignmentEndpoint::Start {
+                                -0.02
+                            } else {
+                                0.02
+                            },
+                    },
+                ],
+                track_type: before.alignments[0].track_type,
+                stations: vec![planned_station(0.5)],
+                reference: None,
+                extension: Some(PlannedAlignmentExtension {
+                    alignment_id: a,
+                    endpoint,
+                }),
+            };
+            let mut invalid = planned_path(0.2);
+            invalid.points.clear();
+            assert!(editor.build_plan(vec![extension(), invalid]).is_err());
+            assert_eq!(editor.snapshot(), before);
+            let after = editor.build_plan(vec![extension()]).unwrap();
+            assert_eq!(after.service_paths, before.service_paths);
+            assert_eq!(after.services, before.services);
+            for old in &before.stations {
+                assert!(after.stations.contains(old));
+            }
+            let id = before.service_paths[0].service_id;
+            assert_eq!(
+                editor.world.service_path_occurrences(id).unwrap(),
+                preview.occurrences
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("service-extension.rosenfu");
+            editor.save(&path).unwrap();
+            let mut loaded = WorldEditor::new();
+            let mut restored = loaded.load(&path).unwrap();
+            // JSON floating-point parsing may differ by one ULP; geometry and
+            // references remain exact, while ratios must preserve metre positions.
+            for (actual, expected) in restored
+                .station_placements
+                .iter_mut()
+                .zip(&after.station_placements)
+            {
+                assert!(
+                    (actual.position - expected.position).abs() * after.alignments[0].length_m()
+                        < 1e-6
+                );
+                actual.position = expected.position;
+            }
+            assert_eq!(restored, after);
+            assert_eq!(
+                loaded.world.service_path_occurrences(id).unwrap(),
+                preview.occurrences
+            );
         }
     }
 }
