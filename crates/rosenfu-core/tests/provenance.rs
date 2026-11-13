@@ -293,8 +293,8 @@ fn extension_does_not_rewrite_source_geometry() {
             vec![
                 points[1],
                 GeoPoint {
-                    latitude: 35.1,
-                    longitude: 139.1
+                    latitude: 35.0,
+                    longitude: 139.2
                 }
             ]
         ),

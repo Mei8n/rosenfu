@@ -53,3 +53,38 @@ fn both_ends_preserve_stations_geometry_distances_and_identity() {
         }
     }
 }
+
+#[test]
+fn backward_and_right_angle_joins_are_atomic_errors() {
+    let mut world = World::default();
+    let player = world.add_player("P".into()).unwrap();
+    let owner = world.add_company(player, "C".into()).unwrap();
+    let id = world
+        .build_alignment(owner, "A".into(), vec![point(139.0), point(139.1)])
+        .unwrap();
+    let before = world.snapshot().clone();
+    for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+        let anchor = if endpoint == AlignmentEndpoint::Start {
+            point(139.0)
+        } else {
+            point(139.1)
+        };
+        let backward = if endpoint == AlignmentEndpoint::Start {
+            point(139.1)
+        } else {
+            point(139.0)
+        };
+        for next in [
+            backward,
+            GeoPoint {
+                latitude: 35.01,
+                longitude: anchor.longitude,
+            },
+        ] {
+            assert!(world
+                .extend_alignment(owner, id, endpoint, vec![anchor, next])
+                .is_err());
+            assert_eq!(world.snapshot(), &before);
+        }
+    }
+}

@@ -52,3 +52,12 @@ test('provisional curve speeds use explicit game model without fake straight spe
  expect([25,300,1000,2000,8000].map(provisionalCurveSpeed)).toEqual([18,62,113,160,321]);
  for(const radius of [0,-1,NaN,Infinity,-Infinity])expect(provisionalCurveSpeed(radius)).toBeNull();
 });
+
+test('extension starts with the existing endpoint tangent rather than a new chord',()=>{
+ const previous={latitude:35,longitude:139},start={latitude:35,longitude:139.01},end={latitude:35.003,longitude:139.02};
+ const result=circularAlignment([start,end],previous);
+ expect(result.error).toBeNull();expect(result.points.length).toBeGreaterThan(2);
+ const first=result.points[1];const turn=Math.atan2(first.latitude-start.latitude,(first.longitude-start.longitude)*Math.cos(35*Math.PI/180));
+ expect(Math.abs(turn)).toBeLessThan(5*Math.PI/180);
+ expect(circularAlignment([start,previous],previous).error).toMatch(/折り返し/);
+});

@@ -35,3 +35,18 @@ test("attributed endpoints reject explicitly without making a disconnected path"
  const map=await start({alignment_provenance:[{alignment_id:"3",source:{source_key:"x"}}]});
  fireEvent.click(map,{clientX:250,clientY:130});expect(await screen.findByText(/出典付き線路の延伸はまだ対応/)).toBeTruthy();expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
 });
+
+test('extending invalidates built station redo ratios from the old alignment length',async()=>{
+ const map=await start();
+ const station={id:"4",owner:"2",name:"駅",...point(215,130)};
+ const placement={station_id:"4",alignment_id:"3",position:0.5,length_m:200,width_m:12};
+ fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
+ vi.mocked(invoke).mockResolvedValueOnce({...world,stations:[station],station_placements:[placement]});
+ fireEvent.click(map,{clientX:215,clientY:130});await waitFor(()=>expect(invoke).toHaveBeenCalledWith("place_station_on_alignment",expect.anything()));
+ await screen.findByText(/を線路に沿って配置しました/);
+ vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});await screen.findByText(/直前の駅設置を取り消しました/);
+ fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(map,{clientX:250,clientY:130});fireEvent.click(map,{clientX:310,clientY:130});
+ vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[{...line,points:[...line.points,point(310,130)]}]});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
+ fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));const count=vi.mocked(invoke).mock.calls.length;
+ fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});await screen.findByText(/やり直せる駅設置履歴はありません/);expect(vi.mocked(invoke).mock.calls).toHaveLength(count);
+});

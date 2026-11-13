@@ -317,8 +317,13 @@ fn extension_rejects_service_in_use_without_any_mutation() {
             *old.points.last().unwrap()
         };
         let next = GeoPoint {
-            latitude: anchor.latitude + 0.01,
-            longitude: anchor.longitude,
+            latitude: anchor.latitude,
+            longitude: anchor.longitude
+                + if endpoint == AlignmentEndpoint::Start {
+                    -0.01
+                } else {
+                    0.01
+                },
         };
         assert_eq!(
             w.extend_alignment(c, a, endpoint, vec![anchor, next]),

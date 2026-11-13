@@ -12,7 +12,7 @@ export function provisionalCurveSpeed(radiusM:number):number|null {
 /** Incremental tangent arcs in a locally scaled Mercator plane. The first chord
  * establishes heading; adding a point never changes an earlier segment.
  * Metre radii are local approximations, not a surveyed track design. */
-export function circularAlignment(anchors:GeoPoint[]):CircularDraft {
+export function circularAlignment(anchors:GeoPoint[], previousPoint?:GeoPoint):CircularDraft {
  const result:CircularDraft={points:[],arcs:[],guide:null,minimumRadiusM:Infinity,error:null};
  if(!anchors.length)return result;
  if(anchors.some(p=>!Number.isFinite(p.latitude)||!Number.isFinite(p.longitude)||Math.abs(p.latitude)>80||Math.abs(p.longitude)>180)){result.error='座標が範囲外です';return result;}
@@ -20,6 +20,7 @@ export function circularAlignment(anchors:GeoPoint[]):CircularDraft {
  const xy=(p:GeoPoint):XY=>({x:(p.longitude-origin.longitude)*DEG*scale,y:(Math.asinh(Math.tan(p.latitude*DEG))-oy)*scale});
  const geo=(p:XY):GeoPoint=>({longitude:origin.longitude+p.x/scale/DEG,latitude:Math.atan(Math.sinh(oy+p.y/scale))/DEG});
  result.points.push({...origin});let tangent:XY|null=null;
+ if(previousPoint){const previous=xy(previousPoint),length=Math.hypot(previous.x,previous.y);if(length>0)tangent={x:-previous.x/length,y:-previous.y/length};}
  for(let i=1;i<anchors.length;i++){
   result.guide=null;
   const a=xy(anchors[i-1]),b=xy(anchors[i]),dx=b.x-a.x,dy=b.y-a.y,length=Math.hypot(dx,dy);

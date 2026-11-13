@@ -238,8 +238,13 @@ export function App() {
   })),[world]);
   const routeVisual = useMemo(() => routeAppearance(world), [world]);
   const selectedAlignment = alignments.find((a) => a.id === alignmentId);
-  const draftGeometry = useMemo(() => circularAlignment(draftPoints), [draftPoints]);
-  const previewGeometry = useMemo(() => circularAlignment(hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints), [draftPoints, hoverPoint, mapMode, draftFinished]);
+  function extensionPrevious(extension:Extension|null){
+    const alignment=alignments.find(a=>a.id===extension?.alignmentId);
+    return alignment&&extension?(extension.endpoint==="start"?alignment.points[1]:alignment.points.at(-2)):undefined;
+  }
+  const previousPoint=extensionPrevious(draftExtension);
+  const draftGeometry = useMemo(() => circularAlignment(draftPoints,previousPoint), [draftPoints,previousPoint]);
+  const previewGeometry = useMemo(() => circularAlignment(hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints,previousPoint), [draftPoints, hoverPoint, mapMode, draftFinished,previousPoint]);
   const draftLine = curved ? draftGeometry.points : draftPoints;
   const previewLine = curved ? previewGeometry.points : hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints;
   const draftInvalid = curved ? Boolean(draftGeometry.error) : draftPoints.some((point,index) => index > 0 && distanceM(draftPoints[index-1], point) < .1);
@@ -612,7 +617,7 @@ export function App() {
         if(draftPoints.length>=2&&!draftInvalid){setDraftFinished(true);setHoverPoint(null);}
         return;
       }
-      if(curved){const candidate=circularAlignment([...draftPoints,coordinates]);if(candidate.error){setHoverPoint(coordinates);return;}}
+      if(curved){const candidate=circularAlignment([...draftPoints,coordinates],previousPoint);if(candidate.error){setHoverPoint(coordinates);return;}}
       if (draftPoints.length && distanceM(draftPoints[draftPoints.length - 1], coordinates) < .1) return;
       if (draftPoints.length >= 128) { setError("線形点は128点までです。一度建設を確定してください。"); return; }
       setDraftPoints((points) => [...points, coordinates]); setRedoPoints([]); setHoverPoint(null); return;
@@ -623,7 +628,7 @@ export function App() {
   }
 
   const currentPaths=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,curved,trackType,roadFollowing,extension:draftExtension}]:[])];
-  const planBuildable=currentPaths.length>0&&currentPaths.every(path=>path.line.length>=2&&!(path.curved&&circularAlignment(path.points).error)&&!(path.trackType==="tram"&&path.roadFollowing));
+  const planBuildable=currentPaths.length>0&&currentPaths.every(path=>path.line.length>=2&&!(path.curved&&circularAlignment(path.points,extensionPrevious(path.extension)).error)&&!(path.trackType==="tram"&&path.roadFollowing));
   function commitAlignment() {
     if (!enabled || !planBuildable) return;
     void perform(async () => {
@@ -633,6 +638,9 @@ export function App() {
       const first=requests[0];
       const batch=requests.length>1||requests.some(request=>request.extension);
       const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests}:first.stations.length?first:{name:first.name,points:first.points,trackType:first.trackType});
+      const extendedIds=new Set(requests.flatMap(request=>request.extension?[request.extension.alignmentId]:[]));
+      const keepHistory=(entry:StationHistoryEntry)=>Boolean(entry.planned)||!entry.placement||!extendedIds.has(entry.placement.alignment_id);
+      setStationUndo(history=>history.filter(keepHistory));setStationRedo(history=>history.filter(keepHistory));
       ids.forEach(discardPlanStations);setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
       const created=snapshot.alignments?.find(a=>!alignments.some(old=>old.id===a.id));
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);

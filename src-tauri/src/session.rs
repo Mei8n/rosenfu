@@ -273,6 +273,10 @@ impl WorldEditor {
             .world
             .extend_alignment(candidate.company, alignment_id, endpoint, points)
             .map_err(|e| match e {
+                rosenfu_core::world::WorldError::InvalidAlignment => {
+                    "延伸の接合方向または線形が不正です。既存線路の接線方向へ続けてください。"
+                        .to_owned()
+                }
                 rosenfu_core::world::WorldError::ProvenanceEditUnsupported => {
                     "実在データの出典付き線路の延伸はまだ対応していません。".to_owned()
                 }
@@ -2374,8 +2378,13 @@ mod tests {
                 points: vec![
                     anchor,
                     GeoPoint {
-                        latitude: anchor.latitude + 0.02,
-                        longitude: anchor.longitude,
+                        latitude: anchor.latitude,
+                        longitude: anchor.longitude
+                            + if endpoint == AlignmentEndpoint::Start {
+                                -0.02
+                            } else {
+                                0.02
+                            },
                     },
                 ],
                 track_type: old.track_type,
@@ -2401,7 +2410,17 @@ mod tests {
             let station = &after.stations[1];
             let expected = a.point_at(p.position);
             assert!((station.latitude - expected.latitude).abs() < 1e-10);
-            assert!((station.latitude - (anchor.latitude + 0.01)).abs() < 1e-8);
+            assert!(
+                (station.longitude
+                    - (anchor.longitude
+                        + if endpoint == AlignmentEndpoint::Start {
+                            -0.01
+                        } else {
+                            0.01
+                        }))
+                .abs()
+                    < 1e-8
+            );
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("extension.rosenfu");
             editor.save(&path).unwrap();

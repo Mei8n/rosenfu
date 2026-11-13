@@ -156,6 +156,27 @@ impl World {
         if alignment.owner != owner || points.len() < 2 || points.first() != Some(&old_endpoint) {
             return Err(WorldError::InvalidAlignment);
         }
+        // Sampled tangent arcs have at most 2.5 degrees of chord deviation.
+        // Reject backward or sharp joins rather than silently constructing a cusp.
+        let interior = match endpoint {
+            AlignmentEndpoint::Start => alignment.points[1],
+            AlignmentEndpoint::End => alignment.points[alignment.points.len() - 2],
+        };
+        let vector = |from: GeoPoint, to: GeoPoint| {
+            (
+                (to.longitude - from.longitude) * old_endpoint.latitude.to_radians().cos(),
+                to.latitude - from.latitude,
+            )
+        };
+        let incoming = vector(interior, old_endpoint);
+        let outgoing = vector(old_endpoint, points[1]);
+        let norm = incoming.0.hypot(incoming.1) * outgoing.0.hypot(outgoing.1);
+        if !norm.is_finite()
+            || norm <= 0.0
+            || (incoming.0 * outgoing.0 + incoming.1 * outgoing.1) / norm < 5_f64.to_radians().cos()
+        {
+            return Err(WorldError::InvalidAlignment);
+        }
         let old_length = alignment.length_m();
         let added_length: f64 = points.windows(2).map(|p| distance(p[0], p[1])).sum();
         if !added_length.is_finite() || added_length < 20.0 {
