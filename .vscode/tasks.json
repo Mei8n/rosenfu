@@ -1,0 +1,123 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Rosenfu: build debug desktop",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "run",
+        "tauri",
+        "--",
+        "build",
+        "--debug",
+        "--no-bundle"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+
+      ],
+      "group": "build"
+    },
+    {
+      "label": "Rosenfu: build release desktop",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "run",
+        "tauri",
+        "--",
+        "build",
+        "--no-bundle"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Rosenfu: dev (hot reload)",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "run",
+        "tauri",
+        "--",
+        "dev"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Rosenfu: test frontend",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "test"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "Rosenfu: test Rust",
+      "type": "shell",
+      "command": "cargo",
+      "args": [
+        "test",
+        "--locked",
+        "--workspace"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+
+      ],
+      "group": "test"
+    },
+    {
+      "label": "Rosenfu: test all",
+      "dependsOn": [
+        "Rosenfu: test frontend",
+        "Rosenfu: test Rust"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Rosenfu: check Rust formatting",
+      "type": "shell",
+      "command": "cargo",
+      "args": [
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

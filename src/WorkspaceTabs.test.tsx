@@ -1,0 +1,10 @@
+// @vitest-environment jsdom
+import React,{useState} from 'react';
+import {cleanup,fireEvent,render,screen,act} from '@testing-library/react';
+import {afterEach,expect,test,vi} from 'vitest';
+import {WorkspaceTabs,type WorkspaceTab} from './WorkspaceTabs';
+import {PanelResizer} from './PanelResizer';
+afterEach(cleanup);
+test('main tabs keep requested order and keyboard navigation',()=>{function View(){const [value,setValue]=useState<WorkspaceTab>('construction');return <WorkspaceTabs value={value} onChange={setValue}/>;}render(<View/>);expect(screen.getAllByRole('tab').map(t=>t.getAttribute('aria-label'))).toEqual(['建設','路線','駅','系統','財務','都市','セーブデータ','設定']);fireEvent.keyDown(screen.getByRole('tab',{name:'建設'}),{key:'End'});expect(screen.getByRole('tab',{name:'設定'}).getAttribute('aria-selected')).toBe('true');expect(document.activeElement).toBe(screen.getByRole('tab',{name:'設定'}));fireEvent.keyDown(document.activeElement!,{key:'ArrowRight'});expect(screen.getByRole('tab',{name:'建設'}).getAttribute('aria-selected')).toBe('true');});
+test('panel resize supports keyboard, clamp, pointer and cancellation',()=>{function View(){const [width,setWidth]=useState(300);return <PanelResizer value={width} onChange={setWidth}/>;}render(<View/>);const handle=screen.getByRole('separator');fireEvent.keyDown(handle,{key:'End'});expect(handle.getAttribute('aria-valuenow')).toBe('400');fireEvent.keyDown(handle,{key:'ArrowRight'});expect(handle.getAttribute('aria-valuenow')).toBe('400');fireEvent.keyDown(handle,{key:'Home'});expect(handle.getAttribute('aria-valuenow')).toBe('260');
+ const pointer=(type:string,props:Record<string,number>)=>{const e=new Event(type,{bubbles:true});Object.assign(e,props);act(()=>handle.dispatchEvent(e));};pointer('pointerdown',{pointerId:1,clientX:260,button:0});pointer('pointermove',{pointerId:1,clientX:320});expect(handle.getAttribute('aria-valuenow')).toBe('320');pointer('pointercancel',{pointerId:1});expect(handle.getAttribute('aria-valuenow')).toBe('260');pointer('pointerdown',{pointerId:2,clientX:260,button:0});pointer('pointerup',{pointerId:2,clientX:1000});expect(handle.getAttribute('aria-valuenow')).toBe('400');});

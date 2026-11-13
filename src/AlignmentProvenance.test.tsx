@@ -1,0 +1,15 @@
+// @vitest-environment jsdom
+import React from 'react';
+import {cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {afterEach,expect,test,vi} from 'vitest';
+import {AlignmentProvenance} from './AlignmentProvenance';
+import {App} from './App';
+import {invoke,isTauri} from '@tauri-apps/api/core';
+vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:vi.fn()}));
+afterEach(()=>{cleanup();vi.resetAllMocks();});
+const alignment={id:'3',owner:'2',name:'保存済線形',points:[{latitude:35.67,longitude:139.7},{latitude:35.68,longitude:139.71}]};
+const record={key:'a'.repeat(64)+':'+ 'b'.repeat(64),dataset_id:'local',revision:'1',graph_sha256:'a'.repeat(64),source_sha256:'b'.repeat(64),source:'<img src=x onerror=alert(1)>',source_date:null,license:'ODbL-1.0',attribution:'© OpenStreetMap contributors',conversion_format_version:1};
+const provenance={alignment_id:'3',source:{source_key:record.key,method:'osm_way_slice_v1' as const,osm_way_id:'90071992547409930',mode:'rail' as const,start_segment_index:2,start_fraction:.2,end_segment_index:5,end_fraction:.7}};
+test('untrusted saved provenance is escaped, bounded and has only a fixed external attribution link',()=>{const view=render(<AlignmentProvenance alignment={alignment} provenance={provenance} sourceRecords={[{...record,source_date:'x'.repeat(100000)}]}/>);expect(screen.getByText(/90071992547409930/)).toBeTruthy();expect(view.container.querySelector('img')).toBeNull();expect(view.container.textContent).toContain('<img src=x');expect(view.container.textContent!.length).toBeLessThan(2000);expect(view.container.querySelectorAll('a')).toHaveLength(1);expect(view.container.querySelector('a')?.href).toBe('https://www.openstreetmap.org/copyright');});
+test('legacy unrecorded and broken references are not falsely described as verified provenance',()=>{const view=render(<AlignmentProvenance alignment={alignment} sourceRecords={[]}/>);expect(screen.getByText(/出典記録なし/)).toBeTruthy();view.rerender(<AlignmentProvenance alignment={alignment} provenance={provenance} sourceRecords={[]}/>);expect(screen.getByRole('alert').textContent).toContain('解決できません');});
+test('World provenance remains visible without any reference bundle and viewing invokes no build command',async()=>{const world={next_id:'4',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],tracks:[],routes:[],services:[],alignments:[alignment],source_records:[record],alignment_provenance:[provenance]};vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async c=>c==='engine_info'?{name:'Rosenfu',version:'provenance-test'}:world);render(<App/>);await screen.findByText(/provenance-test/);fireEvent.click(screen.getByRole('button',{name:/保存済線形（通常）.*選択/}));expect(screen.getByRole('region',{name:'選択線形の出典'}).textContent).toContain('90071992547409930');fireEvent.click(screen.getByRole('button',{name:'参考線を外す'}));expect(screen.getByRole('region',{name:'選択線形の出典'}).textContent).toContain('local');expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','autosave_status']);});

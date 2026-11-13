@@ -1,3 +1,39 @@
+# Dependencies and generated build output
 /node_modules/
 /dist/
 /target/
+/src-tauri/target/
+/src-tauri/gen/schemas/
+/coverage/
+*.tsbuildinfo
+
+# Local environment / credentials (sanitized templates may be committed)
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+
+# Runtime logs and local game data; fixtures remain tracked
+*.log
+/*.rosenfu.json
+/*.rosenfu.json.bak
+/world.json
+/world.json.bak
+/world.autosave.json
+/world.autosave.json.bak
+/local-data/
+
+# OS and editor-local files; shared .vscode settings stay versioned
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+*.swp
+*.swo
+*~
+
+# Runtime save sidecar locks (do not ignore Cargo.lock)
+/*.rosenfu.json.lock
+/world.json.lock
+/world.autosave.json.lock

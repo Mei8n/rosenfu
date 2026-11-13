@@ -4,7 +4,7 @@
 
 Issue #1の技術検証としてTauri 2、React / TypeScript、Rustの構成を追加しています。
 共有RustライブラリをデスクトップとCLIから呼び出し、エンジン名と版番号を返します。
-シミュレーション、地図、建設、保存、通信サーバーは未実装です。CLIは専用サーバーではありません。
+基本モデル・アルファ用ファイル保存と、自作サンプル背景への駅配置・直線の駅間接続・会社名設定・路線編集画面を追加しています。選択式の地理院地図（オンライン・移動とズーム対応）を表示できます。詳細な線形編集・シミュレーション・通信サーバーは未実装です。CLIは専用サーバーではありません。
 
 構成は検証用の暫定採用です。3 OSの実機起動と配布を確認してから正式採用を判断します。
 MapLibre、SQLite、通信方式はまだ導入・確定していません。
@@ -28,7 +28,7 @@ npm ci
 npm run tauri -- dev
 ```
 
-画面に「Rosenfu エンジンに接続しました」と版番号が表示されることを確認します。
+画面に「エンジン接続済み」と版番号が表示されることを確認します。駅配置の確認手順は [小地域試作](station-prototype.md) を参照してください。
 ブラウザで画面だけ確認する場合は`npm run dev`を使い、`http://localhost:1420`を開きます。
 この場合はRustへ接続せず、プレビューであることを表示します。
 
@@ -36,7 +36,7 @@ npm run tauri -- dev
 cargo run --locked -p rosenfu-cli
 ```
 
-CLIは共通エンジンの情報をJSONで出力して終了します。
+引数なしのCLIは共通エンジンの情報をJSONで出力して終了します。保存ファイルの操作は後述のサブコマンドで行います。
 
 ## 確認コマンド
 
@@ -44,11 +44,11 @@ CLIは共通エンジンの情報をJSONで出力して終了します。
 npm test
 npm run build
 cargo fmt --all --check
-cargo test --locked
+cargo test --locked --workspace
 npm run tauri -- build --no-bundle
 ```
 
-`cargo test`の既定対象はcoreとCLIです。デスクトップは最後のコマンドで別途ビルドします。
+`cargo test`の既定対象はcore・storage・CLIです。`--workspace` を付けるとデスクトップの操作テストも含み、OS別のGUI開発依存が必要です。最後のコマンドで配布前の実行ファイルを別途ビルドします。
 配布用インストーラー、署名、公証、更新機構は未対応です。
 Cargo.lockとpackage-lock.jsonをコミットし、依存関係の更新はPRで確認します。
 
@@ -71,10 +71,46 @@ GitHub Actionsのビルド成功もGUIの実機起動成功とは区別します
 | 検証項目 | 今回の状態 |
 | --- | --- |
 | LinuxのCLI実行・共有処理との一致 | 確認済み |
-| フロントエンド型検査・ビルド・接続状態テスト | 成功（接続状態テスト3件） |
+| フロントエンド型検査・ビルド・接続状態テスト | 成功（件数と範囲は後述のローカル検証を参照） |
 | Chromiumでのブラウザプレビュー | 表示とページエラーなしを確認 |
 | Linuxのネイティブ起動 | 作業環境にGTK/WebKitGTK開発ライブラリがなく未確認 |
 | Windows / macOSの実機起動 | 未確認 |
 | 3 OSの自動ビルド | CIを追加。実行結果はPRを参照 |
 
 Issue #1は実機起動と採用判断が残るため、この変更だけでは完了にしません。
+
+## Windows ローカル検証（2026-11-12）
+
+- Node.js 24.18.0 / npm 11.16.0 / Rust 1.99.1（MSVC）で確認。
+- `npm test`: 駅・線路・会社・路線編集と保存・読込画面の 43 テスト成功。
+- `npm run build`: 型検査とフロントエンドビルド成功。
+- `cargo fmt --all --check`: 成功。
+- `cargo test --locked --workspace`: コア・採番・保存・CLI・デスクトップ操作の計 66 テスト成功。
+- `cargo clippy --locked --all-targets -- -D warnings`: 成功。
+- `npm run tauri -- build --no-bundle`: Windows 実行ファイルのビルド成功。
+- 出力: `target/release/rosenfu-desktop.exe`。GUI の実機表示確認は別途必要。
+- 基盤 PR #8 の Windows / macOS / Ubuntu CI は成功確認済み。
+  これは今回のモデル変更を含む CI 実行ではありません。
+
+構築データの初期設計と未実装範囲は [ワールド基本モデル](world-model.md) を参照してください。
+Tauri がビルド時に生成する `src-tauri/gen/schemas/` はバージョン管理対象外です。
+
+## 保存の CLI 検証
+
+```sh
+cargo run --locked -p rosenfu-cli -- world new sample.rosenfu.json
+cargo run --locked -p rosenfu-cli -- world inspect sample.rosenfu.json
+```
+
+`new` は空のワールドを新規作成します。同名ファイルがあれば上書きせず失敗します。
+`inspect` は形式・参照整合性を検証し、各データの件数と次の ID を JSON で出力します。
+どちらも親ディレクトリを自動作成しません。エラー時は標準エラー出力と非ゼロ終了コードを返します。
+GUI の保存・読込は建設試作に接続済みです。運行系統の基本構造はコア・保存・CLIに追加していますが、系統タブで経路と停車位置を編集できます。ゲーム時間・旅客シミュレーションは未実装です。
+保存の制約とバックアップは [保存基盤](storage.md) を参照してください。
+## クラウド再構築版の検証環境（2026-11-13）
+
+再構築の由来と未回収項目は[復旧記録](reconstruction-2026-11-13.md)を参照。OSファイルロックAPIにはRust 1.89以上が必要で、今回Rust 1.100 stableで検証した。`Cargo.lock`を使用し、通常は最新stableを推奨する。`npm ci`でfrontend依存を用意する。
+
+`cargo test --locked` / `cargo clippy --locked --all-targets -- -D warnings`はworkspaceのdefault-members（core/cli/storage）だけを対象にする。`cargo test --locked --workspace`にはLinuxのGTK/WebKitGTKなどnative開発依存が必要。sessionの単独試験だけではTauriコマンド登録・OS起動を検証したことにならない。
+
+`node scripts/benchmark-reference-spatial.ts`はNode 24以上で実行する合成データの索引比較。全体ゲーム負荷や実OSMの速度保証ではない。
