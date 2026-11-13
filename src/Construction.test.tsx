@@ -201,12 +201,11 @@ test("reference name distance uses corrected platform center at both alignment e
 });
 
 
-test("endpoint double click finishes a draft once without building or duplicate anchors",async()=>{
+test("clicking the last point again finishes a draft once without building or duplicate anchors",async()=>{
  const map=await start();
  fireEvent.click(map,{clientX:180,clientY:130,detail:1});
  fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:300,clientY:170,detail:2});
- fireEvent.doubleClick(map,{clientX:300,clientY:170,detail:2});
+ fireEvent.click(map,{clientX:300,clientY:170,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect(map.classList.contains("placement-enabled")).toBe(true);
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
@@ -270,10 +269,10 @@ test("invalid double click does not finish; selecting a parked plan resumes its 
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(4);
 });
 
-test("straight mode retains close anchors and can start an independent path after finishing",async()=>{
+test("straight mode snaps the last anchor to finish and keeps drawing enabled",async()=>{
  const map=await start();fireEvent.click(screen.getByRole("button",{name:"直線"}));
  fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:296,clientY:168,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
+ fireEvent.click(map,{clientX:296,clientY:168,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  fireEvent.click(map,{clientX:296,clientY:168,detail:2});fireEvent.click(map,{clientX:100,clientY:240,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
 });
@@ -291,9 +290,21 @@ test("endpoint snap tolerance stays in CSS pixels after the map resizes",async()
  const map = await start();
  fireEvent.click(map, {clientX:180, clientY:130, detail:1});
  fireEvent.click(map, {clientX:300, clientY:170, detail:1});
- fireEvent.click(map, {clientX:300, clientY:170, detail:2});
+ fireEvent.click(map, {clientX:300, clientY:170, detail:1});
  fireEvent.keyDown(document.body, {key:"Z", ctrlKey:true, shiftKey:true});
  fireEvent.click(map, {clientX:390, clientY:190, detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
  });
+
+test.each(["曲線","直線"])("%s single endpoint finish can resume the same plan without an extra point",async mode=>{
+ const map=await start();fireEvent.click(screen.getByRole("button",{name:mode}));
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ fireEvent.click(map,{clientX:298,clientY:169,detail:1});
+ fireEvent.click(map,{clientX:298,clientY:169,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.click(map,{clientX:390,clientY:190,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
+ expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
+});

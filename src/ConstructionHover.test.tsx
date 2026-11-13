@@ -54,7 +54,7 @@ test("drawing details follow the cursor without hover and diagnose an invalid ca
  expect(document.querySelector(".drawing-tooltip")?.textContent).toContain("線路が折り返しています");
  expect(map.querySelector(".invalid-candidate")).toBeTruthy();
  fireEvent.pointerMove(map,{clientX:297,clientY:168});
- expect(document.querySelector(".drawing-tooltip")?.textContent).toContain("終端をダブルクリック");
+ expect(document.querySelector(".drawing-tooltip")?.textContent).toContain("最後の点をもう一度クリック");
  expect(map.querySelector(".invalid-candidate")).toBeNull();
  fireEvent.pointerLeave(map);expect(document.querySelector(".drawing-tooltip")).toBeNull();
 });

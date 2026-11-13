@@ -242,10 +242,14 @@ export function App() {
   const candidateLine = hoverPoint && !draftFinished && draftPoints.length ? (previewLine.length > draftLine.length ? previewLine.slice(Math.max(0,draftLine.length-1)) : [draftPoints[draftPoints.length-1],hoverPoint]) : [];
   const [cursorPosition,setCursorPosition]=useState<{x:number;y:number}|null>(null);
   useEffect(()=>{setHoverPoint(null);setCursorPosition(null);},[camera]);
+  function endpointDistance(point:GeoPoint, end:GeoPoint, width:number,height:number) {
+    const a=project(end.latitude,end.longitude,camera),b=project(point.latitude,point.longitude,camera);
+    return Math.hypot(a.x-b.x,a.y-b.y)*mapViewport(width,height).scale;
+  }
   function snappedEndpoint(point:GeoPoint, width:number,height:number) {
-    if(!curved || draftFinished || !draftPoints.length)return null;
-    const end=draftPoints[draftPoints.length-1],a=project(end.latitude,end.longitude,camera),b=project(point.latitude,point.longitude,camera);
-    return Math.hypot(a.x-b.x,a.y-b.y)*mapViewport(width,height).scale<=8?end:null;
+    if(draftFinished || !draftPoints.length)return null;
+    const end=draftPoints[draftPoints.length-1];
+    return endpointDistance(point,end,width,height)<=8?end:null;
   }
   const circleGuide = curved && !draftFinished && hoverPoint && mapMode === "draw" ? previewGeometry.guide : null;
   const guideCenter = circleGuide ? project(circleGuide.center.latitude,circleGuide.center.longitude,camera) : null;
@@ -549,14 +553,25 @@ export function App() {
     if (activeTool === "tracks" && mapMode === "draw") {
       if(referenceCopy.active){void referenceCopy.click(coordinates);return;}
       if(roadFollowingBlocked)return;
-      // The second click of a double-click ends the draft without adding
-      // another endpoint or constructing it. The first click already placed it.
-      if (event.detail >= 2) {
-        if (draftPoints.length >= 2 && !draftInvalid && (!curved || snappedEndpoint(coordinates,rect.width,rect.height))) { setDraftFinished(true); setHoverPoint(null); }
+      // A fresh click on the last anchor finishes the path, independent of
+      // double-click timing. Ignore trailing clicks of that same gesture.
+      if(draftFinished || !draftPoints.length){
+        if(event.detail>=2)return;
+        const candidates=[...(draftFinished?[{id:activePlanId,points:draftPoints}]:[]),...parkedPlans]
+          .filter(plan=>plan.points.length>=2)
+          .map(plan=>({id:plan.id,distance:endpointDistance(coordinates,plan.points[plan.points.length-1],rect.width,rect.height)}))
+          .filter(plan=>plan.distance<=8).sort((a,b)=>a.distance-b.distance);
+        if(candidates.length){
+          if(candidates[0].id===activePlanId){setDraftFinished(false);setHoverPoint(null);}
+          else selectIndependentPlan(candidates[0].id);
+          return;
+        }
+        if(draftFinished){newIndependentPlan();setDraftPoints([coordinates]);return;}
+      }
+      if(snappedEndpoint(coordinates,rect.width,rect.height)){
+        if(draftPoints.length>=2&&!draftInvalid){setDraftFinished(true);setHoverPoint(null);}
         return;
       }
-      if(draftFinished){newIndependentPlan();setDraftPoints([coordinates]);return;}
-      if(snappedEndpoint(coordinates,rect.width,rect.height))return;
       if(curved){const candidate=circularAlignment([...draftPoints,coordinates]);if(candidate.error){setHoverPoint(coordinates);return;}}
       if (draftPoints.length && distanceM(draftPoints[draftPoints.length - 1], coordinates) < .1) return;
       if (draftPoints.length >= 128) { setError("線形点は128点までです。一度建設を確定してください。"); return; }
@@ -853,7 +868,7 @@ export function App() {
             <div className="segmented"><button className="secondary" disabled={!enabled||referenceCopy.active} aria-pressed={curved} onClick={() => setCurved(true)}>曲線</button><button className="secondary" disabled={!enabled||referenceCopy.active} aria-pressed={!curved} onClick={() => setCurved(false)}>直線</button></div>
 <details className="construction-help"><summary>説明</summary><p>種類別の速度・曲線・勾配・費用の規格差は未実装です。道路追従は左側の「限定道路追従」から開始できます。</p></details></div>}
             {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && cursorPosition && !draftFinished && (draftPoints.length>0 || !planHover) && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
-              <strong>{roadFollowingBlocked?"道路追従を開始するか、道路に合わせるをOFFにしてください":previewError?`敷設不可：${previewError}`:hoverPoint&&draftPoints.length?"基本条件OK（地形等は未判定）":draftPoints.length?"終端をダブルクリックで終了":"始点をクリック"}</strong>
+              <strong>{roadFollowingBlocked?"道路追従を開始するか、道路に合わせるをOFFにしてください":previewError?`敷設不可：${previewError}`:hoverPoint&&draftPoints.length?"基本条件OK（地形等は未判定）":draftPoints.length?"最後の点をもう一度クリックで終了":"始点をクリック"}</strong>
               {draftPoints.length>0&&<><div>計画 {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div><div>半径（近似）：{circleGuide?`${Math.round(circleGuide.radiusM)} m`:"直線 / 終端"}</div>{circleGuide&&!previewError&&<div>曲線制限（暫定） {provisionalCurveSpeed(circleGuide.radiusM)} km/h</div>}</>}
               <small>建設費・維持費：未計算</small>
             </div>}
@@ -927,7 +942,7 @@ export function App() {
               })}
               </g>
             </svg>
-            <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 終端をダブルクリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
+            <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
             <div className="map-coordinates">{bounds.south.toFixed(4)}–{bounds.north.toFixed(4)}°N / {bounds.west.toFixed(4)}–{bounds.east.toFixed(4)}°E</div>
           </div>
           <footer className="map-footer">
