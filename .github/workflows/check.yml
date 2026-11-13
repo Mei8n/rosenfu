@@ -28,6 +28,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - run: npm ci
+      - name: Verify IDE dependency preparation
+        run: |
+          node scripts/ensure-dependencies.mjs
+          node scripts/ensure-dependencies.mjs
       - run: npm test
       - run: npm run build
       - run: cargo fmt --all --check
