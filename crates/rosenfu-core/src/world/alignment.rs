@@ -122,6 +122,68 @@ impl WorldDraft {
         Ok(())
     }
 }
+/// Endpoint to extend. Input points run from the existing endpoint outwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlignmentEndpoint {
+    Start,
+    End,
+}
+
+impl World {
+    /// Extend a free-drawn alignment without moving any existing station.
+    /// Existing service-path and source-provenance edit protections remain active.
+    pub fn extend_alignment(
+        &mut self,
+        owner: CompanyId,
+        alignment_id: AlignmentId,
+        endpoint: AlignmentEndpoint,
+        points: Vec<GeoPoint>,
+    ) -> Result<(), WorldError> {
+        let mut data = self.data.clone();
+        let alignment = data
+            .alignments
+            .iter_mut()
+            .find(|a| a.id == alignment_id)
+            .ok_or(WorldError::MissingReference("alignment"))?;
+        let old_endpoint = match endpoint {
+            AlignmentEndpoint::Start => alignment.points[0],
+            AlignmentEndpoint::End => *alignment
+                .points
+                .last()
+                .ok_or(WorldError::InvalidAlignment)?,
+        };
+        if alignment.owner != owner || points.len() < 2 || points.first() != Some(&old_endpoint) {
+            return Err(WorldError::InvalidAlignment);
+        }
+        let old_length = alignment.length_m();
+        let added_length: f64 = points.windows(2).map(|p| distance(p[0], p[1])).sum();
+        if !added_length.is_finite() || added_length < 20.0 {
+            return Err(WorldError::InvalidAlignment);
+        }
+        match endpoint {
+            AlignmentEndpoint::Start => {
+                let mut extended: Vec<_> = points.into_iter().skip(1).rev().collect();
+                extended.extend_from_slice(&alignment.points);
+                alignment.points = extended;
+            }
+            AlignmentEndpoint::End => alignment.points.extend(points.into_iter().skip(1)),
+        }
+        let new_length = alignment.length_m();
+        let offset = if endpoint == AlignmentEndpoint::Start {
+            added_length
+        } else {
+            0.0
+        };
+        for placement in &mut data.station_placements {
+            if placement.alignment_id == alignment_id {
+                placement.position = (offset + placement.position * old_length) / new_length;
+            }
+        }
+        self.replace(data)
+    }
+}
+
 impl World {
     pub fn build_alignment(
         &mut self,

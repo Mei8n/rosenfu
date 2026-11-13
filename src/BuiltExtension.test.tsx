@@ -1,0 +1,37 @@
+// @vitest-environment jsdom
+import React from "react";
+import {afterEach,expect,test,vi} from "vitest";
+import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
+import {invoke,isTauri} from "@tauri-apps/api/core";
+import {App} from "./App";
+import {coordinatesFromClient,DEFAULT_CAMERA} from "./map";
+vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:vi.fn()}));
+window.PointerEvent=MouseEvent as typeof PointerEvent;
+afterEach(()=>{cleanup();vi.resetAllMocks();localStorage.clear();});
+const rect={x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})};
+const point=(x:number,y:number)=>coordinatesFromClient(x,y,rect,DEFAULT_CAMERA)!;
+const line={id:"3",owner:"2",name:"既存",track_type:"normal",points:[point(180,130),point(250,130)]};
+const world={next_id:"4",players:[{id:"1",name:"P"}],companies:[{id:"2",owner:"1",name:"C"}],stations:[],tracks:[],routes:[],services:[],alignments:[line],station_placements:[]};
+async function start(extra={}){
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
+ if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};throw Error("unexpected "+command);
+ });render(<App/>);fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));await screen.findByText(/extension-test/);
+ const map=screen.getByRole("img",{name:"駅配置用サンプル地図"});map.getBoundingClientRect=()=>rect;return map;
+}
+for(const endpoint of ["start","end"] as const)test(`${endpoint} extension joins existing ID inside a multi-path plan and preserves station dimensions`,async()=>{
+ const map=await start();const click=(x:number,y=130)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ const anchor=endpoint==="start"?180:250,finish=endpoint==="start"?120:310;
+ click(anchor+2);expect(screen.getByText(/から延伸を計画しています/)).toBeTruthy();click(finish);
+ fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"8"}});click((anchor+finish)/2);
+ fireEvent.click(screen.getByRole("tab",{name:"線路"}));click(finish);click(340,220);click(400,220);
+ vi.mocked(invoke).mockRejectedValueOnce(Error("atomic failure"));fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/atomic failure/);
+ const request=vi.mocked(invoke).mock.calls.find(([c])=>c==="build_plan")![1] as {alignments:any[]};
+ expect(request.alignments).toHaveLength(2);const ext=request.alignments.find(p=>p.extension);
+ expect(ext.extension).toEqual({alignmentId:"3",endpoint});expect(ext.points[0]).toEqual(line.points[endpoint==="start"?0:1]);expect(ext.stations[0].lengthM).toBe(160);
+ expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
+ vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0));
+});
+test("attributed endpoints reject explicitly without making a disconnected path",async()=>{
+ const map=await start({alignment_provenance:[{alignment_id:"3",source:{source_key:"x"}}]});
+ fireEvent.click(map,{clientX:250,clientY:130});expect(await screen.findByText(/出典付き線路の延伸はまだ対応/)).toBeTruthy();expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
+});

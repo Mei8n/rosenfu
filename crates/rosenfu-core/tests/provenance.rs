@@ -277,3 +277,28 @@ fn reference_geometry_copy_keeps_selected_track_type_independent_of_source_mode(
         assert_eq!(w.snapshot().alignment_provenance[0].source, p);
     }
 }
+
+#[test]
+fn extension_does_not_rewrite_source_geometry() {
+    let (mut w, c, source, provenance, points) = sample();
+    let a = w
+        .build_alignment_from_reference(c, "A".into(), points.clone(), source, provenance)
+        .unwrap();
+    let before = w.snapshot().clone();
+    assert_eq!(
+        w.extend_alignment(
+            c,
+            a,
+            AlignmentEndpoint::End,
+            vec![
+                points[1],
+                GeoPoint {
+                    latitude: 35.1,
+                    longitude: 139.1
+                }
+            ]
+        ),
+        Err(WorldError::ProvenanceEditUnsupported)
+    );
+    assert_eq!(w.snapshot(), &before);
+}

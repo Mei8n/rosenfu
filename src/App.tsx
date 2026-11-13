@@ -192,7 +192,9 @@ export function App() {
   const alignmentName = "新しい線路";
   const [draftFinished, setDraftFinished] = useState(false);
   const [draftPoints, setDraftPoints] = useState<GeoPoint[]>([]);
-  type PlannedPath = { id: number; planId: number; name: string; points: GeoPoint[]; redo: GeoPoint[]; line: GeoPoint[]; curved: boolean; trackType: TrackType; roadFollowing: boolean };
+  type Extension = {alignmentId:string;endpoint:"start"|"end"};
+  const [draftExtension,setDraftExtension]=useState<Extension|null>(null);
+  type PlannedPath = { extension:Extension|null; id: number; planId: number; name: string; points: GeoPoint[]; redo: GeoPoint[]; line: GeoPoint[]; curved: boolean; trackType: TrackType; roadFollowing: boolean };
   const [parkedPaths, setParkedPaths] = useState<PlannedPath[]>([]);
   const [activePathId, setActivePathId] = useState(1);
   const [plans,setPlans]=useState([{id:1,name:""}]);
@@ -264,12 +266,12 @@ export function App() {
     setStationRedo(items=>items.filter(entry=>entry.planned?.pathId!==id));
   }
   function parkCurrentPlan(): PlannedPath | null {
-    return draftPoints.length || redoPoints.length ? {id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,curved,trackType,roadFollowing} : null;
+    return draftPoints.length || redoPoints.length ? {id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,curved,trackType,roadFollowing,extension:draftExtension} : null;
   }
   function newPath() {
     const current=parkCurrentPlan();
     setParkedPaths(paths=>current?[...paths,current]:paths);
-    setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);changeMapMode("draw");
+    setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);changeMapMode("draw");
   }
   function newIndependentPlan() {
     if (!enabled || referenceCopy.active) return;
@@ -280,7 +282,7 @@ export function App() {
     const target=parkedPaths.find(path=>path.id===id);if(!target)return;
     const current=parkCurrentPlan();
     setParkedPaths(paths=>[...paths.filter(path=>path.id!==id),...(current?[current]:[])]);
-    setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftPoints(target.points);setRedoPoints(target.redo);setCurved(target.curved);setTrackType(target.trackType);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode("draw");
+    setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setRedoPoints(target.redo);setCurved(target.curved);setTrackType(target.trackType);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode("draw");
   }
   function choosePlan(id:number){
     if(id===activePlanId)return;
@@ -290,7 +292,7 @@ export function App() {
   function clearCurrentPlan(){
     const ids=new Set([activePathId,...parkedPaths.filter(path=>path.planId===activePlanId).map(path=>path.id)]);
     ids.forEach(discardPlanStations);setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
-    setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);
+    setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
   }
   const [planHover, setPlanHover] = useState<{id:number;x:number;y:number} | null>(null);
   useEffect(() => { setPlanHover(null); }, [draftPoints, parkedPaths, activeTool, camera, world]);
@@ -583,6 +585,27 @@ export function App() {
           else selectPath(candidates[0].id);
           return;
         }
+        const builtEnds=alignments.flatMap(alignment=>[
+          {alignment,endpoint:"start" as const,point:alignment.points[0]},
+          {alignment,endpoint:"end" as const,point:alignment.points.at(-1)!},
+        ]).filter(item=>item.point).map(item=>({...item,distance:endpointDistance(coordinates,item.point,rect.width,rect.height)}))
+          .filter(item=>item.distance<=8).sort((a,b)=>a.distance-b.distance);
+        if(builtEnds.length){
+          const target=builtEnds[0];
+          if(world?.alignment_provenance?.some(p=>p.alignment_id===target.alignment.id)){
+            setError("実在データの出典付き線路の延伸はまだ対応していません。");return;
+          }
+          if(world?.service_paths?.some(path=>path.legs.some(leg=>leg.segment.kind==="alignment"&&leg.segment.alignment_id===target.alignment.id))){
+            setError("系統で使用中の線路の延伸はまだ対応していません。");return;
+          }
+          if(target.alignment.owner!==world?.companies[0]?.id){setError("他社の線路は延伸できません。");return;}
+          if(draftFinished)newPath();
+          setDraftExtension({alignmentId:target.alignment.id,endpoint:target.endpoint});
+          setTrackType(target.alignment.track_type??"normal");setRoadFollowing(false);
+          setDraftPoints([target.point]);setRedoPoints([]);setHoverPoint(null);setDraftFinished(false);
+          setNotice("建設済み線路の"+(target.endpoint==="start"?"始点":"終点")+"から延伸を計画しています。着工まで既存線路は変更されません。");return;
+        }
+        setDraftExtension(null);
         if(draftFinished){newPath();setDraftPoints([coordinates]);return;}
       }
       if(snappedEndpoint(coordinates,rect.width,rect.height)){
@@ -599,19 +622,20 @@ export function App() {
     placePlatformAt(coordinates,rect.width,rect.height);
   }
 
-  const currentPaths=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,curved,trackType,roadFollowing}]:[])];
+  const currentPaths=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,curved,trackType,roadFollowing,extension:draftExtension}]:[])];
   const planBuildable=currentPaths.length>0&&currentPaths.every(path=>path.line.length>=2&&!(path.curved&&circularAlignment(path.points).error)&&!(path.trackType==="tram"&&path.roadFollowing));
   function commitAlignment() {
     if (!enabled || !planBuildable) return;
     void perform(async () => {
       const ids=new Set(currentPaths.map(path=>path.id));
       if(plannedPlatforms.some(item=>ids.has(item.station.pathId)&&!item.valid))throw Error("計画駅が線路に収まりません。線形を元に戻すか、計画駅を取り消してください。");
-      const requests=currentPaths.map(path=>({name:alignmentName,points:path.line,trackType:path.trackType,stations:plannedPlatforms.filter(item=>item.station.pathId===path.id).map(item=>({name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}))}));
+      const requests=currentPaths.map(path=>({name:alignmentName,points:path.line,trackType:path.trackType,extension:path.extension??undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===path.id).map(item=>({name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}))}));
       const first=requests[0];
-      const snapshot=await invoke<World>(requests.length>1?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",requests.length>1?{alignments:requests}:first.stations.length?first:{name:first.name,points:first.points,trackType:first.trackType});
+      const batch=requests.length>1||requests.some(request=>request.extension);
+      const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests}:first.stations.length?first:{name:first.name,points:first.points,trackType:first.trackType});
       ids.forEach(discardPlanStations);setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
       const created=snapshot.alignments?.find(a=>!alignments.some(old=>old.id===a.id));
-      setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);
+      setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
       if(created)setAlignmentId(created.id);
       changeMapMode("draw");setNotice("線路を建設しました。次は駅タブからホームを配置できます。");
     });
@@ -821,7 +845,7 @@ export function App() {
       referenceCopy.clear();setCandidateDirty(false);setPendingGraphChange(null);
       setCompanySetupRequired(false);
       clearStationHistory();
-      setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); setPlannedStations([]);setStationCursor(null);setParkedPaths([]);setPlans([{id:1,name:""}]);setActivePlanId(1);nextPlanId.current=2;setTrackType("normal");setRoadFollowing(false);setActivePathId(1);nextPathId.current=2;setDraftFinished(false);setDraftPoints([]); setRedoPoints([]); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setStationFrom(""); setStationTo(""); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
+      setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); setPlannedStations([]);setStationCursor(null);setParkedPaths([]);setPlans([{id:1,name:""}]);setActivePlanId(1);nextPlanId.current=2;setTrackType("normal");setRoadFollowing(false);setActivePathId(1);setDraftExtension(null);nextPathId.current=2;setDraftFinished(false);setDraftPoints([]); setRedoPoints([]); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setStationFrom(""); setStationTo(""); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
       setNotice(source==="auto"?"自動保存から復元しました。手動保存データは上書きしていません。必要なら保存してください。":"保存したワールドを読み込みました。");
     });
   }

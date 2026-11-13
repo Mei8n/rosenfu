@@ -301,3 +301,29 @@ fn referenced_track_endpoint_edits_are_rejected_even_if_traversal_is_equivalent(
     );
     assert_eq!(w, before);
 }
+
+#[test]
+fn extension_rejects_service_in_use_without_any_mutation() {
+    let (mut w, c, a, stations, segments) = sample();
+    let stops = all(&w, stations[0], segments.clone());
+    w.add_service_path(c, "S".into(), stations[0], segments, stops)
+        .unwrap();
+    let before = w.snapshot().clone();
+    for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+        let old = &before.alignments[0];
+        let anchor = if endpoint == AlignmentEndpoint::Start {
+            old.points[0]
+        } else {
+            *old.points.last().unwrap()
+        };
+        let next = GeoPoint {
+            latitude: anchor.latitude + 0.01,
+            longitude: anchor.longitude,
+        };
+        assert_eq!(
+            w.extend_alignment(c, a, endpoint, vec![anchor, next]),
+            Err(WorldError::ServicePathEditUnsupported)
+        );
+        assert_eq!(w.snapshot(), &before);
+    }
+}
