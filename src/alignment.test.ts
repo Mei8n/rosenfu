@@ -1,0 +1,9 @@
+import {describe,it,expect} from 'vitest';
+import {alignmentLength,distanceM,nearestOnAlignment,pointOnAlignment,smoothAlignment,stationPolygon} from './alignment';
+const points=[{latitude:35,longitude:139},{latitude:35.001,longitude:139.001},{latitude:35.003,longitude:139.001}];
+describe('provider independent alignment geometry',()=>{
+  it('smooths with exact endpoints and removes duplicate samples',()=>{const p=smoothAlignment(points);expect(p.length).toBeGreaterThan(3);expect(p[0]).toEqual(points[0]);expect(p[p.length-1]).toEqual(points[points.length-1]);expect(p.slice(1).every((x,i)=>distanceM(x,p[i])>=0.01)).toBe(true);});
+  it('projects onto the nearest segment with distance measured along the line',()=>{const result=nearestOnAlignment(points,points[1]);expect(result.distanceM).toBeLessThan(1e-8);expect(result.position).toBeCloseTo(distanceM(points[0],points[1])/alignmentLength(points));expect(pointOnAlignment(points,result.position)).toEqual(points[1]);});
+  it('builds a curved flat-ended ribbon rather than a dot or a rotated box',()=>{const p=smoothAlignment(points);const polygon=stationPolygon(p,0.5,200,20);expect(polygon.length).toBeGreaterThan(4);expect(distanceM(polygon[0],polygon[polygon.length-1])).toBeCloseTo(20,2);});
+  it('keeps the complete platform within endpoints and rejects oversized lengths',()=>{const polygon=stationPolygon(points,0,100,20);const midpoint={latitude:(polygon[0].latitude+polygon[polygon.length-1].latitude)/2,longitude:(polygon[0].longitude+polygon[polygon.length-1].longitude)/2};expect(distanceM(midpoint,points[0])).toBeLessThan(0.001);expect(stationPolygon(points,0.5,10000,20)).toEqual([]);});
+});

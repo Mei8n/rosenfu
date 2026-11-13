@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Rosenfu",
+  "version": "0.1.0-alpha.1",
+  "identifier": "io.github.mei8n.rosenfu",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Rosenfu",
+        "width": 960,
+        "height": 640,
+        "userAgent": "Rosenfu/0.1.0-alpha.1 (+https://github.com/mei8n/rosenfu)"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self'; img-src 'self' data: https://cyberjapandata.gsi.go.jp https://tile.openstreetmap.org"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  }
+}

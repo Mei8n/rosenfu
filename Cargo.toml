@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/rosenfu-core", "crates/rosenfu-cli", "crates/rosenfu-storage", "src-tauri"]
+default-members = ["crates/rosenfu-core", "crates/rosenfu-cli", "crates/rosenfu-storage"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2021"

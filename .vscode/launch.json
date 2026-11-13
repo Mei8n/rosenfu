@@ -1,0 +1,31 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Rosenfu: debug desktop (Windows)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/rosenfu-desktop.exe",
+      "cwd": "${workspaceFolder}",
+      "args": [],
+      "stopAtEntry": false,
+      "console": "internalConsole",
+      "preLaunchTask": "Rosenfu: build debug desktop"
+    },
+    {
+      "name": "Rosenfu: attach to running desktop (Windows)",
+      "type": "cppvsdbg",
+      "request": "attach",
+      "processId": "${command:pickProcess}"
+    },
+    {
+      "name": "Rosenfu: debug desktop (macOS / Linux)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/rosenfu-desktop",
+      "cwd": "${workspaceFolder}",
+      "args": [],
+      "preLaunchTask": "Rosenfu: build debug desktop"
+    }
+  ]
+}

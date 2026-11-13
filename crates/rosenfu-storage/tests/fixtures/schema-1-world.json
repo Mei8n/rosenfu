@@ -1,0 +1,19 @@
+{
+  "format": "rosenfu-world",
+  "schema_version": 1,
+  "world": {
+    "next_id": "10",
+    "players": [{"id": "1", "name": "Fixture player"}],
+    "companies": [{"id": "2", "owner": "1", "name": "Fixture railway"}],
+    "stations": [
+      {"id": "3", "owner": "2", "name": "A", "latitude": 35.125, "longitude": 139.25},
+      {"id": "4", "owner": "2", "name": "B", "latitude": 35.5, "longitude": 139.75},
+      {"id": "5", "owner": "2", "name": "C", "latitude": 35.75, "longitude": 139.875}
+    ],
+    "tracks": [
+      {"id": "6", "owner": "2", "from": "3", "to": "4"},
+      {"id": "7", "owner": "2", "from": "5", "to": "4"}
+    ],
+    "routes": [{"id": "8", "owner": "2", "name": "Main", "start": "3", "tracks": ["6", "7"]}]
+  }
+}
