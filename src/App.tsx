@@ -1,3 +1,4 @@
+import {snapReferenceStart} from "./referenceEndpointSnap";
 import {extensionJoinError} from "./extensionJoin";
 import {stationTarget, type StationLine} from "./stationTarget";
 import {FontLicenses} from "./FontLicenses";
@@ -369,15 +370,18 @@ export function App() {
   const platformDirty = !!selectedPlacement && (Number(editLength) !== selectedPlacement.length_m || Number(editWidth) !== selectedPlacement.width_m);
   const stationSettingsDirty = stationDirty || platformDirty;
   const copyCanStart=!(routeDirty||serviceDirty||pathServiceDirty||companyDirty||stationSettingsDirty);
-  const referenceCopy=useReferenceCopy({bundle:graphBundle,worldVersion:world,enabled,canStart:copyCanStart,tool:activeTool,name:alignmentName,onBuild:buildReferenceAlignment,roadFollow:roadFollowingBlocked});
+  const referenceCopyState=useReferenceCopy({bundle:graphBundle,worldVersion:world,enabled,canStart:copyCanStart,tool:activeTool,name:alignmentName,onBuild:buildReferenceAlignment,roadFollow:roadFollowingBlocked});
   const [referenceExtensionKey,setReferenceExtensionKey]=useState("");
-  const referenceBuild=referenceCopy.plan.build;
-  const referenceExtensionCandidates=referenceBuild?alignments.flatMap(alignment=>(["start","end"] as const).flatMap(endpoint=>{
+  const referenceBuild=referenceCopyState.plan.build;
+  const referenceExtensionCandidates=referenceBuild&&graphBundle?alignments.flatMap(alignment=>(["start","end"] as const).flatMap(endpoint=>{
     const point=endpoint==="start"?alignment.points[0]:alignment.points.at(-1),origin=referenceBuild.points[0];
-    return point&&point.latitude===origin.latitude&&point.longitude===origin.longitude?[{key:alignment.id+":"+endpoint,alignment,endpoint}]:[];
+    if(!point||endpointDistance(point,origin,mapSize.width||1000,mapSize.height||600)>8)return [];
+    const build=snapReferenceStart(graphBundle,referenceCopyState.picks,point,alignmentName);
+    return build?[{key:alignment.id+":"+endpoint,alignment,endpoint,build}]:[];
   })):[];
   const referenceExtension=referenceExtensionCandidates.find(candidate=>candidate.key===referenceExtensionKey);
-  const referenceExtensionError=referenceExtensionKey?(!referenceExtension?"延伸対象の端点が一致しません。起点を既存線路の端点に合わせて選び直してください。":referenceExtension.alignment.owner!==world?.companies[0]?.id?"他社の線路には延伸できません。":extensionJoinError(referenceBuild!.points,extensionPrevious({alignmentId:referenceExtension.alignment.id,endpoint:referenceExtension.endpoint}))):null;
+  const referenceExtensionError=referenceExtensionKey?(!referenceExtension?"延伸対象の端点が参照形状に一致しません。起点を選び直してください。":referenceExtension.alignment.owner!==world?.companies[0]?.id?"他社の線路には延伸できません。":extensionJoinError(referenceExtension.build.points,extensionPrevious({alignmentId:referenceExtension.alignment.id,endpoint:referenceExtension.endpoint}))):null;
+  const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
   useEffect(()=>{setReferenceExtensionKey("");},[referenceCopy.active,graphBundle]);
   const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referenceCopy.plan.build?[{id:"reference-plan",pathId:-1,points:referenceCopy.plan.build.points}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:plan.curved?!!circularAlignment(plan.points,extensionPrevious(plan.extension)).error:!!extensionJoinError(plan.points,extensionPrevious(plan.extension))})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
   const stationSelection=stationCursor?stationTarget(stationLines,stationCursor,Number(platformLength),camera,mapSize.width>0&&mapSize.height>0?mapViewport(mapSize.width,mapSize.height).scale:1):null;
@@ -576,6 +580,7 @@ export function App() {
   async function buildReferenceAlignment(build:ReferenceBuild){
     if(!enabled||busyRef.current||!copyCanStart)throw Error("別の下書きまたは処理中です。");
     if(referenceExtensionError)throw Error(referenceExtensionError);
+    build=referenceExtension?.build??build;
     const stations=plannedPlatforms.filter(item=>item.station.pathId===-1);
     if(stations.some(item=>!item.valid))throw Error("計画駅が線路に収まりません。");
     const id=nextPathId.current++;
@@ -1050,7 +1055,7 @@ export function App() {
           <section className="track-editor" role="tabpanel" id="panel-tracks" aria-labelledby="tab-tracks" hidden={activeTool !== "tracks"}>
             <div className="section-number">01 / CONSTRUCTION</div><h3>線路を描く</h3>
             <p className="muted">駅より先に線路を建設。地図に点を打って経路を決めます。</p>
-            <ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>延伸は起点が既存端点と一致する場合のみ選択できます。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/>
+            <ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/>
             <button className="secondary full-width" disabled={!enabled || referenceCopy.active || !currentPaths.length} onClick={newIndependentPlan}>別の線路計画を追加</button>
             <div role="group" aria-label="未着工の線路計画"><strong>編集中：{planName.trim() || `計画 ${activePlanId}`}（{currentPaths.length}経路）</strong>{plans.filter(plan=>plan.id!==activePlanId).map(plan=><button key={plan.id} className="secondary" disabled={!enabled || referenceCopy.active} onClick={()=>choosePlan(plan.id)}>{plan.name.trim() || `計画 ${plan.id}`} を編集</button>)}</div>
             <p className="tool-helper">離れた経路も同時に計画できます。着工・消去は編集中の計画だけが対象です。タブ移動では計画は残ります。ゲームを終了すると未着工の計画は失われます。</p>

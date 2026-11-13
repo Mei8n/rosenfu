@@ -73,7 +73,7 @@ test('reference following requires an explicit endpoint target and sends source 
  fireEvent.click(map,{clientX:200,clientY:450});fireEvent.click(map,{clientX:300,clientY:450});fireEvent.click(map,{clientX:300,clientY:450});
  await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
  async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.click(map,{clientX:point.x,clientY:point.y});fireEvent.click(await copyPanel().findByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
- await pick(start,'0');await pick(end,'1');
+ await pick({...start,longitude:start.longitude+.00002},'0');await pick(end,'1');
  const method=copyPanel().getByLabelText('敷設方法') as HTMLSelectElement;
  expect(method.value).toBe('');expect(method.options).toHaveLength(3);
  fireEvent.change(method,{target:{value:'11:end'}});
