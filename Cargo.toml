@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/rosenfu-core", "crates/rosenfu-cli", "src-tauri"]
-default-members = ["crates/rosenfu-core", "crates/rosenfu-cli"]
+members = ["crates/rosenfu-core", "crates/rosenfu-cli", "crates/rosenfu-storage", "src-tauri"]
+default-members = ["crates/rosenfu-core", "crates/rosenfu-cli", "crates/rosenfu-storage"]
 resolver = "2"
 
 [workspace.package]

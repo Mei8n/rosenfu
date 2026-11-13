@@ -1,0 +1,33 @@
+# Stable text across Windows, macOS and Linux. Do not renormalize existing
+# files as part of unrelated feature work; review that separately if needed.
+* text=auto
+*.rs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.lock text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Do not attempt textual conversion or merges of assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.woff2 binary
+
+# Preserve bundled upstream license bytes.
+src/assets/fonts/line-seed-jp/OFL.txt -text whitespace=-trailing-space,cr-at-eol

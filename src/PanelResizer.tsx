@@ -1,0 +1,7 @@
+import {useRef} from 'react';
+export const PANEL_MIN=260,PANEL_MAX=400;
+export function PanelResizer({value,onChange}:{value:number;onChange:(width:number)=>void}){
+ const gesture=useRef<{id:number;x:number;width:number}|null>(null);
+ const clamp=(width:number)=>Math.max(PANEL_MIN,Math.min(PANEL_MAX,Math.round(width)));
+ return <div className="panel-resizer" role="separator" tabIndex={0} aria-label="左パネルの幅" aria-orientation="vertical" aria-valuemin={PANEL_MIN} aria-valuemax={PANEL_MAX} aria-valuenow={value} onPointerDown={event=>{if(event.button!==0)return;event.preventDefault();gesture.current={id:event.pointerId,x:event.clientX,width:value};event.currentTarget.setPointerCapture?.(event.pointerId);}} onPointerMove={event=>{const g=gesture.current;if(g&&g.id===event.pointerId)onChange(clamp(g.width+event.clientX-g.x));}} onPointerUp={event=>{const g=gesture.current;if(g&&g.id===event.pointerId){onChange(clamp(g.width+event.clientX-g.x));gesture.current=null;if(event.currentTarget.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);}}} onPointerCancel={()=>{const g=gesture.current;gesture.current=null;if(g)onChange(g.width);}} onLostPointerCapture={()=>{gesture.current=null;}} onKeyDown={event=>{const next=event.key==='ArrowRight'?value+10:event.key==='ArrowLeft'?value-10:event.key==='Home'?PANEL_MIN:event.key==='End'?PANEL_MAX:null;if(next!==null){event.preventDefault();onChange(clamp(next));}}}/>;
+}

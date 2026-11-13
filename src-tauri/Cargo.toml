@@ -9,3 +9,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 rosenfu-core = { path = "../crates/rosenfu-core" }
 tauri = { version = "2", features = [] }
+rosenfu-storage = { path = "../crates/rosenfu-storage" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

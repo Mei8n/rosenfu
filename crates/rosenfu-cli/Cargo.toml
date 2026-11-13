@@ -6,3 +6,7 @@ edition.workspace = true
 [dependencies]
 rosenfu-core = { path = "../rosenfu-core" }
 serde_json = "1"
+rosenfu-storage = { path = "../rosenfu-storage" }
+
+[dev-dependencies]
+tempfile = "3"
