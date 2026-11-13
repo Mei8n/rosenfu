@@ -30,7 +30,7 @@ test('App drag does not select, explicit click choices preview the exact atomic 
  // Restore camera after the pan, then select with a complete normal pointer sequence.
  fireEvent.click(screen.getByText('東京へ戻る',{selector:'button'}));
  async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.pointerDown(map,{clientX:point.x,clientY:point.y,button:0});fireEvent.pointerUp(map,{clientX:point.x,clientY:point.y});fireEvent.click(map,{clientX:point.x,clientY:point.y});await copyPanel().findByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)});fireEvent.click(copyPanel().getByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
- await pick(start,'0');await pick(end,'1');const preview=view.container.querySelector('.reference-copy-preview')?.getAttribute('d');expect(preview).toBeTruthy();fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内に新しい線路を敷設します'));fireEvent.click(copyPanel().getByRole('button',{name:'参考形状を明示着工'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_alignment_from_reference')).toBe(true));const payload=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_alignment_from_reference')![1] as any;expect(payload.trackType).toBe('high_speed');expect(payload.points).toHaveLength(3);expect(payload.points[1]).toEqual({latitude:DEFAULT_CAMERA.latitude,longitude:DEFAULT_CAMERA.longitude});expect(payload.sourceRecord.graph_sha256).toBe('a'.repeat(64));expect(payload.provenance.method).toBe('osm_way_slice_v1');expect(preview).toBe(payload.points.map((p:any,i:number)=>{const projected=project(p.latitude,p.longitude,DEFAULT_CAMERA);return (i?'L':'M')+projected.x+','+projected.y;}).join(' '));await waitFor(()=>expect((screen.getByText('保存',{selector:'button'}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(screen.getByText('保存',{selector:'button'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world')).toBe(true));
+ await pick(start,'0');await pick(end,'1');const preview=view.container.querySelector('.reference-copy-preview')?.getAttribute('d');expect(preview).toBeTruthy();fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));fireEvent.click(copyPanel().getByRole('button',{name:'選択中の計画に追加'}));await waitFor(()=>expect(copyPanel().queryByRole('button',{name:'選択中の計画に追加'})).toBeNull());fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_plan')).toBe(true));const payload=(vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as any).alignments[0];expect(payload.trackType).toBe('high_speed');expect(payload.points).toHaveLength(3);expect(payload.points[1]).toEqual({latitude:DEFAULT_CAMERA.latitude,longitude:DEFAULT_CAMERA.longitude});expect(payload.reference.sourceRecord.graph_sha256).toBe('a'.repeat(64));expect(payload.reference.provenance.method).toBe('osm_way_slice_v1');expect(preview).toBe(payload.points.map((p:any,i:number)=>{const projected=project(p.latitude,p.longitude,DEFAULT_CAMERA);return (i?'L':'M')+projected.x+','+projected.y;}).join(' '));await waitFor(()=>expect((screen.getByText('保存',{selector:'button'}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(screen.getByText('保存',{selector:'button'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world')).toBe(true));
 });
 
 test('bundle replacement while candidate search is pending cannot publish old candidates',async()=>{const h=setup();act(()=>h.result.current.begin());let request:Promise<void>;act(()=>{request=h.result.current.click(start);});h.rerender({...h.props,bundle:fixture()});await act(()=>request!);expect(h.result.current.active).toBe(false);expect(h.result.current.candidates).toEqual([]);expect(h.result.current.picks).toEqual([]);expect(h.result.current.confirmed).toBe(false);});
@@ -51,9 +51,9 @@ test('reference plan station is session-only and included in atomic provenance-p
  fireEvent.click(map,{clientX:500,clientY:300});expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='place_station_on_alignment'||c==='build_alignment_with_stations')).toBe(false);
  fireEvent.click(screen.getByRole('tab',{name:'線路'}));
- fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内に新しい線路を敷設します'));
- fireEvent.click(copyPanel().getByRole('button',{name:'参考形状を明示着工'}));
- await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_alignment_with_stations',expect.objectContaining({stations:[expect.objectContaining({lengthM:60,widthM:12})],reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})));
+ fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));
+ fireEvent.click(copyPanel().getByRole('button',{name:'選択中の計画に追加'}));await waitFor(()=>expect(copyPanel().queryByRole('button',{name:'選択中の計画に追加'})).toBeNull());fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expect.objectContaining({stations:[expect.objectContaining({lengthM:60,widthM:12})],reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})]})));
  await waitFor(()=>expect(map.querySelectorAll('.planned-station')).toHaveLength(0));
 });
 
@@ -69,14 +69,15 @@ test('reference following requires an explicit endpoint target and sends source 
  const view=render(<App/>);await screen.findByText(/reference-extension-test/);
  fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});
  await screen.findByText(/synthetic-test/);
- await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
  const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ fireEvent.click(map,{clientX:200,clientY:450});fireEvent.click(map,{clientX:300,clientY:450});fireEvent.click(map,{clientX:300,clientY:450});
+ await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
  async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.click(map,{clientX:point.x,clientY:point.y});fireEvent.click(await copyPanel().findByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
  await pick(start,'0');await pick(end,'1');
  const method=copyPanel().getByLabelText('敷設方法') as HTMLSelectElement;
  expect(method.value).toBe('');expect(method.options).toHaveLength(3);
  fireEvent.change(method,{target:{value:'11:end'}});
- fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内に新しい線路を敷設します'));
- fireEvent.click(copyPanel().getByRole('button',{name:'参考形状を明示着工'}));
- await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expect.objectContaining({extension:{alignmentId:'11',endpoint:'end'},reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})]})));
+ fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));
+ fireEvent.click(copyPanel().getByRole('button',{name:'選択中の計画に追加'}));await waitFor(()=>expect(copyPanel().queryByRole('button',{name:'選択中の計画に追加'})).toBeNull());fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expect.objectContaining({reference:undefined}),expect.objectContaining({extension:{alignmentId:'11',endpoint:'end'},reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})]})));
 });

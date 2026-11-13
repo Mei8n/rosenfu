@@ -337,9 +337,6 @@ impl WorldEditor {
         let mut candidate = self.clone();
         for alignment in alignments {
             if let Some(extension) = alignment.extension {
-                if alignment.reference.is_some() {
-                    return Err("実在データ付き計画による延伸はまだ対応していません。".into());
-                }
                 let old = candidate
                     .world
                     .snapshot()
@@ -351,11 +348,32 @@ impl WorldEditor {
                     return Err("延伸対象と線路種別が一致しません。".into());
                 }
                 let old_length = old.length_m();
-                candidate.extend_alignment(
-                    extension.alignment_id,
-                    extension.endpoint,
-                    alignment.points,
-                )?;
+                if let Some(reference) = alignment.reference {
+                    if alignment
+                        .points
+                        .iter()
+                        .any(|p| !in_edit_extent(p.latitude, p.longitude))
+                    {
+                        return Err("路線は編集範囲内に建設してください。".into());
+                    }
+                    candidate
+                        .world
+                        .extend_alignment_from_reference(
+                            candidate.company,
+                            extension.alignment_id,
+                            extension.endpoint,
+                            alignment.points,
+                            reference.source_record,
+                            reference.provenance,
+                        )
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    candidate.extend_alignment(
+                        extension.alignment_id,
+                        extension.endpoint,
+                        alignment.points,
+                    )?;
+                }
                 let new_length = candidate
                     .world
                     .snapshot()
@@ -1083,7 +1101,7 @@ mod tests {
         let auto = dir.path().join("auto.json");
         WorldEditor::new().autosave(&auto).unwrap();
         let bytes = std::fs::read_to_string(&auto).unwrap();
-        let newer = bytes.replace("\"schema_version\": 7", "\"schema_version\": 999");
+        let newer = bytes.replace("\"schema_version\": 8", "\"schema_version\": 999");
         assert_ne!(bytes, newer);
         std::fs::write(&manual, &newer).unwrap();
         let mut editor = WorldEditor::new();
@@ -2089,6 +2107,44 @@ mod tests {
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provenance.json");
+        editor.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
+        // Reference-followed extension shares the original alignment and is atomic
+        // with later paths, planned stations, provenance, and allocation state.
+        let id = editor.snapshot().alignments[0].id;
+        let before = editor.snapshot();
+        let reference_extension = || PlannedAlignment {
+            name: "Reference extension".into(),
+            points: vec![
+                points[1],
+                GeoPoint {
+                    latitude: 35.0,
+                    longitude: 139.2,
+                },
+            ],
+            track_type: rosenfu_core::world::TrackType::Tram,
+            stations: vec![planned_station(0.5)],
+            reference: Some(PlannedAlignmentReference {
+                source_record: source.clone(),
+                provenance: provenance.clone(),
+            }),
+            extension: Some(PlannedAlignmentExtension {
+                alignment_id: id,
+                endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+            }),
+        };
+        let mut invalid = planned_path(0.2);
+        invalid.stations.push(planned_station(f64::NAN));
+        assert!(editor
+            .build_plan(vec![reference_extension(), invalid])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        editor.build_plan(vec![reference_extension()]).unwrap();
+        assert_eq!(editor.snapshot().alignments.len(), before.alignments.len());
+        assert_eq!(
+            editor.snapshot().alignment_provenance.len(),
+            before.alignment_provenance.len() + 1
+        );
         editor.save(&path).unwrap();
         assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
         // Oversized serializable world must not gain partial geometry/metadata/IDs.

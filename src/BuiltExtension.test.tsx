@@ -31,9 +31,9 @@ for(const endpoint of ["start","end"] as const)test(`${endpoint} extension joins
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
  vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0));
 });
-test("attributed endpoints reject explicitly without making a disconnected path",async()=>{
+test("attributed endpoints can start an extension without duplicating the alignment",async()=>{
  const map=await start({alignment_provenance:[{alignment_id:"3",source:{source_key:"x"}}]});
- fireEvent.click(map,{clientX:250,clientY:130});expect(await screen.findByText(/出典付き線路の延伸はまだ対応/)).toBeTruthy();expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
+ fireEvent.click(map,{clientX:250,clientY:130});expect(await screen.findByText(/から延伸を計画しています/)).toBeTruthy();expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
 });
 
 test('extending invalidates built station redo ratios from the old alignment length',async()=>{

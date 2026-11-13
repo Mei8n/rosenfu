@@ -1,8 +1,9 @@
-//! Frozen schema 6 document, validated before upgrading alignment kinds.
+use super::legacy_v7::LegacyAlignmentProvenance as AlignmentProvenance;
+// Frozen schema 6 document, validated before upgrading alignment kinds.
 use super::legacy_alignment::LegacyAlignment;
 use rosenfu_core::world::{
-    AlignmentProvenance, Company, OperatingService, Player, Route, RoutePath, ServicePath,
-    SourceRecord, Station, StationPlacement, Track,
+    Company, OperatingService, Player, Route, RoutePath, ServicePath, SourceRecord, Station,
+    StationPlacement, Track,
 };
 use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]

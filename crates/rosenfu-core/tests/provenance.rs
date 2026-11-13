@@ -279,26 +279,174 @@ fn reference_geometry_copy_keeps_selected_track_type_independent_of_source_mode(
 }
 
 #[test]
-fn extension_does_not_rewrite_source_geometry() {
+fn extension_preserves_source_span_and_stations_at_both_ends() {
     let (mut w, c, source, provenance, points) = sample();
     let a = w
-        .build_alignment_from_reference(c, "A".into(), points.clone(), source, provenance)
-        .unwrap();
-    let before = w.snapshot().clone();
-    assert_eq!(
-        w.extend_alignment(
+        .build_alignment_from_reference(
             c,
-            a,
+            "A".into(),
+            points.clone(),
+            source.clone(),
+            provenance.clone(),
+        )
+        .unwrap();
+    w.place_station_on_alignment(c, "S".into(), a, 0.5, 100.0, 12.0)
+        .unwrap();
+    let second = w
+        .place_station_on_alignment(c, "Second".into(), a, 0.8, 100.0, 12.0)
+        .unwrap();
+    let first = w.snapshot().stations[0].id;
+    let segments = vec![RouteSegment::Alignment {
+        alignment_id: a,
+        from: first,
+        to: second,
+    }];
+    let stops = w
+        .preview_service_path(first, segments.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .map(|o| o.reference)
+        .collect();
+    let service = w
+        .add_service_path(c, "Service".into(), first, segments, stops)
+        .unwrap();
+    let services = w.snapshot().service_paths.clone();
+    let occurrences = w.service_path_occurrences(service).unwrap();
+    let stations = w.snapshot().stations.clone();
+    w.extend_alignment(
+        c,
+        a,
+        AlignmentEndpoint::End,
+        vec![
+            points[1],
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 139.2,
+            },
+        ],
+    )
+    .unwrap();
+    w.extend_alignment(
+        c,
+        a,
+        AlignmentEndpoint::Start,
+        vec![
+            points[0],
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 138.9,
+            },
+        ],
+    )
+    .unwrap();
+    let p = &w.snapshot().alignment_provenance[0];
+    assert_eq!((p.start_point_index, p.end_point_index), (1, 2));
+    assert_eq!(p.source, provenance);
+    assert_eq!(w.snapshot().source_records, vec![source]);
+    assert_eq!(w.snapshot().stations, stations);
+    assert_eq!(w.snapshot().service_paths, services);
+    assert_eq!(w.service_path_occurrences(service).unwrap(), occurrences);
+    assert_eq!(&w.snapshot().alignments[0].points[1..=2], points.as_slice());
+    let before = w.snapshot().clone();
+    let mut tampered = before.clone();
+    tampered.alignment_provenance[0].start_point_index = 0;
+    assert_eq!(
+        w.replace(tampered),
+        Err(WorldError::ProvenanceEditUnsupported)
+    );
+    assert_eq!(w.snapshot(), &before);
+    for (start, end) in [(1, 1), (2, 1), (0, 4)] {
+        let mut bad = before.clone();
+        bad.alignment_provenance[0].start_point_index = start;
+        bad.alignment_provenance[0].end_point_index = end;
+        assert!(World::new(bad).is_err());
+    }
+}
+
+#[test]
+fn multiple_reference_extensions_keep_separate_sources_and_orientation() {
+    let (mut w, c, source, p, points) = sample();
+    let id = w
+        .build_alignment_from_reference(c, "A".into(), points.clone(), source.clone(), p.clone())
+        .unwrap();
+    let mut other = source.clone();
+    other.source_sha256 = "c".repeat(64);
+    other.key = format!("{}:{}", other.graph_sha256, other.source_sha256);
+    let mut provenance = p.clone();
+    provenance.source_key = other.key.clone();
+    provenance.osm_way_id = "456".into();
+    w.extend_alignment_from_reference(
+        c,
+        id,
+        AlignmentEndpoint::End,
+        vec![
+            points[1],
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 139.2,
+            },
+        ],
+        other.clone(),
+        provenance.clone(),
+    )
+    .unwrap();
+    w.extend_alignment_from_reference(
+        c,
+        id,
+        AlignmentEndpoint::Start,
+        vec![
+            points[0],
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 138.9,
+            },
+        ],
+        other.clone(),
+        provenance.clone(),
+    )
+    .unwrap();
+    let data = w.snapshot();
+    assert_eq!(data.source_records, vec![source, other]);
+    assert_eq!(
+        data.alignment_provenance
+            .iter()
+            .map(|p| (p.start_point_index, p.end_point_index))
+            .collect::<Vec<_>>(),
+        vec![(1, 2), (2, 3), (0, 1)]
+    );
+    assert_eq!(
+        data.alignment_provenance[2].source.start_segment_index,
+        provenance.end_segment_index
+    );
+    assert_eq!(
+        data.alignment_provenance[2].source.end_fraction,
+        provenance.start_fraction
+    );
+    let mut overlapping = data.clone();
+    overlapping.alignment_provenance[1].start_point_index = 1;
+    assert!(World::new(overlapping).is_err());
+    let before = w.snapshot().clone();
+    let mut bad = w.snapshot().source_records[0].clone();
+    bad.attribution = "removed".into();
+    assert!(w
+        .extend_alignment_from_reference(
+            c,
+            id,
             AlignmentEndpoint::End,
             vec![
-                points[1],
                 GeoPoint {
                     latitude: 35.0,
                     longitude: 139.2
+                },
+                GeoPoint {
+                    latitude: 35.0,
+                    longitude: 139.3
                 }
-            ]
-        ),
-        Err(WorldError::ProvenanceEditUnsupported)
-    );
+            ],
+            bad,
+            p
+        )
+        .is_err());
     assert_eq!(w.snapshot(), &before);
 }

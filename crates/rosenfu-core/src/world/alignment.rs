@@ -182,6 +182,11 @@ impl World {
         if !added_length.is_finite() || added_length < 20.0 {
             return Err(WorldError::InvalidAlignment);
         }
+        let prepend = if endpoint == AlignmentEndpoint::Start {
+            points.len() - 1
+        } else {
+            0
+        };
         match endpoint {
             AlignmentEndpoint::Start => {
                 let mut extended: Vec<_> = points.into_iter().skip(1).rev().collect();
@@ -204,8 +209,22 @@ impl World {
         // This command alone constructs an append/prepend-only candidate: no old
         // geometry, station coordinates, routes, service legs or IDs are editable.
         // Generic replace deliberately retains its stronger edit prohibition.
+        for p in data
+            .alignment_provenance
+            .iter_mut()
+            .filter(|p| p.alignment_id == alignment_id)
+        {
+            p.start_point_index = p
+                .start_point_index
+                .checked_add(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+            p.end_point_index = p
+                .end_point_index
+                .checked_add(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+        }
         data.validate()?;
-        data.preserve_provenance(&self.data)?;
+        data.preserve_extended_provenance(&self.data, alignment_id, prepend)?;
         data.preserve_service_traversals(&self.data)?;
         self.data = data;
         Ok(())
