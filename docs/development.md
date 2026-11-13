@@ -114,3 +114,28 @@ GUI の保存・読込は建設試作に接続済みです。運行系統の基�
 `cargo test --locked` / `cargo clippy --locked --all-targets -- -D warnings`はworkspaceのdefault-members（core/cli/storage）だけを対象にする。`cargo test --locked --workspace`にはLinuxのGTK/WebKitGTKなどnative開発依存が必要。sessionの単独試験だけではTauriコマンド登録・OS起動を検証したことにならない。
 
 `node scripts/benchmark-reference-spatial.ts`はNode 24以上で実行する合成データの索引比較。全体ゲーム負荷や実OSMの速度保証ではない。
+
+## Pull後のF5と依存関係の同期
+
+VS Codeのデバッグ／リリースビルドとhot reloadタスクは、先に`node scripts/ensure-dependencies.mjs`を実行します。
+初回、`package.json`／`package-lock.json`、NodeのバージョンやOSが変わった場合だけ`npm ci --include=dev`で同期します。
+これにより、Pull後に`fake-indexeddb`などの新しい開発依存が見つからずF5が止まる問題を防ぎます。
+同期成功の記録はGit対象外の`node_modules`内に置き、通常の繰り返しF5ではインストールを省略します。
+初回／依存更新時にはネット接続（またはnpmキャッシュ）が必要です。失敗時はビルドへ進まず、次回再試行します。
+この処理は開発用タスクだけであり、配布ゲームの起動・オフラインプレイ時には実行しません。
+
+手動でビルドする場合とCIでは従来どおり先に`npm ci`を実行してください。
+`node_modules`を部分的に削除するなどして壊した場合は`npm ci`で修復できます。
+同じチェックアウトで依存インストールと別のビルドを同時に走らせないでください。
+
+### 共同開発者のVS Code初回セットアップ
+
+1. OS別のTauri前提条件、Node.js 24、Rust stableを導入し、`node --version`、`npm --version`、`cargo --version`がIDEのターミナルでも動くことを確認する。
+2. `git clone https://github.com/Mei8n/rosenfu.git`後に`cd rosenfu`、`git switch feat/application-foundation`。`package.json`と`Cargo.toml`があるリポジトリルートをVS Codeで開く。
+3. WindowsはMicrosoft C/C++拡張（`ms-vscode.cpptools`）、macOS / LinuxはCodeLLDB拡張（`vadimcn.vscode-lldb`）を導入する。Rust Analyzerも推奨。拡張は自動導入されない。
+4. 「実行とデバッグ」でOSに対応する`Rosenfu: debug desktop (...)`を選びF5。依存同期→フロント／Rustデバッグビルド→ネイティブデバッガの順で起動する。初回のRustビルドは時間がかかる。
+5. Rust側のブレークポイントを使って停止・再開を確認する。React/TypeScript側の調査にはWebViewの開発者ツールを使う。F5のネイティブデバッガがJSのブレークポイントまで扱うわけではない。
+
+更新後はアプリとデバッグを終了してから`git pull --ff-only`し、再度F5を実行する。ローカル変更がある場合は先に保全し、強制リセットしない。
+ビルド失敗時は「デバッグを続行」せず、タスクのターミナルにある最初のエラーを確認する（以前の実行ファイルを起動してしまうため）。
+macOS / Linuxの起動構成は追加したが、IDEからの実機起動・ブレークポイント停止は未検証。CIのビルド成功とは区別する。

@@ -2,6 +2,18 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Rosenfu: prepare dependencies",
+      "type": "shell",
+      "command": "node",
+      "args": [
+        "scripts/ensure-dependencies.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Rosenfu: build debug desktop",
       "type": "shell",
       "command": "npm",
@@ -16,10 +28,12 @@
       "options": {
         "cwd": "${workspaceFolder}"
       },
-      "problemMatcher": [
-
+      "problemMatcher": [],
+      "group": "build",
+      "dependsOn": [
+        "Rosenfu: prepare dependencies"
       ],
-      "group": "build"
+      "dependsOrder": "sequence"
     },
     {
       "label": "Rosenfu: build release desktop",
@@ -35,13 +49,15 @@
       "options": {
         "cwd": "${workspaceFolder}"
       },
-      "problemMatcher": [
-
-      ],
+      "problemMatcher": [],
       "group": {
         "kind": "build",
         "isDefault": true
-      }
+      },
+      "dependsOn": [
+        "Rosenfu: prepare dependencies"
+      ],
+      "dependsOrder": "sequence"
     },
     {
       "label": "Rosenfu: dev (hot reload)",
@@ -60,7 +76,11 @@
       "presentation": {
         "reveal": "always",
         "panel": "dedicated"
-      }
+      },
+      "dependsOn": [
+        "Rosenfu: prepare dependencies"
+      ],
+      "dependsOrder": "sequence"
     },
     {
       "label": "Rosenfu: test frontend",
@@ -87,9 +107,7 @@
       "options": {
         "cwd": "${workspaceFolder}"
       },
-      "problemMatcher": [
-
-      ],
+      "problemMatcher": [],
       "group": "test"
     },
     {
