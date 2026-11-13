@@ -23,7 +23,7 @@ import {resolveServicePath,referenceKey} from "./servicePaths";
 import type {ServicePath} from "./servicePaths";
 import { ServiceFromRoutePreview } from "./ServiceFromRoutePreview";
 import { useDisplaySettings } from "./useDisplaySettings";
-import { AutomaticStationName } from "./AutomaticStationName";
+import { StationNamePreview } from "./StationNamePreview";
 import { automaticStationName } from "./automaticStationName";
 import { ReferenceStationControls } from "./ReferenceStationControls";
 import { createReferenceRepository } from "./referenceStations";
@@ -878,7 +878,7 @@ export function App() {
               <button className="full-width track-submit" type="submit" disabled={!enabled || stationPosition === null || stationPreview.length < 4}>ホームを配置</button>
               <p className="field-hint">{stationPosition === null ? "地図で位置を選ぶとプレビューが表示されます。" : stationPreview.length < 4 ? "この線路に収まるホーム長を指定してください。" : "位置選択済み。寸法を確認して配置してください。"}</p>
             </fieldset></form>
-            <AutomaticStationName pack={referencePack} repository={referenceRepository} point={stationPreview.length>=4?previewCenter:null} existingNames={world?.stations.map(s=>s.name)??[]}/>
+            <StationNamePreview pack={referencePack} repository={referenceRepository} point={stationPreview.length>=4?previewCenter:null} existingNames={world?.stations.map(s=>s.name)??[]}/>
             {!alignments.length && <p className="field-hint">まず「線路」で線路を建設してください。</p>}
             <p className="tool-helper">ホーム長は実寸で保存。編成長による収容判定は今後実装します。</p>
             <details className="legacy-tools"><summary>旧ワールド用：単独駅の座標配置</summary>
