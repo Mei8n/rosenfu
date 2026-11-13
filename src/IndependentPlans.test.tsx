@@ -118,3 +118,14 @@ test("resuming a parked path preserves its point redo and station within the sam
  expect(trackPanel().getByText(/編集中：計画 1（2経路）/)).toBeTruthy();
  fireEvent.click(trackPanel().getByRole("button",{name:"下書きを消去"}));expect(map.querySelectorAll(".planned-station")).toHaveLength(0);expect(map.querySelectorAll(".draft-path")).toHaveLength(0);
 });
+
+test("a parked redo-only path remains selectable and can recover without deleting its plan",async()=>{
+ const map=await start();const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(180,130);click(230,130);click(230,130);click(320,200);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});click(230,130);
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.click(screen.getByRole("button",{name:"経路 2（0点・やり直し1点）"}));
+ fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+ click(360,200);expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
+});

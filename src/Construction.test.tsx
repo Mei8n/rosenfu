@@ -308,3 +308,13 @@ test.each(["曲線","直線"])("%s single endpoint finish can resume the same pl
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
 });
+
+test.each(["曲線","直線"])("%s dragging at the endpoint never finishes or adds an anchor",async mode=>{
+ const map=await start();fireEvent.click(screen.getByRole("button",{name:mode}));
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ const pointer=(type:string,x:number,y:number)=>{const e=new MouseEvent(type,{bubbles:true,clientX:x,clientY:y,button:0});Object.defineProperty(e,"pointerId",{value:1});fireEvent(map,e);};
+ pointer("pointerdown",300,170);pointer("pointermove",315,170);pointer("pointerup",315,170);fireEvent.click(map,{clientX:315,clientY:170,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ pointer("pointerdown",390,190);pointer("pointerup",390,190);fireEvent.click(map,{clientX:390,clientY:190,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
+});
