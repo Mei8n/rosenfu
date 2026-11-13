@@ -35,7 +35,7 @@ fn json_roundtrip_preserves_graph_and_allocator() {
 
 #[test]
 fn unsupported_version_is_reported_before_decoding_world() {
-    for version in [0, 8, u64::MAX] {
+    for version in [0, 9, u64::MAX] {
         let bytes = format!(
             r#"{{"format":"rosenfu-world","schema_version":{version},"world":"not a world"}}"#
         );

@@ -122,6 +122,115 @@ impl WorldDraft {
         Ok(())
     }
 }
+/// Endpoint to extend. Input points run from the existing endpoint outwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlignmentEndpoint {
+    Start,
+    End,
+}
+
+impl World {
+    /// Extend a free-drawn alignment without moving any existing station.
+    /// Service traversals must remain identical; source-provenance protection remains active.
+    pub fn extend_alignment(
+        &mut self,
+        owner: CompanyId,
+        alignment_id: AlignmentId,
+        endpoint: AlignmentEndpoint,
+        points: Vec<GeoPoint>,
+    ) -> Result<(), WorldError> {
+        let mut data = self.data.clone();
+        let alignment = data
+            .alignments
+            .iter_mut()
+            .find(|a| a.id == alignment_id)
+            .ok_or(WorldError::MissingReference("alignment"))?;
+        let old_endpoint = match endpoint {
+            AlignmentEndpoint::Start => alignment.points[0],
+            AlignmentEndpoint::End => *alignment
+                .points
+                .last()
+                .ok_or(WorldError::InvalidAlignment)?,
+        };
+        if alignment.owner != owner || points.len() < 2 || points.first() != Some(&old_endpoint) {
+            return Err(WorldError::InvalidAlignment);
+        }
+        // Sampled tangent arcs have at most 2.5 degrees of chord deviation.
+        // Reject backward or sharp joins rather than silently constructing a cusp.
+        let interior = match endpoint {
+            AlignmentEndpoint::Start => alignment.points[1],
+            AlignmentEndpoint::End => alignment.points[alignment.points.len() - 2],
+        };
+        let vector = |from: GeoPoint, to: GeoPoint| {
+            (
+                (to.longitude - from.longitude) * old_endpoint.latitude.to_radians().cos(),
+                to.latitude - from.latitude,
+            )
+        };
+        let incoming = vector(interior, old_endpoint);
+        let outgoing = vector(old_endpoint, points[1]);
+        let norm = incoming.0.hypot(incoming.1) * outgoing.0.hypot(outgoing.1);
+        if !norm.is_finite()
+            || norm <= 0.0
+            || (incoming.0 * outgoing.0 + incoming.1 * outgoing.1) / norm < 5_f64.to_radians().cos()
+        {
+            return Err(WorldError::InvalidAlignment);
+        }
+        let old_length = alignment.length_m();
+        let added_length: f64 = points.windows(2).map(|p| distance(p[0], p[1])).sum();
+        if !added_length.is_finite() || added_length < 20.0 {
+            return Err(WorldError::InvalidAlignment);
+        }
+        let prepend = if endpoint == AlignmentEndpoint::Start {
+            points.len() - 1
+        } else {
+            0
+        };
+        match endpoint {
+            AlignmentEndpoint::Start => {
+                let mut extended: Vec<_> = points.into_iter().skip(1).rev().collect();
+                extended.extend_from_slice(&alignment.points);
+                alignment.points = extended;
+            }
+            AlignmentEndpoint::End => alignment.points.extend(points.into_iter().skip(1)),
+        }
+        let new_length = alignment.length_m();
+        let offset = if endpoint == AlignmentEndpoint::Start {
+            added_length
+        } else {
+            0.0
+        };
+        for placement in &mut data.station_placements {
+            if placement.alignment_id == alignment_id {
+                placement.position = (offset + placement.position * old_length) / new_length;
+            }
+        }
+        // This command alone constructs an append/prepend-only candidate: no old
+        // geometry, station coordinates, routes, service legs or IDs are editable.
+        // Generic replace deliberately retains its stronger edit prohibition.
+        for p in data
+            .alignment_provenance
+            .iter_mut()
+            .filter(|p| p.alignment_id == alignment_id)
+        {
+            p.start_point_index = p
+                .start_point_index
+                .checked_add(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+            p.end_point_index = p
+                .end_point_index
+                .checked_add(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+        }
+        data.validate()?;
+        data.preserve_extended_provenance(&self.data, alignment_id, prepend)?;
+        data.preserve_service_traversals(&self.data)?;
+        self.data = data;
+        Ok(())
+    }
+}
+
 impl World {
     pub fn build_alignment(
         &mut self,

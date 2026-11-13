@@ -9,6 +9,44 @@ fn in_edit_extent(latitude: f64, longitude: f64) -> bool {
     (20.0..=46.0).contains(&latitude) && (122.0..=154.0).contains(&longitude)
 }
 
+/// A station attached to the alignment being constructed, not an existing ID.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedStation {
+    pub name: String,
+    pub position: f64,
+    pub length_m: f64,
+    pub width_m: f64,
+}
+
+/// Optional attribution for a plan copied from real-world railway or road data.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedAlignmentReference {
+    pub source_record: rosenfu_core::world::SourceRecord,
+    pub provenance: rosenfu_core::world::AlignmentProvenanceInput,
+}
+
+/// Existing infrastructure endpoint targeted by a path, not a new alignment.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlannedAlignmentExtension {
+    pub alignment_id: AlignmentId,
+    pub endpoint: rosenfu_core::world::AlignmentEndpoint,
+}
+
+/// One independent path and its stations within an explicitly selected plan.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedAlignment {
+    pub name: String,
+    pub points: Vec<GeoPoint>,
+    pub track_type: rosenfu_core::world::TrackType,
+    pub stations: Vec<PlannedStation>,
+    pub reference: Option<PlannedAlignmentReference>,
+    pub extension: Option<PlannedAlignmentExtension>,
+}
+
 #[derive(Clone)]
 pub struct WorldEditor {
     world: World,
@@ -190,7 +228,7 @@ impl WorldEditor {
         source_record: rosenfu_core::world::SourceRecord,
         provenance: rosenfu_core::world::AlignmentProvenanceInput,
         track_type: rosenfu_core::world::TrackType,
-    ) -> Result<WorldDraft, String> {
+    ) -> Result<AlignmentId, String> {
         if name.trim().is_empty() || name.chars().count() > 80 {
             return Err("路線名は1〜80文字で入力してください。".into());
         }
@@ -201,7 +239,7 @@ impl WorldEditor {
             return Err("路線は編集範囲内に建設してください。".into());
         }
         let mut candidate = self.world.clone();
-        candidate
+        let alignment_id = candidate
             .build_alignment_from_reference_typed(
                 self.company,
                 name.trim().into(),
@@ -215,8 +253,43 @@ impl WorldEditor {
         // before publishing either its geometry, metadata, or allocated ID.
         rosenfu_storage::encode(&candidate).map_err(|e| e.to_string())?;
         self.world = candidate;
+        Ok(alignment_id)
+    }
+    /// Extend only after validating the complete candidate and its save representation.
+    pub fn extend_alignment(
+        &mut self,
+        alignment_id: AlignmentId,
+        endpoint: rosenfu_core::world::AlignmentEndpoint,
+        points: Vec<GeoPoint>,
+    ) -> Result<WorldDraft, String> {
+        if points
+            .iter()
+            .any(|p| !in_edit_extent(p.latitude, p.longitude))
+        {
+            return Err("線路は編集範囲内に建設してください。".into());
+        }
+        let mut candidate = self.clone();
+        candidate
+            .world
+            .extend_alignment(candidate.company, alignment_id, endpoint, points)
+            .map_err(|e| match e {
+                rosenfu_core::world::WorldError::InvalidAlignment => {
+                    "延伸の接合方向または線形が不正です。既存線路の接線方向へ続けてください。"
+                        .to_owned()
+                }
+                rosenfu_core::world::WorldError::ProvenanceEditUnsupported => {
+                    "実在データの出典付き線路の延伸はまだ対応していません。".to_owned()
+                }
+                rosenfu_core::world::WorldError::ServicePathEditUnsupported => {
+                    "延伸によって既存の系統経路が変わるため実行できません。".to_owned()
+                }
+                _ => e.to_string(),
+            })?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
         Ok(self.snapshot())
     }
+
     pub fn build_alignment(
         &mut self,
         name: String,
@@ -236,12 +309,137 @@ impl WorldEditor {
         *self = candidate;
         Ok(self.snapshot())
     }
+    /// Publish the alignment and all planned stations together, or change nothing.
+    pub fn build_alignment_with_stations(
+        &mut self,
+        name: String,
+        points: Vec<GeoPoint>,
+        track_type: rosenfu_core::world::TrackType,
+        stations: Vec<PlannedStation>,
+        reference: Option<PlannedAlignmentReference>,
+    ) -> Result<WorldDraft, String> {
+        self.build_plan(vec![PlannedAlignment {
+            name,
+            points,
+            track_type,
+            stations,
+            reference,
+            extension: None,
+        }])
+    }
+
+    /// Build only the supplied plan's paths, stations and attribution atomically.
+    /// A failed path never publishes earlier paths or consumes their IDs.
+    pub fn build_plan(&mut self, alignments: Vec<PlannedAlignment>) -> Result<WorldDraft, String> {
+        if alignments.is_empty() {
+            return Err("着工する線路がありません。".into());
+        }
+        let mut candidate = self.clone();
+        for alignment in alignments {
+            if let Some(extension) = alignment.extension {
+                let old = candidate
+                    .world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == extension.alignment_id)
+                    .ok_or("延伸対象の線路がありません。")?;
+                if old.track_type != alignment.track_type {
+                    return Err("延伸対象と線路種別が一致しません。".into());
+                }
+                let old_length = old.length_m();
+                if let Some(reference) = alignment.reference {
+                    if alignment
+                        .points
+                        .iter()
+                        .any(|p| !in_edit_extent(p.latitude, p.longitude))
+                    {
+                        return Err("路線は編集範囲内に建設してください。".into());
+                    }
+                    candidate
+                        .world
+                        .extend_alignment_from_reference(
+                            candidate.company,
+                            extension.alignment_id,
+                            extension.endpoint,
+                            alignment.points,
+                            reference.source_record,
+                            reference.provenance,
+                        )
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    candidate.extend_alignment(
+                        extension.alignment_id,
+                        extension.endpoint,
+                        alignment.points,
+                    )?;
+                }
+                let new_length = candidate
+                    .world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == extension.alignment_id)
+                    .ok_or("延伸対象の線路がありません。")?
+                    .length_m();
+                let added_length = new_length - old_length;
+                for station in alignment.stations {
+                    if !station.position.is_finite() || !(0.0..=1.0).contains(&station.position) {
+                        return Err("駅の計画位置が不正です。".into());
+                    }
+                    // Plan positions run from the old endpoint outward even at the start.
+                    let distance = match extension.endpoint {
+                        rosenfu_core::world::AlignmentEndpoint::Start => {
+                            added_length * (1.0 - station.position)
+                        }
+                        rosenfu_core::world::AlignmentEndpoint::End => {
+                            old_length + added_length * station.position
+                        }
+                    };
+                    candidate.place_station_on_alignment_unchecked(
+                        station.name,
+                        extension.alignment_id,
+                        distance / new_length,
+                        station.length_m,
+                        station.width_m,
+                    )?;
+                }
+                continue;
+            }
+            let alignment_id = match alignment.reference {
+                Some(reference) => candidate.build_alignment_from_reference_typed_unchecked(
+                    alignment.name,
+                    alignment.points,
+                    reference.source_record,
+                    reference.provenance,
+                    alignment.track_type,
+                )?,
+                None => candidate.build_alignment_typed_unchecked(
+                    alignment.name,
+                    alignment.points,
+                    alignment.track_type,
+                )?,
+            };
+            for station in alignment.stations {
+                candidate.place_station_on_alignment_unchecked(
+                    station.name,
+                    alignment_id,
+                    station.position,
+                    station.length_m,
+                    station.width_m,
+                )?;
+            }
+        }
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
     fn build_alignment_typed_unchecked(
         &mut self,
         name: String,
         points: Vec<GeoPoint>,
         track_type: rosenfu_core::world::TrackType,
-    ) -> Result<WorldDraft, String> {
+    ) -> Result<AlignmentId, String> {
         if name.trim().is_empty() || name.chars().count() > 80 {
             return Err("路線名は1〜80文字で入力してください。".into());
         }
@@ -253,8 +451,7 @@ impl WorldEditor {
         }
         self.world
             .build_alignment_typed(self.company, name.trim().to_owned(), points, track_type)
-            .map_err(|e| e.to_string())?;
-        Ok(self.snapshot())
+            .map_err(|e| e.to_string())
     }
     pub fn place_station_on_alignment(
         &mut self,
@@ -283,7 +480,7 @@ impl WorldEditor {
         position: f64,
         length_m: f64,
         width_m: f64,
-    ) -> Result<WorldDraft, String> {
+    ) -> Result<StationId, String> {
         if name.trim().is_empty() || name.chars().count() > 80 {
             return Err("駅名は1〜80文字で入力してください。".into());
         }
@@ -296,8 +493,7 @@ impl WorldEditor {
                 length_m,
                 width_m,
             )
-            .map_err(|e| e.to_string())?;
-        Ok(self.snapshot())
+            .map_err(|e| e.to_string())
     }
     pub fn update_station_placement(
         &mut self,
@@ -905,7 +1101,7 @@ mod tests {
         let auto = dir.path().join("auto.json");
         WorldEditor::new().autosave(&auto).unwrap();
         let bytes = std::fs::read_to_string(&auto).unwrap();
-        let newer = bytes.replace("\"schema_version\": 7", "\"schema_version\": 999");
+        let newer = bytes.replace("\"schema_version\": 8", "\"schema_version\": 999");
         assert_ne!(bytes, newer);
         std::fs::write(&manual, &newer).unwrap();
         let mut editor = WorldEditor::new();
@@ -1833,6 +2029,36 @@ mod tests {
                 longitude: 139.1,
             },
         ];
+        // Attribution on an earlier path must roll back if any later path fails.
+        let attributed_path = || PlannedAlignment {
+            extension: None,
+            name: "Attributed".into(),
+            points: points.clone(),
+            track_type: rosenfu_core::world::TrackType::Tram,
+            stations: vec![planned_station(0.5)],
+            reference: Some(PlannedAlignmentReference {
+                source_record: source.clone(),
+                provenance: provenance.clone(),
+            }),
+        };
+        let before = editor.snapshot();
+        let mut invalid_path = planned_path(0.2);
+        invalid_path.stations.push(planned_station(1.1));
+        assert!(editor
+            .build_plan(vec![attributed_path(), invalid_path])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let mut expected = editor.clone();
+        assert_eq!(
+            editor
+                .build_plan(vec![attributed_path(), planned_path(0.2)])
+                .unwrap(),
+            expected
+                .build_plan(vec![attributed_path(), planned_path(0.2)])
+                .unwrap()
+        );
+        // Use a fresh editor for the original single-path compatibility checks.
+        let mut editor = WorldEditor::new();
         let before = editor.snapshot();
         let mut bad = source.clone();
         bad.source_date = Some("x".repeat(65));
@@ -1840,6 +2066,37 @@ mod tests {
             .build_alignment_from_reference("A".into(), points.clone(), bad, provenance.clone())
             .is_err());
         assert_eq!(editor.snapshot(), before);
+        // A late station error must also roll back newly allocated source metadata.
+        assert!(editor
+            .build_alignment_with_stations(
+                "Batch".into(),
+                points.clone(),
+                rosenfu_core::world::TrackType::Tram,
+                vec![planned_station(0.3), planned_station(f64::NAN)],
+                Some(PlannedAlignmentReference {
+                    source_record: source.clone(),
+                    provenance: provenance.clone(),
+                }),
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let batch = editor
+            .build_alignment_with_stations(
+                "Batch".into(),
+                points.clone(),
+                rosenfu_core::world::TrackType::Tram,
+                vec![planned_station(0.3)],
+                Some(PlannedAlignmentReference {
+                    source_record: source.clone(),
+                    provenance: provenance.clone(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(batch.stations.len(), 1);
+        assert_eq!(
+            batch.station_placements[0].alignment_id,
+            batch.alignments[0].id
+        );
         editor
             .build_alignment_from_reference(
                 "A".into(),
@@ -1850,6 +2107,44 @@ mod tests {
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provenance.json");
+        editor.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
+        // Reference-followed extension shares the original alignment and is atomic
+        // with later paths, planned stations, provenance, and allocation state.
+        let id = editor.snapshot().alignments[0].id;
+        let before = editor.snapshot();
+        let reference_extension = || PlannedAlignment {
+            name: "Reference extension".into(),
+            points: vec![
+                points[1],
+                GeoPoint {
+                    latitude: 35.0,
+                    longitude: 139.2,
+                },
+            ],
+            track_type: rosenfu_core::world::TrackType::Tram,
+            stations: vec![planned_station(0.5)],
+            reference: Some(PlannedAlignmentReference {
+                source_record: source.clone(),
+                provenance: provenance.clone(),
+            }),
+            extension: Some(PlannedAlignmentExtension {
+                alignment_id: id,
+                endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+            }),
+        };
+        let mut invalid = planned_path(0.2);
+        invalid.stations.push(planned_station(f64::NAN));
+        assert!(editor
+            .build_plan(vec![reference_extension(), invalid])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        editor.build_plan(vec![reference_extension()]).unwrap();
+        assert_eq!(editor.snapshot().alignments.len(), before.alignments.len());
+        assert_eq!(
+            editor.snapshot().alignment_provenance.len(),
+            before.alignment_provenance.len() + 1
+        );
         editor.save(&path).unwrap();
         assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
         // Oversized serializable world must not gain partial geometry/metadata/IDs.
@@ -1891,5 +2186,400 @@ mod tests {
             .build_alignment_typed("Bad".into(), vec![], TrackType::Tram)
             .is_err());
         assert_eq!(editor.snapshot(), before);
+    }
+    fn planned_station(position: f64) -> PlannedStation {
+        PlannedStation {
+            name: "計画駅".into(),
+            position,
+            length_m: 120.0,
+            width_m: 10.0,
+        }
+    }
+
+    fn planned_alignment_points() -> Vec<GeoPoint> {
+        vec![
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 139.0,
+            },
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 139.01,
+            },
+        ]
+    }
+
+    #[test]
+    fn planned_alignment_and_stations_publish_together_and_roundtrip() {
+        use rosenfu_core::world::TrackType;
+        let mut editor = WorldEditor::new();
+        let snapshot = editor
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Tram,
+                vec![planned_station(0.0), planned_station(0.8)],
+                None,
+            )
+            .unwrap();
+        assert_eq!(snapshot.alignments.len(), 1);
+        assert_eq!(snapshot.alignments[0].track_type, TrackType::Tram);
+        assert_eq!(snapshot.stations.len(), 2);
+        assert_eq!(snapshot.station_placements.len(), 2);
+        for placement in &snapshot.station_placements {
+            assert_eq!(placement.alignment_id, snapshot.alignments[0].id);
+        }
+        assert!(snapshot.station_placements[0].position > 0.0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("planned-stations.json");
+        editor.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn later_invalid_planned_station_does_not_publish_or_consume_ids() {
+        use rosenfu_core::world::TrackType;
+        let mut editor = WorldEditor::new();
+        let before = editor.snapshot();
+        for invalid in [
+            PlannedStation {
+                name: "".into(),
+                ..planned_station(0.5)
+            },
+            planned_station(f64::NAN),
+            planned_station(1.1),
+            PlannedStation {
+                length_m: 1000.0,
+                ..planned_station(0.5)
+            },
+            PlannedStation {
+                width_m: 0.0,
+                ..planned_station(0.5)
+            },
+        ] {
+            assert!(editor
+                .build_alignment_with_stations(
+                    "計画線".into(),
+                    planned_alignment_points(),
+                    TrackType::Normal,
+                    vec![planned_station(0.2), invalid],
+                    None,
+                )
+                .is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+        let actual = editor
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+                vec![planned_station(0.5)],
+                None,
+            )
+            .unwrap();
+        let expected = WorldEditor::new()
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+                vec![planned_station(0.5)],
+                None,
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn invalid_alignment_and_unsaveable_batch_are_atomic() {
+        use rosenfu_core::world::TrackType;
+        let mut editor = WorldEditor::new();
+        let before = editor.snapshot();
+        assert!(editor
+            .build_alignment_with_stations(
+                "計画線".into(),
+                vec![],
+                TrackType::HighSpeed,
+                vec![planned_station(0.5)],
+                None,
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let mut huge = editor.snapshot();
+        huge.companies[0].name = "x".repeat(rosenfu_storage::MAX_SAVE_BYTES);
+        editor.world.replace(huge).unwrap();
+        let before = editor.snapshot();
+        assert!(editor
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+                vec![planned_station(0.5)],
+                None,
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
+    fn empty_station_batch_matches_existing_alignment_command() {
+        use rosenfu_core::world::TrackType;
+        let expected = WorldEditor::new()
+            .build_alignment_typed(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+            )
+            .unwrap();
+        let actual = WorldEditor::new()
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+                vec![],
+                None,
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+    fn planned_path(offset: f64) -> PlannedAlignment {
+        PlannedAlignment {
+            name: format!("計画線{offset}"),
+            points: planned_alignment_points()
+                .into_iter()
+                .map(|mut p| {
+                    p.latitude += offset;
+                    p
+                })
+                .collect(),
+            track_type: rosenfu_core::world::TrackType::Normal,
+            stations: vec![planned_station(0.5)],
+            reference: None,
+            extension: None,
+        }
+    }
+
+    #[test]
+    fn independent_paths_build_together_and_preserve_existing_world() {
+        let mut editor = WorldEditor::new();
+        let before = editor.build_plan(vec![planned_path(0.0)]).unwrap();
+        let result = editor
+            .build_plan(vec![planned_path(0.1), planned_path(0.2)])
+            .unwrap();
+        assert_eq!(result.alignments.len(), 3);
+        assert_eq!(result.stations.len(), 3);
+        assert_eq!(result.alignments[0], before.alignments[0]);
+        assert_eq!(result.stations[0], before.stations[0]);
+        for (placement, alignment) in result.station_placements.iter().zip(&result.alignments) {
+            assert_eq!(placement.alignment_id, alignment.id);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multi-path.json");
+        editor.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), result);
+    }
+
+    #[test]
+    fn later_path_failure_rolls_back_entire_plan_and_ids() {
+        let mut editor = WorldEditor::new();
+        editor.build_plan(vec![planned_path(0.0)]).unwrap();
+        let before = editor.snapshot();
+        let mut control = editor.clone();
+        let mut invalid = planned_path(0.2);
+        invalid.stations.push(planned_station(1.1));
+        assert!(editor.build_plan(vec![planned_path(0.1), invalid]).is_err());
+        assert_eq!(editor.snapshot(), before);
+        let mut invalid_geometry = planned_path(0.2);
+        invalid_geometry.points.clear();
+        assert!(editor
+            .build_plan(vec![planned_path(0.1), invalid_geometry])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert!(editor.build_plan(vec![]).is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(
+            editor
+                .build_plan(vec![planned_path(0.1), planned_path(0.2)])
+                .unwrap(),
+            control
+                .build_plan(vec![planned_path(0.1), planned_path(0.2)])
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn plan_payload_uses_frontend_camel_case_and_optional_reference() {
+        let payload = serde_json::json!({
+            "name": "計画線", "points": planned_alignment_points(),
+            "trackType": "normal",
+            "stations": [{"name":"駅", "position":0.5, "lengthM":120.0, "widthM":10.0}]
+        });
+        let alignment: PlannedAlignment = serde_json::from_value(payload).unwrap();
+        assert!(alignment.reference.is_none());
+        assert!(WorldEditor::new().build_plan(vec![alignment]).is_ok());
+    }
+    #[test]
+    fn extension_batch_is_atomic_and_preserves_old_station_locations() {
+        use rosenfu_core::world::AlignmentEndpoint;
+        for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+            let mut editor = WorldEditor::new();
+            let before = editor.build_plan(vec![planned_path(0.0)]).unwrap();
+            let old = &before.alignments[0];
+            let anchor = if endpoint == AlignmentEndpoint::Start {
+                old.points[0]
+            } else {
+                *old.points.last().unwrap()
+            };
+            let extension = || PlannedAlignment {
+                name: "延伸".into(),
+                points: vec![
+                    anchor,
+                    GeoPoint {
+                        latitude: anchor.latitude,
+                        longitude: anchor.longitude
+                            + if endpoint == AlignmentEndpoint::Start {
+                                -0.02
+                            } else {
+                                0.02
+                            },
+                    },
+                ],
+                track_type: old.track_type,
+                stations: vec![planned_station(0.5)],
+                reference: None,
+                extension: Some(PlannedAlignmentExtension {
+                    alignment_id: old.id,
+                    endpoint,
+                }),
+            };
+            let mut invalid = planned_path(0.2);
+            invalid.points.clear();
+            assert!(editor.build_plan(vec![extension(), invalid]).is_err());
+            assert_eq!(editor.snapshot(), before);
+            let after = editor
+                .build_plan(vec![extension(), planned_path(0.3)])
+                .unwrap();
+            assert_eq!(after.alignments.len(), 2);
+            assert_eq!(after.stations[0], before.stations[0]);
+            assert_eq!(after.station_placements[1].alignment_id, old.id);
+            let a = &after.alignments[0];
+            let p = &after.station_placements[1];
+            let station = &after.stations[1];
+            let expected = a.point_at(p.position);
+            assert!((station.latitude - expected.latitude).abs() < 1e-10);
+            assert!(
+                (station.longitude
+                    - (anchor.longitude
+                        + if endpoint == AlignmentEndpoint::Start {
+                            -0.01
+                        } else {
+                            0.01
+                        }))
+                .abs()
+                    < 1e-8
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("extension.rosenfu");
+            editor.save(&path).unwrap();
+            assert_eq!(WorldEditor::new().load(&path).unwrap(), after);
+        }
+    }
+    #[test]
+    fn in_service_extension_roundtrips_and_batch_failure_is_atomic() {
+        use rosenfu_core::world::{AlignmentEndpoint, RouteSegment};
+        for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+            let mut editor = WorldEditor::new();
+            let initial = editor.build_plan(vec![planned_path(0.0)]).unwrap();
+            let a = initial.alignments[0].id;
+            editor
+                .place_station_on_alignment("Second".into(), a, 0.8, 100.0, 12.0)
+                .unwrap();
+            let snapshot = editor.snapshot();
+            let segments = vec![RouteSegment::Alignment {
+                alignment_id: a,
+                from: snapshot.stations[0].id,
+                to: snapshot.stations[1].id,
+            }];
+            let preview = editor
+                .preview_service_path(snapshot.stations[0].id, segments.clone())
+                .unwrap();
+            editor
+                .create_service_path(
+                    "Service".into(),
+                    snapshot.stations[0].id,
+                    segments,
+                    preview
+                        .occurrences
+                        .iter()
+                        .map(|o| o.reference.clone())
+                        .collect(),
+                )
+                .unwrap();
+            let before = editor.snapshot();
+            let anchor = if endpoint == AlignmentEndpoint::Start {
+                before.alignments[0].points[0]
+            } else {
+                *before.alignments[0].points.last().unwrap()
+            };
+            let extension = || PlannedAlignment {
+                name: "Extension".into(),
+                points: vec![
+                    anchor,
+                    GeoPoint {
+                        latitude: anchor.latitude,
+                        longitude: anchor.longitude
+                            + if endpoint == AlignmentEndpoint::Start {
+                                -0.02
+                            } else {
+                                0.02
+                            },
+                    },
+                ],
+                track_type: before.alignments[0].track_type,
+                stations: vec![planned_station(0.5)],
+                reference: None,
+                extension: Some(PlannedAlignmentExtension {
+                    alignment_id: a,
+                    endpoint,
+                }),
+            };
+            let mut invalid = planned_path(0.2);
+            invalid.points.clear();
+            assert!(editor.build_plan(vec![extension(), invalid]).is_err());
+            assert_eq!(editor.snapshot(), before);
+            let after = editor.build_plan(vec![extension()]).unwrap();
+            assert_eq!(after.service_paths, before.service_paths);
+            assert_eq!(after.services, before.services);
+            for old in &before.stations {
+                assert!(after.stations.contains(old));
+            }
+            let id = before.service_paths[0].service_id;
+            assert_eq!(
+                editor.world.service_path_occurrences(id).unwrap(),
+                preview.occurrences
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("service-extension.rosenfu");
+            editor.save(&path).unwrap();
+            let mut loaded = WorldEditor::new();
+            let mut restored = loaded.load(&path).unwrap();
+            // JSON floating-point parsing may differ by one ULP; geometry and
+            // references remain exact, while ratios must preserve metre positions.
+            for (actual, expected) in restored
+                .station_placements
+                .iter_mut()
+                .zip(&after.station_placements)
+            {
+                assert!(
+                    (actual.position - expected.position).abs() * after.alignments[0].length_m()
+                        < 1e-6
+                );
+                actual.position = expected.position;
+            }
+            assert_eq!(restored, after);
+            assert_eq!(
+                loaded.world.service_path_occurrences(id).unwrap(),
+                preview.occurrences
+            );
+        }
     }
 }

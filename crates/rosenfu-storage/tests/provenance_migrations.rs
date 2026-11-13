@@ -76,7 +76,7 @@ fn schemas_one_through_five_preserve_all_fields_and_backup_bytes() {
         let world = load_world(&path).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
         let current: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
-        assert_eq!(current["schema_version"], 7);
+        assert_eq!(current["schema_version"], 8);
         for (key, value) in old["world"].as_object().unwrap() {
             assert_eq!(&current["world"][key], value, "v{version}: {key}");
         }
@@ -189,6 +189,8 @@ fn provenance_world() -> World {
     });
     draft.alignment_provenance.push(AlignmentProvenance {
         alignment_id: a,
+        start_point_index: 0,
+        end_point_index: 1,
         source: AlignmentProvenanceInput {
             source_key: key,
             method: ProvenanceMethod::OsmSegmentCopyV1,
@@ -244,5 +246,60 @@ fn provenance_roundtrip_and_corrupt_metadata_are_strict() {
             decode(&serde_json::to_vec(&bad).unwrap()).is_err(),
             "{pointer}"
         );
+    }
+}
+
+#[test]
+fn schema_seven_source_ranges_migrate_and_extended_ranges_roundtrip() {
+    let mut world = provenance_world();
+    let mut old: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
+    old["schema_version"] = json!(7);
+    for p in old["world"]["alignment_provenance"].as_array_mut().unwrap() {
+        p.as_object_mut().unwrap().remove("start_point_index");
+        p.as_object_mut().unwrap().remove("end_point_index");
+    }
+    assert_eq!(decode(&serde_json::to_vec(&old).unwrap()).unwrap(), world);
+    let mut v6 = old.clone();
+    v6["schema_version"] = json!(6);
+    for a in v6["world"]["alignments"].as_array_mut().unwrap() {
+        a.as_object_mut().unwrap().remove("track_type");
+    }
+    assert_eq!(decode(&serde_json::to_vec(&v6).unwrap()).unwrap(), world);
+    old["world"]["alignment_provenance"][0]["start_point_index"] = json!(0);
+    assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());
+    let a = world.snapshot().alignments[0].clone();
+    let end = *a.points.last().unwrap();
+    let prev = a.points[a.points.len() - 2];
+    world
+        .extend_alignment(
+            a.owner,
+            a.id,
+            AlignmentEndpoint::End,
+            vec![
+                end,
+                GeoPoint {
+                    latitude: 2.0 * end.latitude - prev.latitude,
+                    longitude: 2.0 * end.longitude - prev.longitude,
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+}
+
+#[test]
+fn schema_seven_keeps_optional_alignment_arrays_but_rejects_wrong_types() {
+    let world = World::default();
+    let mut old: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
+    old["schema_version"] = json!(7);
+    old["world"].as_object_mut().unwrap().remove("alignments");
+    old["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("station_placements");
+    assert_eq!(decode(&serde_json::to_vec(&old).unwrap()).unwrap(), world);
+    for invalid in [Value::Null, json!({}), json!("invalid")] {
+        old["world"]["alignments"] = invalid;
+        assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());
     }
 }

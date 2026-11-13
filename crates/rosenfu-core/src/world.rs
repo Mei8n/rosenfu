@@ -471,7 +471,7 @@ impl WorldDraft {
 }
 
 mod alignment;
-pub use alignment::{Alignment, GeoPoint, StationPlacement, TrackType};
+pub use alignment::{Alignment, AlignmentEndpoint, GeoPoint, StationPlacement, TrackType};
 
 #[cfg(test)]
 mod tests {

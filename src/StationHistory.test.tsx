@@ -28,7 +28,7 @@ async function start(){let world=structuredClone(initial);let id=20;const failur
  if(command==="load_world"){if(failures.load)throw Error("load failure");world=structuredClone(initial);return world;}
  throw Error(command);
  });render(<App/>);await screen.findByText(/history-test/);await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));return failures;}
-async function place(){fireEvent.change(region("#panel-stations").getByLabelText("配置先の線路"),{target:{value:"3"}});fireEvent.change(document.getElementById("platform-position")!,{target:{value:"60"}});fireEvent.click(region("#panel-stations").getByRole("button",{name:"ホームを配置"}));await screen.findByText(/を線路に沿って配置しました/);await ready();}
+async function place(){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:250,clientY:150});await screen.findByText(/を線路に沿って配置しました/);await ready();}
 async function ready(){await waitFor(()=>expect((document.querySelector(".save-controls button:last-child") as HTMLButtonElement).disabled).toBe(false));}
 const undo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});const redo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
 test("station undo and redo preserve failed history, issue a fresh ID and protect existing stations",async()=>{

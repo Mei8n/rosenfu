@@ -7,6 +7,7 @@ import { App } from "./App";
 import { project, DEFAULT_CAMERA } from "./map";
 import { alignmentLength, pointOnAlignment } from "./alignment";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
+window.PointerEvent=MouseEvent as typeof PointerEvent;
 afterEach(() => { localStorage.removeItem("rosenfu.display-settings"); cleanup(); vi.resetAllMocks(); });
 const alignment = { id:"3",owner:"2",name:"試験線",points:[{latitude:35.67504,longitude:139.72},{latitude:35.67504,longitude:139.78}] };
 const empty = {next_id:"3",players:[{id:"1",name:"Player"}],companies:[{id:"2",owner:"1",name:"Railway"}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
@@ -68,6 +69,7 @@ test("draft undo, cancel and load confirmation preserve intentional construction
   expect(screen.getByRole("button",{name:"読込を続ける"})).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"戻る"}));
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("tab",{name:"線路"}));
   fireEvent.click(screen.getByRole("button",{name:"下書きを消去"}));
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
 });
@@ -76,12 +78,11 @@ test("line-constrained station previews then commits metric platform dimensions"
   fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
   expect(screen.queryByLabelText("新しい駅名")).toBeNull();expect(screen.queryByLabelText("幅 (m)")).toBeNull();
   fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"12"}});
-  fireEvent.click(screen.getByRole("button",{name:"地図でホーム位置を選ぶ"}));
-  fireEvent.click(map,{clientX:250,clientY:150});
+  fireEvent.pointerMove(map,{clientX:250,clientY:150});
   expect(map.querySelector(".station-platform")).toBeTruthy();
   expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
   vi.mocked(invoke).mockResolvedValueOnce({...placed,station_placements:[{...placed.station_placements[0],length_m:240}]});
-  fireEvent.click(screen.getByRole("button",{name:"ホームを配置"}));
+  fireEvent.click(map,{clientX:250,clientY:150});
   await screen.findByText("新駅を線路に沿って配置しました。");
   expect(invoke).toHaveBeenCalledWith("place_station_on_alignment",expect.objectContaining({alignmentId:"3",lengthM:240,widthM:12}));
   expect(map.querySelector(".station-marker circle.station-dot")).toBeTruthy();
@@ -90,18 +91,11 @@ test("line-constrained station previews then commits metric platform dimensions"
   expect(map.querySelector(".station-marker circle")).toBeNull();
 });
 test("placement rejects distant clicks and keeps station operation uncalled",async()=>{
-  const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
-  fireEvent.click(screen.getByRole("button",{name:"地図でホーム位置を選ぶ"}));
-  fireEvent.click(map,{clientX:250,clientY:20});
-  await screen.findByText(/線路の近くを選んで/);
-  expect((screen.getByRole("button",{name:"ホームを配置"}) as HTMLButtonElement).disabled).toBe(true);
-  expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
-  fireEvent.click(screen.getByRole("button",{name:"エラー通知を閉じる"}));expect(screen.queryByText(/線路の近くを選んで/)).toBeNull();
-  fireEvent.click(map,{clientX:250,clientY:20});await screen.findByText(/線路の近くを選んで/);
-  fireEvent.keyDown(document.body,{key:"Escape"});expect(screen.queryByText(/線路の近くを選んで/)).toBeNull();
-  fireEvent.click(screen.getByRole("button",{name:"地図でホーム位置を選ぶ"}));fireEvent.click(map,{clientX:250,clientY:20});await screen.findByText(/線路の近くを選んで/);
-  fireEvent.click(map,{clientX:250,clientY:150});expect(screen.queryByText(/線路の近くを選んで/)).toBeNull();
-  expect((screen.getByRole("button",{name:"ホームを配置"}) as HTMLButtonElement).disabled).toBe(false);
+ const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
+ fireEvent.click(map,{clientX:250,clientY:20});await screen.findByText(/処理できませんでした: 線路の近くを選んで/);
+ expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
+ fireEvent.click(screen.getByRole("button",{name:"エラー通知を閉じる"}));
+ expect(screen.queryByText(/処理できませんでした/)).toBeNull();
 });
 test("existing platform resize preserves ID and duplicate submits are blocked",async()=>{
   const map=await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
@@ -118,16 +112,18 @@ test("existing platform resize preserves ID and duplicate submits are blocked",a
   expect(screen.getByText("未保存の変更あり")).toBeTruthy();
 });
 
-test("keyboard position selection previews a platform and too-long platform is blocked",async()=>{
-  const short={...built,alignments:[{...alignment,points:[{latitude:35.67504,longitude:139.749},{latitude:35.67504,longitude:139.751}]}]};
-  const map=await start(short);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
-  fireEvent.change(screen.getByLabelText("配置先の線路"),{target:{value:"3"}});
-  fireEvent.change(document.getElementById("platform-position")!,{target:{value:"60"}});
-  expect(screen.getByText("この線路に収まるホーム長を指定してください。")).toBeTruthy();
-  expect((screen.getByRole("button",{name:"ホームを配置"}) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"5"}});
-  expect(map.querySelector(".station-platform")).toBeTruthy();
-  expect((screen.getByRole("button",{name:"ホームを配置"}) as HTMLButtonElement).disabled).toBe(false);
+test("keyboard position previews a platform and too-long platform is blocked",async()=>{
+ const short={...built,alignments:[{...alignment,points:[{latitude:35.67504,longitude:139.749},{latitude:35.67504,longitude:139.751}]}]};
+ const map=await start(short);fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
+ fireEvent.keyDown(map,{key:"ArrowRight"});
+ expect(screen.getAllByText("この線路に収まるホーム長を指定してください。").length).toBeGreaterThan(0);
+ fireEvent.keyDown(map,{key:"Enter"});
+ expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
+ fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"5"}});
+ expect(map.querySelector(".station-platform")).toBeTruthy();
+ vi.mocked(invoke).mockResolvedValueOnce(placed);
+ fireEvent.keyDown(map,{key:"Enter"});
+ await screen.findByText("新駅を線路に沿って配置しました。");
 });
 
 test("plan redo, duplicate rejection and display controls",async()=>{
@@ -172,11 +168,10 @@ test("station display switches exactly across ZL14 and ZL15 without changing dim
 });
 test("low-zoom endpoint previews use the full-platform corrected center",async()=>{
  const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
- fireEvent.change(screen.getByLabelText("配置先の線路"),{target:{value:"3"}});
  fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"12"}});
  const half=120/alignmentLength(alignment.points);
  for(const position of [0,1]){
-  fireEvent.change(document.getElementById("platform-position")!,{target:{value:String(position*100)}});
+  const hover=project(alignment.points[position].latitude,alignment.points[position].longitude,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
   const dot=map.querySelector("circle.station-platform")!;
   const point=pointOnAlignment(alignment.points,position===0?half:1-half);
   const expected=project(point.latitude,point.longitude,DEFAULT_CAMERA);
@@ -187,37 +182,38 @@ test("low-zoom endpoint previews use the full-platform corrected center",async()
  }
 });
 test("reference name is automatic and does not place or rename until confirmed",async()=>{
- await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 /}));expect(screen.queryByLabelText("新しい駅名")).toBeNull();
+ const map=await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 /}));expect(screen.queryByLabelText("新しい駅名")).toBeNull();
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
  const pack={format:"rosenfu-reference-stations",version:1,dataset:{id:"names",revision:"1",source:"local fixture",license:"test",bounds:{west:139,east:140,south:35,north:36}},stations:[{osmType:"node",osmId:"1",name:"参考中央",latitude:35.67504,longitude:139.756,kind:"station"}]};
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:500,text:()=>Promise.resolve(JSON.stringify(pack))}]}});await screen.findByText("names / 1 / 1件");
- fireEvent.change(screen.getByLabelText("配置先の線路"),{target:{value:"3"}});fireEvent.change(document.getElementById("platform-position")!,{target:{value:"60"}});
+ const hover=project(35.67504,139.756,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
  expect(await screen.findByText("参考中央",{selector:"strong"})).toBeTruthy();expect((screen.getByLabelText("選択駅の名前") as HTMLInputElement).value).toBe("新駅");expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="place_station_on_alignment"||command==="rename_station")).toBe(false);
- vi.mocked(invoke).mockResolvedValueOnce(placed);fireEvent.click(screen.getByRole("button",{name:"ホームを配置"}));
+ vi.mocked(invoke).mockResolvedValueOnce(placed);fireEvent.click(map,{clientX:hover.x/2,clientY:hover.y/2});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("place_station_on_alignment",expect.objectContaining({name:"参考中央"})));
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="rename_station")).toBe(false);
 });
 test("reference name distance uses corrected platform center at both alignment endpoints",async()=>{
- await start(built);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.change(screen.getByLabelText("配置先の線路"),{target:{value:"3"}});fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"12"}});
+ const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"12"}});
  const half=120/alignmentLength(alignment.points),startPoint=pointOnAlignment(alignment.points,half),endPoint=pointOnAlignment(alignment.points,1-half);
  const pack={format:"rosenfu-reference-stations",version:1,dataset:{id:"endpoint-names",revision:"1",source:"test",license:"test",bounds:{west:139,east:140,south:35,north:36}},stations:[{osmType:"node",osmId:"1",name:"始端中心",...startPoint,kind:"station"},{osmType:"node",osmId:"2",name:"終端中心",...endPoint,kind:"station"}]};
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:1000,text:()=>Promise.resolve(JSON.stringify(pack))}]}});await screen.findByText("endpoint-names / 1 / 2件");
- for(const [position,name] of [["0","始端中心"],["100","終端中心"]]){fireEvent.change(document.getElementById("platform-position")!,{target:{value:position}});expect(await screen.findByText(name as string,{selector:"strong"})).toBeTruthy();expect(screen.getByText(/約0m・直線距離/)).toBeTruthy();}
+ for(const [position,name] of [["0","始端中心"],["100","終端中心"]]){const point=alignment.points[position==="0"?0:1],hover=project(point.latitude,point.longitude,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});expect(await screen.findByText(name as string,{selector:"strong"})).toBeTruthy();expect(screen.getByText(/約0m・直線距離/)).toBeTruthy();}
 });
 
 
-test("endpoint double click finishes a draft once without building or duplicate anchors",async()=>{
+test("clicking the last point again finishes a draft once without building or duplicate anchors",async()=>{
  const map=await start();
  fireEvent.click(map,{clientX:180,clientY:130,detail:1});
  fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:300,clientY:170,detail:2});
- fireEvent.doubleClick(map,{clientX:300,clientY:170,detail:2});
+ fireEvent.click(map,{clientX:300,clientY:170,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- expect(map.classList.contains("map-move-mode")).toBe(true);
- fireEvent.click(map,{clientX:350,clientY:180,detail:1});
- expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- expect(vi.mocked(invoke).mock.calls.some(([c])=>c==="build_alignment")).toBe(false);
+ expect(map.classList.contains("placement-enabled")).toBe(true);
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(map,{clientX:350,clientY:180,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+ expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==="build_alignment")).toBe(false);
+ expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(true);
 });
 
 test("double clicking an existing endpoint does not duplicate it; one point cannot finish",async()=>{
@@ -230,5 +226,95 @@ test("double clicking an existing endpoint does not duplicate it; one point cann
  fireEvent.click(map,{clientX:300,clientY:170,detail:1});
  fireEvent.click(map,{clientX:300,clientY:170,detail:2});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- expect(map.classList.contains("map-move-mode")).toBe(true);
+ expect(map.classList.contains("placement-enabled")).toBe(true);
+});
+
+
+test("returning near the endpoint snaps in CSS pixels without a foldback anchor",async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ fireEvent.pointerMove(map,{clientX:350,clientY:180});fireEvent.pointerMove(map,{clientX:296,clientY:168});
+ fireEvent.click(map,{clientX:296,clientY:168,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.click(map,{clientX:296,clientY:168,detail:2});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.click(map,{clientX:100,clientY:240,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+ expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
+ expect(screen.queryByText(/敷設不可：線路が折り返しています/)).toBeNull();
+});
+
+test("invalid curve remains diagnostic and cannot add an anchor",async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ fireEvent.click(map,{clientX:200,clientY:160,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ expect(map.querySelector(".confirmed-draft")).toBeTruthy();
+ expect(map.querySelector(".invalid-candidate")?.getAttribute("d")).toContain("L");
+ fireEvent.click(map,{clientX:390,clientY:190,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
+ expect(map.querySelector(".invalid-candidate")).toBeNull();
+});
+
+test("invalid double click does not finish; selecting a parked plan resumes its endpoint",async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ fireEvent.click(map,{clientX:200,clientY:160,detail:1});fireEvent.click(map,{clientX:200,clientY:160,detail:2});
+ fireEvent.click(map,{clientX:390,clientY:190,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
+ expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
+ fireEvent.click(screen.getByRole("button",{name:"別の線路計画を追加"}));
+ fireEvent.click(screen.getByRole("button",{name:/計画 1 を編集/}));
+ fireEvent.click(map,{clientX:450,clientY:200,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(4);
+});
+
+test("straight mode snaps the last anchor to finish and keeps drawing enabled",async()=>{
+ const map=await start();fireEvent.click(screen.getByRole("button",{name:"直線"}));
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ fireEvent.click(map,{clientX:296,clientY:168,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.click(map,{clientX:296,clientY:168,detail:2});fireEvent.click(map,{clientX:100,clientY:240,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
+});
+
+test("endpoint snap tolerance stays in CSS pixels after the map resizes",async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ fireEvent.click(map,{clientX:595,clientY:337,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.click(map,{clientX:595,clientY:337,detail:2});expect(map.classList.contains("placement-enabled")).toBe(true);
+ fireEvent.click(map,{clientX:100,clientY:400,detail:1});expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
+});
+
+ test("empty redo preserves a finished draft before starting another path", async () => {
+ const map = await start();
+ fireEvent.click(map, {clientX:180, clientY:130, detail:1});
+ fireEvent.click(map, {clientX:300, clientY:170, detail:1});
+ fireEvent.click(map, {clientX:300, clientY:170, detail:1});
+ fireEvent.keyDown(document.body, {key:"Z", ctrlKey:true, shiftKey:true});
+ fireEvent.click(map, {clientX:390, clientY:190, detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+ expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
+ });
+
+test.each(["曲線","直線"])("%s single endpoint finish can resume the same plan without an extra point",async mode=>{
+ const map=await start();fireEvent.click(screen.getByRole("button",{name:mode}));
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ fireEvent.click(map,{clientX:298,clientY:169,detail:1});
+ fireEvent.click(map,{clientX:298,clientY:169,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.click(map,{clientX:390,clientY:190,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
+ expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
+});
+
+test.each(["曲線","直線"])("%s dragging at the endpoint never finishes or adds an anchor",async mode=>{
+ const map=await start();fireEvent.click(screen.getByRole("button",{name:mode}));
+ fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ const pointer=(type:string,x:number,y:number)=>{const e=new MouseEvent(type,{bubbles:true,clientX:x,clientY:y,button:0});Object.defineProperty(e,"pointerId",{value:1});fireEvent(map,e);};
+ pointer("pointerdown",300,170);pointer("pointermove",315,170);pointer("pointerup",315,170);fireEvent.click(map,{clientX:315,clientY:170,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ pointer("pointerdown",390,190);pointer("pointerup",390,190);fireEvent.click(map,{clientX:390,clientY:190,detail:1});
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
 });

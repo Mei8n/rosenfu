@@ -2591,6 +2591,7 @@ dependencies = [
  "rosenfu-core",
  "rosenfu-storage",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tempfile",

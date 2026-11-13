@@ -34,3 +34,16 @@ test("native registration and close failures are visible rather than claiming su
   await waitFor(()=>expect(result.current.closeError).toMatch(/登録できません/));
   await act(()=>result.current.discardAndClose());expect(result.current.closeError).toMatch(/計画は保持/);
 });
+test("repeated discard is deduplicated and a failed close can be retried",async()=>{
+  let rejectClose:(reason:Error)=>void=()=>{};
+  const destroy=vi.fn().mockImplementationOnce(()=>new Promise((_,reject)=>{rejectClose=reject;})).mockResolvedValue(undefined);
+  vi.mocked(getCurrentWindow).mockReturnValue({destroy} as unknown as ReturnType<typeof getCurrentWindow>);
+  const {result}=renderHook(()=>useUnsavedCloseGuard(true));
+  let pending:Promise<void>;
+  act(()=>{pending=result.current.discardAndClose();});
+  expect(result.current.closing).toBe(true);
+  await act(()=>result.current.discardAndClose());expect(destroy).toHaveBeenCalledOnce();
+  await act(async()=>{rejectClose(Error("failed"));await pending;});
+  expect(result.current.closing).toBe(false);expect(result.current.closeError).toContain("計画は保持");
+  await act(()=>result.current.discardAndClose());expect(destroy).toHaveBeenCalledTimes(2);expect(result.current.closeError).toBe("");
+});

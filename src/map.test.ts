@@ -8,10 +8,10 @@ test("camera center and geographic roundtrips remain accurate across Japan and a
       const center = project(camera.latitude,camera.longitude,camera);
       expect(center.x).toBeCloseTo(MAP_VIEWBOX.width/2,8);
       expect(center.y).toBeCloseTo(MAP_VIEWBOX.height/2,8);
-      const point = project(latitude+0.001,longitude+0.001,camera);
+      const point = project(camera.latitude+0.0001,camera.longitude+0.0001,camera);
       const restored = unproject(point.x,point.y,camera);
-      expect(restored.latitude).toBeCloseTo(latitude+0.001,9);
-      expect(restored.longitude).toBeCloseTo(longitude+0.001,9);
+      expect(restored.latitude).toBeCloseTo(camera.latitude+0.0001,9);
+      expect(restored.longitude).toBeCloseTo(camera.longitude+0.0001,9);
     }
   }
 });
@@ -24,7 +24,7 @@ test("pan and zoom keep the whole viewport inside viewing limits without changin
   expect(project(station.latitude,station.longitude,camera).x).toBeCloseTo(before.x-300,8);
   expect(project(station.latitude,station.longitude,camera).y).toBeCloseTo(before.y+180,8);
   expect(station).toEqual({ latitude:35.681236, longitude:139.767125 });
-  expect(zoomCamera(DEFAULT_CAMERA,-1).zoom).toBe(MIN_ZOOM);
+  expect(zoomCamera(DEFAULT_CAMERA,-100).zoom).toBe(MIN_ZOOM);
   expect(zoomCamera(cameraAt(35,139,MAX_ZOOM),1).zoom).toBe(MAX_ZOOM);
   for(const latitude of [MAP_BOUNDS.south,MAP_BOUNDS.north]) for(const longitude of [MAP_BOUNDS.west,MAP_BOUNDS.east]) {
     const edge = panCamera(cameraAt(latitude,longitude), longitude===MAP_BOUNDS.west?-1e9:1e9, latitude===MAP_BOUNDS.north?-1e9:1e9);
@@ -51,12 +51,12 @@ test("client conversion fills wide and tall viewports and rejects coordinates ou
 });
 
 test("tile enumeration contains only visible approved pale tiles with bounded count and exact coverage", () => {
-  for(const [lat,lon] of [[20,122],[46,154],[35.67504,139.75],[43.06,141.35]]) for(let zoom=12;zoom<=16;zoom++) {
+  for(const [lat,lon] of [[20,122],[46,154],[35.67504,139.75],[43.06,141.35]]) for(let zoom=12;zoom<=MAX_ZOOM;zoom++) {
     const tiles = visibleTiles(cameraAt(lat,lon,zoom));
     expect(tiles.length).toBeGreaterThan(0); expect(tiles.length).toBeLessThanOrEqual(MAX_TILES);
     expect(new Set(tiles.map(tile=>tile.id)).size).toBe(tiles.length);
     for(const tile of tiles) {
-      expect(tile.url).toMatch(/^https:\/\/cyberjapandata\.gsi\.go\.jp\/xyz\/pale\/(12|13|14|15|16)\/\d+\/\d+\.png$/);
+      expect(tile.url).toMatch(/^https:\/\/cyberjapandata\.gsi\.go\.jp\/xyz\/pale\/(12|13|14|15|16|17)\/\d+\/\d+\.png$/);
       expect(tile.width).toBe(tile.height);
       expect(tile.x).toBeLessThan(MAP_VIEWBOX.width); expect(tile.x+tile.width).toBeGreaterThan(0);
       expect(tile.y).toBeLessThan(MAP_VIEWBOX.height); expect(tile.y+tile.height).toBeGreaterThan(0);
@@ -79,7 +79,7 @@ test("previous tiles remain georeferenced while waiting for a debounced camera r
 });
 
 test("invalid cameras and geographic inputs fail instead of producing requests", () => {
-  for(const args of [[NaN,139,12],[19,139,12],[47,139,12],[35,121,12],[35,155,12],[35,139,11],[35,139,17]]) expect(()=>cameraAt(...args as [number,number,number])).toThrow();
+  for(const args of [[NaN,139,12],[19,139,12],[47,139,12],[35,121,12],[35,155,12],[35,139,MIN_ZOOM-1],[35,139,MAX_ZOOM+1]]) expect(()=>cameraAt(...args as [number,number,number])).toThrow();
   expect(()=>project(NaN,139)).toThrow(); expect(()=>project(90,139)).toThrow();
   expect(()=>project(35,181)).toThrow(); expect(()=>unproject(-1,0)).toThrow();
 });
@@ -143,7 +143,7 @@ test("provider detail ceilings and invalid DPI are respected",()=>{
 test("fractional zoom preserves cursor geography and uses integer tile URLs",()=>{
  for(const size of [{width:1920,height:1080},{width:400,height:1000}])for(const anchor of [{x:250,y:200},{x:750,y:400}]){
   const start=cameraAt(35.675,139.75,13.25),point=unproject(anchor.x,anchor.y,start);
-  for(const z of [12,12.125,14.9,15.01,16]){
+  for(const z of [12,12.125,14.9,15.01,16,18.5,20]){
    const moved=zoomCameraAt(start,z,anchor),pixel=project(point.latitude,point.longitude,moved);
    expect(pixel.x).toBeCloseTo(anchor.x,7);expect(pixel.y).toBeCloseTo(anchor.y,7);
    const tiles=visibleTiles(moved,"osm",size,2);
@@ -152,4 +152,49 @@ test("fractional zoom preserves cursor geography and uses integer tile URLs",()=
    for(const t of tiles){const positioned=positionTile(t,moved);expect(positioned.x).toBeCloseTo(t.x,7);expect(positioned.y).toBeCloseTo(t.y,7);}
   }
  }
+});
+
+test("close editing magnification overzooms native tiles without unsupported requests or gaps",()=>{
+ expect(MAX_ZOOM).toBe(20);
+ for(const provider of ["osm","gsi"] as const) for(const zoom of [17,18,19,19.5,20]) for(const size of [{width:1920,height:1080},{width:400,height:1000}]) {
+  const camera=cameraAt(35.675,139.75,zoom),tiles=visibleTiles(camera,provider,size,2);
+  const ceiling=provider==="osm"?19:17;
+  expect(tiles.length).toBeGreaterThan(0);expect(tiles.length).toBeLessThanOrEqual(MAX_TILES);
+  expect(tiles.every(t=>Number(t.id.split("/")[0])<=ceiling)).toBe(true);
+  const viewport=mapViewport(size.width,size.height);
+  for(const fx of [0,.5,.99999])for(const fy of [0,.5,.99999]){
+   const x=viewport.x+fx*viewport.width,y=viewport.y+fy*viewport.height;
+   expect(tiles.some(t=>t.x<=x&&t.x+t.width>x&&t.y<=y&&t.y+t.height>y)).toBe(true);
+  }
+  for(const tile of tiles){const moved=positionTile(tile,camera);expect(moved.x).toBeCloseTo(tile.x,6);expect(moved.y).toBeCloseTo(tile.y,6);}
+ }
+});
+
+test("track and platform geographic dimensions enlarge uniformly without altering world data",()=>{
+ // A small polygon represents a platform and its edge a rail: both use project in App.
+ const points=Object.freeze([{latitude:35.675,longitude:139.75},{latitude:35.6751,longitude:139.75},{latitude:35.6751,longitude:139.75001}]);
+ const projected=(zoom:number)=>points.map(p=>project(p.latitude,p.longitude,cameraAt(35.675,139.75,zoom)));
+ const before=projected(16),after=projected(MAX_ZOOM),factor=2**(MAX_ZOOM-16);
+ for(let i=0;i<points.length;i++){
+  expect(after[i].x-500).toBeCloseTo((before[i].x-500)*factor,6);
+  expect(after[i].y-300).toBeCloseTo((before[i].y-300)*factor,6);
+ }
+ expect(factor).toBe(16);
+});
+
+test("Japan overview fits the supported region without world wrapping or missing tiles",()=>{
+ const camera=zoomCamera(DEFAULT_CAMERA,-100),bounds=viewBounds(camera);
+ expect(camera.zoom).toBe(MIN_ZOOM);
+ expect(bounds.west).toBeLessThanOrEqual(MAP_BOUNDS.west);
+ expect(bounds.east).toBeGreaterThanOrEqual(MAP_BOUNDS.east);
+ expect(bounds.south).toBeLessThanOrEqual(MAP_BOUNDS.south);
+ expect(bounds.north).toBeGreaterThanOrEqual(MAP_BOUNDS.north);
+ expect(bounds.east).toBeLessThanOrEqual(180);expect(bounds.west).toBeGreaterThanOrEqual(-180);
+ for(const provider of ["osm","gsi"] as const){
+  const tiles=visibleTiles(camera,provider);
+  expect(tiles.length).toBeLessThanOrEqual(MAX_TILES);
+  for(const x of [0,500,999])for(const y of [0,300,599])expect(tiles.some(t=>t.x<=x&&t.x+t.width>x&&t.y<=y&&t.y+t.height>y)).toBe(true);
+ }
+ expect(()=>panCamera(camera,1e9,-1e9)).not.toThrow();
+ expect(DEFAULT_CAMERA.zoom).toBe(12);
 });

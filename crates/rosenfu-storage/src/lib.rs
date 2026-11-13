@@ -13,9 +13,10 @@ mod legacy_v3;
 mod legacy_v4;
 mod legacy_v5;
 mod legacy_v6;
+mod legacy_v7;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 7;
+pub const SCHEMA_VERSION: u64 = 8;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -124,7 +125,7 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         4 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(value)?)?)?,
         5 => legacy_v6::migrate(legacy_v5::migrate(value)?)?,
         6 => legacy_v6::migrate(value)?,
-        SCHEMA_VERSION => {
+        7 | SCHEMA_VERSION => {
             if [
                 "route_paths",
                 "service_paths",
@@ -143,6 +144,11 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
             value
         }
         _ => return Err(StorageError::UnsupportedVersion(version)),
+    };
+    let current = if version <= 7 {
+        legacy_v7::migrate(current)?
+    } else {
+        current
     };
     let document: SaveDocument = serde_json::from_value(current)?;
     let world = World::new(document.world)?;

@@ -6,7 +6,7 @@ fn old_schema_two_loads_without_losing_graph() {
     let world = decode(bytes).unwrap();
     assert!(world.snapshot().alignments.is_empty());
     let saved: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
-    assert_eq!(saved["schema_version"], 7);
+    assert_eq!(saved["schema_version"], 8);
 }
 #[test]
 fn curved_geometry_and_platform_resize_roundtrip() {

@@ -3,13 +3,14 @@ import type { MapProvider } from "./mapProviders";
 /** Display-only Web Mercator camera. Geographic world data never moves with the camera. */
 export const MAP_BOUNDS = { west: 122, east: 154, south: 20, north: 46 } as const;
 export const MAP_VIEWBOX = { width: 1000, height: 600 } as const;
-export const MIN_ZOOM = 12;
-export const MAX_ZOOM = 16;
+export const MIN_ZOOM = 4;
+// Editing magnification is independent of the raster providers’ native detail ceilings.
+export const MAX_ZOOM = 20;
 export const MAX_TILES = 128;
 const MAX_TILE_ZOOM = { osm: 19, gsi: 17 } as const;
 export const GSI_ATTRIBUTION_URL = "https://maps.gsi.go.jp/development/ichiran.html";
 export type Camera = { latitude: number; longitude: number; zoom: number };
-export const DEFAULT_CAMERA: Camera = { latitude: 35.67504, longitude: 139.75, zoom: MIN_ZOOM };
+export const DEFAULT_CAMERA: Camera = { latitude: 35.67504, longitude: 139.75, zoom: 12 };
 const mercatorY = (latitude: number) => (1 - Math.asinh(Math.tan(latitude * Math.PI / 180)) / Math.PI) / 2;
 const worldX = (longitude: number) => (longitude + 180) / 360;
 const latitudeAt = (y: number) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180 / Math.PI;
@@ -18,12 +19,15 @@ const scaleFor = (zoom: number) => 256 * 2 ** zoom;
 function checkCamera(camera: Camera) {
   if (![camera.latitude, camera.longitude, camera.zoom].every(Number.isFinite) || camera.zoom < MIN_ZOOM || camera.zoom > MAX_ZOOM || camera.latitude < MAP_BOUNDS.south || camera.latitude > MAP_BOUNDS.north || camera.longitude < MAP_BOUNDS.west || camera.longitude > MAP_BOUNDS.east) throw new RangeError("Camera outside supported viewing rectangle or zoom range");
 }
-/** Keep the whole viewport inside the supported rectangle. This is not a territorial boundary. */
-export function cameraAt(latitude: number, longitude: number, zoom = MIN_ZOOM): Camera {
+/** At regional zoom keep the viewport inside Japan; at overview zoom center the
+ * viewing rectangle, while keeping the map inside the finite Mercator world. */
+export function cameraAt(latitude: number, longitude: number, zoom = DEFAULT_CAMERA.zoom): Camera {
   checkCamera({ latitude, longitude, zoom });
   const scale = scaleFor(zoom);
-  const x = clamp(worldX(longitude), worldX(MAP_BOUNDS.west) + MAP_VIEWBOX.width / (2 * scale), worldX(MAP_BOUNDS.east) - MAP_VIEWBOX.width / (2 * scale));
-  const y = clamp(mercatorY(latitude), mercatorY(MAP_BOUNDS.north) + MAP_VIEWBOX.height / (2 * scale), mercatorY(MAP_BOUNDS.south) - MAP_VIEWBOX.height / (2 * scale));
+  const fit = (value:number, low:number, high:number, half:number) =>
+    clamp(low + half <= high - half ? clamp(value, low + half, high - half) : (low + high) / 2, half, 1 - half);
+  const x = fit(worldX(longitude), worldX(MAP_BOUNDS.west), worldX(MAP_BOUNDS.east), MAP_VIEWBOX.width / (2 * scale));
+  const y = fit(mercatorY(latitude), mercatorY(MAP_BOUNDS.north), mercatorY(MAP_BOUNDS.south), MAP_VIEWBOX.height / (2 * scale));
   return { latitude: latitudeAt(y), longitude: x * 360 - 180, zoom };
 }
 export function project(latitude: number, longitude: number, camera = DEFAULT_CAMERA) {

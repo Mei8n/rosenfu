@@ -52,7 +52,7 @@ fn schema_four_preserves_every_existing_field_and_original_backup() {
     let world = load_world(&path).unwrap();
     assert_eq!(fs::read(&path).unwrap(), bytes);
     let current: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
-    assert_eq!(current["schema_version"], 7);
+    assert_eq!(current["schema_version"], 8);
     assert_eq!(current["world"]["service_paths"], json!([]));
     for (key, value) in old["world"].as_object().unwrap() {
         assert_eq!(&current["world"][key], value, "changed {key}");

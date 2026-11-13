@@ -43,3 +43,18 @@ test("plan details appear only while hovering a plan, not elsewhere or during dr
   fireEvent.pointerLeave(map);
   expect(document.querySelector(".construction-tooltip")).toBeNull();
 });
+
+test("drawing details follow the cursor without hover and diagnose an invalid candidate",async()=>{
+ vi.stubGlobal("PointerEvent",MouseEvent);
+ const map=await start();
+ fireEvent.click(map,{clientX:200,clientY:130});fireEvent.click(map,{clientX:300,clientY:170});
+ fireEvent.pointerMove(map,{clientX:360,clientY:190});
+ expect(document.querySelector(".drawing-tooltip")?.textContent).toContain("基本条件OK");
+ fireEvent.pointerMove(map,{clientX:220,clientY:160});
+ expect(document.querySelector(".drawing-tooltip")?.textContent).toContain("線路が折り返しています");
+ expect(map.querySelector(".invalid-candidate")).toBeTruthy();
+ fireEvent.pointerMove(map,{clientX:297,clientY:168});
+ expect(document.querySelector(".drawing-tooltip")?.textContent).toContain("最後の点をもう一度クリック");
+ expect(map.querySelector(".invalid-candidate")).toBeNull();
+ fireEvent.pointerLeave(map);expect(document.querySelector(".drawing-tooltip")).toBeNull();
+});

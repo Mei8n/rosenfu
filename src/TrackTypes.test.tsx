@@ -27,7 +27,7 @@ async function start(snapshot: unknown = empty) {
 
 const panel=()=>within(document.getElementById("panel-tracks")!);
 test("track kind survives independent plans, undo, failed construction and is sent to backend",async()=>{
- const map=await start();const kind=()=>panel().getByLabelText("線路の種類") as HTMLSelectElement;
+ const map=await start();const kind=()=>screen.getByLabelText("線路の種類") as HTMLSelectElement;
  expect(kind().value).toBe("normal");fireEvent.change(kind(),{target:{value:"high_speed"}});
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
  fireEvent.click(panel().getByRole("button",{name:"別の線路計画を追加"}));fireEvent.change(kind(),{target:{value:"normal"}});
@@ -39,9 +39,9 @@ test("track kind survives independent plans, undo, failed construction and is se
  vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"high_speed"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);expect(panel().getByText(/試験線（高速）/)).toBeTruthy();
 });
 test("tram defaults road following on, blocks unsupported drawing and construction, permits explicit off",async()=>{
- const map=await start();const kind=panel().getByLabelText("線路の種類");
+ const map=await start();const kind=screen.getByLabelText("線路の種類");
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
- fireEvent.change(kind,{target:{value:"tram"}});const road=panel().getByLabelText("道路に合わせる") as HTMLInputElement;expect(road.checked).toBe(true);
+ fireEvent.change(kind,{target:{value:"tram"}});const road=screen.getByLabelText("道路に合わせる") as HTMLInputElement;expect(road.checked).toBe(true);
  fireEvent.click(map,{clientX:300,clientY:130});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(road);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
  vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"tram"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);

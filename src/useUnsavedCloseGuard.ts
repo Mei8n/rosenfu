@@ -6,6 +6,8 @@ export function useUnsavedCloseGuard(unsaved: boolean) {
   const unsavedRef = useRef(unsaved);
   unsavedRef.current = unsaved;
   const [confirmClose, setConfirmClose] = useState(false);
+  const closingRef = useRef(false);
+  const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState("");
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -30,8 +32,13 @@ export function useUnsavedCloseGuard(unsaved: boolean) {
     return () => { disposed = true; unlisten?.(); window.removeEventListener("beforeunload", beforeUnload); };
   }, []);
   const discardAndClose = async () => {
+    if (closingRef.current) return;
+    closingRef.current = true; setClosing(true); setCloseError("");
     try { await getCurrentWindow().destroy(); }
-    catch { setCloseError("終了できませんでした。計画は保持されています。"); }
+    catch {
+      closingRef.current = false; setClosing(false);
+      setCloseError("終了できませんでした。計画は保持されています。");
+    }
   };
-  return { confirmClose, closeError, cancelClose: () => setConfirmClose(false), discardAndClose };
+  return { confirmClose, closeError, closing, cancelClose: () => {if (!closingRef.current) setConfirmClose(false);}, discardAndClose };
 }

@@ -46,6 +46,9 @@ pub struct AlignmentProvenanceInput {
 pub struct AlignmentProvenance {
     pub alignment_id: AlignmentId,
     pub source: AlignmentProvenanceInput,
+    /// Inclusive point range in the current alignment; outside this range is not attributed.
+    pub start_point_index: usize,
+    pub end_point_index: usize,
 }
 fn safe_text(s: &str, max: usize) -> bool {
     !s.trim().is_empty() && s.len()<=max && !s.chars().any(|c|c.is_control() || matches!(c as u32,0x00ad|0x061c|0x180e|0x200b..=0x200f|0x202a..=0x202e|0x2060..=0x206f|0xfeff|0xfff9..=0xfffb|0xe0001|0xe0020..=0xe007f))
@@ -121,21 +124,73 @@ impl WorldDraft {
             }
             bytes += source.bytes();
         }
-        let mut ids = BTreeSet::new();
+        let mut spans = std::collections::BTreeMap::<AlignmentId, Vec<(usize, usize)>>::new();
         for p in &self.alignment_provenance {
-            if !ids.insert(p.alignment_id)
-                || !self.alignments.iter().any(|a| a.id == p.alignment_id)
-                || !keys.contains(&p.source.source_key)
+            if !self.alignments.iter().any(|a| {
+                a.id == p.alignment_id
+                    && p.start_point_index < p.end_point_index
+                    && p.end_point_index < a.points.len()
+            }) || !keys.contains(&p.source.source_key)
                 || !p.source.valid()
             {
                 return Err(WorldError::InvalidProvenance);
             }
+            let ranges = spans.entry(p.alignment_id).or_default();
+            if ranges
+                .iter()
+                .any(|(start, end)| p.start_point_index < *end && *start < p.end_point_index)
+            {
+                return Err(WorldError::InvalidProvenance);
+            }
+            ranges.push((p.start_point_index, p.end_point_index));
             bytes += p.source.source_key.len() + p.source.osm_way_id.len() + 256;
         }
         if bytes > MAX_METADATA_BYTES {
             return Err(WorldError::InvalidProvenance);
         }
         Ok(())
+    }
+    /// Only endpoint growth may move a source span. Restore the old geometry and
+    /// indexes before invoking the unchanged generic provenance protection.
+    pub(super) fn preserve_extended_provenance(
+        &self,
+        old: &Self,
+        id: AlignmentId,
+        prepend: usize,
+    ) -> Result<(), WorldError> {
+        let mut normalized = self.clone();
+        let previous = old
+            .alignments
+            .iter()
+            .find(|a| a.id == id)
+            .ok_or(WorldError::InvalidAlignment)?;
+        let current = normalized
+            .alignments
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or(WorldError::InvalidAlignment)?;
+        let end = prepend
+            .checked_add(previous.points.len())
+            .ok_or(WorldError::InvalidProvenance)?;
+        if current.points.get(prepend..end) != Some(previous.points.as_slice()) {
+            return Err(WorldError::ProvenanceEditUnsupported);
+        }
+        current.points = previous.points.clone();
+        for p in normalized
+            .alignment_provenance
+            .iter_mut()
+            .filter(|p| p.alignment_id == id)
+        {
+            p.start_point_index = p
+                .start_point_index
+                .checked_sub(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+            p.end_point_index = p
+                .end_point_index
+                .checked_sub(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+        }
+        normalized.preserve_provenance(old)
     }
     pub(super) fn preserve_provenance(&self, old: &Self) -> Result<(), WorldError> {
         // Source snapshots survive removing a bundle and are not silently GC'd.
@@ -223,6 +278,7 @@ impl World {
             {
                 data.source_records.push(source_record);
             }
+            let end_point_index = points.len().saturating_sub(1);
             data.alignments.push(Alignment {
                 id: AlignmentId(id),
                 owner,
@@ -233,8 +289,79 @@ impl World {
             data.alignment_provenance.push(AlignmentProvenance {
                 alignment_id: AlignmentId(id),
                 source: provenance,
+                start_point_index: 0,
+                end_point_index,
             });
         })
         .map(AlignmentId)
+    }
+}
+
+impl World {
+    /// Extend along a verified reference slice while retaining every older source
+    /// range and license snapshot. Input points run from the old endpoint outward.
+    pub fn extend_alignment_from_reference(
+        &mut self,
+        owner: CompanyId,
+        id: AlignmentId,
+        endpoint: AlignmentEndpoint,
+        points: Vec<GeoPoint>,
+        source_record: SourceRecord,
+        mut source: AlignmentProvenanceInput,
+    ) -> Result<(), WorldError> {
+        if source.source_key != source_record.key
+            || self
+                .data
+                .source_records
+                .iter()
+                .any(|s| s.key == source_record.key && s != &source_record)
+        {
+            return Err(WorldError::InvalidProvenance);
+        }
+        let old_count = self
+            .data
+            .alignments
+            .iter()
+            .find(|a| a.id == id)
+            .ok_or(WorldError::MissingReference("alignment"))?
+            .points
+            .len();
+        let added_count = points
+            .len()
+            .checked_sub(1)
+            .ok_or(WorldError::InvalidAlignment)?;
+        let mut candidate = self.clone();
+        candidate.extend_alignment(owner, id, endpoint, points)?;
+        let (start_point_index, end_point_index) = match endpoint {
+            AlignmentEndpoint::End => (old_count - 1, old_count - 1 + added_count),
+            AlignmentEndpoint::Start => {
+                std::mem::swap(
+                    &mut source.start_segment_index,
+                    &mut source.end_segment_index,
+                );
+                std::mem::swap(&mut source.start_fraction, &mut source.end_fraction);
+                (0, added_count)
+            }
+        };
+        if !candidate
+            .data
+            .source_records
+            .iter()
+            .any(|s| s.key == source_record.key)
+        {
+            candidate.data.source_records.push(source_record);
+        }
+        candidate
+            .data
+            .alignment_provenance
+            .push(AlignmentProvenance {
+                alignment_id: id,
+                source,
+                start_point_index,
+                end_point_index,
+            });
+        candidate.data.validate()?;
+        *self = candidate;
+        Ok(())
     }
 }

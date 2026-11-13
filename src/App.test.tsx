@@ -62,7 +62,7 @@ test("station map placement requires a previously built alignment", async () => 
   fireEvent.click(screen.getByRole("button", { name: "駅配置" }));
   const map = interactiveMap();
   fireEvent.click(map, { clientX: 250, clientY: 150 });
-  expect(await screen.findByText(/先に線路タブから/)).toBeTruthy();
+  expect(await screen.findByText(/処理できませんでした: 線路の近くを選んで/)).toBeTruthy();
   expect(invoke).not.toHaveBeenCalledWith("add_station", expect.anything());
 });
 
@@ -319,9 +319,9 @@ test("map station placement is disabled outside the station editor tab", async (
   fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab", { name: "駅設置" }));
   fireEvent.click(screen.getByRole("button", { name: "駅配置" }));
   expect(map.classList.contains("placement-enabled")).toBe(true);
-  expect(screen.getByText("線路の近くをクリック → ホームを配置")).toBeTruthy();
+  expect(screen.getByText("線路にカーソルを重ねてクリックで駅を配置")).toBeTruthy();
   fireEvent.click(map, { clientX: 250, clientY: 150 });
-  await screen.findByText(/先に線路タブから/);
+  await screen.findByText(/処理できませんでした: 線路の近くを選んで/);
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "add_station")).toHaveLength(0);
 });
 
@@ -417,12 +417,12 @@ test("tile result metadata is discarded when tiles leave the viewport and zoom r
   fireEvent.click(region(".camera-controls").getByRole("button", { name: "東京へ戻る" }));
   act(()=>vi.advanceTimersByTime(250));
   expect(map.querySelector(`image[data-tile-id="${id}"]`)).toBeTruthy();
-  expect((region(".camera-controls").getByRole("button", { name: "縮小" }) as HTMLButtonElement).disabled).toBe(true);
-  for(let i=0;i<6;i++) fireEvent.click(region(".camera-controls").getByRole("button", { name: "拡大" }));
+  expect((region(".camera-controls").getByRole("button", { name: "縮小" }) as HTMLButtonElement).disabled).toBe(false);
+  for(let i=0;i<10;i++) fireEvent.click(region(".camera-controls").getByRole("button", { name: "拡大" }));
   act(()=>vi.advanceTimersByTime(200));
   expect((region(".camera-controls").getByRole("button", { name: "拡大" }) as HTMLButtonElement).disabled).toBe(true);
   act(()=>vi.advanceTimersByTime(250));
-  expect(Array.from(map.querySelectorAll("image")).every(image=>image.getAttribute("href")?.includes("/pale/16/"))).toBe(true);
+  expect(Array.from(map.querySelectorAll("image")).every(image=>image.getAttribute("href")?.includes("/pale/17/"))).toBe(true);
   expect(invoke).not.toHaveBeenCalled();
 });
 
@@ -474,7 +474,7 @@ test("move is the default mode and drags never create stations even in placement
   expect(Number((screen.getByLabelText("中心経度") as HTMLInputElement).value)).toBeLessThan(DEFAULT_CAMERA.longitude);
   pointer(map,"pointerdown",250,150); pointer(map,"pointermove",252,150); pointer(map,"pointerup",252,150);
   fireEvent.click(map,{clientX:252,clientY:150});
-  await screen.findByText(/先に線路タブから/);
+  await screen.findByText(/処理できませんでした: 線路の近くを選んで/);
   expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="add_station")).toHaveLength(0);
 });
 
@@ -499,7 +499,7 @@ test("tool and mode switches cancel active drags and require renewed placement i
   fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));
   fireEvent.click(map,{clientX:250,clientY:150});
   expect((region(".camera-controls").getByLabelText("中心経度") as HTMLInputElement).value).toBe(longitude);
-  expect(region(".camera-controls").getByRole("button",{name:"移動"}).getAttribute("aria-pressed")).toBe("true");
+  expect(region(".camera-controls").getByRole("button",{name:"駅配置"}).getAttribute("aria-pressed")).toBe("true");
   fireEvent.click(region(".camera-controls").getByRole("button",{name:"駅配置"}));
   pointer(map,"pointerdown",250,150); fireEvent.click(region(".camera-controls").getByRole("button",{name:"移動"})); pointer(map,"pointerup",250,150); fireEvent.click(map,{clientX:250,clientY:150});
   expect(invoke).not.toHaveBeenCalledWith("add_station",expect.anything());
@@ -550,7 +550,7 @@ test("changing from move to placement midgesture cannot turn its eventual click 
   pointer(map,"pointermove",251,150); pointer(map,"pointerup",251,150); fireEvent.click(map,{clientX:251,clientY:150});
   expect(invoke).not.toHaveBeenCalledWith("add_station",expect.anything());
   pointer(map,"pointerdown",250,150); pointer(map,"pointerup",250,150); fireEvent.click(map,{clientX:250,clientY:150});
-  await screen.findByText(/先に線路タブから/);
+  await screen.findByText(/処理できませんでした: 線路の近くを選んで/);
   expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="add_station")).toHaveLength(0);
 });
 
