@@ -374,3 +374,20 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .construction-content[hidden] { display:none; }
 
 .font-license pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; font-size: .8rem; }
+
+/* Drawing controls stay on the map, separate from the pan/click surface. */
+.construction-toolbar { position:absolute; z-index:5; top:12px; left:50%; transform:translateX(-50%); max-width:calc(100% - 24px); width:max-content; display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 12px; background:var(--surface, #fff); color:var(--ink); border:1px solid var(--edge); border-radius:6px; box-shadow:0 2px 8px #0002; }
+.construction-toolbar .track-type-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; border:0; padding:0; margin:0; }
+.construction-toolbar .track-type-controls > p { display:none; }
+.construction-toolbar .track-type-controls label { margin:0; }
+.construction-toolbar select { width:auto; margin:0; }
+.construction-toolbar .segmented { margin:0; }
+.drawing-tooltip { z-index:6; pointer-events:none; max-width:248px; }
+.workbench .draft-path.candidate-draft { stroke-width:4; }
+.workbench .draft-path.invalid-candidate { stroke:#c54444; }
+.curve-speed-label { position:absolute; z-index:3; pointer-events:none; white-space:nowrap; font-size:11px; color:var(--ink); background:var(--surface); border:1px solid var(--edge); padding:1px 4px; }
+
+.workbench .construction-tooltip { max-width:calc(100% - 16px); box-sizing:border-box; overflow-wrap:anywhere; }
+.construction-help { position:relative; font-size:11px; }
+.construction-help p { position:absolute; top:20px; right:0; width:220px; padding:8px; background:var(--surface); border:1px solid var(--edge); }
+.construction-toolbar select { background:var(--surface-alt); color:var(--ink); }

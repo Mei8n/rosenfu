@@ -417,12 +417,12 @@ test("tile result metadata is discarded when tiles leave the viewport and zoom r
   fireEvent.click(region(".camera-controls").getByRole("button", { name: "東京へ戻る" }));
   act(()=>vi.advanceTimersByTime(250));
   expect(map.querySelector(`image[data-tile-id="${id}"]`)).toBeTruthy();
-  expect((region(".camera-controls").getByRole("button", { name: "縮小" }) as HTMLButtonElement).disabled).toBe(true);
-  for(let i=0;i<6;i++) fireEvent.click(region(".camera-controls").getByRole("button", { name: "拡大" }));
+  expect((region(".camera-controls").getByRole("button", { name: "縮小" }) as HTMLButtonElement).disabled).toBe(false);
+  for(let i=0;i<10;i++) fireEvent.click(region(".camera-controls").getByRole("button", { name: "拡大" }));
   act(()=>vi.advanceTimersByTime(200));
   expect((region(".camera-controls").getByRole("button", { name: "拡大" }) as HTMLButtonElement).disabled).toBe(true);
   act(()=>vi.advanceTimersByTime(250));
-  expect(Array.from(map.querySelectorAll("image")).every(image=>image.getAttribute("href")?.includes("/pale/16/"))).toBe(true);
+  expect(Array.from(map.querySelectorAll("image")).every(image=>image.getAttribute("href")?.includes("/pale/17/"))).toBe(true);
   expect(invoke).not.toHaveBeenCalled();
 });
 

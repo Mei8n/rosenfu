@@ -2,6 +2,7 @@
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
 import {act,cleanup,fireEvent,render,screen,within} from "@testing-library/react";
+import {MAX_ZOOM,MIN_ZOOM} from "./map";
 import {App} from "./App";
 vi.mock("@tauri-apps/api/core",()=>({isTauri:()=>false,invoke:vi.fn()}));
 afterEach(()=>{cleanup();localStorage.clear();vi.useRealTimers();});
@@ -21,14 +22,14 @@ test("buttons and keyboard use identical animated center zoom, accumulating repe
 });
 test("zoom keys clamp boundaries and do not intercept typing, composition or browser modifiers",()=>{
  const {buttons,zoom}=setup();
- fireEvent.keyDown(window,{key:'-',code:'NumpadSubtract'});finish();expect(zoom()).toBe(12);
+ for(let n=0;n<20;n++)fireEvent.keyDown(window,{key:'-',code:'NumpadSubtract'});finish();expect(zoom()).toBe(MIN_ZOOM);
  const input=buttons.getByLabelText('中心緯度');
- for(const target of [input]){fireEvent.keyDown(target,{key:'+'});finish();expect(zoom()).toBe(12);}
+ for(const target of [input]){fireEvent.keyDown(target,{key:'+'});finish();expect(zoom()).toBe(MIN_ZOOM);}
  const editable=document.createElement('div');editable.contentEditable='true';Object.defineProperty(editable,'isContentEditable',{value:true});document.body.append(editable);
- fireEvent.keyDown(editable,{key:'+'});finish();expect(zoom()).toBe(12);editable.remove();
- for(const props of [{ctrlKey:true},{metaKey:true},{altKey:true},{isComposing:true}]){fireEvent.keyDown(window,{key:'+',...props});finish();expect(zoom()).toBe(12);}
- for(let n=0;n<8;n++)fireEvent.keyDown(window,{key:'+',code:'NumpadAdd',repeat:n>0});finish();expect(zoom()).toBe(16);
+ fireEvent.keyDown(editable,{key:'+'});finish();expect(zoom()).toBe(MIN_ZOOM);editable.remove();
+ for(const props of [{ctrlKey:true},{metaKey:true},{altKey:true},{isComposing:true}]){fireEvent.keyDown(window,{key:'+',...props});finish();expect(zoom()).toBe(MIN_ZOOM);}
+ for(let n=0;n<20;n++)fireEvent.keyDown(window,{key:'+',code:'NumpadAdd',repeat:n>0});finish();expect(zoom()).toBe(MAX_ZOOM);
  expect(buttons.getByRole('button',{name:'拡大'}).hasAttribute('disabled')).toBe(true);
- for(let n=0;n<8;n++)fireEvent.keyDown(window,{key:'-',code:'NumpadSubtract',repeat:n>0});finish();expect(zoom()).toBe(12);
+ for(let n=0;n<20;n++)fireEvent.keyDown(window,{key:'-',code:'NumpadSubtract',repeat:n>0});finish();expect(zoom()).toBe(MIN_ZOOM);
  expect(buttons.getByRole('button',{name:'縮小'}).hasAttribute('disabled')).toBe(true);
 });

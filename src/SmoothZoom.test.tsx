@@ -3,7 +3,7 @@ import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
 import {act,cleanup,fireEvent,render,renderHook} from "@testing-library/react";
 import {useSmoothZoom,wheelZoomDelta} from "./useSmoothZoom";
-import {cameraAt,project,unproject,visibleTiles,positionTile} from "./map";
+import {MAX_ZOOM,cameraAt,project,unproject,visibleTiles,positionTile} from "./map";
 import type {Camera} from "./map";
 import {GsiBackground} from "./GsiBackground";
 afterEach(()=>{cleanup();vi.useRealTimers();vi.unstubAllGlobals();});
@@ -19,11 +19,11 @@ test("small wheel deltas accumulate into fractional cursor-anchored frames",()=>
  for(const frame of frames){const p=project(point.latitude,point.longitude,frame);expect(p.x).toBeCloseTo(anchor.x,7);expect(p.y).toBeCloseTo(anchor.y,7);}
 });
 test("direction reversal, cancellation, bounds and unmount discard obsolete animation",()=>{
- vi.useFakeTimers();const camera={current:cameraAt(35.675,139.75,15.9)},write=vi.fn((next:Camera)=>{camera.current=next;});
+ vi.useFakeTimers();const camera={current:cameraAt(35.675,139.75,MAX_ZOOM-.1)},write=vi.fn((next:Camera)=>{camera.current=next;});
  const hook=renderHook(()=>useSmoothZoom(camera,write));const anchor={x:500,y:300};
- act(()=>hook.result.current.zoomBy(10,anchor));act(()=>vi.advanceTimersByTime(200));expect(camera.current.zoom).toBe(16);
+ act(()=>hook.result.current.zoomBy(10,anchor));act(()=>vi.advanceTimersByTime(200));expect(camera.current.zoom).toBe(MAX_ZOOM);
  act(()=>hook.result.current.zoomBy(-.5,anchor));act(()=>vi.advanceTimersByTime(32));
- act(()=>hook.result.current.zoomBy(.5,anchor));act(()=>vi.advanceTimersByTime(200));expect(camera.current.zoom).toBe(16);
+ act(()=>hook.result.current.zoomBy(.5,anchor));act(()=>vi.advanceTimersByTime(200));expect(camera.current.zoom).toBe(MAX_ZOOM);
  act(()=>hook.result.current.zoomBy(-1,anchor));act(()=>vi.advanceTimersByTime(32));act(()=>hook.result.current.cancel());const stopped=camera.current;
  act(()=>vi.advanceTimersByTime(200));expect(camera.current).toBe(stopped);
  act(()=>hook.result.current.zoomBy(-1,anchor));hook.unmount();const count=write.mock.calls.length;act(()=>vi.advanceTimersByTime(200));expect(write).toHaveBeenCalledTimes(count);

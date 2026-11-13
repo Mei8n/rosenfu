@@ -1,5 +1,5 @@
 import {expect,test} from 'vitest';
-import {circularAlignment} from './circularAlignment';
+import {circularAlignment,provisionalCurveSpeed} from './circularAlignment';
 import {project,DEFAULT_CAMERA} from './map';
 const p=(x:number,y:number)=>({longitude:139.75+x/90000,latitude:35.67504+y/111000});
 test('first chord is straight; later segment follows one true display circle',()=>{
@@ -24,4 +24,31 @@ test('duplicate, backward and too tight curves explain refusal',()=>{
  expect(circularAlignment([p(0,0),p(100,0),p(80,20)]).error).toMatch(/折り返/);
  expect(circularAlignment([p(0,0),p(100,0),p(110,10)]).error).toMatch(/25m/);
  expect(circularAlignment([{latitude:NaN,longitude:0}]).error).toMatch(/座標/);
+});
+
+test('arc metadata identifies each sampled segment and analytical midpoint',()=>{
+ const a=[p(0,0),p(100,0),p(200,100),p(100,200)],r=circularAlignment(a);
+ expect(r.arcs).toHaveLength(2);
+ expect(r.arcs.map(arc=>arc.segmentIndex)).toEqual([1,2]);
+ for(const arc of r.arcs){
+  expect(r.points[arc.startPointIndex]).toEqual(a[arc.segmentIndex]);
+  expect(r.points[arc.endPointIndex]).toEqual(a[arc.segmentIndex+1]);
+  expect(Number.isFinite(arc.midpoint.latitude)&&Number.isFinite(arc.midpoint.longitude)).toBe(true);
+  expect(arc.radiusM).toBeGreaterThan(25);
+ }
+ const one=circularAlignment(a.slice(0,3));
+ expect(r.arcs[0]).toEqual(one.arcs[0]);
+ const g=one.guide!,c=project(g.center.latitude,g.center.longitude),edge=project(g.edge.latitude,g.edge.longitude),mid=project(one.arcs[0].midpoint.latitude,one.arcs[0].midpoint.longitude);
+ expect(Math.hypot(mid.x-c.x,mid.y-c.y)).toBeCloseTo(Math.hypot(edge.x-c.x,edge.y-c.y),7);
+});
+test('right-hand arc has midpoint; straight and refused backward segments add no arcs',()=>{
+ expect(circularAlignment([p(0,0),p(100,0),p(200,-100)]).arcs).toHaveLength(1);
+ expect(circularAlignment([p(0,0),p(100,0),p(200,0)]).arcs).toEqual([]);
+ expect(circularAlignment([p(0,0),p(100,0),p(80,20)]).arcs).toEqual([]);
+ const tight=circularAlignment([p(0,0),p(100,0),p(110,10)]);
+ expect(tight.error).toMatch(/25m/);expect(tight.arcs).toHaveLength(1);
+});
+test('provisional curve speeds use explicit game model without fake straight speeds',()=>{
+ expect([25,300,1000,2000,8000].map(provisionalCurveSpeed)).toEqual([18,62,113,160,321]);
+ for(const radius of [0,-1,NaN,Infinity,-Infinity])expect(provisionalCurveSpeed(radius)).toBeNull();
 });

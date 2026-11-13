@@ -1,0 +1,21 @@
+.unsaved-close-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 12px 48px #0005;
+}
+.unsaved-close-dialog::backdrop { background: rgb(0 0 0 / 35%); }
+.workbench .unsaved-close-dialog h2 { margin: 0 0 16px; font-size: 1.2em; font-weight: 700; }
+.unsaved-close-dialog p { line-height: 1.8; }
+.close-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+.workbench .close-dialog-actions .danger { background: #a32d27; color: #fff; border-color: #a32d27; }
+.workbench .close-dialog-actions .danger:hover:not(:disabled) { background: #84231f; }
+.close-dialog-error { margin-top: 12px; color: var(--ink); font-weight: 700; }
