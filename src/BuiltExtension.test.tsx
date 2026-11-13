@@ -50,3 +50,13 @@ test('extending invalidates built station redo ratios from the old alignment len
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));const count=vi.mocked(invoke).mock.calls.length;
  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});await screen.findByText(/やり直せる駅設置履歴はありません/);expect(vi.mocked(invoke).mock.calls).toHaveLength(count);
 });
+
+test('straight extension rejects an invalid join in preview without altering ordinary straight mode',async()=>{
+ const map=await start();fireEvent.click(screen.getByRole("button",{name:/^直線$/}));
+ fireEvent.click(map,{clientX:250,clientY:130});fireEvent.pointerMove(map,{clientX:250,clientY:190});
+ expect(await screen.findByText(/接合角は5度以内/)).toBeTruthy();expect(map.querySelector('.invalid-candidate')).toBeTruthy();
+ fireEvent.click(map,{clientX:250,clientY:190});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.click(map,{clientX:310,clientY:130});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});

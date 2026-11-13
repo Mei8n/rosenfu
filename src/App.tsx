@@ -1,3 +1,4 @@
+import {extensionJoinError} from "./extensionJoin";
 import {stationTarget, type StationLine} from "./stationTarget";
 import {FontLicenses} from "./FontLicenses";
 import {TrackTypeControls,TRACK_TYPE_LABELS,type TrackType} from "./TrackTypeControls";
@@ -247,8 +248,8 @@ export function App() {
   const previewGeometry = useMemo(() => circularAlignment(hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints,previousPoint), [draftPoints, hoverPoint, mapMode, draftFinished,previousPoint]);
   const draftLine = curved ? draftGeometry.points : draftPoints;
   const previewLine = curved ? previewGeometry.points : hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints;
-  const draftInvalid = curved ? Boolean(draftGeometry.error) : draftPoints.some((point,index) => index > 0 && distanceM(draftPoints[index-1], point) < .1);
-  const previewError = curved ? previewGeometry.error : null;
+  const draftInvalid = curved ? Boolean(draftGeometry.error) : Boolean(extensionJoinError(draftPoints,previousPoint)) || draftPoints.some((point,index) => index > 0 && distanceM(draftPoints[index-1], point) < .1);
+  const previewError = curved ? previewGeometry.error : extensionJoinError(previewLine,previousPoint);
   // Invalid geometry is diagnostic only. Never commit this fallback chord.
   const candidateLine = hoverPoint && !draftFinished && draftPoints.length ? (previewLine.length > draftLine.length ? previewLine.slice(Math.max(0,draftLine.length-1)) : [draftPoints[draftPoints.length-1],hoverPoint]) : [];
   const [cursorPosition,setCursorPosition]=useState<{x:number;y:number}|null>(null);
@@ -369,7 +370,7 @@ export function App() {
   const stationSettingsDirty = stationDirty || platformDirty;
   const copyCanStart=!(plannedStations.some(station=>station.pathId!==-1)||routeDirty||serviceDirty||pathServiceDirty||companyDirty||stationSettingsDirty||draftPoints.length||redoPoints.length||parkedPaths.length);
   const referenceCopy=useReferenceCopy({bundle:graphBundle,worldVersion:world,enabled,canStart:copyCanStart,tool:activeTool,name:alignmentName,onBuild:buildReferenceAlignment,roadFollow:roadFollowingBlocked});
-  const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referenceCopy.plan.build?[{id:"reference-plan",pathId:-1,points:referenceCopy.plan.build.points}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:plan.curved&&!!circularAlignment(plan.points).error})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
+  const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referenceCopy.plan.build?[{id:"reference-plan",pathId:-1,points:referenceCopy.plan.build.points}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:plan.curved?!!circularAlignment(plan.points,extensionPrevious(plan.extension)).error:!!extensionJoinError(plan.points,extensionPrevious(plan.extension))})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
   const stationSelection=stationCursor?stationTarget(stationLines,stationCursor,Number(platformLength),camera,mapSize.width>0&&mapSize.height>0?mapViewport(mapSize.width,mapSize.height).scale:1):null;
   const stationPreview=activeTool==="stations"&&mapMode==="place"&&!dragging&&!stationSelection?.error?stationSelection?.target?.polygon??[]:[];
   const previewCenter=stationSelection?.target?.center??null;
@@ -617,6 +618,7 @@ export function App() {
         if(draftPoints.length>=2&&!draftInvalid){setDraftFinished(true);setHoverPoint(null);}
         return;
       }
+      if(!curved&&extensionJoinError([...draftPoints,coordinates],previousPoint)){setHoverPoint(coordinates);return;}
       if(curved){const candidate=circularAlignment([...draftPoints,coordinates],previousPoint);if(candidate.error){setHoverPoint(coordinates);return;}}
       if (draftPoints.length && distanceM(draftPoints[draftPoints.length - 1], coordinates) < .1) return;
       if (draftPoints.length >= 128) { setError("線形点は128点までです。一度建設を確定してください。"); return; }
@@ -628,7 +630,7 @@ export function App() {
   }
 
   const currentPaths=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,curved,trackType,roadFollowing,extension:draftExtension}]:[])];
-  const planBuildable=currentPaths.length>0&&currentPaths.every(path=>path.line.length>=2&&!(path.curved&&circularAlignment(path.points,extensionPrevious(path.extension)).error)&&!(path.trackType==="tram"&&path.roadFollowing));
+  const planBuildable=currentPaths.length>0&&currentPaths.every(path=>path.line.length>=2&&!(path.curved?circularAlignment(path.points,extensionPrevious(path.extension)).error:extensionJoinError(path.points,extensionPrevious(path.extension)))&&!(path.trackType==="tram"&&path.roadFollowing));
   function commitAlignment() {
     if (!enabled || !planBuildable) return;
     void perform(async () => {
