@@ -17,6 +17,15 @@
       "type": "cppvsdbg",
       "request": "attach",
       "processId": "${command:pickProcess}"
+    },
+    {
+      "name": "Rosenfu: debug desktop (macOS / Linux)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/rosenfu-desktop",
+      "cwd": "${workspaceFolder}",
+      "args": [],
+      "preLaunchTask": "Rosenfu: build debug desktop"
     }
   ]
 }
