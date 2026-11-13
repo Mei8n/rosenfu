@@ -72,3 +72,11 @@ test("changing a plan so its station no longer fits blocks construction until st
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:"計画駅 新駅 を削除"}));
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
 });
+
+test("saving the built world preserves both undo and redo for unbuilt stations",async()=>{
+ const map=await start();fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
+ fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/建設済みワールドを保存しました/);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
+});

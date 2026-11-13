@@ -772,7 +772,7 @@ export function App() {
     if (saveBlocked) return;
     void perform(async () => {
       await invoke<{ saved: boolean }>("save_world");
-      setDirty(false);clearStationHistory(); setNotice(hasPlans?"建設済みワールドを保存しました。未着工計画は保存対象外です。画面上の計画は残っています。":"ワールドを保存しました。");
+      setDirty(false);setStationUndo(history=>history.filter(entry=>entry.planned));setStationRedo(history=>history.filter(entry=>entry.planned)); setNotice(hasPlans?"建設済みワールドを保存しました。未着工計画は保存対象外です。画面上の計画は残っています。":"ワールドを保存しました。");
     });
   }
   function requestLoad(source:"manual"|"auto"){setLoadSource(source);if(dirty||unapplied)setConfirmLoad(true);else load(source);}
@@ -995,7 +995,7 @@ export function App() {
             {world?.tracks.length ? <ul className="track-list">{world.tracks.map((track) => <li key={track.id}><span>{stationsById.get(track.from)?.name ?? track.from} ↔ {stationsById.get(track.to)?.name ?? track.to} (ID {track.id})</span><button className="secondary danger" disabled={!enabled || unapplied || !!trackReferences(track.id)} onClick={() => setPendingDelete({ kind: "track", id: track.id })}>線路 {track.id} を削除</button>{trackReferences(track.id) && <small>削除不可: {trackReferences(track.id)}</small>}</li>)}</ul> : <p className="field-hint">駅を2つ配置すると接続できます。</p>}</details>
           </section>
           </div>
-          <section hidden={activeTool!=="stations" && activeTool!=="station-management"} className="station-history"><p className="field-hint">取消対象: {stationUndo.at(-1)?.station.name ?? "なし"} / Undo {stationUndo.length}件・Redo {stationRedo.length}件</p><div className="route-actions"><button type="button" className="secondary" disabled={!enabled || !stationUndo.length} onClick={undoStation}>駅設置を取り消す</button><button type="button" className="secondary" disabled={!enabled || !stationRedo.length} onClick={redoStation}>駅設置をやり直す</button></div><p className="field-hint">Ctrl+Z / Ctrl+Shift+Z：このセッションの新規駅設置のみ（最大50件）。参照付き駅は不可。保存・読込・駅名/寸法変更・手動駅削除で履歴終了。Redoは駅IDを再発行。参照駅は対象外。線路ツールの点下書きがあれば点のUndo/Redoを優先します。</p></section>
+          <section hidden={activeTool!=="stations" && activeTool!=="station-management"} className="station-history"><p className="field-hint">取消対象: {stationUndo.at(-1)?.station.name ?? "なし"} / Undo {stationUndo.length}件・Redo {stationRedo.length}件</p><div className="route-actions"><button type="button" className="secondary" disabled={!enabled || !stationUndo.length} onClick={undoStation}>駅設置を取り消す</button><button type="button" className="secondary" disabled={!enabled || !stationRedo.length} onClick={redoStation}>駅設置をやり直す</button></div><p className="field-hint">Ctrl+Z / Ctrl+Shift+Z：このセッションの新規駅設置のみ（最大50件）。参照付き駅は不可。建設済み駅は保存で履歴終了。未着工駅の履歴は保存後も維持。読込・駅名/寸法変更・手動駅削除で履歴終了。Redoは駅IDを再発行。参照駅は対象外。線路ツールの点下書きがあれば点のUndo/Redoを優先します。</p></section>
           <section id="workspace-panel-stations" role="tabpanel" className="station-directory" aria-labelledby="workspace-tab-stations" hidden={activeTool !== "stations" && activeTool !== "station-management"}><div className="directory-heading"><h3 id="stations-title">配置済みの駅</h3><span className="count">{world?.stations.length ?? 0}</span></div>
             {world?.stations.length ? <ul>{world.stations.map((station) => <li key={station.id}><button className={`station-entry ${selected === station.id ? "selected" : ""}`} onClick={() => selectStation(station.id)}><span>{station.name}</span><small>{station.latitude.toFixed(5)}, {station.longitude.toFixed(5)}</small></button></li>)}</ul> : <p className="empty-state">まだ駅はありません。<br />最初の駅を配置してみましょう。</p>}
           </section>
