@@ -34,3 +34,25 @@ test('App drag does not select, explicit click choices preview the exact atomic 
 });
 
 test('bundle replacement while candidate search is pending cannot publish old candidates',async()=>{const h=setup();act(()=>h.result.current.begin());let request:Promise<void>;act(()=>{request=h.result.current.click(start);});h.rerender({...h.props,bundle:fixture()});await act(()=>request!);expect(h.result.current.active).toBe(false);expect(h.result.current.candidates).toEqual([]);expect(h.result.current.picks).toEqual([]);expect(h.result.current.confirmed).toBe(false);});
+
+test('reference plan station is session-only and included in atomic provenance-preserving build',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);const bundle=fixture();const dx=DEFAULT_CAMERA.longitude-135,dy=DEFAULT_CAMERA.latitude-35;
+ bundle.graph.nodes=bundle.graph.nodes.map(n=>({...n,latitude:n.latitude+dy,longitude:n.longitude+dx}));
+ bundle.graph.dataset.bounds={west:DEFAULT_CAMERA.longitude-.01,east:DEFAULT_CAMERA.longitude+.01,south:DEFAULT_CAMERA.latitude-.01,north:DEFAULT_CAMERA.latitude+.01};
+ vi.mocked(readReferenceGraphBundle).mockResolvedValue(bundle);
+ vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'station-copy-test'}:empty);
+ const view=render(<App/>);await screen.findByText(/station-copy-test/);
+ fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});
+ await screen.findByText(/synthetic-test/);fireEvent.click(copyPanel().getByRole('button',{name:'参考形状コピーを開始'}));
+ const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.click(map,{clientX:point.x,clientY:point.y});fireEvent.click(await copyPanel().findByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
+ await pick(start,'0');await pick(end,'1');
+ fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));fireEvent.change(screen.getByLabelText('ホーム長 (20m級・両相当)'),{target:{value:'3'}});
+ fireEvent.click(map,{clientX:500,clientY:300});expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='place_station_on_alignment'||c==='build_alignment_with_stations')).toBe(false);
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));
+ fireEvent.click(copyPanel().getByLabelText('形状・出典・独立したゲーム設備へのコピーを確認しました'));
+ fireEvent.click(copyPanel().getByRole('button',{name:'参考形状を明示着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_alignment_with_stations',expect.objectContaining({stations:[expect.objectContaining({lengthM:60,widthM:12})],reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})));
+ await waitFor(()=>expect(map.querySelectorAll('.planned-station')).toHaveLength(0));
+});

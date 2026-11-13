@@ -9,6 +9,24 @@ fn in_edit_extent(latitude: f64, longitude: f64) -> bool {
     (20.0..=46.0).contains(&latitude) && (122.0..=154.0).contains(&longitude)
 }
 
+/// A station attached to the alignment being constructed, not an existing ID.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedStation {
+    pub name: String,
+    pub position: f64,
+    pub length_m: f64,
+    pub width_m: f64,
+}
+
+/// Optional attribution for a plan copied from real-world railway or road data.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedAlignmentReference {
+    pub source_record: rosenfu_core::world::SourceRecord,
+    pub provenance: rosenfu_core::world::AlignmentProvenanceInput,
+}
+
 #[derive(Clone)]
 pub struct WorldEditor {
     world: World,
@@ -190,7 +208,7 @@ impl WorldEditor {
         source_record: rosenfu_core::world::SourceRecord,
         provenance: rosenfu_core::world::AlignmentProvenanceInput,
         track_type: rosenfu_core::world::TrackType,
-    ) -> Result<WorldDraft, String> {
+    ) -> Result<AlignmentId, String> {
         if name.trim().is_empty() || name.chars().count() > 80 {
             return Err("路線名は1〜80文字で入力してください。".into());
         }
@@ -201,7 +219,7 @@ impl WorldEditor {
             return Err("路線は編集範囲内に建設してください。".into());
         }
         let mut candidate = self.world.clone();
-        candidate
+        let alignment_id = candidate
             .build_alignment_from_reference_typed(
                 self.company,
                 name.trim().into(),
@@ -215,7 +233,7 @@ impl WorldEditor {
         // before publishing either its geometry, metadata, or allocated ID.
         rosenfu_storage::encode(&candidate).map_err(|e| e.to_string())?;
         self.world = candidate;
-        Ok(self.snapshot())
+        Ok(alignment_id)
     }
     pub fn build_alignment(
         &mut self,
@@ -236,12 +254,45 @@ impl WorldEditor {
         *self = candidate;
         Ok(self.snapshot())
     }
+    /// Publish the alignment and all planned stations together, or change nothing.
+    pub fn build_alignment_with_stations(
+        &mut self,
+        name: String,
+        points: Vec<GeoPoint>,
+        track_type: rosenfu_core::world::TrackType,
+        stations: Vec<PlannedStation>,
+        reference: Option<PlannedAlignmentReference>,
+    ) -> Result<WorldDraft, String> {
+        let mut candidate = self.clone();
+        let alignment_id = match reference {
+            Some(reference) => candidate.build_alignment_from_reference_typed_unchecked(
+                name,
+                points,
+                reference.source_record,
+                reference.provenance,
+                track_type,
+            )?,
+            None => candidate.build_alignment_typed_unchecked(name, points, track_type)?,
+        };
+        for station in stations {
+            candidate.place_station_on_alignment_unchecked(
+                station.name,
+                alignment_id,
+                station.position,
+                station.length_m,
+                station.width_m,
+            )?;
+        }
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
     fn build_alignment_typed_unchecked(
         &mut self,
         name: String,
         points: Vec<GeoPoint>,
         track_type: rosenfu_core::world::TrackType,
-    ) -> Result<WorldDraft, String> {
+    ) -> Result<AlignmentId, String> {
         if name.trim().is_empty() || name.chars().count() > 80 {
             return Err("路線名は1〜80文字で入力してください。".into());
         }
@@ -253,8 +304,7 @@ impl WorldEditor {
         }
         self.world
             .build_alignment_typed(self.company, name.trim().to_owned(), points, track_type)
-            .map_err(|e| e.to_string())?;
-        Ok(self.snapshot())
+            .map_err(|e| e.to_string())
     }
     pub fn place_station_on_alignment(
         &mut self,
@@ -283,7 +333,7 @@ impl WorldEditor {
         position: f64,
         length_m: f64,
         width_m: f64,
-    ) -> Result<WorldDraft, String> {
+    ) -> Result<StationId, String> {
         if name.trim().is_empty() || name.chars().count() > 80 {
             return Err("駅名は1〜80文字で入力してください。".into());
         }
@@ -296,8 +346,7 @@ impl WorldEditor {
                 length_m,
                 width_m,
             )
-            .map_err(|e| e.to_string())?;
-        Ok(self.snapshot())
+            .map_err(|e| e.to_string())
     }
     pub fn update_station_placement(
         &mut self,
@@ -1840,6 +1889,37 @@ mod tests {
             .build_alignment_from_reference("A".into(), points.clone(), bad, provenance.clone())
             .is_err());
         assert_eq!(editor.snapshot(), before);
+        // A late station error must also roll back newly allocated source metadata.
+        assert!(editor
+            .build_alignment_with_stations(
+                "Batch".into(),
+                points.clone(),
+                rosenfu_core::world::TrackType::Tram,
+                vec![planned_station(0.3), planned_station(f64::NAN)],
+                Some(PlannedAlignmentReference {
+                    source_record: source.clone(),
+                    provenance: provenance.clone(),
+                }),
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let batch = editor
+            .build_alignment_with_stations(
+                "Batch".into(),
+                points.clone(),
+                rosenfu_core::world::TrackType::Tram,
+                vec![planned_station(0.3)],
+                Some(PlannedAlignmentReference {
+                    source_record: source.clone(),
+                    provenance: provenance.clone(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(batch.stations.len(), 1);
+        assert_eq!(
+            batch.station_placements[0].alignment_id,
+            batch.alignments[0].id
+        );
         editor
             .build_alignment_from_reference(
                 "A".into(),
@@ -1891,5 +1971,159 @@ mod tests {
             .build_alignment_typed("Bad".into(), vec![], TrackType::Tram)
             .is_err());
         assert_eq!(editor.snapshot(), before);
+    }
+    fn planned_station(position: f64) -> PlannedStation {
+        PlannedStation {
+            name: "計画駅".into(),
+            position,
+            length_m: 120.0,
+            width_m: 10.0,
+        }
+    }
+
+    fn planned_alignment_points() -> Vec<GeoPoint> {
+        vec![
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 139.0,
+            },
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 139.01,
+            },
+        ]
+    }
+
+    #[test]
+    fn planned_alignment_and_stations_publish_together_and_roundtrip() {
+        use rosenfu_core::world::TrackType;
+        let mut editor = WorldEditor::new();
+        let snapshot = editor
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Tram,
+                vec![planned_station(0.0), planned_station(0.8)],
+                None,
+            )
+            .unwrap();
+        assert_eq!(snapshot.alignments.len(), 1);
+        assert_eq!(snapshot.alignments[0].track_type, TrackType::Tram);
+        assert_eq!(snapshot.stations.len(), 2);
+        assert_eq!(snapshot.station_placements.len(), 2);
+        for placement in &snapshot.station_placements {
+            assert_eq!(placement.alignment_id, snapshot.alignments[0].id);
+        }
+        assert!(snapshot.station_placements[0].position > 0.0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("planned-stations.json");
+        editor.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), snapshot);
+    }
+
+    #[test]
+    fn later_invalid_planned_station_does_not_publish_or_consume_ids() {
+        use rosenfu_core::world::TrackType;
+        let mut editor = WorldEditor::new();
+        let before = editor.snapshot();
+        for invalid in [
+            PlannedStation {
+                name: "".into(),
+                ..planned_station(0.5)
+            },
+            planned_station(f64::NAN),
+            planned_station(1.1),
+            PlannedStation {
+                length_m: 1000.0,
+                ..planned_station(0.5)
+            },
+            PlannedStation {
+                width_m: 0.0,
+                ..planned_station(0.5)
+            },
+        ] {
+            assert!(editor
+                .build_alignment_with_stations(
+                    "計画線".into(),
+                    planned_alignment_points(),
+                    TrackType::Normal,
+                    vec![planned_station(0.2), invalid],
+                    None,
+                )
+                .is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+        let actual = editor
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+                vec![planned_station(0.5)],
+                None,
+            )
+            .unwrap();
+        let expected = WorldEditor::new()
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+                vec![planned_station(0.5)],
+                None,
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn invalid_alignment_and_unsaveable_batch_are_atomic() {
+        use rosenfu_core::world::TrackType;
+        let mut editor = WorldEditor::new();
+        let before = editor.snapshot();
+        assert!(editor
+            .build_alignment_with_stations(
+                "計画線".into(),
+                vec![],
+                TrackType::HighSpeed,
+                vec![planned_station(0.5)],
+                None,
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let mut huge = editor.snapshot();
+        huge.companies[0].name = "x".repeat(rosenfu_storage::MAX_SAVE_BYTES);
+        editor.world.replace(huge).unwrap();
+        let before = editor.snapshot();
+        assert!(editor
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+                vec![planned_station(0.5)],
+                None,
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
+    fn empty_station_batch_matches_existing_alignment_command() {
+        use rosenfu_core::world::TrackType;
+        let expected = WorldEditor::new()
+            .build_alignment_typed(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+            )
+            .unwrap();
+        let actual = WorldEditor::new()
+            .build_alignment_with_stations(
+                "計画線".into(),
+                planned_alignment_points(),
+                TrackType::Normal,
+                vec![],
+                None,
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
     }
 }
