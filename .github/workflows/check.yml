@@ -32,6 +32,10 @@ jobs:
         run: |
           node scripts/ensure-dependencies.mjs
           node scripts/ensure-dependencies.mjs
+      - name: Verify debug server lifecycle
+        run: node --test scripts/debug-dev-server.check.mjs
+      - name: Build native development debugger target
+        run: cargo build --locked -p rosenfu-desktop
       - run: npm test
       - run: npm run build
       - run: cargo fmt --all --check
