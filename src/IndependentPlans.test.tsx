@@ -219,3 +219,17 @@ test('deleting a plan asks first and preserves other plans and built infrastruct
  fireEvent.click(trackPanel().getByRole('button',{name:'計画を削除'}));dialog=screen.getByRole('dialog',{name:'計画を削除'});fireEvent.click(within(dialog).getByRole('button',{name:'削除する'}));
  expect(map.querySelectorAll('.draft-path')).toHaveLength(1);expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='delete_alignment')).toBe(false);
 });
+
+test('empty saved headers are removed on reopen while nonempty plans retain neutral selection styling',async()=>{
+ const plans=await import('./constructionPlans');
+ const saved={...plans.emptyConstructionPlans(),plans:[{id:1,name:'空案'},{id:2,name:'残す案'}],activePlanId:2,draftPoints:[{latitude:35.67504,longitude:139.75}]};
+ const map=await start({...empty,construction_plans:saved});
+ expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();
+ expect((screen.getByLabelText('計画名（任意）') as HTMLInputElement).value).toBe('残す案');
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ fireEvent.click(map,{clientX:400,clientY:200});
+ fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));
+ expect(map.querySelector('.parked-plan')?.closest('.inactive-plan')).not.toBeNull();
+ fireEvent.click(trackPanel().getByRole('button',{name:'残す案 を編集'}));
+ expect(map.querySelectorAll('.confirmed-draft')).toHaveLength(1);
+});

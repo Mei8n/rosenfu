@@ -481,3 +481,9 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .track-selection-controls button{padding:.25rem .5rem}
 .track-explicit-selection{filter:drop-shadow(0 0 2px #fff);stroke:#e9aa25}
 .workbench[data-theme="dark"] .station-placement-error { color:#ffaaa5; }
+
+/* Separate plan selection from path hover: other plans remain visible, but neutral. */
+.workbench .inactive-plan .draft-path { stroke:#89939d; }
+.workbench .inactive-plan .draft-anchor,.workbench .inactive-plan .parked-anchor { stroke:#89939d;fill:#e3e7eb; }
+.workbench .planned-station.inactive-plan .station-platform { fill:#b1bac3;stroke:#78838e; }
+.workbench .planned-station.inactive-plan text { fill:#78838e; }
