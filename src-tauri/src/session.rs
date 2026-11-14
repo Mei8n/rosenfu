@@ -42,6 +42,7 @@ pub struct PlannedAlignment {
     pub name: String,
     pub points: Vec<GeoPoint>,
     pub track_type: rosenfu_core::world::TrackType,
+    pub design_speed_kmh: Option<f64>,
     pub stations: Vec<PlannedStation>,
     pub reference: Option<PlannedAlignmentReference>,
     pub extension: Option<PlannedAlignmentExtension>,
@@ -322,6 +323,7 @@ impl WorldEditor {
             name,
             points,
             track_type,
+            design_speed_kmh: None,
             stations,
             reference,
             extension: None,
@@ -346,6 +348,12 @@ impl WorldEditor {
                     .ok_or("延伸対象の線路がありません。")?;
                 if old.track_type != alignment.track_type {
                     return Err("延伸対象と線路種別が一致しません。".into());
+                }
+                if alignment
+                    .design_speed_kmh
+                    .is_some_and(|speed| speed != old.effective_design_speed_kmh())
+                {
+                    return Err("延伸では元の線路の設計最高速度を引き継ぎます。".into());
                 }
                 let old_length = old.length_m();
                 if let Some(reference) = alignment.reference {
@@ -420,6 +428,12 @@ impl WorldEditor {
                     alignment.track_type,
                 )?,
             };
+            if let Some(speed) = alignment.design_speed_kmh {
+                candidate
+                    .world
+                    .set_alignment_design_speed(alignment_id, speed)
+                    .map_err(|e| e.to_string())?;
+            }
             for station in alignment.stations {
                 candidate.place_station_on_alignment_unchecked(
                     station.name,
@@ -1101,7 +1115,10 @@ mod tests {
         let auto = dir.path().join("auto.json");
         WorldEditor::new().autosave(&auto).unwrap();
         let bytes = std::fs::read_to_string(&auto).unwrap();
-        let newer = bytes.replace("\"schema_version\": 8", "\"schema_version\": 999");
+        let newer = bytes.replace(
+            &format!("\"schema_version\": {}", rosenfu_storage::SCHEMA_VERSION),
+            "\"schema_version\": 999",
+        );
         assert_ne!(bytes, newer);
         std::fs::write(&manual, &newer).unwrap();
         let mut editor = WorldEditor::new();
@@ -2035,6 +2052,7 @@ mod tests {
             name: "Attributed".into(),
             points: points.clone(),
             track_type: rosenfu_core::world::TrackType::Tram,
+            design_speed_kmh: None,
             stations: vec![planned_station(0.5)],
             reference: Some(PlannedAlignmentReference {
                 source_record: source.clone(),
@@ -2123,6 +2141,7 @@ mod tests {
                 },
             ],
             track_type: rosenfu_core::world::TrackType::Tram,
+            design_speed_kmh: None,
             stations: vec![planned_station(0.5)],
             reference: Some(PlannedAlignmentReference {
                 source_record: source.clone(),
@@ -2352,6 +2371,7 @@ mod tests {
                 })
                 .collect(),
             track_type: rosenfu_core::world::TrackType::Normal,
+            design_speed_kmh: None,
             stations: vec![planned_station(0.5)],
             reference: None,
             extension: None,
@@ -2444,6 +2464,7 @@ mod tests {
                     },
                 ],
                 track_type: old.track_type,
+                design_speed_kmh: None,
                 stations: vec![planned_station(0.5)],
                 reference: None,
                 extension: Some(PlannedAlignmentExtension {
@@ -2535,6 +2556,7 @@ mod tests {
                     },
                 ],
                 track_type: before.alignments[0].track_type,
+                design_speed_kmh: None,
                 stations: vec![planned_station(0.5)],
                 reference: None,
                 extension: Some(PlannedAlignmentExtension {
@@ -2581,5 +2603,48 @@ mod tests {
                 preview.occurrences
             );
         }
+    }
+    #[test]
+    fn planned_design_speed_validates_atomically_and_extension_inherits() {
+        let mut editor = WorldEditor::new();
+        let mut path = planned_path(0.0);
+        path.design_speed_kmh = Some(95.0);
+        let built = editor.build_plan(vec![path]).unwrap();
+        let old = &built.alignments[0];
+        assert_eq!(old.design_speed_kmh, Some(95.0));
+        for speed in [0.0, 601.0, f64::NAN, f64::INFINITY] {
+            let before = editor.snapshot();
+            let mut bad = planned_path(0.1);
+            bad.design_speed_kmh = Some(speed);
+            assert!(editor.build_plan(vec![planned_path(0.2), bad]).is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+        let endpoint = *old.points.last().unwrap();
+        let previous = old.points[old.points.len() - 2];
+        let extension = || PlannedAlignment {
+            name: "Extension".into(),
+            points: vec![
+                endpoint,
+                GeoPoint {
+                    latitude: endpoint.latitude + (endpoint.latitude - previous.latitude),
+                    longitude: endpoint.longitude + (endpoint.longitude - previous.longitude),
+                },
+            ],
+            track_type: old.track_type,
+            design_speed_kmh: None,
+            stations: vec![],
+            reference: None,
+            extension: Some(PlannedAlignmentExtension {
+                alignment_id: old.id,
+                endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+            }),
+        };
+        let before = editor.snapshot();
+        let mut changed_speed = extension();
+        changed_speed.design_speed_kmh = Some(120.0);
+        assert!(editor.build_plan(vec![changed_speed]).is_err());
+        assert_eq!(editor.snapshot(), before);
+        let after = editor.build_plan(vec![extension()]).unwrap();
+        assert_eq!(after.alignments[0].design_speed_kmh, Some(95.0));
     }
 }

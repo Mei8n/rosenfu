@@ -61,3 +61,24 @@ test('extension starts with the existing endpoint tangent rather than a new chor
  expect(Math.abs(turn)).toBeLessThan(5*Math.PI/180);
  expect(circularAlignment([start,previous],previous).error).toMatch(/折り返し/);
 });
+
+test('straight snapping uses CSS pixel tolerance, rejects backward points and preserves anchors',async()=>{
+ const {snapStraight}=await import('./circularAlignment');
+ const anchors=[p(0,0),p(100,0)],snapshot=structuredClone(anchors);
+ const snapped=snapStraight(anchors,p(200,4),1);
+ expect(circularAlignment([...anchors,snapped]).arcs).toHaveLength(0);
+ expect(snapStraight(anchors,p(200,10),1)).toEqual(p(200,10));
+ expect(snapStraight(anchors,p(80,1),1)).toEqual(p(80,1));
+ expect(snapStraight(anchors,p(110,4),1)).toEqual(p(110,4));
+ expect(circularAlignment([...anchors,snapStraight(anchors,p(200,4),.25)]).arcs).toHaveLength(1);
+ expect(anchors).toEqual(snapshot);
+});
+test('straight snapping follows the analytical outgoing tangent after a curve and at built ends',async()=>{
+ const {snapStraight}=await import('./circularAlignment');
+ const anchors=[p(0,0),p(100,0),p(200,100)],draft=circularAlignment(anchors);
+ const snapped=snapStraight(anchors,p(202,200),1),extended=circularAlignment([...anchors,snapped]);
+ expect(extended.error).toBeNull();expect(extended.arcs).toHaveLength(1);
+ expect(extended.points.slice(0,draft.points.length)).toEqual(draft.points);
+ const start=[p(100,0)],previous=p(0,0);
+ expect(circularAlignment([...start,snapStraight(start,p(200,4),1,previous)],previous).arcs).toHaveLength(0);
+});

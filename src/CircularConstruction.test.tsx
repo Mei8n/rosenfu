@@ -27,3 +27,33 @@ test('circular hover guide precedes saved geometry and undo/redo restores the pa
  const points=(call[1] as {points:{latitude:number;longitude:number}[]}).points;
  expect(points.map((point,index)=>{const p=project(point.latitude,point.longitude);return(index?'L':'M')+p.x+','+p.y;}).join(' ')).toBe(preview);
 });
+
+test('automatic straights and curves need no mode switch, use identical preview/commit and cap speeds',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);
+ const world={next_id:'3',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'R'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'auto-test'}:world);
+ render(<App/>);fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));await screen.findByText(/auto-test/);
+ expect(screen.queryByRole('button',{name:/^(直線|曲線)$/})).toBeNull();
+ const speed=screen.getByRole('spinbutton',{name:'線路の設計最高速度'});
+ fireEvent.change(speed,{target:{value:'80'}});
+ const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
+ fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:250,clientY:130});
+ fireEvent.pointerMove(map,{clientX:330,clientY:134});
+ expect(map.querySelector('.curve-circle-guide')).toBeNull();
+ expect(document.querySelector('.drawing-tooltip')?.textContent).toContain('80 km/h（設計上限）');
+ fireEvent.click(map,{clientX:330,clientY:134});
+ const anchor=map.querySelectorAll('.draft-anchor')[2];expect(Number(anchor.getAttribute('y'))+4).toBeCloseTo(260,5);
+ const straightPath=map.querySelector('.draft-path')!.getAttribute('d')!;
+ fireEvent.pointerMove(map,{clientX:380,clientY:180});expect(map.querySelector('.curve-circle-guide')).toBeTruthy();
+ expect([...document.querySelectorAll('.curve-speed-label')].every(label=>Number(label.textContent?.split(' ')[0])<=80)).toBe(true);
+ fireEvent.click(map,{clientX:380,clientY:180});
+ expect(map.querySelector('.draft-path')!.getAttribute('d')).toContain(straightPath);
+ const finalPreview=map.querySelector('.draft-path')!.getAttribute('d');
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ const call=vi.mocked(invoke).mock.calls.find(([command])=>command==='build_alignment')!;
+ expect(call[1]).toMatchObject({designSpeedKmh:80});
+ const points=(call[1] as {points:{latitude:number;longitude:number}[]}).points;
+ expect(points.map((point,index)=>{const p=project(point.latitude,point.longitude);return(index?'L':'M')+p.x+','+p.y;}).join(' ')).toBe(finalPreview);
+});

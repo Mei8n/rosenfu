@@ -314,6 +314,7 @@ fn compact_world_that_exceeds_pretty_limit_is_rejected_before_load() {
             name: "a".into(),
             points: points.clone(),
             track_type: TrackType::Normal,
+            design_speed_kmh: None,
         });
     }
     draft.next_id = 43;

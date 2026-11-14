@@ -285,6 +285,7 @@ impl World {
                 name,
                 points,
                 track_type,
+                design_speed_kmh: None,
             });
             data.alignment_provenance.push(AlignmentProvenance {
                 alignment_id: AlignmentId(id),

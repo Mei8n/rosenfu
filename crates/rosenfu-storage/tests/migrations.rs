@@ -35,8 +35,8 @@ fn current_schema_roundtrip_retains_services_and_stop_occurrences() {
         .unwrap();
     let bytes = encode(&source).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(SCHEMA_VERSION, 8);
-    assert_eq!(json["schema_version"], 8);
+    assert_eq!(SCHEMA_VERSION, 9);
+    assert_eq!(json["schema_version"], 9);
     assert_eq!(json["world"]["services"][0]["id"], "10");
     assert_eq!(
         json["world"]["services"][0]["stops"],
@@ -58,7 +58,7 @@ fn loading_old_save_is_read_only_and_explicit_save_preserves_original_bytes() {
     save_world(&path, &world).unwrap();
     assert_eq!(fs::read(&backup).unwrap(), LEGACY);
     let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(current["schema_version"], 8);
+    assert_eq!(current["schema_version"], 9);
     assert_eq!(current["world"]["services"], serde_json::json!([]));
     assert_eq!(load_world(&path).unwrap(), world);
 }
