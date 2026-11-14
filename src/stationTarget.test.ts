@@ -12,6 +12,8 @@ test("nearest candidate changes automatically between built and planned; invalid
 test("end platform clamps center, short line rejects and distant cursor has no target",()=>{
  const target=stationTarget([line],line.points[0],200,DEFAULT_CAMERA,1);
  expect(target.target!.position).toBeGreaterThan(0);expect(target.target!.polygon).toHaveLength(4);
- expect(stationTarget([line],point,10000,DEFAULT_CAMERA,1).error).toContain("収まる");
+ expect(stationTarget([{...line,points:[point,{...point,longitude:point.longitude+.0001}]}],point,200,DEFAULT_CAMERA,1).error).toContain("収まる");
  expect(stationTarget([line],{...point,latitude:36},200,DEFAULT_CAMERA,1).target).toBeNull();
 });
+
+test("new station lengths reject outside 2–20 cars without generating geometry",()=>{for(const length of [0,20,39.9,400.1,1000,NaN,Infinity]){const result=stationTarget([line],point,length,DEFAULT_CAMERA,1);expect(result.target).toBeNull();expect(result.error).toContain("2〜20");}for(const length of [40,231.5,400])expect(stationTarget([line],point,length,DEFAULT_CAMERA,1).error).toBe("");});

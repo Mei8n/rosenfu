@@ -59,7 +59,7 @@ fn hash(s: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 impl SourceRecord {
-    fn valid(&self) -> bool {
+    pub(super) fn valid(&self) -> bool {
         hash(&self.graph_sha256)
             && hash(&self.source_sha256)
             && self.key == format!("{}:{}", self.graph_sha256, self.source_sha256)
@@ -85,7 +85,7 @@ impl SourceRecord {
     }
 }
 impl AlignmentProvenanceInput {
-    fn valid(&self) -> bool {
+    pub(super) fn valid(&self) -> bool {
         let id = &self.osm_way_id;
         !id.is_empty()
             && id.len() <= 20

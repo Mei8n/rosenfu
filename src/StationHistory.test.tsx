@@ -39,13 +39,13 @@ test("station undo and redo preserve failed history, issue a fresh ID and protec
 });
 test("successful save closes history while failed save preserves it",async()=>{
  const failures=await start();await place();failures.save=true;fireEvent.click(region(".save-controls").getByRole("button",{name:"保存"}));await screen.findByText(/save failure/);await ready();expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す"}) as HTMLButtonElement).disabled).toBe(false);
- failures.save=false;fireEvent.click(region(".save-controls").getByRole("button",{name:"保存"}));await screen.findByText("ワールドを保存しました。");await ready();undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
+ failures.save=false;fireEvent.click(region(".save-controls").getByRole("button",{name:"保存"}));await screen.findByText("ワールドと未着工計画を保存しました。");await ready();undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });
 test("references block station undo without consuming history",async()=>{
  await start();await place();fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"線路"}));fireEvent.change(screen.getByLabelText("接続元の駅"),{target:{value:"20"}});fireEvent.change(screen.getByLabelText("接続先の駅"),{target:{value:"10"}});fireEvent.click(screen.getByRole("button",{name:"線路を接続"}));await screen.findByText("線路を接続しました。");await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));undo();await screen.findByText(/駅設置Undo不可: 接続線路/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す"}) as HTMLButtonElement).disabled).toBe(false);
 });
 test("text inputs keep native undo and track drafts have shortcut priority",async()=>{
- await start();await place();fireEvent.keyDown(region("#panel-stations").getByLabelText("ホーム長 (20m級・両相当)"),{key:"z",ctrlKey:true});expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
+ await start();await place();fireEvent.keyDown(screen.getByLabelText("駅の長さ"),{key:"z",ctrlKey:true});expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
  fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"線路"}));const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:200,clientY:130});undo();expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);redo();expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });
 test("world load ends history and a new placement discards redo",async()=>{
@@ -70,7 +70,7 @@ test("failed world load retains the station history",async()=>{
 test.each(["name","size"])("successful station %s edit ends placement history",async kind=>{
  await start();await place();fireEvent.click(region(".station-directory").getByRole("button",{name:/^新駅 /}));
  if(kind==="name"){fireEvent.change(screen.getByLabelText("選択駅の名前"),{target:{value:"改名駅"}});fireEvent.click(screen.getByRole("button",{name:"駅名を適用"}));await screen.findByText(/駅名を変更しました/);await ready();}
- else{fireEvent.change(screen.getByLabelText("選択駅のホーム長 (20m級・両相当)"),{target:{value:"12"}});fireEvent.click(screen.getByRole("button",{name:"ホーム寸法を適用"}));await screen.findByText("ホーム寸法を変更しました。保存でファイルに反映します。");await ready();}
+ else{fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12"}});fireEvent.click(screen.getByRole("button",{name:"ホーム寸法を適用"}));await screen.findByText("ホーム寸法を変更しました。保存でファイルに反映します。");await ready();}
  undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });
 test("RoutePath membership reference blocks station undo even without Track connections",async()=>{

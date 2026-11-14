@@ -22,7 +22,7 @@ for(const endpoint of ["start","end"] as const)test(`${endpoint} extension joins
  const map=await start();const click=(x:number,y=130)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
  const anchor=endpoint==="start"?180:250,finish=endpoint==="start"?120:310;
  click(anchor+2);expect(screen.getByText(/から延伸を計画しています/)).toBeTruthy();click(finish);
- fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"8"}});click((anchor+finish)/2);
+ fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"8"}});click((anchor+finish)/2);
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));click(finish);click(340,220);click(400,220);
  vi.mocked(invoke).mockRejectedValueOnce(Error("atomic failure"));fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/atomic failure/);
  const request=vi.mocked(invoke).mock.calls.find(([c])=>c==="build_plan")![1] as {alignments:any[]};
@@ -76,4 +76,63 @@ test('extension inherits non-default design speed and prevents changing its sett
  fireEvent.click(map,{clientX:310,clientY:133});
  vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({designSpeedKmh:95})])})));
+});
+
+test('endpoint hover previews the exact clicked extension and clears on leave',async()=>{
+ const map=await start();
+ fireEvent.pointerMove(map,{clientX:253,clientY:132});
+ expect(screen.getByText(/既存の終点にスナップ/)).toBeTruthy();
+ expect(map.querySelector('.endpoint-snap-ring')?.getAttribute('data-allowed')).toBe('true');
+ fireEvent.pointerLeave(map);
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+ fireEvent.pointerMove(map,{clientX:253,clientY:132});
+ fireEvent.click(map,{clientX:253,clientY:132});
+ expect(screen.getByText(/延伸元を選択済み：既存の終点（着工前）/)).toBeTruthy();
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+ fireEvent.click(map,{clientX:310,clientY:130});
+ vi.mocked(invoke).mockResolvedValueOnce(world);
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({extension:{alignmentId:'3',endpoint:'end'}})])})));
+});
+
+test('non-owned endpoints show refusal, not a usable connection',async()=>{
+ const map=await start({alignments:[{...line,owner:'other'}]});
+ fireEvent.pointerMove(map,{clientX:250,clientY:130});
+ expect(screen.getByText('他社の線路は延伸できません')).toBeTruthy();
+ expect(map.querySelector('.endpoint-snap-ring')?.getAttribute('data-allowed')).toBe('false');
+ fireEvent.click(map,{clientX:250,clientY:130});
+ expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+});
+
+test('endpoint outside snap radius has no connection feedback',async()=>{
+ const map=await start();
+ fireEvent.pointerMove(map,{clientX:260,clientY:130});
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+ fireEvent.click(map,{clientX:260,clientY:130});
+ expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
+});
+
+test('planned endpoint feedback takes precedence over built endpoints as clicking does',async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:340,clientY:220});
+ fireEvent.click(map,{clientX:400,clientY:220});
+ fireEvent.click(map,{clientX:400,clientY:220});
+ fireEvent.pointerMove(map,{clientX:402,clientY:221});
+ expect(screen.getByText(/計画の終点にスナップ/)).toBeTruthy();
+ fireEvent.click(map,{clientX:402,clientY:221});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
+ fireEvent.click(map,{clientX:440,clientY:220});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
+});
+
+for(const endpoint of ['start','end'] as const)test(`tangent guide follows built ${endpoint} extension direction`,async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:endpoint==='start'?180:250,clientY:130});
+ const guide=map.querySelector('.construction-tangent-guide')!;
+ expect(guide).toBeTruthy();
+ const delta=Number(guide.getAttribute('x2'))-Number(guide.getAttribute('x1'));
+ expect(endpoint==='start'?delta<0:delta>0).toBe(true);
+ expect(Number(guide.getAttribute('y1'))).toBeCloseTo(Number(guide.getAttribute('y2')),5);
 });

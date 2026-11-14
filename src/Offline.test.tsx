@@ -73,11 +73,11 @@ test("background failure does not block editing, saving and reloading local stat
   fireEvent.click(screen.getByRole("button", { name: "設定変更" }));
   await screen.findByText("会社名を変更しました。");
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
-  await screen.findByText("ワールドを保存しました。");
+  await screen.findByText("ワールドと未着工計画を保存しました。");
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   await screen.findByText("保存したワールドを読み込みました。");
   expect((screen.getByLabelText("会社名") as HTMLInputElement).value).toBe("オフライン鉄道");
-  expect(invoke).toHaveBeenCalledWith("save_world");
+  expect(invoke).toHaveBeenCalledWith("save_world",expect.objectContaining({constructionPlans:expect.any(Object)}));
   expect(invoke).toHaveBeenCalledWith("load_world");
   expect(fetchAttempt).not.toHaveBeenCalled();
 });

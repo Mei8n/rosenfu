@@ -34,12 +34,12 @@ test("direct hover and click places planned stations without committing tracks; 
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.click(screen.getByRole("tab",{name:"路線"}));expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
- fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/建設済みワールドを保存しました/);
+ fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/ワールドと未着工計画を保存しました/);
  // The notice can render before perform() releases the async busy guard.
  // Redo is a subsequent user action, so wait for controls to become usable.
  await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
  expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
- fireEvent.click(screen.getByRole("button",{name:"読込"}));fireEvent.click(screen.getByRole("button",{name:"読込を続ける"}));await screen.findByText("保存したワールドを読み込みました。");
+ fireEvent.click(screen.getByRole("button",{name:"読込"}));expect(screen.queryByRole("button",{name:"読込を続ける"})).toBeNull();await screen.findByText("保存したワールドを読み込みました。");
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
 });
 test("atomic plan construction submits stations together; failure preserves draft and success clears it",async()=>{
@@ -63,7 +63,7 @@ test("drag does not place a station and clearing one independent plan only remov
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(map,{clientX:250,clientY:180});expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("button",{name:"下書きを消去"}));
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
- await waitFor(()=>expect(screen.getByText("新駅（計画）")).toBeTruthy());
+ expect(map.querySelector(".planned-station title")?.textContent).toContain("新駅");
 });
 test("changing a plan so its station no longer fits blocks construction until station is removed",async()=>{
  const map=await start();fireEvent.click(map,{clientX:310,clientY:150});
@@ -79,7 +79,7 @@ test("changing a plan so its station no longer fits blocks construction until st
 test("saving the built world preserves both undo and redo for unbuilt stations",async()=>{
  const map=await start();fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
- fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/建設済みワールドを保存しました/);
+ fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/ワールドと未着工計画を保存しました/);
  // The notice can render before perform() releases the async busy guard.
  // Redo is a subsequent user action, so wait for controls to become usable.
  await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
@@ -101,4 +101,16 @@ test("pending save locks editing without consuming a planned-station redo",async
  expect(save.disabled).toBe(false);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
+});
+test("station controls are on the map, invalid placement is boxed and names are opt-in",async()=>{
+ const map=await start();
+ const input=screen.getByLabelText('駅の長さ');expect(input.closest('.map-surface')).toBeTruthy();expect(input.closest('#panel-stations')).toBeNull();
+ fireEvent.pointerMove(map,{clientX:230,clientY:50});
+ const tip=document.querySelector('.station-placement-error');expect(tip?.tagName).toBe('DIV');expect(tip?.textContent).toBe('駅は線路上に置いてください');
+ fireEvent.pointerMove(map,{clientX:230,clientY:150});expect(document.querySelector('.station-placement-error')).toBeNull();
+ expect(map.querySelector('.station-placement-preview')?.tagName).toBe('path');
+ fireEvent.click(map,{clientX:230,clientY:150});expect(map.querySelector('.planned-station text')).toBeNull();
+ fireEvent.click(screen.getByLabelText('駅名を表示'));expect(map.querySelector('.planned-station text')?.textContent).toContain('新駅');
+ expect(JSON.parse(localStorage.getItem('rosenfu.display-settings')!).settings.stationNamesVisible).toBe(true);
+ fireEvent.click(screen.getByLabelText('駅名を表示'));expect(map.querySelector('.planned-station text')).toBeNull();
 });

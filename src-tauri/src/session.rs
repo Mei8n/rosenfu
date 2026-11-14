@@ -878,6 +878,27 @@ impl WorldEditor {
         }
         Ok(self.snapshot())
     }
+    /// Save a candidate atomically: a failed validation/write leaves editor state unchanged.
+    pub fn save_with_plans(
+        &mut self,
+        path: &Path,
+        plans: Option<rosenfu_core::world::ConstructionPlans>,
+        automatic: bool,
+    ) -> Result<(), String> {
+        let mut candidate = self.clone();
+        if let Some(plans) = plans {
+            let mut draft = candidate.snapshot();
+            draft.construction_plans = Some(plans);
+            candidate.world = World::new(draft).map_err(|e| e.to_string())?;
+        }
+        if automatic {
+            candidate.autosave(path)?;
+        } else {
+            candidate.save(path)?;
+        }
+        *self = candidate;
+        Ok(())
+    }
     pub fn save(&mut self, path: &Path) -> Result<(), String> {
         let expected = if self.loaded_path.as_deref() == Some(path) {
             self.manual_version
@@ -1065,6 +1086,77 @@ impl WorldEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn draft_plans() -> rosenfu_core::world::ConstructionPlans {
+        serde_json::from_value(serde_json::json!({
+            "version":1,"plans":[{"id":1,"name":"計画"}],"parkedPaths":[],
+            "activePathId":1,"activePlanId":1,"draftPoints":[{"latitude":35.0,"longitude":139.0}],"redoPoints":[],"draftExtension":null,
+            "trackType":"normal","designSpeedKmh":120,"roadFollowing":false,"plannedStations":[],"draftFinished":false
+        })).unwrap()
+    }
+    #[test]
+    fn plan_save_conflict_does_not_apply_new_draft_or_replace_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        let mut editor = WorldEditor::new();
+        editor
+            .save_with_plans(&path, Some(draft_plans()), false)
+            .unwrap();
+        let before = editor.snapshot();
+        let mut other = WorldEditor::new();
+        other.load(&path).unwrap();
+        other.rename_company("External writer".into()).unwrap();
+        other.save(&path).unwrap();
+        let disk = std::fs::read(&path).unwrap();
+        let mut next = draft_plans();
+        next.plans[0].name = "Not saved".into();
+        assert!(editor.save_with_plans(&path, Some(next), false).is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(std::fs::read(&path).unwrap(), disk);
+    }
+    #[test]
+    fn manual_and_autosave_restore_drafts_and_failed_save_is_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let manual = dir.path().join("world.json");
+        let auto = dir.path().join("auto.json");
+        let mut editor = WorldEditor::new();
+        editor
+            .save_with_plans(&manual, Some(draft_plans()), false)
+            .unwrap();
+        let mut restored = WorldEditor::new();
+        assert_eq!(
+            restored.load(&manual).unwrap().construction_plans,
+            Some(draft_plans())
+        );
+        let before = editor.snapshot();
+        let bytes = std::fs::read(&manual).unwrap();
+        let mut invalid = draft_plans();
+        invalid.active_plan_id = 999;
+        assert!(editor
+            .save_with_plans(&manual, Some(invalid), false)
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(std::fs::read(&manual).unwrap(), bytes);
+        let mut next = draft_plans();
+        next.plans[0].name = "自動保存".into();
+        editor
+            .save_with_plans(&auto, Some(next.clone()), true)
+            .unwrap();
+        assert_eq!(
+            restored
+                .load_autosave(&auto, &manual)
+                .unwrap()
+                .construction_plans,
+            Some(next)
+        );
+        assert_eq!(std::fs::read(&manual).unwrap(), bytes);
+        // Missing payload from older callers preserves the stored plans.
+        editor.save_with_plans(&manual, None, false).unwrap();
+        assert!(rosenfu_storage::load_world(&manual)
+            .unwrap()
+            .snapshot()
+            .construction_plans
+            .is_some());
+    }
     #[test]
     fn same_version_status_preserves_restored_and_saved_autosave_permission() {
         let dir = tempfile::tempdir().unwrap();

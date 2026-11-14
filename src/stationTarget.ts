@@ -3,13 +3,14 @@ import {project, type Camera} from "./map";
 
 export type StationLine = {id:string; points:GeoPoint[]; pathId?:number; invalid?:boolean};
 export function stationTarget(lines:StationLine[], point:GeoPoint, lengthM:number, camera:Camera, scale:number) {
+  if(!Number.isFinite(lengthM)||lengthM<40||lengthM>400)return {error:"駅の長さは2〜20両にしてください。",target:null};
   const cursor=project(point.latitude,point.longitude,camera);
   const candidates=lines.filter(line=>line.points.length>1).map(line=>{
     const nearest=nearestOnAlignment(line.points,point), p=project(nearest.point.latitude,nearest.point.longitude,camera);
     return {line,nearest,pixels:Math.hypot(cursor.x-p.x,cursor.y-p.y)*scale};
   }).sort((a,b)=>a.pixels-b.pixels);
   const target=candidates[0];
-  if(!target || target.pixels>20) return {error:"線路の近くを選んでください。建設済み・計画中の線路に沿って配置します。",target:null};
+  if(!target || target.pixels>20) return {error:"駅は線路上に置いてください",target:null};
   const polygon=stationPolygon(target.line.points,target.nearest.position,lengthM,12);
   const half=lengthM/alignmentLength(target.line.points)/2;
   const position=Math.max(half,Math.min(1-half,target.nearest.position));

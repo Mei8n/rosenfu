@@ -28,7 +28,7 @@ export function UnsavedCloseDialog({error, closing, onCancel, onDiscard}: Props)
     onCancel={event => {event.preventDefault(); if (!closing) onCancel();}}
     onKeyDown={event => event.stopPropagation()}>
     <h2 id={titleId}>未保存の内容を破棄して終了しますか？</h2>
-    <p id={descriptionId}>閉じると未着工計画（参考コピー・道路追従を含む）と未保存の変更が失われます。計画は再起動後に復元できません。</p>
+    <p id={descriptionId}>保存していない変更や未確定の参照候補は失われます。保存済みの未着工計画は、次回読み込んだときに復元できます。</p>
     {error && <p className="close-dialog-error" role="alert">{error}</p>}
     <div className="close-dialog-actions">
       <button ref={cancel} type="button" className="secondary" disabled={closing} onClick={onCancel}>編集に戻る</button>

@@ -62,7 +62,7 @@ test("station map placement requires a previously built alignment", async () => 
   fireEvent.click(screen.getByRole("button", { name: "駅配置" }));
   const map = interactiveMap();
   fireEvent.click(map, { clientX: 250, clientY: 150 });
-  expect(await screen.findByText(/処理できませんでした: 線路の近くを選んで/)).toBeTruthy();
+  expect(await screen.findByText(/処理できませんでした: 駅は線路上に置いてください/)).toBeTruthy();
   expect(invoke).not.toHaveBeenCalledWith("add_station", expect.anything());
 });
 
@@ -80,7 +80,7 @@ test("save and load errors retain the current snapshot", async () => {
   vi.mocked(invoke).mockRejectedValueOnce(new Error("save denied"));
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await screen.findByText(/save denied/);
-  expect(screen.queryByText("ワールドを保存しました。")).toBeNull();
+  expect(screen.queryByText("ワールドと未着工計画を保存しました。")).toBeNull();
   vi.mocked(invoke).mockRejectedValueOnce(new Error("corrupt file"));
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   await screen.findByText(/corrupt file/);
@@ -116,7 +116,7 @@ test("pending operations block duplicate actions and successful save clears dirt
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "save_world")).toHaveLength(1);
   finish({ saved: true });
   await waitFor(() => expect(screen.queryByText("未保存の変更あり")).toBeNull());
-  expect(screen.getByText("ワールドを保存しました。")).toBeTruthy();
+  expect(screen.getByText("ワールドと未着工計画を保存しました。")).toBeTruthy();
 });
 
 const twoStations = {
@@ -321,7 +321,7 @@ test("map station placement is disabled outside the station editor tab", async (
   expect(map.classList.contains("placement-enabled")).toBe(true);
   expect(screen.getByText("線路にカーソルを重ねてクリックで駅を配置")).toBeTruthy();
   fireEvent.click(map, { clientX: 250, clientY: 150 });
-  await screen.findByText(/処理できませんでした: 線路の近くを選んで/);
+  await screen.findByText(/処理できませんでした: 駅は線路上に置いてください/);
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "add_station")).toHaveLength(0);
 });
 
@@ -379,6 +379,7 @@ test("background switching is display-only and outside viewport clicks never cre
 
 test("rapid pan debounces new tile URLs while keeping shared DOM and existing tiles georeferenced", () => {
   vi.useFakeTimers(); vi.mocked(isTauri).mockReturnValue(false); renderStationEditor();
+  fireEvent.click(screen.getByLabelText("駅名を表示"));
   fireEvent.click(screen.getByRole("button", { name: "地理院地図（オンライン）" }));
   const map = screen.getByRole("img", { name: "駅配置用地理院地図" });
   const original = new Map(Array.from(map.querySelectorAll("image")).map(image=>[image.getAttribute("data-tile-id")!,image]));
@@ -432,7 +433,7 @@ test("camera changes neither edit world IDs/coordinates nor reset on save and re
   fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   await screen.findByText("新駅を配置しました。");
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
-  await screen.findByText("ワールドを保存しました。");
+  await screen.findByText("ワールドと未着工計画を保存しました。");
   const count = vi.mocked(invoke).mock.calls.length;
   fireEvent.change(screen.getByLabelText("中心緯度"), { target: { value: "43.06" } });
   fireEvent.change(screen.getByLabelText("中心経度"), { target: { value: "141.35" } });
@@ -474,7 +475,7 @@ test("move is the default mode and drags never create stations even in placement
   expect(Number((screen.getByLabelText("中心経度") as HTMLInputElement).value)).toBeLessThan(DEFAULT_CAMERA.longitude);
   pointer(map,"pointerdown",250,150); pointer(map,"pointermove",252,150); pointer(map,"pointerup",252,150);
   fireEvent.click(map,{clientX:252,clientY:150});
-  await screen.findByText(/処理できませんでした: 線路の近くを選んで/);
+  await screen.findByText(/処理できませんでした: 駅は線路上に置いてください/);
   expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="add_station")).toHaveLength(0);
 });
 
@@ -550,7 +551,7 @@ test("changing from move to placement midgesture cannot turn its eventual click 
   pointer(map,"pointermove",251,150); pointer(map,"pointerup",251,150); fireEvent.click(map,{clientX:251,clientY:150});
   expect(invoke).not.toHaveBeenCalledWith("add_station",expect.anything());
   pointer(map,"pointerdown",250,150); pointer(map,"pointerup",250,150); fireEvent.click(map,{clientX:250,clientY:150});
-  await screen.findByText(/処理できませんでした: 線路の近くを選んで/);
+  await screen.findByText(/処理できませんでした: 駅は線路上に置いてください/);
   expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="add_station")).toHaveLength(0);
 });
 
@@ -643,10 +644,10 @@ test("service path changes explicitly reset stops and keep disconnected tracks u
   expect(screen.getByText("経路を変更したため、停車設定を全駅停車へ戻しました。")).toBeTruthy();
   expect((screen.getByRole("checkbox", { name: "停車 2: 東" }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "系統末尾を戻す" }));
-  expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+  expect(region("#workspace-panel-services").getAllByRole("checkbox")).toHaveLength(3);
   expect((screen.getByRole("checkbox", { name: "停車 3: 中央" }) as HTMLInputElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "系統経路をクリア" }));
-  expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+  expect(region("#workspace-panel-services").getAllByRole("checkbox")).toHaveLength(1);
   expect((screen.getByRole("button", { name: "系統を適用" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(screen.getByLabelText("系統の起点"), { target: { value: "7" } });
   expect(Array.from((screen.getByLabelText("系統で次にたどる線路") as HTMLSelectElement).options).map(option=>option.value)).toEqual(["", "6"]);

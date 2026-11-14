@@ -58,3 +58,24 @@ test("drawing details follow the cursor without hover and diagnose an invalid ca
  expect(map.querySelector(".invalid-candidate")).toBeNull();
  fireEvent.pointerLeave(map);expect(document.querySelector(".drawing-tooltip")).toBeNull();
 });
+
+test('hover only speed and highlight clear on leaving; small endpoints are visually distinct',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);
+ const map=await start();
+ fireEvent.change(screen.getByRole('spinbutton',{name:'線路の設計最高速度'}),{target:{value:'80'}});
+ fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:250,clientY:130});fireEvent.click(map,{clientX:320,clientY:130});
+ expect(document.querySelector('.curve-speed-label')).toBeNull();
+ const anchors=map.querySelectorAll('.draft-anchor');
+ expect(anchors[0].classList.contains('draft-endpoint')).toBe(true);
+ expect(anchors[1].classList.contains('draft-endpoint')).toBe(false);
+ expect(anchors[2].classList.contains('draft-endpoint')).toBe(true);
+ expect(Number(anchors[1].getAttribute('width'))).toBeLessThan(8);
+ const line=map.querySelector('.plan-hover-hit')!;
+ fireEvent.pointerEnter(line,{clientX:220,clientY:130});
+ expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain('80 km/h');
+ expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain('高さ：未設定');
+ expect(map.querySelectorAll('.plan-hovered')).toHaveLength(1);
+ fireEvent.pointerLeave(line);
+ expect(document.querySelector('.plan-hover-tooltip')).toBeNull();
+ expect(map.querySelector('.plan-hovered')).toBeNull();
+});
