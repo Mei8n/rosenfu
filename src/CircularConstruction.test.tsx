@@ -44,10 +44,10 @@ test('automatic straights and curves need no mode switch, use identical preview/
  expect(map.querySelector('.curve-circle-guide')).toBeNull();
  expect(document.querySelector('.drawing-tooltip')?.textContent).toContain('80 km/h（設計上限）');
  fireEvent.click(map,{clientX:330,clientY:134});
- const anchor=map.querySelectorAll('.draft-anchor')[2];expect(Number(anchor.getAttribute('y'))+4).toBeCloseTo(260,5);
+ const anchor=map.querySelectorAll('.draft-anchor')[2];expect(Number(anchor.getAttribute('y'))+Number(anchor.getAttribute('height'))/2).toBeCloseTo(260,5);
  const straightPath=map.querySelector('.draft-path')!.getAttribute('d')!;
  fireEvent.pointerMove(map,{clientX:380,clientY:180});expect(map.querySelector('.curve-circle-guide')).toBeTruthy();
- expect([...document.querySelectorAll('.curve-speed-label')].every(label=>Number(label.textContent?.split(' ')[0])<=80)).toBe(true);
+ expect(document.querySelector('.curve-speed-label')).toBeNull();
  fireEvent.click(map,{clientX:380,clientY:180});
  expect(map.querySelector('.draft-path')!.getAttribute('d')).toContain(straightPath);
  const finalPreview=map.querySelector('.draft-path')!.getAttribute('d');

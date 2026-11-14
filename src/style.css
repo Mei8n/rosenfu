@@ -385,9 +385,13 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .drawing-tooltip { z-index:6; pointer-events:none; max-width:248px; }
 .workbench .draft-path.candidate-draft { stroke-width:4; }
 .workbench .draft-path.invalid-candidate { stroke:#c54444; }
-.curve-speed-label { position:absolute; z-index:3; pointer-events:none; white-space:nowrap; font-size:11px; color:var(--ink); background:var(--surface); border:1px solid var(--edge); padding:1px 4px; }
 
 .workbench .construction-tooltip { max-width:calc(100% - 16px); box-sizing:border-box; overflow-wrap:anywhere; }
 .construction-help { position:relative; font-size:11px; }
 .construction-help p { position:absolute; top:20px; right:0; width:220px; padding:8px; background:var(--surface); border:1px solid var(--edge); }
 .construction-toolbar select { background:var(--surface-alt); color:var(--ink); }
+
+.workbench .draft-path.plan-hovered { stroke:#80cbc4; stroke-width:7; }
+.workbench .draft-anchor,.workbench .parked-anchor { pointer-events:none; fill:#fff; stroke:#263849; stroke-width:1; }
+.workbench .draft-anchor.draft-endpoint,.workbench .parked-anchor.draft-endpoint { fill:#fff1f7; stroke:#d95187; stroke-width:1.8; }
+.plan-hover-tooltip { white-space:nowrap; pointer-events:none; }

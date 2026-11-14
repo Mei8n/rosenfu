@@ -1,3 +1,4 @@
+import {plannedTrackSpeed} from "./plannedTrackSpeed";
 import {snapReferenceStart} from "./referenceEndpointSnap";
 import {extensionJoinError} from "./extensionJoin";
 import {stationTarget, type StationLine} from "./stationTarget";
@@ -306,28 +307,22 @@ export function App() {
     ids.forEach(discardPlanStations);setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
     setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
   }
-  const [planHover, setPlanHover] = useState<{id:number;x:number;y:number} | null>(null);
+  const [planHover, setPlanHover] = useState<{id:number;x:number;y:number;point:GeoPoint} | null>(null);
   useEffect(() => { setPlanHover(null); }, [draftPoints, parkedPaths, activeTool, camera, world]);
-  const hoveredPlan = planHover?.id === activePathId ? {name:planName,line:draftLine,points:draftPoints,reference:undefined} : parkedPaths.find(plan=>plan.id===planHover?.id);
-  const hoveredGeometry = hoveredPlan&&!hoveredPlan.reference ? circularAlignment(hoveredPlan.points) : null;
+  const hoveredPlan = planHover?.id === activePathId ? {name:planName,line:draftLine,points:draftPoints,reference:undefined,designSpeedKmh,extension:draftExtension} : parkedPaths.find(plan=>plan.id===planHover?.id);
+  const hoveredExtension=hoveredPlan?.extension?alignments.find(a=>a.id===hoveredPlan.extension!.alignmentId):null;
+  const hoveredPrevious=hoveredExtension?(hoveredPlan!.extension!.endpoint==="end"?hoveredExtension.points.at(-2):hoveredExtension.points[1]):undefined;
+  const hoveredGeometry = hoveredPlan&&!hoveredPlan.reference ? circularAlignment(hoveredPlan.points,hoveredPrevious) : null;
+  const hoveredSpeed=hoveredGeometry&&planHover?plannedTrackSpeed(hoveredGeometry,planHover.point,hoveredPlan!.designSpeedKmh):null;
+
   function hoverPlan(event: ReactPointerEvent<SVGPathElement>, id:number) {
     if (gestureRef.current || event.pointerType === "touch") return;
     const rect=svgRef.current?.getBoundingClientRect();
-    if(rect)setPlanHover({id,x:event.clientX-rect.left,y:event.clientY-rect.top});
+    if(rect){const point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);if(point)setPlanHover({id,x:event.clientX-rect.left,y:event.clientY-rect.top,point});}
   }
   const viewport = mapViewport(mapSize.width,mapSize.height);
-  // Keep labels screen-sized and avoid overlapping dense adjacent curves.
-  const curveLabels:{key:number;x:number;y:number;speed:number|null}[]=[];
-  const speedAnchors=hoverPoint&&!draftFinished&&mapMode==="draw"?[...draftPoints,hoverPoint]:draftPoints;
-  for(let index=speedAnchors.length-2;index>=0;index--){
-    if(previewError&&index===draftPoints.length-1)continue;
-    const arc=previewGeometry.arcs.find(item=>item.segmentIndex===index);
-    const midpoint=arc?.midpoint??pointOnAlignment(speedAnchors.slice(index,index+2),.5);
-    const p=project(midpoint.latitude,midpoint.longitude,camera),x=(p.x-viewport.x)*viewport.scale+8,y=(p.y-viewport.y)*viewport.scale-20;
-    if(x<0||x>mapSize.width-110||y<0||y>mapSize.height-20||curveLabels.some(label=>Math.abs(label.x-x)<110&&Math.abs(label.y-y)<24))continue;
-    curveLabels.push({key:index,x,y,speed:Math.min(designSpeedKmh,arc?(provisionalCurveSpeed(arc.radiusM)??designSpeedKmh):designSpeedKmh)});
-  }
   const drawPath = (points: GeoPoint[]) => points.map((point, index) => { const p = project(point.latitude, point.longitude, camera); return (index ? "L" : "M") + p.x + "," + p.y; }).join(" ");
+  const drawAnchors=(points:GeoPoint[],parked=false)=>points.map((point,index) => { const p = project(point.latitude,point.longitude,camera),size=5/viewport.scale,endpoint=index===0||index===points.length-1; return <rect key={index} x={p.x-size/2} y={p.y-size/2} width={size} height={size} className={(parked?"parked-anchor":"draft-anchor")+(endpoint?" draft-endpoint":"")} vectorEffect="non-scaling-stroke" />; });
   const [companyName, setCompanyName] = useState("");
   const [routeId, setRouteId] = useState<string | null>(null);
   const [routeName, setRouteName] = useState("新路線");
@@ -884,6 +879,7 @@ export function App() {
     });
   }
 
+  const showPlanHover=!!planHover&&!!hoveredPlan&&!referenceCopy.active&&!dragging&&(activeTool==="tracks"||activeTool==="inactive");
   return (
     <main className="workbench" data-theme={theme} style={{"--rail-width":lineWidth,"--map-contrast":contrast/100,"--panel-width":panelWidth+"px","--ui-font":textSize+"px"} as CSSProperties}>
       <header className="app-header">
@@ -941,18 +937,18 @@ export function App() {
             {tileStatus.failed > 0 && <p role="alert">{tileStatus.failed}枚の読み込みに失敗しました。自動再試行やサンプルへの自動切替は行いません。</p>}
             <button className="secondary" onClick={() => setBackground("sample")}>サンプル背景に戻す</button>
           </div>}
-          {(activeTool === "tracks" || activeTool === "inactive") && !referenceCopy.active && !dragging && !(mapMode==="draw" && cursorPosition && draftPoints.length>0 && !draftFinished) && planHover && hoveredPlan && hoveredPlan.line.length > 1 && <div className="construction-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-145,planHover.y+18))}}><strong>{hoveredPlan.name.trim() || "線路計画"} · {Math.round(alignmentLength(hoveredPlan.line))} m</strong><div>{hoveredGeometry?.error ? "敷設不可："+hoveredGeometry.error : "基本条件OK（地形等は未判定）"}</div><small>最小半径（近似）：{Number.isFinite(hoveredGeometry?.minimumRadiusM ?? Infinity) ? Math.round(hoveredGeometry!.minimumRadiusM)+" m" : "直線"}<br/>制限速度：未算定<br/>費用倍率・建設費・維持費：未計算</small></div>}
+
             <div className="map-surface">
             {activeTool === "tracks" && <div className="construction-toolbar" role="group" aria-label="線路敷設設定">            <TrackTypeControls value={trackType} roadFollowing={roadFollowing} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType} onRoadFollowing={value=>{setRoadFollowing(value);setHoverPoint(null);}}/>
             <label>設計最高速度 (km/h)<input aria-label="線路の設計最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/></label>
             <small>接線に近づけると直線、離すと曲線になります</small>
 <details className="construction-help"><summary>説明</summary><p>設計最高速度は線路の上限で、車両性能とは別です。初期値は通常120・高速300・トラム50 km/h、入力範囲1〜600 km/hの暫定ゲーム設定です。延伸は元の線路の値を引き継ぎます。速度に連動する費用や種類別の曲線・勾配規格差は未実装です。道路追従は左側の「限定道路追従」から開始できます。</p></details></div>}
-            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && cursorPosition && !draftFinished && (draftPoints.length>0 || !planHover) && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
+            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && cursorPosition && !draftFinished && !showPlanHover && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
               <strong>{roadFollowingBlocked?"道路追従を開始するか、道路に合わせるをOFFにしてください":previewError?`敷設不可：${previewError}`:hoverPoint&&draftPoints.length?"基本条件OK（地形等は未判定）":draftPoints.length?"最後の点をもう一度クリックで終了":"始点をクリック"}</strong>
               {draftPoints.length>0&&<><div>計画 {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div><div>半径（近似）：{circleGuide?`${Math.round(circleGuide.radiusM)} m`:"直線 / 終端"}</div>{!previewError&&<div>線路の最高速度 {Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh)} km/h{circleGuide?"（曲線制限は暫定）":"（設計上限）"}</div>}</>}
               <small>建設費・維持費：未計算</small>
             </div>}
-            {!referenceCopy.active&&activeTool==="tracks"&&curveLabels.map(label=><span key={label.key} className="curve-speed-label" style={{left:label.x,top:label.y}}>{label.speed} km/h（暫定）</span>)}
+            {showPlanHover&&planHover&&hoveredPlan&&<div className="construction-tooltip plan-hover-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,planHover.y+18))}}><strong>{hoveredPlan.name.trim()||"線路計画"}（ホバー中）</strong><div>高さ：未設定 · {hoveredSpeed===null?"制限速度：未算定":`${hoveredSpeed} km/h（暫定）`}</div></div>}
             <svg ref={svgRef} tabIndex={0} onKeyDown={event=>{
               if(activeTool!=="stations"||mapMode!=="place"||!enabled||event.ctrlKey||event.metaKey||event.altKey)return;
               if(event.key==="Enter"){event.preventDefault();if(!event.repeat){const rect=event.currentTarget.getBoundingClientRect();placePlatformAt(stationCursor??{latitude:camera.latitude,longitude:camera.longitude},rect.width,rect.height);}return;}
@@ -987,12 +983,13 @@ export function App() {
               </g>)}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {referenceCopy.active&&referenceCopy.plan.build&&<path d={drawPath(referenceCopy.plan.build.points)} className="draft-path reference-copy-preview" style={referenceCopy.roadFollow?{stroke:"#298746"}:undefined} pointerEvents="none"/>}
-              {parkedPaths.map(plan=><g key={plan.id}><path d={drawPath(plan.line)} className="draft-path parked-plan" data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} /></g>)}
+              {parkedPaths.map(plan=><g key={plan.id}><path d={drawPath(plan.line)} className={"draft-path parked-plan"+(showPlanHover&&planHover?.id===plan.id?" plan-hovered":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true)}</g>)}
               {!referenceCopy.active && guideCenter && guideEdge && <circle className="curve-circle-guide" cx={guideCenter.x} cy={guideCenter.y} r={Math.hypot(guideEdge.x-guideCenter.x,guideEdge.y-guideCenter.y)} fill="none" stroke={previewError ? "#b34c4c" : "#65716b"} strokeWidth="1" opacity=".6" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
-              {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className="draft-path confirmed-draft" pointerEvents="none" />}
+              {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className={"draft-path confirmed-draft"+(showPlanHover&&planHover?.id===activePathId?" plan-hovered":"")} pointerEvents="none" />}
               {!referenceCopy.active&&candidateLine.length > 1 && <path d={drawPath(candidateLine)} className={"draft-path candidate-draft"+(previewError?" invalid-candidate":"")} pointerEvents="none" />}
               {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
-              {draftPoints.map((point,index) => { const p = project(point.latitude,point.longitude,camera); return <rect key={index} x={p.x-4} y={p.y-4} width="8" height="8" className="draft-anchor" />; })}
+              {showPlanHover&&planHover&&hoveredPlan&&(()=>{const nearest=nearestOnAlignment(hoveredPlan.line,planHover.point).point,p=project(nearest.latitude,nearest.longitude,camera);return <circle className="plan-hover-point" cx={p.x} cy={p.y} r={5/viewport.scale} fill="none" stroke="#d95187" strokeWidth="1.5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;})()}
+              {drawAnchors(draftPoints)}
               {activeTool==="stations"&&mapMode==="place"&&!dragging&&stationCursor&&stationSelection?.error&&<text className="station-placement-error" x={Math.min(680,Math.max(12,project(stationCursor.latitude,stationCursor.longitude,camera).x+16))} y={Math.max(24,project(stationCursor.latitude,stationCursor.longitude,camera).y-16)} fill="#b34c4c" pointerEvents="none">{stationSelection.target?stationSelection.error:"駅は線路上に置いてください"}</text>}
               {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className="planned-station" pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform"/>:<circle cx={p.x} cy={p.y} r="5" fill={valid?"#777":"#b34c4c"}/>}<text x={p.x+10} y={p.y-8}>{station.name}（計画）</text></g>;})}
               {stationPreview.length >= 4 && (detailedStations ? <path d={drawPath(stationPreview) + "Z"} className="station-platform" opacity=".65" pointerEvents="none" /> : <circle cx={project(previewCenter!.latitude,previewCenter!.longitude,camera).x} cy={project(previewCenter!.latitude,previewCenter!.longitude,camera).y} r="5" className="station-platform station-dot" opacity=".65" pointerEvents="none" />)}
