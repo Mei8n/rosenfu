@@ -56,3 +56,46 @@ fn invalid_plan_payload_is_rejected_without_overwriting_old_save() {
     value["world"]["construction_plans"] = json!({"version":999});
     assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
 }
+
+#[test]
+fn schema_ten_path_station_and_schema_eleven_built_station_roundtrip() {
+    let legacy = World::new(WorldDraft {
+        construction_plans: Some(plans()),
+        ..WorldDraft::default()
+    })
+    .unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&encode(&legacy).unwrap()).unwrap();
+    value["schema_version"] = json!(10);
+    assert_eq!(
+        decode(&serde_json::to_vec(&value).unwrap()).unwrap(),
+        legacy
+    );
+    let station = &mut value["world"]["construction_plans"]["plannedStations"][0];
+    station.as_object_mut().unwrap().remove("pathId");
+    station["alignmentId"] = json!("999");
+    station["planId"] = json!(2);
+    value["schema_version"] = json!(11);
+    // Stale infrastructure references remain editable drafts, validated at build time.
+    let restored = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(decode(&encode(&restored).unwrap()).unwrap(), restored);
+    value["world"]["construction_plans"]["plannedStations"][0]["pathId"] = json!(3);
+    assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
+}
+
+#[test]
+fn edited_plan_shape_roundtrips_without_reconstruction() {
+    let mut payload = serde_json::to_value(plans()).unwrap();
+    let a = json!({"latitude":35.0,"longitude":139.0});
+    let b = json!({"latitude":35.001,"longitude":139.002});
+    let mid = json!({"latitude":35.0006,"longitude":139.001});
+    payload["draftPoints"] = json!([a, b]);
+    payload["draftEditedGeometry"] = json!({"version":1,"anchors":[a,b],"line":[a,mid,b]});
+    let mut draft = WorldDraft::default();
+    draft.construction_plans = Some(serde_json::from_value(payload.clone()).unwrap());
+    let world = World::new(draft).unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+    payload["draftEditedGeometry"]["version"] = json!(999);
+    let mut invalid = WorldDraft::default();
+    invalid.construction_plans = Some(serde_json::from_value(payload).unwrap());
+    assert!(World::new(invalid).is_err());
+}

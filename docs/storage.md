@@ -5,7 +5,7 @@ UI・Tauri から独立したクレートで、単体テストでは一時ディ
 
 ## 現段階の形式
 
-JSON のエンベロープに `format: "rosenfu-world"` と `schema_version: 10`、
+JSON のエンベロープに `format: "rosenfu-world"` と `schema_version: 11`、
 `world` を格納します。推奨拡張子は `.rosenfu.json` です。
 この JSON 形式はアルファの小規模検証用であり、SQLite の正式採用・不採用を
 決定したものではありません。製品バージョンと保存スキーマ番号は別に管理します。
@@ -79,3 +79,7 @@ cargo test --locked -p rosenfu-storage
 ## schema 10: 未着工計画
 
 `world.construction_plans` に型付きの計画を保存します。旧schema 1〜9にはこのフィールドがなく、空の計画として復元します。型不正は読込前に拒否し、途中の線形は着工時に検証します。計画も16 MiB上限・既存バックアップ・競合検出の対象です。
+
+## schema 11: 既設線上の計画駅
+
+計画駅の対象を `pathId`（未着工経路）または `alignmentId`（既設線）で区別し、既設線対象は `planId` で所属計画を指定します。schema 10以前の省略されたplanIdは経路の所属から解決します。

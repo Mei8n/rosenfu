@@ -8,6 +8,6 @@ export function plannedTrackSpeed(geometry:CircularDraft, target:GeoPoint, desig
   const d=nearestOnAlignment(geometry.points.slice(i,i+2),target).distanceM;
   if(d<distance){distance=d;index=i;}
  }
- const arc=geometry.arcs.find(a=>index>=a.startPointIndex&&index<a.endPointIndex);
- return Math.min(designSpeed,arc?(provisionalCurveSpeed(arc.radiusM)??designSpeed):designSpeed);
+ const arcs=geometry.arcs.filter(a=>index>=a.startPointIndex&&index<a.endPointIndex);
+ return Math.min(designSpeed,...arcs.map(arc=>provisionalCurveSpeed(arc.radiusM)??0));
 }

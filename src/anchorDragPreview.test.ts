@@ -13,6 +13,6 @@ describe('anchor drag geometric preview',()=>{
  });
  it('rejects missing provenance, endpoints, invalid targets without changing input',()=>{
   const line=[p(0),p(100),p(200)];
-  for(const result of [anchorDragPreview(line,line,0,p(10)),anchorDragPreview(line,[p(0),p(99),p(200)],1,p(50)),anchorDragPreview(line,line,1,{latitude:NaN,longitude:139})]){expect(result.error).not.toBeNull();expect(result.line).toEqual(line);}
+  for(const result of [anchorDragPreview(line,line,-1,p(10)),anchorDragPreview(line,[p(0),p(99),p(200)],1,p(50)),anchorDragPreview(line,line,1,{latitude:NaN,longitude:139})]){expect(result.error).not.toBeNull();expect(result.line).toEqual(line);}
  });
 });

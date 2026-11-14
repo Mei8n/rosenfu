@@ -10,6 +10,8 @@ pub struct ConstructionPlans {
     pub active_path_id: u64,
     pub active_plan_id: u64,
     pub draft_points: Vec<GeoPoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_edited_geometry: Option<EditedPlanGeometry>,
     pub redo_points: Vec<GeoPoint>,
     pub draft_extension: Option<ConstructionExtension>,
     pub track_type: TrackType,
@@ -42,6 +44,8 @@ pub struct ConstructionReference {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPath {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_geometry: Option<EditedPlanGeometry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<ConstructionReference>,
     pub extension: Option<ConstructionExtension>,
     pub id: u64,
@@ -58,10 +62,46 @@ pub struct ConstructionPath {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionStation {
     pub id: String,
-    pub path_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment_id: Option<AlignmentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<u64>,
     pub name: String,
     pub point: GeoPoint,
     pub length_m: f64,
+}
+/// Versioned sampled edit; never reconstruct old plan shapes from moved anchors.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditedPlanGeometry {
+    pub version: u32,
+    pub anchors: Vec<GeoPoint>,
+    pub line: Vec<GeoPoint>,
+}
+impl EditedPlanGeometry {
+    fn valid(&self, current: &[GeoPoint]) -> bool {
+        if self.version != 1
+            || self.anchors.len() < 2
+            || self.anchors.len() > 128
+            || self.line.len() < 2
+            || self.line.len() > 4096
+            || !valid_points(&self.anchors)
+            || !valid_points(&self.line)
+            || current.iter().zip(&self.anchors).any(|(a, b)| a != b)
+        {
+            return false;
+        }
+        let mut start = 0;
+        for anchor in &self.anchors {
+            let Some(offset) = self.line[start..].iter().position(|p| p == anchor) else {
+                return false;
+            };
+            start += offset + 1;
+        }
+        self.line.first() == self.anchors.first() && self.line.last() == self.anchors.last()
+    }
 }
 fn valid_id(id: u64) -> bool {
     id > 0 && id < 9_007_199_254_740_991
@@ -91,6 +131,13 @@ impl ConstructionPlans {
         {
             return Err(invalid);
         }
+        if self
+            .draft_edited_geometry
+            .as_ref()
+            .is_some_and(|g| !g.valid(&self.draft_points))
+        {
+            return Err(invalid);
+        }
         let mut plans = BTreeSet::new();
         for plan in &self.plans {
             if !valid_id(plan.id) || !plans.insert(plan.id) || plan.name.len() > 4096 {
@@ -102,6 +149,13 @@ impl ConstructionPlans {
         }
         let mut paths = BTreeSet::from([self.active_path_id]);
         for path in &self.parked_paths {
+            if path
+                .edited_geometry
+                .as_ref()
+                .is_some_and(|g| path.reference.is_some() || !g.valid(&path.points))
+            {
+                return Err(invalid);
+            }
             if !valid_id(path.id)
                 || !paths.insert(path.id)
                 || !plans.contains(&path.plan_id)
@@ -137,7 +191,21 @@ impl ConstructionPlans {
             if !valid_id(id)
                 || station.id != format!("planned:{id}")
                 || !stations.insert(id)
-                || !paths.contains(&station.path_id)
+                || match (station.path_id, station.alignment_id) {
+                    (Some(path), None) => {
+                        let owner = if path == self.active_path_id {
+                            Some(self.active_plan_id)
+                        } else {
+                            self.parked_paths
+                                .iter()
+                                .find(|p| p.id == path)
+                                .map(|p| p.plan_id)
+                        };
+                        owner.is_none() || station.plan_id.is_some_and(|id| Some(id) != owner)
+                    }
+                    (None, Some(_)) => station.plan_id.is_none_or(|id| !plans.contains(&id)),
+                    _ => true,
+                }
                 || station.name.len() > 4096
                 || !valid_points(&[station.point])
                 || !station.length_m.is_finite()

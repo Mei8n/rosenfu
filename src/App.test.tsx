@@ -840,7 +840,7 @@ test("OSM is the normal background with attribution and offline sample remains a
  const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});
  expect(map.querySelectorAll("image").length).toBeGreaterThan(0);
  for(const image of map.querySelectorAll("image")) expect(image.getAttribute("href")).toMatch(/^https:\/\/tile\.openstreetmap\.org\//);
- expect(screen.getByRole("link",{name:"© OpenStreetMap contributors"}).getAttribute("href")).toBe("https://www.openstreetmap.org/copyright");
+ expect(within(screen.getByLabelText("地図の出典")).getByRole("link",{name:"© OpenStreetMap contributors"}).getAttribute("href")).toBe("https://www.openstreetmap.org/copyright");
  fireEvent.error(map.querySelector("image")!);expect(await screen.findByText(/枚の読み込みに失敗/)).toBeTruthy();
  fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));
  expect(screen.getByRole("img",{name:"駅配置用サンプル地図"}).querySelectorAll("image")).toHaveLength(0);
@@ -893,7 +893,7 @@ test("reference station import stays separate from game stations and can be hidd
  const pack={format:"rosenfu-reference-stations",version:1,dataset:{id:"reference-test",revision:"r1",source:"synthetic",license:"test",bounds:{west:139,east:140,south:35,north:36}},stations:[{osmType:"node",osmId:"123",name:"<script>実在参考</script>",longitude:139.75,latitude:35.67504,kind:"station"}]};
  const before=document.querySelectorAll('.station-marker').length;
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:600,text:()=>Promise.resolve(JSON.stringify(pack))}]}});
- await screen.findByText("参考: <script>実在参考</script>");expect(document.querySelectorAll('.reference-station')).toHaveLength(1);expect(document.querySelector('.reference-station script')).toBeNull();expect(screen.getByRole("link",{name:"参考駅データ: © OpenStreetMap contributors"}).getAttribute("href")).toBe("https://www.openstreetmap.org/copyright");expect(document.querySelectorAll('.station-marker')).toHaveLength(before);expect(invoke).not.toHaveBeenCalled();
+ await screen.findByText("参考: <script>実在参考</script>");expect(document.querySelectorAll('.reference-station')).toHaveLength(1);expect(document.querySelector('.reference-station script')).toBeNull();expect(within(screen.getByLabelText("地図の出典")).getByRole("link",{name:"© OpenStreetMap contributors"}).getAttribute("href")).toBe("https://www.openstreetmap.org/copyright");expect(document.querySelectorAll('.station-marker')).toHaveLength(before);expect(invoke).not.toHaveBeenCalled();
  fireEvent.click(screen.getByLabelText("参考駅を表示"));expect(document.querySelectorAll('.reference-station')).toHaveLength(0);
  fireEvent.click(screen.getByLabelText("参考駅を表示"));expect(document.querySelectorAll('.reference-station')).toHaveLength(1);
 });
