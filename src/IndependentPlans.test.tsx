@@ -156,7 +156,7 @@ test('built-line stations remain separate plans until atomic construction, and p
  fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
  expect(map.querySelectorAll('.planned-station')).toHaveLength(2);
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='place_station_on_alignment'||c==='build_plan')).toBe(false);
- fireEvent.click(screen.getByRole('button',{name:'別の計画を追加'}));fireEvent.click(map,{clientX:320,clientY:150});expect(map.querySelectorAll('.planned-station')).toHaveLength(3);
+ fireEvent.click(screen.getByRole('button',{name:'別の計画を追加'}));fireEvent.click(map,{clientX:250,clientY:150});expect(map.querySelectorAll('.planned-station')).toHaveLength(3);
  vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/ワールドと未着工計画を保存しました/);
  const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
  expect(saved.parkedPaths).toHaveLength(0);expect(saved.plannedStations.map(s=>s.planId)).toEqual([1,1,2]);expect(saved.plannedStations.every(s=>s.alignmentId==='3'&&s.pathId===undefined)).toBe(true);

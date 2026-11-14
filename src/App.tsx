@@ -282,7 +282,7 @@ export function App() {
   function newPath() {
     const current=parkCurrentPlan();
     setParkedPaths(paths=>current?[...paths,current]:paths);
-    setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);changeMapMode("draw");
+    setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function newIndependentPlan() {
     if (!enabled || referenceCopy.active) return;
@@ -293,7 +293,7 @@ export function App() {
     const target=parkedPaths.find(path=>path.id===id);if(!target||target.reference)return;
     const current=parkCurrentPlan();
     setParkedPaths(paths=>[...paths.filter(path=>path.id!==id),...(current?[current]:[])]);
-    setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode("draw");
+    setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function choosePlan(id:number){
     if(id===activePlanId)return;
