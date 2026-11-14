@@ -391,3 +391,13 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .construction-help { position:relative; font-size:11px; }
 .construction-help p { position:absolute; top:20px; right:0; width:220px; padding:8px; background:var(--surface); border:1px solid var(--edge); }
 .construction-toolbar select { background:var(--surface-alt); color:var(--ink); }
+
+/* Optional instructions stay available without competing with editing controls. */
+.user-guide { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border, #c9c9c9); border-radius: 8px; }
+.user-guide summary, .reference-tools > summary, .reference-controls summary { cursor: pointer; }
+.user-guide > summary { font-weight: 600; }
+.user-guide details { margin-top: 10px; }
+.user-guide p { font-size: 0.85rem; line-height: 1.6; }
+.side-panel.collapsed > .user-guide { display: none; }
+.reference-tools { margin: 12px 0; }
+.reference-controls details { margin: 8px 0; }
