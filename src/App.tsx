@@ -1,3 +1,4 @@
+import {emptyConstructionPlans,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
 import {snapReferenceStart} from "./referenceEndpointSnap";
 import {extensionJoinError} from "./extensionJoin";
 import {stationTarget, type StationLine} from "./stationTarget";
@@ -56,6 +57,7 @@ type Route = { id: string; owner: string; name: string; start: string; tracks: s
 type OperatingService = { id: string; owner: string; name: string; start: string; tracks: string[]; stops: number[] };
 type RoutePath = { route_id: string; segments: Segment[]; member_stations: string[] };
 type World = {
+  construction_plans?: ConstructionPlans | null;
   route_paths?: RoutePath[];
   service_paths?: ServicePath[];
   source_records?: SourceRecord[];
@@ -70,7 +72,6 @@ type World = {
   routes: Route[];
   services: OperatingService[];
 };
-type PlannedStation = {id:string; pathId:number; name:string; point:GeoPoint; lengthM:number};
 type StationHistoryEntry = { station: Station; placement?: StationPlacement; planned?:PlannedStation };
 type Status = "loading" | "preview" | "ready" | "error";
 
@@ -194,9 +195,7 @@ export function App() {
   const alignmentName = "新しい線路";
   const [draftFinished, setDraftFinished] = useState(false);
   const [draftPoints, setDraftPoints] = useState<GeoPoint[]>([]);
-  type Extension = {alignmentId:string;endpoint:"start"|"end"};
   const [draftExtension,setDraftExtension]=useState<Extension|null>(null);
-  type PlannedPath = { reference?:ReferenceBuild; extension:Extension|null; id: number; planId: number; name: string; points: GeoPoint[]; redo: GeoPoint[]; line: GeoPoint[]; designSpeedKmh:number; trackType: TrackType; roadFollowing: boolean };
   const [parkedPaths, setParkedPaths] = useState<PlannedPath[]>([]);
   const [activePathId, setActivePathId] = useState(1);
   const [plans,setPlans]=useState([{id:1,name:""}]);
@@ -409,9 +408,22 @@ export function App() {
   useEffect(()=>{referenceCopy.clearHover();},[camera]);
   const saveBlocked = candidateDirty || routeDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
   const hasPlans = plannedStations.length>0 || draftPoints.length > 0 || redoPoints.length > 0 || parkedPaths.length > 0 || referenceCopy.active;
-  const unapplied = saveBlocked || hasPlans;
-  const autosave=useAutosave({ready:status==="ready",dirty:dirty&&!companySetupRequired,world,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
-  const closeGuard = useUnsavedCloseGuard(dirty || unapplied);
+  const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,plans,parkedPaths,activePathId,activePlanId,draftPoints,redoPoints,draftExtension,trackType,designSpeedKmh,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[plans,parkedPaths,activePathId,activePlanId,draftPoints,redoPoints,draftExtension,trackType,designSpeedKmh,roadFollowing,plannedStations,draftFinished]);
+  const planFingerprint=JSON.stringify(constructionPlans);
+  const [savedPlanFingerprint,setSavedPlanFingerprint]=useState(()=>JSON.stringify(emptyConstructionPlans()));
+  const plansDirty=planFingerprint!==savedPlanFingerprint;
+  const unapplied = saveBlocked || referenceCopy.active;
+  const autosaveSnapshot=useMemo(()=>({world,constructionPlans}),[world,constructionPlans]);
+  const autosave=useAutosave({ready:status==="ready",dirty:(dirty||plansDirty)&&!companySetupRequired,world:autosaveSnapshot,constructionPlans,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
+  const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied);
+  function restoreConstructionPlans(value:ConstructionPlans|null|undefined){
+    const restored=value??emptyConstructionPlans(),ids=nextConstructionIds(restored);
+    setPlans(restored.plans);setParkedPaths(restored.parkedPaths);setActivePathId(restored.activePathId);setActivePlanId(restored.activePlanId);
+    setDraftPoints(restored.draftPoints);setRedoPoints(restored.redoPoints);setDraftExtension(restored.draftExtension);setDraftFinished(restored.draftFinished);
+    setTrackType(restored.trackType);setDesignSpeedKmh(restored.designSpeedKmh);setRoadFollowing(restored.roadFollowing);setPlannedStations(restored.plannedStations);
+    nextPlanId.current=ids.plan;nextPathId.current=ids.path;nextPlannedStationId.current=ids.station;
+    setSavedPlanFingerprint(JSON.stringify(restored));
+  }
   function stationReferences(id: string) {
     const links = world?.tracks.filter((track) => track.from === id || track.to === id) ?? [];
     const routes = world?.routes.filter((route) => route.start === id || world?.route_paths?.some(path => path.route_id === route.id && (path.member_stations.includes(id) || path.segments.some(segment => segment.kind === "alignment" ? segment.from === id || segment.to === id : links.some(link => link.id === segment.track_id)))) || route.tracks.some((track) => links.some((link) => link.id === track))) ?? [];
@@ -494,7 +506,7 @@ export function App() {
     setStatus("loading");
     Promise.all([invoke<EngineInfo>("engine_info"), invoke<World>("world_snapshot")]).then(
       ([engine, snapshot]) => {
-        if (active) { setInfo(engine); setCompanySetupRequired(engine.company_setup_required===true); setWorld(snapshot); setCompanyName(snapshot.companies[0]?.name ?? ""); setStatus("ready"); }
+        if (active) { setInfo(engine); setCompanySetupRequired(engine.company_setup_required===true); setWorld(snapshot); restoreConstructionPlans(snapshot.construction_plans);setCompanyName(snapshot.companies[0]?.name ?? ""); setStatus("ready"); }
       },
       (failure) => {
         if (active) { setError(detail(failure)); setStatus("error"); }
@@ -865,11 +877,12 @@ export function App() {
   function save() {
     if (saveBlocked) return;
     void perform(async () => {
-      await invoke<{ saved: boolean }>("save_world");
-      setDirty(false);setStationUndo(history=>history.filter(entry=>entry.planned));setStationRedo(history=>history.filter(entry=>entry.planned)); setNotice(hasPlans?"建設済みワールドを保存しました。未着工計画は保存対象外です。画面上の計画は残っています。":"ワールドを保存しました。");
+      await invoke<{ saved: boolean }>("save_world",{constructionPlans});
+      setSavedPlanFingerprint(planFingerprint);
+      setDirty(false);setStationUndo(history=>history.filter(entry=>entry.planned));setStationRedo(history=>history.filter(entry=>entry.planned)); setNotice(referenceCopy.active?"ワールドと未着工計画を保存しました。選択中の参照候補は計画に追加するまで保存されません。":"ワールドと未着工計画を保存しました。");
     });
   }
-  function requestLoad(source:"manual"|"auto"){setLoadSource(source);if(dirty||unapplied)setConfirmLoad(true);else load(source);}
+  function requestLoad(source:"manual"|"auto"){setLoadSource(source);if(dirty||plansDirty||unapplied)setConfirmLoad(true);else load(source);}
   function load(source: "manual"|"auto" = loadSource) {
     setConfirmLoad(false);
     void perform(async () => {
@@ -879,7 +892,7 @@ export function App() {
       referenceCopy.clear();setCandidateDirty(false);setPendingGraphChange(null);
       setCompanySetupRequired(false);
       clearStationHistory();
-      setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); setPlannedStations([]);setStationCursor(null);setParkedPaths([]);setPlans([{id:1,name:""}]);setActivePlanId(1);nextPlanId.current=2;setTrackType("normal");setDesignSpeedKmh(120);setRoadFollowing(false);setActivePathId(1);setDraftExtension(null);nextPathId.current=2;setDraftFinished(false);setDraftPoints([]); setRedoPoints([]); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setStationFrom(""); setStationTo(""); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
+      setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreConstructionPlans(snapshot.construction_plans);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setStationFrom(""); setStationTo(""); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
       setNotice(source==="auto"?"自動保存から復元しました。手動保存データは上書きしていません。必要なら保存してください。":"保存したワールドを読み込みました。");
     });
   }
@@ -891,7 +904,7 @@ export function App() {
       </header>
       <div className="toolbar">
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
-        <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={() => requestLoad("manual")}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
+        <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={() => requestLoad("manual")}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
       </div>
       {status === "preview" && <p className="banner">ブラウザでの画面確認です。表示はサンプルデータで、駅の配置・線路接続・保存・読込はデスクトップ版で利用できます。</p>}
       {status === "loading" && <p className="banner" role="status">共通エンジンからワールドを読み込んでいます。</p>}
@@ -901,7 +914,7 @@ export function App() {
       {autosave.message.includes("失敗") && <div className="banner" role="status">オートセーブの確認または保存に失敗しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の状態を確認</button></div>}
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
       {pendingGraphChange && <div className="banner load-confirm" role="alert"><p>参考線データを変更すると、現在の実在形状に沿う敷設・道路追従の未着工計画を破棄します。変更しますか。</p><button className="secondary" onClick={()=>setPendingGraphChange(null)}>計画に戻る</button><button disabled={!enabled} onClick={()=>{referenceCopy.clear();setGraphBundle(pendingGraphChange.bundle);setPendingGraphChange(null);}}>参考計画を破棄して変更</button></div>}
-      {confirmLoad && <div className="banner load-confirm" role="alert"><p>読込すると、未着工計画（実在形状に沿う敷設・道路追従を含む）、未保存の建設内容と未適用の下書きが破棄され、保存時点の状態に置き換わります。</p><button className="secondary" disabled={busy} onClick={() => setConfirmLoad(false)}>戻る</button><button disabled={busy} onClick={()=>load()}>読込を続ける</button></div>}
+      {confirmLoad && <div className="banner load-confirm" role="alert"><p>読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。</p><button className="secondary" disabled={busy} onClick={() => setConfirmLoad(false)}>戻る</button><button disabled={busy} onClick={()=>load()}>読込を続ける</button></div>}
       {saveBlocked && <p className="draft-warning">駅設定・会社・路線・系統の下書きを適用、または破棄してから手動保存してください。自動保存も適用済みの内容だけが対象です。</p>}
       {hasPlans && <p className="draft-warning">未着工計画は保存されません。建設済みワールドは保存でき、画面上の計画はそのまま残ります。</p>}
       {unapplied && (activeTool === "stations" || activeTool === "tracks") && <p className="draft-warning">設備削除は未適用の下書きを適用・破棄してから行えます。</p>}
@@ -1043,7 +1056,7 @@ export function App() {
           </nav>
           <section id="workspace-panel-finance" role="tabpanel" aria-labelledby="workspace-tab-finance" hidden={mainTab!=="finance"}><h3>財務</h3><p>未実装です。収支・運賃・経費の画面は今後追加します。</p></section>
           <section id="workspace-panel-city" role="tabpanel" aria-labelledby="workspace-tab-city" hidden={mainTab!=="city"}><h3>都市</h3><p>未実装です。人口・需要・都市発展の画面は今後追加します。</p></section>
-          <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3><p>この試作は1つのローカル保存先を使います。セーブ一覧・複数スロットは未実装です。</p><button disabled={!enabled||saveBlocked} onClick={save}>ワールドを保存</button><button className="secondary" disabled={!enabled} onClick={()=>requestLoad("manual")}>ワールドを読み込む</button><h4>オートセーブ</h4><p>自動保存間隔：2分（固定・実時間）</p><p>適用済みワールドのみを専用ファイルに自動保存します。未着工計画・未適用編集は対象外。手動保存を上書きしません。最新1件のみ保持します。</p><p role="status">{autosave.message}</p>{autosave.permission==="blocked"&&<button className="secondary" disabled={!enabled} onClick={autosave.allowReplacement}>このワールドで自動保存を開始（以前の自動保存を置き換える）</button>}{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
+          <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3><p>この試作は1つのローカル保存先を使います。セーブ一覧・複数スロットは未実装です。</p><button disabled={!enabled||saveBlocked} onClick={save}>ワールドを保存</button><button className="secondary" disabled={!enabled} onClick={()=>requestLoad("manual")}>ワールドを読み込む</button><h4>オートセーブ</h4><p>自動保存間隔：2分（固定・実時間）</p><p>ワールドと未着工計画を専用ファイルに自動保存します。未適用の編集フォーム・未確定の参照候補は対象外。手動保存を上書きしません。最新1件のみ保持します。</p><p role="status">{autosave.message}</p>{autosave.permission==="blocked"&&<button className="secondary" disabled={!enabled} onClick={autosave.allowReplacement}>このワールドで自動保存を開始（以前の自動保存を置き換える）</button>}{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
           <section className="station-editor" role="tabpanel" id="panel-stations" aria-labelledby="tab-stations" hidden={activeTool !== "stations"}>
             <div className="section-number">02 / STATION</div><h3 id="editor-title">線路にホームを置く</h3>

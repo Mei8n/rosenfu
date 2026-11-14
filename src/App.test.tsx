@@ -80,7 +80,7 @@ test("save and load errors retain the current snapshot", async () => {
   vi.mocked(invoke).mockRejectedValueOnce(new Error("save denied"));
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await screen.findByText(/save denied/);
-  expect(screen.queryByText("ワールドを保存しました。")).toBeNull();
+  expect(screen.queryByText("ワールドと未着工計画を保存しました。")).toBeNull();
   vi.mocked(invoke).mockRejectedValueOnce(new Error("corrupt file"));
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   await screen.findByText(/corrupt file/);
@@ -116,7 +116,7 @@ test("pending operations block duplicate actions and successful save clears dirt
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "save_world")).toHaveLength(1);
   finish({ saved: true });
   await waitFor(() => expect(screen.queryByText("未保存の変更あり")).toBeNull());
-  expect(screen.getByText("ワールドを保存しました。")).toBeTruthy();
+  expect(screen.getByText("ワールドと未着工計画を保存しました。")).toBeTruthy();
 });
 
 const twoStations = {
@@ -432,7 +432,7 @@ test("camera changes neither edit world IDs/coordinates nor reset on save and re
   fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   await screen.findByText("新駅を配置しました。");
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
-  await screen.findByText("ワールドを保存しました。");
+  await screen.findByText("ワールドと未着工計画を保存しました。");
   const count = vi.mocked(invoke).mock.calls.length;
   fireEvent.change(screen.getByLabelText("中心緯度"), { target: { value: "43.06" } });
   fireEvent.change(screen.getByLabelText("中心経度"), { target: { value: "141.35" } });

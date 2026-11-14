@@ -87,6 +87,8 @@ pub struct OperatingService {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub construction_plans: Option<ConstructionPlans>,
     #[serde(default)]
     pub source_records: Vec<SourceRecord>,
     #[serde(default)]
@@ -126,6 +128,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            construction_plans: None,
             route_paths: vec![],
             service_paths: vec![],
             source_records: vec![],
@@ -148,6 +151,7 @@ pub enum WorldError {
     EmptyName(&'static str),
     MissingReference(&'static str),
     InvalidCoordinate,
+    InvalidConstructionPlans,
     InvalidAlignment,
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
@@ -333,6 +337,9 @@ fn name(value: &str, entity: &'static str) -> Result<(), WorldError> {
 }
 impl WorldDraft {
     pub fn validate(&self) -> Result<(), WorldError> {
+        if let Some(plans) = &self.construction_plans {
+            plans.validate()?;
+        }
         ids(self.players.iter().map(|x| x.id.0), "player")?;
         ids(self.companies.iter().map(|x| x.id.0), "company")?;
         ids(self.stations.iter().map(|x| x.id.0), "station")?;
@@ -479,6 +486,7 @@ mod tests {
     use super::*;
     fn sample() -> WorldDraft {
         WorldDraft {
+            construction_plans: None,
             route_paths: vec![],
             service_paths: vec![],
             source_records: vec![],
@@ -622,3 +630,6 @@ mod provenance;
 pub use provenance::{
     AlignmentProvenance, AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
 };
+
+mod construction_plans;
+pub use construction_plans::ConstructionPlans;

@@ -34,7 +34,7 @@ test("direct hover and click places planned stations without committing tracks; 
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.click(screen.getByRole("tab",{name:"路線"}));expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
- fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/建設済みワールドを保存しました/);
+ fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/ワールドと未着工計画を保存しました/);
  // The notice can render before perform() releases the async busy guard.
  // Redo is a subsequent user action, so wait for controls to become usable.
  await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
@@ -79,7 +79,7 @@ test("changing a plan so its station no longer fits blocks construction until st
 test("saving the built world preserves both undo and redo for unbuilt stations",async()=>{
  const map=await start();fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
- fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/建設済みワールドを保存しました/);
+ fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/ワールドと未着工計画を保存しました/);
  // The notice can render before perform() releases the async busy guard.
  // Redo is a subsequent user action, so wait for controls to become usable.
  await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));

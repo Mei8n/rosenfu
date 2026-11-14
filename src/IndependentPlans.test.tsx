@@ -78,12 +78,12 @@ test("plan names are optional, editable per independent plan and never become ph
  await waitFor(()=>expect((trackPanel().getByRole("button",{name:/山側に変更 を編集/}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(trackPanel().getByRole("button",{name:/山側に変更 を編集/}));fireEvent.change(name(),{target:{value:""}});expect(trackPanel().getByText(/編集中：計画 1/)).toBeTruthy();
 });
 
-test("manual save excludes plans but retains active, parked, redo and close/load guards",async()=>{
+test("manual save includes plans and retains active, parked and redo; later edits require a load guard",async()=>{
  const map=await start(built);fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
  fireEvent.click(trackPanel().getByRole("button",{name:"別の線路計画を追加"}));fireEvent.click(map,{clientX:320,clientY:200});fireEvent.click(map,{clientX:360,clientY:200});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});const paths=Array.from(map.querySelectorAll('.draft-path')).map(p=>p.getAttribute('d'));
  vi.mocked(invoke).mockRejectedValueOnce(Error('save rejected'));fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/save rejected/);expect(Array.from(map.querySelectorAll('.draft-path')).map(p=>p.getAttribute('d'))).toEqual(paths);
- vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/建設済みワールドを保存しました/);expect(Array.from(map.querySelectorAll('.draft-path')).map(p=>p.getAttribute('d'))).toEqual(paths);
+ vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/ワールドと未着工計画を保存しました/);expect(Array.from(map.querySelectorAll('.draft-path')).map(p=>p.getAttribute('d'))).toEqual(paths);
  await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  fireEvent.click(screen.getByRole('button',{name:'読込'}));expect(screen.getByRole('button',{name:'読込を続ける'})).toBeTruthy();
 });
@@ -128,4 +128,25 @@ test("a parked redo-only path remains selectable and can recover without deletin
  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  click(360,200);expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("manual round-trip restores multiple plans, paths, stations, redo and independent IDs",async()=>{
+ const map=await start();const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(180,130);click(230,130);fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));click(205,130);fireEvent.click(screen.getByRole('tab',{name:'線路'}));click(230,130);
+ click(320,200);click(360,200);
+ fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));
+ fireEvent.change(trackPanel().getByLabelText('計画名（任意）'),{target:{value:'第二計画'}});
+ click(180,240);click(230,240);fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/ワールドと未着工計画を保存しました/);
+ const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
+ expect(saved.plans).toHaveLength(2);expect(saved.parkedPaths).toHaveLength(2);expect(saved.plannedStations).toHaveLength(1);expect(saved.redoPoints).toHaveLength(1);
+ await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
+ const beforeUnload=new Event('beforeunload',{cancelable:true});window.dispatchEvent(beforeUnload);expect(beforeUnload.defaultPrevented).toBe(false);
+ fireEvent.click(trackPanel().getByRole('button',{name:'下書きを消去'}));
+ vi.mocked(invoke).mockResolvedValueOnce({...empty,construction_plans:saved});fireEvent.click(screen.getByRole('button',{name:'読込'}));fireEvent.click(screen.getByRole('button',{name:'読込を続ける'}));
+ await waitFor(()=>expect((trackPanel().getByLabelText('計画名（任意）') as HTMLInputElement).value).toBe('第二計画'));
+ expect(map.querySelectorAll('.parked-plan')).toHaveLength(2);expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));expect(trackPanel().getByText(/編集中：計画 3/)).toBeTruthy();
 });

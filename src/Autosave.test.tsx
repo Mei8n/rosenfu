@@ -78,3 +78,11 @@ test.each(['0','1','5','10'])('fixed two-minute real-time cadence ignores legacy
  await act(async()=>{await vi.advanceTimersByTimeAsync(1);});
  expect(writes()).toBe(2);
 });
+
+test('autosave includes plan-only edits and sends a consistent snapshot, not later edits',async()=>{
+ const h=start();const {emptyConstructionPlans}=await import('./constructionPlans');const first=emptyConstructionPlans();first.plans[0].name='未着工';
+ const props={...h.props,constructionPlans:first,world:{id:1,plans:first}};h.rerender(props);
+ await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(invoke).toHaveBeenCalledWith('autosave_world',{constructionPlans:first});
+ const second={...first,plans:[{id:1,name:'変更後'}]};const changed={...props,constructionPlans:second,world:{id:1,plans:second}};h.rerender(changed);
+ await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(invoke).toHaveBeenLastCalledWith('autosave_world',{constructionPlans:second});
+});
