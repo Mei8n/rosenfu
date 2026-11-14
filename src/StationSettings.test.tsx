@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
+import {act,cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:vi.fn()}));
@@ -77,4 +77,15 @@ test("station name display preference is discoverable in Settings and restores o
  cleanup();await setup();fireEvent.click(screen.getByRole('tab',{name:'設定'}));
  expect((screen.getByRole('checkbox',{name:'駅名を表示'}) as HTMLInputElement).checked).toBe(true);
  expect(document.querySelectorAll('.station-marker text')).toHaveLength(2);
+});
+
+test("closing stays guarded when input returns to the saved length while an update is in flight",async()=>{
+ const editor=await setup();const input=editor.getByLabelText('選択駅の長さ');let finish!:(value:unknown)=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+ fireEvent.change(input,{target:{value:'12'}});await waitFor(()=>expect(invoke).toHaveBeenCalledWith('update_station_placement',{stationId:'4',lengthM:240,widthM:17}));
+ fireEvent.change(input,{target:{value:'10'}});
+ const closing=new Event('beforeunload',{cancelable:true});window.dispatchEvent(closing);expect(closing.defaultPrevented).toBe(true);
+ vi.mocked(invoke).mockResolvedValueOnce(world);
+ await act(async()=>finish({...world,station_placements:[{...world.station_placements[0],length_m:240},world.station_placements[1]]}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('update_station_placement',{stationId:'4',lengthM:200,widthM:17}));
 });

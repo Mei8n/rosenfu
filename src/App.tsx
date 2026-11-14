@@ -430,7 +430,7 @@ export function App() {
   const unapplied = saveBlocked || referenceCopy.active;
   const autosaveSnapshot=useMemo(()=>({world,constructionPlans}),[world,constructionPlans]);
   const autosave=useAutosave({ready:status==="ready",dirty:(dirty||plansDirty)&&!companySetupRequired,world:autosaveSnapshot,constructionPlans,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
-  const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied);
+  const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined){
     const restored=value??emptyConstructionPlans(),ids=nextConstructionIds(restored);
     setPlans(restored.plans);setParkedPaths(restored.parkedPaths);setActivePathId(restored.activePathId);setActivePlanId(restored.activePlanId);
