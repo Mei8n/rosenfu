@@ -321,7 +321,7 @@ export function App() {
     ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
     setDraftFinished(false);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
   }
-  const [planHover, setPlanHover] = useState<{id:number;x:number;y:number;point:GeoPoint} | null>(null);
+  const [planHover, setPlanHover] = useState<{id:number;x:number;y:number;point:GeoPoint;anchor?:number} | null>(null);
   const [builtHover,setBuiltHover]=useState<{id:string;point:GeoPoint}|null>(null);
   useEffect(() => { setPlanHover(null);setBuiltHover(null); }, [draftPoints, parkedPaths, activeTool, camera, world]);
   function hoverBuilt(event:ReactPointerEvent<SVGPathElement>,id:string){
@@ -338,11 +338,11 @@ export function App() {
   const hoveredGeometry = hoveredPlan&&!hoveredPlan.reference ? plannedGeometry(hoveredPlan.points,hoveredPlan.editedGeometry,hoveredPrevious) : null;
   const hoveredSpeed=hoveredGeometry&&planHover?plannedTrackSpeed(hoveredGeometry,planHover.point,hoveredPlan!.designSpeedKmh):null;
 
-  function hoverPlan(event: ReactPointerEvent<SVGPathElement>, id:number) {
+  function hoverPlan(event: ReactPointerEvent<SVGElement>, id:number, anchor?:number) {
     if (gestureRef.current || anchorGesture.current || event.pointerType === "touch") return;
     setBuiltHover(null);
     const rect=svgRef.current?.getBoundingClientRect();
-    if(rect){const point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);if(point)setPlanHover({id,x:event.clientX-rect.left,y:event.clientY-rect.top,point});}
+    if(rect){const points=id===activePathId?draftPoints:parkedPaths.find(path=>path.id===id)?.points;const point=anchor===undefined?coordinatesFromClient(event.clientX,event.clientY,rect,camera):points?.[anchor];if(point)setPlanHover({id,x:event.clientX-rect.left,y:event.clientY-rect.top,point,anchor});}
   }
   const viewport = mapViewport(mapSize.width,mapSize.height);
   // Both focus markers use the same size: the visible rail plus a small
@@ -354,14 +354,14 @@ export function App() {
   };
   const lineFocusMarker=(points:GeoPoint[],target:GeoPoint,className:string)=>{
     const p=project(target.latitude,target.longitude,camera);
-    const endpoint=[points[0],points.at(-1)].filter((point):point is GeoPoint=>!!point).find(point=>{const q=project(point.latitude,point.longitude,camera);return Math.hypot(p.x-q.x,p.y-q.y)*viewport.scale<=8;});
+    const endpoint=[points[0],points.at(-1)].filter((point):point is GeoPoint=>!!point).map(point=>{const q=project(point.latitude,point.longitude,camera);return {point,distance:Math.hypot(p.x-q.x,p.y-q.y)*viewport.scale};}).filter(item=>item.distance<=8).sort((a,b)=>a.distance-b.distance)[0]?.point;
     return focusMarker(endpoint??nearestOnAlignment(points,target).point,endpoint?"anchor":"line",className);
   };
   const drawPath = (points: GeoPoint[]) => points.map((point, index) => { const p = project(point.latitude, point.longitude, camera); return (index ? "L" : "M") + p.x + "," + p.y; }).join(" ");
   const drawAnchors=(points:GeoPoint[],parked=false,id=activePathId)=>points.map((point,index) => {
     const p=project(point.latitude,point.longitude,camera),size=5/viewport.scale,hit=22/viewport.scale,endpoint=index===0||index===points.length-1;
     return <g key={index}><rect x={p.x-size/2} y={p.y-size/2} width={size} height={size} className={(parked?"parked-anchor":"draft-anchor")+(endpoint?" draft-endpoint":"")} vectorEffect="non-scaling-stroke"/>
-      <rect onPointerDown={event=>beginAnchorGesture(event,id,index)} data-anchor-index={index} data-anchor-path={id} x={p.x-hit/2} y={p.y-hit/2} width={hit} height={hit} className="anchor-drag-hit"/></g>;
+      <rect onPointerEnter={event=>hoverPlan(event,id,index)} onPointerMove={event=>hoverPlan(event,id,index)} onPointerLeave={()=>setPlanHover(null)} onPointerDown={event=>beginAnchorGesture(event,id,index)} data-anchor-index={index} data-anchor-path={id} x={p.x-hit/2} y={p.y-hit/2} width={hit} height={hit} className="anchor-drag-hit"/></g>;
   });
   const [companyName, setCompanyName] = useState("");
   const [routeId, setRouteId] = useState<string | null>(null);
@@ -1136,7 +1136,7 @@ export function App() {
               {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
               {enabled&&(activeTool==="tracks"||activeTool==="inactive")&&!referenceCopy.active&&!dragging&&!anchorPreview&&!endpointCandidate&&builtHover&&hoveredBuilt&&lineFocusMarker(hoveredBuilt.points,builtHover.point,"built-hover-point")}
               {endpointCandidate&&focusMarker(endpointCandidate.point,"anchor","endpoint-snap-ring",endpointCandidateAllowed)}
-              {showPlanHover&&!endpointCandidate&&planHover&&hoveredPlan&&lineFocusMarker(hoveredPlan.line,planHover.point,"plan-hover-point")}
+              {showPlanHover&&!endpointCandidate&&planHover&&hoveredPlan&&(planHover.anchor===undefined?lineFocusMarker(hoveredPlan.line,planHover.point,"plan-hover-point"):focusMarker(planHover.point,"anchor","plan-hover-point"))}
               {dragSpeedLabels.map(label=>{const p=project(label.point.latitude,label.point.longitude,camera);return <g key={label.interval} className="drag-segment-speed" data-interval={label.interval} pointerEvents="none" transform={`translate(${p.x} ${p.y}) scale(${1/viewport.scale})`}><rect x="-34" y="-27" width="68" height="19" rx="3"/><text x="0" y="-14" textAnchor="middle">{label.speed} km/h</text></g>;})}
               {drawAnchors(draftPoints)}
               {anchorPreview?.preview&&<g pointerEvents="none"><path d={drawPath(anchorPreview.preview.line)} className={"draft-path anchor-drag-preview"+(anchorPreview.error?" invalid-candidate":"")} />{focusMarker(anchorPreview.preview.anchors[anchorPreview.index],"anchor",anchorPreview.snapped?"anchor-snap-ring snapped":"anchor-snap-ring",!anchorPreview.error)}</g>}

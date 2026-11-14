@@ -174,3 +174,15 @@ test('built track midpoint hover is visual only and matches endpoint marker size
  fireEvent.pointerLeave(hit);fireEvent.pointerLeave(map);
  expect(map.querySelector('.built-hover-point')).toBeNull();
 });
+
+test('inactive hover selects the nearest endpoint when both endpoints are nearby',async()=>{
+ const map=await start({alignments:[{...line,points:[point(180,130),point(183,130)]}]});
+ fireEvent.keyDown(window,{key:'Escape'});
+ const hit=map.querySelector('.alignment-hit')!;
+ fireEvent.pointerEnter(hit,{clientX:183,clientY:130});
+ const marker=map.querySelector('.built-hover-point')!;
+ expect(marker).toBeTruthy();
+ expect(marker.getAttribute('data-kind')).toBe('anchor');
+ const endPath=hit.getAttribute('d')!.match(/-?\d+(?:\.\d+)?/g)!;
+ expect(Number(marker.getAttribute('cx'))).toBeCloseTo(Number(endPath[endPath.length-2]),3);
+});
