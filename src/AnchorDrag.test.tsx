@@ -15,7 +15,7 @@ async function setup(){
  return map;
 }
 function startDrag(map:HTMLElement){const anchor=map.querySelector('[data-anchor-index="1"]')!;fireEvent.pointerDown(anchor,{clientX:250,clientY:150,button:0});fireEvent.pointerMove(map,{clientX:250,clientY:160});}
-const shape=(map:HTMLElement)=>map.querySelector('.draft-path')!.getAttribute('d');
+const shape=(map:HTMLElement)=>map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d');
 test('anchor drag previews, commits both sides, undo/redo and save preserves explicit geometry',async()=>{
  const map=await setup(),before=shape(map);startDrag(map);
  expect(map.querySelector('.anchor-drag-preview')).not.toBeNull();expect(shape(map)).toBe(before);expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(true);
@@ -58,4 +58,40 @@ test('parking and reselecting edited geometry never regenerates the old curve',a
  const map=await setup();startDrag(map);fireEvent.pointerUp(map,{clientX:250,clientY:160});const after=shape(map);
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));expect(map.querySelector('.parked-plan')!.getAttribute('d')).toBe(after);
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));expect(shape(map)).toBe(after);
+});
+
+async function savedPlan(){
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ await screen.findByText(/ワールドと未着工計画を保存しました/);
+ return (vi.mocked(invoke).mock.calls.filter(([command])=>command==='save_world').at(-1)![1] as any).constructionPlans;
+}
+const undo=()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+const redo=()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+test('finished path undo/redo retains completion at three, two, one and zero points',async()=>{
+ const map=await setup();fireEvent.click(map,{clientX:350,clientY:150});
+ for(const length of [2,1,0]){
+  undo();fireEvent.pointerMove(map,{clientX:420,clientY:180});
+  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(length);
+  const saved=await savedPlan();expect(saved.draftFinished).toBe(true);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
+ }
+ for(const length of [1,2,3]){
+  redo();fireEvent.pointerMove(map,{clientX:420,clientY:180});
+  const saved=await savedPlan();expect(saved.draftFinished).toBe(true);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
+ }
+});
+test('loaded finished plans retain completion through fallback point undo/redo',async()=>{
+ const map=await setup();fireEvent.click(map,{clientX:350,clientY:150});const saved=await savedPlan();
+ vi.mocked(invoke).mockResolvedValueOnce({...empty,construction_plans:saved});fireEvent.click(screen.getByRole('button',{name:'読込'}));await screen.findByText(/保存したワールドを読み込みました/);
+ undo();expect((await savedPlan()).draftFinished).toBe(true);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ redo();expect((await savedPlan()).draftFinished).toBe(true);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
+});
+test('finished drag undo and redo preserve completed state and other paths',async()=>{
+ const map=await setup();fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));const parked=map.querySelector('.parked-plan')!.getAttribute('d');
+ for(const x of [150,250,350])fireEvent.click(map,{clientX:x,clientY:210});
+ fireEvent.click(map,{clientX:350,clientY:210});const before=shape(map);
+ const anchor=map.querySelector('[data-anchor-index="1"][data-anchor-path="2"]')!;
+ fireEvent.pointerDown(anchor,{clientX:250,clientY:210,button:0});fireEvent.pointerMove(map,{clientX:250,clientY:220});fireEvent.pointerUp(map,{clientX:250,clientY:220});
+ const after=shape(map);expect(after).not.toBe(before);
+ undo();expect(shape(map)).toBe(before);expect((await savedPlan()).draftFinished).toBe(true);
+ redo();expect(shape(map)).toBe(after);expect((await savedPlan()).draftFinished).toBe(true);expect(map.querySelector('.parked-plan')!.getAttribute('d')).toBe(parked);
 });

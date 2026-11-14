@@ -236,8 +236,8 @@ export function App() {
   const setContrast=(value:number)=>displaySettings.update({contrast:value});
   const setPanelWidth=(value:number)=>displaySettings.update({panelWidth:value});
   const setTextSize=(value:number)=>displaySettings.update({textSize:value});
-  function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} setDraftFinished(false); if (!draftPoints.length) return; setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
-  function redoPoint() { if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) return; setDraftFinished(false); setDraftPoints(points => [...points, redoPoints[redoPoints.length-1]]); setRedoPoints(points => points.slice(0,-1)); setHoverPoint(null); }
+  function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} if (!draftPoints.length) return; setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
+  function redoPoint() { if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) return; setDraftPoints(points => [...points, redoPoints[redoPoints.length-1]]); setRedoPoints(points => points.slice(0,-1)); setHoverPoint(null); }
   const [alignmentId, setAlignmentId] = useState("");
   const stationNamesVisible=displaySettings.settings.stationNamesVisible;
   const setStationNamesVisible=(value:boolean)=>displaySettings.update({stationNamesVisible:value});
@@ -577,7 +577,7 @@ export function App() {
   }
   function undoAnchor(redo:boolean){
     const history=redo?anchorRedo:anchorUndo,entry=history.at(-1);if(!entry)return;
-    applyAnchorEdit(entry.id,redo?entry.after:entry.before);if(entry.kind==="point"&&entry.id===activePathId)setDraftFinished(false);
+    applyAnchorEdit(entry.id,redo?entry.after:entry.before);
     if(redo){setAnchorRedo(items=>items.slice(0,-1));setAnchorUndo(items=>[...items,entry]);}else{setAnchorUndo(items=>items.slice(0,-1));setAnchorRedo(items=>[...items,entry]);}
   }
   function cancelAnchorGesture(){
