@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
+import styles from "./style.css?raw";
 import {afterEach,expect,test,vi} from "vitest";
 import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
@@ -152,6 +153,11 @@ for(const endpoint of ['start','end'] as const)test(`tangent guide follows built
 
 test('built line list keeps a unique selectable label without repetitive metadata',async()=>{
  await start({alignments:[{...line,name:'新しい線路'}]});
+ expect(screen.queryByRole('button',{name:'線路 3'})).toBeNull();
+ const css=document.createElement('style');css.textContent=styles;document.head.append(css);
+ expect(getComputedStyle(document.querySelector('.construction-list')!).display).toBe('none');
+ css.remove();
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));
  const entry=screen.getByRole('button',{name:'線路 3'});
  expect(entry.textContent).toBe('線路 3');
  expect(screen.queryByText('出典記録なし')).toBeNull();
@@ -187,19 +193,19 @@ test('inactive hover selects the nearest endpoint when both endpoints are nearby
  expect(Number(marker.getAttribute('cx'))).toBeCloseTo(Number(endPath[endPath.length-2]),3);
 });
 
-for(const sourceEnd of ['start','end'] as const)for(const targetEnd of ['start','end'] as const)test(`joins built ${sourceEnd} to ${targetEnd} with exact endpoint and undoable target`,async()=>{
+for(const sourceEnd of ['start','end'] as const)for(const targetEnd of ['start','end'] as const)test(`joins built ${sourceEnd} to ${targetEnd} with Ctrl held, exact endpoint and undoable target`,async()=>{
  const x=sourceEnd==='end'?350:100,far=sourceEnd==='end'?420:40;
  const target={...line,id:'4',name:'接続先',design_speed_kmh:80,points:targetEnd==='start'?[point(x,130),point(far,130)]:[point(far,130),point(x,130)]};
  const map=await start({alignments:[line,target]});
  fireEvent.click(map,{clientX:sourceEnd==='end'?250:180,clientY:130});
- fireEvent.pointerMove(map,{clientX:x+2,clientY:131});
+ fireEvent.pointerMove(map,{clientX:x+2,clientY:131,ctrlKey:true});
  expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('true');
  const hit=map.querySelector('[data-alignment-id="4"] .alignment-hit')!;
- fireEvent.pointerDown(hit,{clientX:x+2,clientY:131,pointerId:1,button:0,isPrimary:true});
- fireEvent.pointerUp(map,{clientX:x+2,clientY:131,pointerId:1,button:0,isPrimary:true});
- fireEvent.click(hit,{clientX:x+2,clientY:131});
+ fireEvent.pointerDown(hit,{clientX:x+2,clientY:131,ctrlKey:true,pointerId:1,button:0,isPrimary:true});
+ fireEvent.pointerUp(map,{clientX:x+2,clientY:131,ctrlKey:true,pointerId:1,button:0,isPrimary:true});
+ fireEvent.click(hit,{clientX:x+2,clientY:131,ctrlKey:true});
  // A follow-up click must not accidentally detach the planned endpoint link.
- fireEvent.click(hit,{clientX:x+2,clientY:131,detail:1});
+ fireEvent.click(hit,{clientX:x+2,clientY:131,ctrlKey:true,detail:1});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);

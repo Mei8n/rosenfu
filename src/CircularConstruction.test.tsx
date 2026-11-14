@@ -76,13 +76,13 @@ test('outgoing tangent guide follows the preview endpoint and has a stable CSS l
  expect(Number(guide()!.getAttribute('x1'))).toBeCloseTo(600,5);
  expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(360,5);
  expect(Number(guide()!.getAttribute('x2'))).toBeCloseTo(600,4);
- expect(Number(guide()!.getAttribute('y2'))-360).toBeCloseTo(240,4);
+ expect(Number(guide()!.getAttribute('y2'))-360).toBeCloseTo(600,4);
  const curvedGuide=guide()!.outerHTML;
  fireEvent.pointerMove(map,{clientX:320,clientY:160});
  expect(guide()!.outerHTML).not.toBe(curvedGuide);
  const dx=Number(guide()!.getAttribute('x2'))-Number(guide()!.getAttribute('x1'));
  const dy=Number(guide()!.getAttribute('y2'))-Number(guide()!.getAttribute('y1'));
- expect(Math.hypot(dx,dy)*.5).toBeCloseTo(120,5);
+ expect(Math.hypot(dx,dy)*.5).toBeCloseTo(300,5);
  // No invented forward direction for a refused curve.
  fireEvent.pointerMove(map,{clientX:220,clientY:190});
  expect(map.querySelector('.invalid-candidate')).toBeTruthy();
@@ -100,4 +100,33 @@ test('outgoing tangent guide follows the preview endpoint and has a stable CSS l
  expect(guide()).toBeNull();
  fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
  expect(guide()).toBeNull();
+});
+
+test('Ctrl bypasses straight snapping until release, including stationary preview and committed points',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);
+ const world={next_id:'3',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'R'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'ctrl-test'}:world);
+ render(<App/>);fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));await screen.findByText(/ctrl-test/);
+ const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
+ fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:250,clientY:130});
+ fireEvent.pointerMove(map,{clientX:330,clientY:134});
+ expect(map.querySelector('.curve-circle-guide')).toBeNull();
+ fireEvent.keyDown(document.body,{key:'Control',ctrlKey:true});
+ expect(map.querySelector('.curve-circle-guide')).not.toBeNull();
+ fireEvent.keyUp(document.body,{key:'Control',ctrlKey:false});
+ expect(map.querySelector('.curve-circle-guide')).toBeNull();
+ fireEvent.pointerMove(map,{clientX:330,clientY:134,ctrlKey:true});
+ expect(map.querySelector('.curve-circle-guide')).not.toBeNull();
+ fireEvent.click(map,{clientX:330,clientY:134,ctrlKey:true});
+ const anchor=map.querySelectorAll('.draft-anchor')[2];
+ expect(Number(anchor.getAttribute('y'))+Number(anchor.getAttribute('height'))/2).toBeCloseTo(268,5);
+ const committed=map.querySelector('.draft-path')!.getAttribute('d');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelector('.draft-path')!.getAttribute('d')).toBe(committed);
+ fireEvent.blur(window);
+ expect(map.querySelector('.curve-circle-guide')).toBeNull();
 });

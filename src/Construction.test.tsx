@@ -55,7 +55,7 @@ test("draft undo, cancel and load confirmation preserve intentional construction
   expect(screen.queryByText("Backspace")).toBeNull();
   expect(screen.queryByText("移動モード")).toBeNull();
   // Shortcuts still bubble from focused toolbar controls after map editing.
-  const drawButton=screen.getByRole("button",{name:"1点戻す"});
+  const drawButton=screen.getByRole("tab",{name:"線路"});
   drawButton.focus();
   fireEvent.keyDown(drawButton,{key:"z",ctrlKey:true});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
@@ -128,8 +128,8 @@ test("keyboard position previews a platform and too-long platform is blocked",as
 test("plan redo, duplicate rejection and display controls",async()=>{
  const map=await start();
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:250,clientY:160});
- fireEvent.click(screen.getByRole("button",{name:"1点戻す"})); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
- fireEvent.click(screen.getByRole("button",{name:"やり直す"})); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  fireEvent.click(map,{clientX:250,clientY:160});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect(screen.queryByText("敷設不可：重複する点があります")).toBeNull();
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
@@ -139,7 +139,7 @@ test("plan redo, duplicate rejection and display controls",async()=>{
 
 test("20m equivalent inputs preserve fractional metre lengths when creating and editing",async()=>{
  const snapshot={...placed,station_placements:[{...placed.station_placements[0],length_m:231.5,width_m:17}]};
- await start(snapshot);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 35/}));
+ await start(snapshot);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 35/}));
  expect(screen.queryByLabelText("選択駅のホーム長 (m)")).toBeNull();
  expect((screen.getByLabelText("選択駅の長さ") as HTMLInputElement).value).toBe("11.575");
  fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12.125"}});
@@ -178,7 +178,7 @@ test("low-zoom endpoint previews use the full-platform corrected center",async()
  }
 });
 test("reference name is automatic and does not place or rename until confirmed",async()=>{
- const map=await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 /}));expect(screen.queryByLabelText("新しい駅名")).toBeNull();
+ const map=await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 /}));expect(screen.queryByLabelText("新しい駅名")).toBeNull();
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
  const pack={format:"rosenfu-reference-stations",version:1,dataset:{id:"names",revision:"1",source:"local fixture",license:"test",bounds:{west:139,east:140,south:35,north:36}},stations:[{osmType:"node",osmId:"1",name:"参考中央",latitude:35.67504,longitude:139.756,kind:"station"}]};
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:500,text:()=>Promise.resolve(JSON.stringify(pack))}]}});await screen.findByText("names / 1 / 1件");
@@ -252,7 +252,7 @@ test("invalid curve remains diagnostic and cannot add an anchor",async()=>{
  expect(map.querySelector(".invalid-candidate")).toBeNull();
 });
 
-test("invalid double click does not finish; selecting a parked plan resumes its endpoint",async()=>{
+test("invalid double click does not finish; selecting a parked plan waits for an explicit endpoint click",async()=>{
  const map=await start();
  fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
  fireEvent.click(map,{clientX:200,clientY:160,detail:1});fireEvent.click(map,{clientX:200,clientY:160,detail:2});
@@ -261,6 +261,7 @@ test("invalid double click does not finish; selecting a parked plan resumes its 
  expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
  fireEvent.click(screen.getByRole("button",{name:"別の線路計画を追加"}));
  fireEvent.click(screen.getByRole("button",{name:/計画 1 を編集/}));
+ fireEvent.click(map,{clientX:390,clientY:190,detail:1});
  fireEvent.click(map,{clientX:450,clientY:200,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(4);
 });
@@ -314,3 +315,7 @@ test("automatic drawing dragging at the endpoint never finishes or adds an ancho
  pointer("pointerdown",390,190);pointer("pointerup",390,190);fireEvent.click(map,{clientX:390,clientY:190,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
 });
+
+ test("construction omits redundant controls without removing keyboard editing",async()=>{await start();expect(screen.queryByRole("button",{name:"1点戻す"})).toBeNull();expect(screen.queryByRole("button",{name:"やり直す"})).toBeNull();expect(document.querySelector(".reference-tools")?.hasAttribute("hidden")).toBe(true);expect(document.querySelector(".track-editor")?.textContent).not.toContain("運行経路用：駅間接続");});
+
+test("station placement hides management controls while retaining management access",async()=>{await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));expect(screen.queryByRole("region",{name:"駅名の自動設定"})).toBeNull();expect(screen.queryByRole("button",{name:"指定座標に配置"})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置を取り消す"})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置をやり直す"})).toBeNull();expect(screen.queryByRole("heading",{name:"配置済みの駅"})).toBeNull();fireEvent.click(screen.getByRole("tab",{name:"駅"}));expect(screen.getByRole("heading",{name:"配置済みの駅"})).toBeTruthy();expect(screen.getByRole("button",{name:"指定座標に配置"})).toBeTruthy();});

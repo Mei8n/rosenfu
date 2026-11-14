@@ -481,3 +481,13 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .track-selection-controls button{padding:.25rem .5rem}
 .track-explicit-selection{filter:drop-shadow(0 0 2px #fff);stroke:#e9aa25}
 .workbench[data-theme="dark"] .station-placement-error { color:#ffaaa5; }
+
+/* Construction keeps its drawing cursor over existing tracks. */
+.workbench .placement-enabled .alignment-hit,
+.workbench .placement-enabled .track-connection,
+.workbench .placement-enabled .draft-anchor,
+.workbench .placement-enabled .parked-anchor,
+.workbench .placement-enabled .anchor-drag-hit,
+.workbench .placement-enabled .station-marker { cursor: crosshair; }
+
+.workbench .construction-list[hidden] { display: none; }

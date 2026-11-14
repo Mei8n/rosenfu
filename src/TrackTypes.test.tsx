@@ -36,7 +36,7 @@ test("track kind survives independent plans, undo, failed construction and is se
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(kind().getAttribute("aria-pressed")).toBe("true");
  vi.mocked(invoke).mockRejectedValueOnce(Error("kind build rejected"));fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/kind build rejected/);expect(kind().getAttribute("aria-pressed")).toBe("true");
  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="build_alignment")?.[1]).toMatchObject({trackType:"high_speed"});
- vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"high_speed"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);expect(panel().getByRole("button",{name:"試験線"})).toBeTruthy();
+ vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"high_speed"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);expect(panel().queryByRole("button",{name:"試験線"})).toBeNull();fireEvent.click(screen.getByRole("button",{name:"選択"}));expect(panel().getByRole("button",{name:"試験線"})).toBeTruthy();
 });
 test("tram defaults road following on, blocks unsupported drawing and construction, permits explicit off",async()=>{
  const map=await start();const kind=screen.getByRole("button",{name:"トラム"});
