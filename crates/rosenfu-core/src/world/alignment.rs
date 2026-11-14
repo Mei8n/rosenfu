@@ -161,6 +161,18 @@ impl World {
         endpoint: AlignmentEndpoint,
         points: Vec<GeoPoint>,
     ) -> Result<(), WorldError> {
+        let end = AlignmentEndpointRef {
+            alignment_id,
+            endpoint,
+        };
+        if self
+            .data
+            .alignment_connections
+            .iter()
+            .any(|link| link.a == end || link.b == end)
+        {
+            return Err(WorldError::InvalidAlignmentConnection);
+        }
         let mut data = self.data.clone();
         let alignment = data
             .alignments

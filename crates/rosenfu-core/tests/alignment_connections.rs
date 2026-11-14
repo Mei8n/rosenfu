@@ -45,6 +45,28 @@ fn all_four_orientations_preserve_ids_stations_and_speed_caps() {
                 .connect_alignment_endpoints(c, end(b, be), end(a, ae))
                 .is_err());
             assert_eq!(w.snapshot(), &after);
+            // Even a closed loop restoring the exact endpoint and tangent is not
+            // an extension of a free endpoint.
+            let mut high = point(139.2);
+            high.latitude = 35.1;
+            let mut low = point(139.0);
+            low.latitude = 35.1;
+            assert!(w
+                .extend_alignment(
+                    c,
+                    a,
+                    ae,
+                    vec![
+                        point(139.1),
+                        point(139.2),
+                        high,
+                        low,
+                        point(139.0),
+                        point(139.1)
+                    ]
+                )
+                .is_err());
+            assert_eq!(w.snapshot(), &after);
             let raw = serde_json::to_string(&after).unwrap();
             let restored: WorldDraft = serde_json::from_str(&raw).unwrap();
             assert_eq!(World::new(restored).unwrap().snapshot(), &after);
@@ -213,4 +235,96 @@ fn corridor_preserves_added_intermediate_stations_but_rejects_fake_links() {
         .place_station_on_alignment(c, "Mid".into(), a, 0.8, 100., 10.)
         .unwrap();
     assert_eq!(w.route_path_stations(route).unwrap(), vec![s, mid, t]);
+}
+
+#[test]
+fn ring_reports_both_paths_instead_of_false_unique() {
+    let mut w = World::default();
+    let p = w.add_player("P".into()).unwrap();
+    let c = w.add_company(p, "C".into()).unwrap();
+    let a = w
+        .build_alignment(c, "Straight".into(), vec![point(139.), point(139.1)])
+        .unwrap();
+    let mut upper1 = point(139.11);
+    upper1.latitude = 35.1;
+    let mut upper2 = point(138.99);
+    upper2.latitude = 35.1;
+    let b = w
+        .build_alignment(
+            c,
+            "Around".into(),
+            vec![
+                point(139.1),
+                point(139.11),
+                upper1,
+                upper2,
+                point(138.99),
+                point(139.),
+            ],
+        )
+        .unwrap();
+    let s = w
+        .place_station_on_alignment(c, "S".into(), a, 0.2, 100., 10.)
+        .unwrap();
+    let t = w
+        .place_station_on_alignment(c, "T".into(), a, 0.8, 100., 10.)
+        .unwrap();
+    w.connect_alignment_endpoints(
+        c,
+        end(a, AlignmentEndpoint::End),
+        end(b, AlignmentEndpoint::Start),
+    )
+    .unwrap();
+    w.connect_alignment_endpoints(
+        c,
+        end(b, AlignmentEndpoint::End),
+        end(a, AlignmentEndpoint::Start),
+    )
+    .unwrap();
+    for (from, to) in [(s, t), (t, s)] {
+        let result = w.route_candidates(from, to).unwrap();
+        assert_eq!(result.status, RouteSearchStatus::Ambiguous);
+        assert_eq!(result.candidates.len(), 2);
+        for candidate in result.candidates {
+            assert!(w.preview_service_path(from, candidate.segments).is_ok());
+        }
+    }
+}
+
+#[test]
+fn overlong_endpoint_chain_reports_incomplete_not_no_path() {
+    let mut w = World::default();
+    let p = w.add_player("P".into()).unwrap();
+    let c = w.add_company(p, "C".into()).unwrap();
+    let mut ids = vec![];
+    for i in 0..258 {
+        ids.push(
+            w.build_alignment(
+                c,
+                "A".into(),
+                vec![
+                    point(139. + i as f64 * 0.001),
+                    point(139. + (i + 1) as f64 * 0.001),
+                ],
+            )
+            .unwrap(),
+        );
+    }
+    for pair in ids.windows(2) {
+        w.connect_alignment_endpoints(
+            c,
+            end(pair[0], AlignmentEndpoint::End),
+            end(pair[1], AlignmentEndpoint::Start),
+        )
+        .unwrap();
+    }
+    let s = w
+        .place_station_on_alignment(c, "S".into(), ids[0], 0.5, 20., 10.)
+        .unwrap();
+    let t = w
+        .place_station_on_alignment(c, "T".into(), *ids.last().unwrap(), 0.5, 20., 10.)
+        .unwrap();
+    let result = w.route_candidates(s, t).unwrap();
+    assert_eq!(result.status, RouteSearchStatus::Incomplete);
+    assert!(result.truncated);
 }

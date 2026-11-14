@@ -169,7 +169,17 @@ pub(super) fn resolve_corridor(
             1.0
         };
     }
-    if current_id != last.alignment_id || !seen.insert(current_id) || start == last.position {
+    let ring_return = current_id == first.alignment_id
+        && ((connections[0].a.endpoint == AlignmentEndpoint::Start
+            && start == 1.0
+            && last.position > first.position)
+            || (connections[0].a.endpoint == AlignmentEndpoint::End
+                && start == 0.0
+                && last.position < first.position));
+    if current_id != last.alignment_id
+        || (!seen.insert(current_id) && !ring_return)
+        || start == last.position
+    {
         return Err(invalid);
     }
     append(current_id, start, last.position)?;
@@ -183,8 +193,9 @@ pub(super) fn resolve_corridor(
 /// Empty (station-free) alignments are traversed, never converted to fake stations.
 pub(super) fn corridor_edges(
     data: &WorldDraft,
-) -> Vec<(StationId, StationId, Vec<AlignmentConnection>)> {
+) -> (Vec<(StationId, StationId, Vec<AlignmentConnection>)>, bool) {
     let mut edges = Vec::new();
+    let mut truncated = false;
     for initial in &data.alignment_connections {
         for first in [
             initial.clone(),
@@ -213,7 +224,8 @@ pub(super) fn corridor_edges(
             let mut incoming = first.b;
             let mut seen = BTreeSet::from([first.a.alignment_id]);
             loop {
-                if chain.len() > 256 || !seen.insert(incoming.alignment_id) {
+                if chain.len() > 256 {
+                    truncated = true;
                     break;
                 }
                 if let Some(target) = nearest(incoming) {
@@ -221,6 +233,9 @@ pub(super) fn corridor_edges(
                     {
                         edges.push((source.station_id, target.station_id, chain));
                     }
+                    break;
+                }
+                if !seen.insert(incoming.alignment_id) {
                     break;
                 }
                 let exit = AlignmentEndpointRef {
@@ -250,5 +265,5 @@ pub(super) fn corridor_edges(
             }
         }
     }
-    edges
+    (edges, truncated)
 }

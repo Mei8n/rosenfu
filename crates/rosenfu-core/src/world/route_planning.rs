@@ -78,7 +78,7 @@ struct Edge {
 }
 type Graph = BTreeMap<StationId, Vec<Edge>>;
 
-fn graph(data: &WorldDraft) -> Graph {
+fn graph(data: &WorldDraft) -> (Graph, bool) {
     let mut graph: Graph = data.stations.iter().map(|s| (s.id, vec![])).collect();
     // Sort independently of save order, to make limited searches deterministic.
     let mut tracks: Vec<_> = data.tracks.iter().collect();
@@ -139,7 +139,8 @@ fn graph(data: &WorldDraft) -> Graph {
             });
         }
     }
-    for (from, to, connections) in alignment_connections::corridor_edges(data) {
+    let (corridors, truncated) = alignment_connections::corridor_edges(data);
+    for (from, to, connections) in corridors {
         graph.get_mut(&from).expect("validated station").push(Edge {
             to,
             segment: RouteSegment::ConnectedAlignments {
@@ -149,7 +150,7 @@ fn graph(data: &WorldDraft) -> Graph {
             },
         });
     }
-    graph
+    (graph, truncated)
 }
 fn candidate(stations: Vec<StationId>, segments: Vec<RouteSegment>) -> RouteCandidate {
     let track_only = segments
@@ -170,7 +171,7 @@ impl World {
         start: StationId,
         end: StationId,
     ) -> Result<RouteCandidates, RoutePlanningError> {
-        let graph = graph(self.snapshot());
+        let (graph, graph_truncated) = graph(self.snapshot());
         if !graph.contains_key(&start) || !graph.contains_key(&end) {
             return Err(RoutePlanningError::MissingStation);
         }
@@ -182,7 +183,7 @@ impl World {
         let mut cursors = vec![0usize];
         let mut visited = BTreeSet::from([start]);
         let mut candidates = vec![];
-        let mut truncated = false;
+        let mut truncated = graph_truncated;
         let mut steps = 0;
         while let Some(&current) = stations.last() {
             if steps >= MAX_STEPS {
