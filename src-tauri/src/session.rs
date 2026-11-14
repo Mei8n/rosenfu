@@ -19,6 +19,17 @@ pub struct PlannedStation {
     pub width_m: f64,
 }
 
+/// A station planned on already built infrastructure, placed at commit time.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlannedBuiltStation {
+    pub alignment_id: AlignmentId,
+    pub name: String,
+    pub position: f64,
+    pub length_m: f64,
+    pub width_m: f64,
+}
+
 /// Optional attribution for a plan copied from real-world railway or road data.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -333,10 +344,28 @@ impl WorldEditor {
     /// Build only the supplied plan's paths, stations and attribution atomically.
     /// A failed path never publishes earlier paths or consumes their IDs.
     pub fn build_plan(&mut self, alignments: Vec<PlannedAlignment>) -> Result<WorldDraft, String> {
-        if alignments.is_empty() {
-            return Err("着工する線路がありません。".into());
+        self.build_construction_plan(alignments, vec![])
+    }
+    pub fn build_construction_plan(
+        &mut self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+    ) -> Result<WorldDraft, String> {
+        if alignments.is_empty() && stations.is_empty() {
+            return Err("着工する線路・駅がありません。".into());
         }
         let mut candidate = self.clone();
+        // Place these before any extensions. Extending an alignment remaps its
+        // existing placements, preserving the planned station's physical location.
+        for station in stations {
+            candidate.place_station_on_alignment_unchecked(
+                station.name,
+                station.alignment_id,
+                station.position,
+                station.length_m,
+                station.width_m,
+            )?;
+        }
         for alignment in alignments {
             if let Some(extension) = alignment.extension {
                 let old = candidate
@@ -2452,6 +2481,89 @@ mod tests {
             .unwrap();
         assert_eq!(actual, expected);
     }
+    fn built_station(alignment_id: AlignmentId, position: f64) -> PlannedBuiltStation {
+        PlannedBuiltStation {
+            alignment_id,
+            name: "既存線の計画駅".into(),
+            position,
+            length_m: 100.0,
+            width_m: 12.0,
+        }
+    }
+    #[test]
+    fn station_only_plan_builds_multiple_stations_and_mixed_plan_is_atomic() {
+        let mut editor = WorldEditor::new();
+        let mut base = planned_path(0.0);
+        base.stations.clear();
+        let before = editor.build_plan(vec![base]).unwrap();
+        let id = before.alignments[0].id;
+        let result = editor
+            .build_construction_plan(
+                vec![],
+                vec![built_station(id, 0.25), built_station(id, 0.75)],
+            )
+            .unwrap();
+        assert_eq!(result.alignments.len(), before.alignments.len());
+        assert_eq!(result.stations.len(), before.stations.len() + 2);
+        let before = editor.snapshot();
+        assert!(editor
+            .build_construction_plan(
+                vec![planned_path(0.1)],
+                vec![built_station(id, 0.4), built_station(id, 1.1)]
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let mut invalid = planned_path(0.1);
+        invalid.stations.push(planned_station(1.1));
+        assert!(editor
+            .build_construction_plan(vec![invalid], vec![built_station(id, 0.4)])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let result = editor
+            .build_construction_plan(vec![planned_path(0.1)], vec![built_station(id, 0.4)])
+            .unwrap();
+        assert_eq!(result.alignments.len(), before.alignments.len() + 1);
+        assert_eq!(result.stations.len(), before.stations.len() + 2);
+    }
+    #[test]
+    fn station_planned_on_existing_line_keeps_location_when_same_plan_extends_start() {
+        let mut editor = WorldEditor::new();
+        let mut base = planned_path(0.0);
+        base.stations.clear();
+        let before = editor.build_plan(vec![base]).unwrap();
+        let a = &before.alignments[0];
+        let expected = a.point_at(0.4);
+        let start = a.points[0];
+        let extension = PlannedAlignment {
+            name: "延伸".into(),
+            points: vec![
+                start,
+                GeoPoint {
+                    latitude: start.latitude,
+                    longitude: start.longitude - 0.01,
+                },
+            ],
+            track_type: a.track_type,
+            design_speed_kmh: None,
+            stations: vec![],
+            reference: None,
+            extension: Some(PlannedAlignmentExtension {
+                alignment_id: a.id,
+                endpoint: rosenfu_core::world::AlignmentEndpoint::Start,
+            }),
+        };
+        let result = editor
+            .build_construction_plan(vec![extension], vec![built_station(a.id, 0.4)])
+            .unwrap();
+        let station = result.stations.last().unwrap();
+        assert!((station.latitude - expected.latitude).abs() < 1e-8);
+        assert!((station.longitude - expected.longitude).abs() < 1e-8);
+        let placement = result.station_placements.last().unwrap();
+        let actual = result.alignments[0].point_at(placement.position);
+        assert!((actual.latitude - expected.latitude).abs() < 1e-8);
+        assert!((actual.longitude - expected.longitude).abs() < 1e-8);
+    }
+
     fn planned_path(offset: f64) -> PlannedAlignment {
         PlannedAlignment {
             name: format!("計画線{offset}"),

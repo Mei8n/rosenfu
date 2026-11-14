@@ -300,9 +300,10 @@ export function App() {
     const path=parkedPaths.find(path=>path.planId===id&&!path.reference);
     if(path)selectPath(path.id);else{newPath();setActivePlanId(id);}
   }
+  function stationPlanId(station:PlannedStation){return station.planId??(station.pathId===activePathId?activePlanId:parkedPaths.find(path=>path.id===station.pathId)?.planId);}
   function clearCurrentPlan(){
     const ids=new Set([activePathId,...parkedPaths.filter(path=>path.planId===activePlanId).map(path=>path.id)]);
-    ids.forEach(discardPlanStations);setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
+    ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
     setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
   }
   const [planHover, setPlanHover] = useState<{id:number;x:number;y:number} | null>(null);
@@ -395,7 +396,7 @@ export function App() {
   const stationPreview=activeTool==="stations"&&mapMode==="place"&&!dragging&&!stationSelection?.error?stationSelection?.target?.polygon??[]:[];
   const previewCenter=stationSelection?.target?.center??null;
   const plannedPlatforms=plannedStations.map(station=>{
-    const line=stationLines.find(line=>line.pathId===station.pathId);
+    const line=stationLines.find(line=>station.alignmentId?line.pathId===undefined&&line.id===station.alignmentId:line.pathId===station.pathId);
     const nearest=line?nearestOnAlignment(line.points,station.point):null;
     const polygon=line&&nearest?stationPolygon(line.points,nearest.position,station.lengthM,12):[];
     const half=line?station.lengthM/alignmentLength(line.points)/2:0;
@@ -666,24 +667,29 @@ export function App() {
   }
 
   const currentPaths:PlannedPath[]=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,designSpeedKmh,trackType,roadFollowing,extension:draftExtension}]:[])];
-  const planBuildable=currentPaths.length>0&&currentPaths.every(path=>path.line.length>=2&&!(path.reference?extensionJoinError(path.points,extensionPrevious(path.extension)):circularAlignment(path.points,extensionPrevious(path.extension)).error)&&!(path.trackType==="tram"&&path.roadFollowing));
+  const currentStations=plannedPlatforms.filter(item=>stationPlanId(item.station)===activePlanId);
+  const planHasContent=currentPaths.length>0||currentStations.length>0;
+  const planBuildable=planHasContent&&currentPaths.every(path=>path.line.length>=2&&!(path.reference?extensionJoinError(path.points,extensionPrevious(path.extension)):circularAlignment(path.points,extensionPrevious(path.extension)).error)&&!(path.trackType==="tram"&&path.roadFollowing));
   function commitAlignment() {
     if (!enabled || !planBuildable) return;
     void perform(async () => {
       const ids=new Set(currentPaths.map(path=>path.id));
-      if(plannedPlatforms.some(item=>ids.has(item.station.pathId)&&!item.valid))throw Error("計画駅が線路に収まりません。線形を元に戻すか、計画駅を取り消してください。");
+      if(currentStations.some(item=>!item.valid))throw Error("計画駅が線路に収まりません。線形を元に戻すか、計画駅を取り消してください。");
       const requests=currentPaths.map(path=>({name:alignmentName,points:path.line,trackType:path.trackType,designSpeedKmh:path.designSpeedKmh,extension:path.extension??undefined,reference:path.reference?{sourceRecord:path.reference.sourceRecord,provenance:path.reference.provenance}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===path.id).map(item=>({name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}))}));
+      const stations=currentStations.filter(item=>item.station.alignmentId).map(item=>({alignmentId:item.station.alignmentId!,name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}));
       const first=requests[0];
-      const batch=requests.length>1||requests.some(request=>request.extension||request.reference);
-      const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests}:first.stations.length?first:{name:first.name,points:first.points,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh});
+      const batch=stations.length>0||requests.length>1||requests.some(request=>request.extension||request.reference);
+      const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh});
       const extendedIds=new Set(requests.flatMap(request=>request.extension?[request.extension.alignmentId]:[]));
       const keepHistory=(entry:StationHistoryEntry)=>Boolean(entry.planned)||!entry.placement||!extendedIds.has(entry.placement.alignment_id);
       setStationUndo(history=>history.filter(keepHistory));setStationRedo(history=>history.filter(keepHistory));
-      ids.forEach(discardPlanStations);setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
+      ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
       const created=snapshot.alignments?.find(a=>!alignments.some(old=>old.id===a.id));
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
       if(created)setAlignmentId(created.id);
-      changeMapMode("draw");setNotice("線路を建設しました。次は駅タブからホームを配置できます。");
+      const builtStations=snapshot.stations.filter(station=>!world?.stations.some(old=>old.id===station.id)).map(station=>({station,placement:snapshot.station_placements?.find(p=>p.station_id===station.id)}));
+      setStationUndo(history=>[...history,...builtStations].slice(-50));setStationRedo([]);
+      changeMapMode(activeTool==="stations"?"place":"draw");setNotice(requests.length?"線路を建設しました。計画駅も反映しました。":"計画駅を建設しました。");
     });
   }
   function placePlatformAt(point:GeoPoint,width:number,height:number) {
@@ -693,18 +699,12 @@ export function App() {
     if(selection.error||!selection.target){setError(selection.error);return;}
     const {line,position,center}=selection.target;
     const name=automaticStationName(center,referenceRepository,[...(world?.stations.map(s=>s.name)??[]),...plannedStations.map(s=>s.name)]).name;
-    if(line.pathId!==undefined){
-      const planned={id:"planned:"+nextPlannedStationId.current++,pathId:line.pathId,name,point:center,lengthM:Number(platformLength)};
-      setPlannedStations(items=>[...items,planned]);
-      setStationUndo(items=>[...items,{station:{id:planned.id,owner:"",name,...center},planned}].slice(-50));setStationRedo([]);
-      setError("");setNotice(name+"を線路計画に配置しました。線路の着工時に一緒に建設します。");return;
-    }
-    void perform(async () => {
-      const snapshot = await invoke<World>("place_station_on_alignment", { name, alignmentId:line.id, position, lengthM:Number(platformLength), widthM:12 });
-      recordStation(snapshot);
-      setWorld(snapshot);setDirty(true);setConfirmLoad(false);
-      setNotice(name+"を線路に沿って配置しました。");
-    });
+    const planId=line.pathId===undefined?activePlanId:line.pathId===activePathId||line.pathId===-1?activePlanId:parkedPaths.find(path=>path.id===line.pathId)?.planId;
+    if(planId===undefined){setError("駅の所属計画が見つかりません。");return;}
+    const planned:PlannedStation={id:"planned:"+nextPlannedStationId.current++,...(line.pathId===undefined?{alignmentId:line.id}:{pathId:line.pathId}),planId,name,point:center,lengthM:Number(platformLength)};
+    setPlannedStations(items=>[...items,planned]);
+    setStationUndo(items=>[...items,{station:{id:planned.id,owner:"",name,...center},planned}].slice(-50));setStationRedo([]);
+    setError("");setNotice(name+"を計画に追加しました。計画を着工するまで建設されません。");
   }
   function resizePlatform(event: FormEvent) {
     event.preventDefault();
@@ -746,7 +746,7 @@ export function App() {
     const entry=stationRedo.at(-1);if(!entry){setNotice("やり直せる駅設置履歴はありません。");return;}
     if(pendingDelete||pendingStation||confirmLoad){setError("表示中の確認を完了または取り消してください。");return;}
     if(entry.planned){
-      if(!stationLines.some(line=>line.pathId===entry.planned!.pathId)){setError("元の線路計画がありません。");return;}
+      if(!stationLines.some(line=>entry.planned!.alignmentId?line.pathId===undefined&&line.id===entry.planned!.alignmentId:line.pathId===entry.planned!.pathId)){setError("元の線路計画がありません。");return;}
       setPlannedStations(items=>[...items,entry.planned!]);setStationRedo(items=>items.slice(0,-1));setStationUndo(items=>[...items,entry]);setNotice("計画駅を再設置しました。");return;
     }
     const blocked=stationHistoryBlock();if(blocked){setError(blocked);return;}
@@ -1060,10 +1060,12 @@ export function App() {
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
           <section className="station-editor" role="tabpanel" id="panel-stations" aria-labelledby="tab-stations" hidden={activeTool !== "stations"}>
             <div className="section-number">02 / STATION</div><h3 id="editor-title">線路にホームを置く</h3>
+            <div role="group" aria-label="駅の建設計画"><strong>編集中：{planName.trim() || `計画 ${activePlanId}`}</strong>{plans.filter(plan=>plan.id!==activePlanId).map(plan=><button key={plan.id} className="secondary" disabled={!enabled||referenceCopy.active} onClick={()=>{choosePlan(plan.id);changeMapMode("place");}}>{plan.name.trim()||`計画 ${plan.id}`} を編集</button>)}<button className="secondary" disabled={!enabled||referenceCopy.active||!planHasContent} onClick={()=>{newIndependentPlan();changeMapMode("place");}}>別の計画を追加</button><button disabled={!enabled||referenceCopy.active||!planBuildable} onClick={commitAlignment}>計画を着工</button></div>
+            <p className="tool-helper">建設済み線路上の駅も計画に追加します。選択中の計画を着工すると、線路と駅をまとめて建設します。</p>
             <p className="muted">置きたい位置にカーソルを合わせてクリック。建設済み・計画中の線路を自動で選び、カーブにも沿って配置します。</p>
             <fieldset disabled={!enabled}>
               <PlatformLengthInput id="platform-length" label="ホーム長 (20m級・両相当)" value={platformLength} onChange={setPlatformLength}/>
-              <p className="field-hint" role="status">{stationSelection?.error || (stationSelection?.target ? "クリックで駅を配置。そのまま続けて配置できます。" : "線路にカーソルを重ねるとホームを表示します。")}</p>
+              <p className="field-hint" role="status">{stationSelection?.error || (stationSelection?.target ? "クリックで計画に追加。そのまま続けて配置できます。" : "線路にカーソルを重ねるとホームを表示します。")}</p>
               <p className="field-hint">地図をTabで選択し、矢印キーで位置を動かしてEnterで配置。ドラッグは地図移動。</p>
             </fieldset>
             <StationNamePreview pack={referencePack} repository={referenceRepository} point={stationPreview.length>=4?previewCenter:null} existingNames={[...(world?.stations.map(s=>s.name)??[]),...plannedStations.map(s=>s.name)]}/>
@@ -1079,13 +1081,13 @@ export function App() {
             <div className="section-number">01 / CONSTRUCTION</div><h3>線路を描く</h3>
             <p className="muted">駅より先に線路を建設。地図に点を打って経路を決めます。</p>
             <ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/>
-            <button className="secondary full-width" disabled={!enabled || referenceCopy.active || !currentPaths.length} onClick={newIndependentPlan}>別の線路計画を追加</button>
-            <div role="group" aria-label="未着工の線路計画"><strong>編集中：{planName.trim() || `計画 ${activePlanId}`}（{currentPaths.length}経路）</strong>{plans.filter(plan=>plan.id!==activePlanId).map(plan=><button key={plan.id} className="secondary" disabled={!enabled || referenceCopy.active} onClick={()=>choosePlan(plan.id)}>{plan.name.trim() || `計画 ${plan.id}`} を編集</button>)}</div>
-            <p className="tool-helper">離れた経路も同時に計画できます。着工・消去は編集中の計画だけが対象です。タブ移動では計画は残ります。ゲームを終了すると未着工の計画は失われます。</p>
+            <button className="secondary full-width" disabled={!enabled || referenceCopy.active || !planHasContent} onClick={newIndependentPlan}>別の線路計画を追加</button>
+            <div role="group" aria-label="未着工の線路計画"><strong>編集中：{planName.trim() || `計画 ${activePlanId}`}（{currentPaths.length}経路）・{currentStations.length}駅</strong>{plans.filter(plan=>plan.id!==activePlanId).map(plan=><button key={plan.id} className="secondary" disabled={!enabled || referenceCopy.active} onClick={()=>choosePlan(plan.id)}>{plan.name.trim() || `計画 ${plan.id}`} を編集</button>)}</div>
+            <p className="tool-helper">離れた経路も同時に計画できます。着工・消去は編集中の計画だけが対象です。タブ移動では計画は残ります。保存した未着工計画は、次回読み込んだときに復元できます。</p>
             <div role="group" aria-label="計画内の経路">{currentPaths.map(path=><button key={path.id} className="secondary" disabled={!enabled||referenceCopy.active||path.id===activePathId||!!path.reference} aria-pressed={path.id===activePathId} onClick={()=>selectPath(path.id)}>経路 {path.id}（{path.reference?"実在形状・編集固定 / ":""}{path.points.length}点・やり直し{path.redo.length}点）</button>)}</div>
             <label htmlFor="construction-plan-name">計画名（任意）</label><input id="construction-plan-name" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled || referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/><p className="field-hint">名前なしでも計画・着工できます。路線名や線路名ではなく、この画面で計画を見分けるための名前です。</p>
             <div className="build-summary"><div><strong>{draftPoints.length}</strong><span>線形点</span></div><div><strong>{alignments.length}</strong><span>建設済み線路</span></div></div>
-            <div className="route-actions"><button className="secondary" disabled={!enabled || !draftPoints.length} onClick={undoPoint}>1点戻す</button><button className="secondary" disabled={!enabled || !redoPoints.length} onClick={redoPoint}>やり直す</button><button className="secondary" disabled={!enabled || !currentPaths.length} onClick={clearCurrentPlan}>下書きを消去</button></div>
+            <div className="route-actions"><button className="secondary" disabled={!enabled || !draftPoints.length} onClick={undoPoint}>1点戻す</button><button className="secondary" disabled={!enabled || !redoPoints.length} onClick={redoPoint}>やり直す</button><button className="secondary" disabled={!enabled || !planHasContent} onClick={clearCurrentPlan}>下書きを消去</button></div>
             <button className="full-width track-submit" disabled={!enabled || referenceCopy.active || !planBuildable} onClick={commitAlignment}>計画を着工</button><p className="tool-helper">計画は着工まで未確定です。建設費・維持費は未計算。</p>
             <p className="tool-helper">ドラッグは移動。自由描画にはOSM追従なし。実在線路・道路に沿う敷設は別の操作です。</p>
             <ul className="construction-list">{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name}（{TRACK_TYPE_LABELS[a.track_type]??"通常"}）<small>選択</small></button><small>{world?.alignment_provenance?.some(p=>p.alignment_id===a.id)?"参考OSM由来":"出典記録なし"}</small></li>)}</ul>

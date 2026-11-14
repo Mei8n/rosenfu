@@ -42,8 +42,8 @@ test('extending invalidates built station redo ratios from the old alignment len
  const placement={station_id:"4",alignment_id:"3",position:0.5,length_m:200,width_m:12};
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
  vi.mocked(invoke).mockResolvedValueOnce({...world,stations:[station],station_placements:[placement]});
- fireEvent.click(map,{clientX:215,clientY:130});await waitFor(()=>expect(invoke).toHaveBeenCalledWith("place_station_on_alignment",expect.anything()));
- await screen.findByText(/を線路に沿って配置しました/);
+ fireEvent.click(map,{clientX:215,clientY:130});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith("build_plan",expect.anything()));
+ await screen.findByText(/計画駅を建設しました/);
  vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});await screen.findByText(/直前の駅設置を取り消しました/);
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(map,{clientX:250,clientY:130});fireEvent.click(map,{clientX:310,clientY:130});
  vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[{...line,points:[...line.points,point(310,130)]}]});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);

@@ -83,8 +83,8 @@ test("line-constrained station previews then commits metric platform dimensions"
   expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
   vi.mocked(invoke).mockResolvedValueOnce({...placed,station_placements:[{...placed.station_placements[0],length_m:240}]});
   fireEvent.click(map,{clientX:250,clientY:150});
-  await screen.findByText("新駅を線路に沿って配置しました。");
-  expect(invoke).toHaveBeenCalledWith("place_station_on_alignment",expect.objectContaining({alignmentId:"3",lengthM:240,widthM:12}));
+  fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText("計画駅を建設しました。");
+  expect(invoke).toHaveBeenCalledWith("build_plan",expect.objectContaining({stations:[expect.objectContaining({alignmentId:"3",lengthM:240,widthM:12})]}));
   expect(map.querySelector(".station-marker circle.station-dot")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"拡大"}));fireEvent.click(screen.getByRole("button",{name:"拡大"}));fireEvent.click(screen.getByRole("button",{name:"拡大"}));
   await waitFor(()=>expect(map.querySelector(".station-marker path.station-platform")).toBeTruthy());
@@ -123,7 +123,7 @@ test("keyboard position previews a platform and too-long platform is blocked",as
  expect(map.querySelector(".station-platform")).toBeTruthy();
  vi.mocked(invoke).mockResolvedValueOnce(placed);
  fireEvent.keyDown(map,{key:"Enter"});
- await screen.findByText("新駅を線路に沿って配置しました。");
+ fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText("計画駅を建設しました。");
 });
 
 test("plan redo, duplicate rejection and display controls",async()=>{
@@ -189,7 +189,7 @@ test("reference name is automatic and does not place or rename until confirmed",
  const hover=project(35.67504,139.756,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
  expect(await screen.findByText("参考中央",{selector:"strong"})).toBeTruthy();expect((screen.getByLabelText("選択駅の名前") as HTMLInputElement).value).toBe("新駅");expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="place_station_on_alignment"||command==="rename_station")).toBe(false);
  vi.mocked(invoke).mockResolvedValueOnce(placed);fireEvent.click(map,{clientX:hover.x/2,clientY:hover.y/2});
- await waitFor(()=>expect(invoke).toHaveBeenCalledWith("place_station_on_alignment",expect.objectContaining({name:"参考中央"})));
+ fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith("build_plan",expect.objectContaining({stations:[expect.objectContaining({name:"参考中央"})]})));
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="rename_station")).toBe(false);
 });
 test("reference name distance uses corrected platform center at both alignment endpoints",async()=>{
