@@ -25,7 +25,7 @@ async function start(snapshot: unknown = empty) {
   return map;
 }
 
-const panel=()=>within(document.getElementById("panel-tracks")!);
+const panel=()=>within(document.getElementById("workspace-panel-construction")!);
 test("track kind survives independent plans, undo, failed construction and is sent to backend",async()=>{
  const map=await start();const kind=()=>screen.getByLabelText("線路の種類") as HTMLSelectElement;
  expect(kind().value).toBe("normal");fireEvent.change(kind(),{target:{value:"high_speed"}});
