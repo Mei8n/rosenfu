@@ -450,3 +450,5 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 /* Drawing metrics are a compact factual readout, not a tutorial card. */
 .workbench .drawing-metrics { width: max-content; max-width: 202px; padding: 4px 6px; font-size: 10px; line-height: 1.4; }
 .workbench .drawing-speed { padding: 0 3px; background: var(--surface-alt, #eee9cb); font-variant-numeric: tabular-nums; }
+.drag-segment-speed rect { fill:var(--surface);stroke:var(--edge);stroke-width:1; }
+.drag-segment-speed text { fill:var(--ink);font-size:11px;font-weight:600; }

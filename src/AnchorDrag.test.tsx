@@ -59,3 +59,12 @@ test('parking and reselecting edited geometry never regenerates the old curve',a
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));expect(map.querySelector('.parked-plan')!.getAttribute('d')).toBe(after);
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));expect(shape(map)).toBe(after);
 });
+
+test('drag previews adjacent segment speed labels instead of an instruction popup',async()=>{
+ const map=await setup();startDrag(map);
+ expect(map.querySelectorAll('.drag-segment-speed')).toHaveLength(2);
+ expect(Array.from(map.querySelectorAll('.drag-segment-speed')).every(label=>label.textContent?.includes('km/h'))).toBe(true);
+ expect(screen.queryByText('アンカーを移動')).toBeNull();
+ fireEvent.pointerCancel(map);
+ expect(map.querySelector('.drag-segment-speed')).toBeNull();
+});

@@ -158,3 +158,19 @@ test('built line list keeps a unique selectable label without repetitive metadat
  fireEvent.click(entry);
  expect(screen.queryByText('出典記録なし')).toBeNull();
 });
+
+test('built track midpoint hover is visual only and matches endpoint marker size',async()=>{
+ const map=await start(),hit=map.querySelector('.alignment-hit')!;
+ fireEvent.pointerEnter(hit,{clientX:210,clientY:130});
+ const marker=map.querySelector('.built-hover-point')!;
+ expect(marker.getAttribute('data-kind')).toBe('line');const radius=marker.getAttribute('r');
+ expect(marker.parentElement?.getAttribute('pointer-events')).toBe('none');
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>/^(build|place|extend|add)_/.test(command))).toBe(false);
+ fireEvent.pointerMove(hit,{clientX:250,clientY:130});
+ expect(map.querySelector('.built-hover-point')).toBeNull();
+ expect(map.querySelector('.endpoint-snap-ring')?.getAttribute('r')).toBe(radius);
+ fireEvent.pointerLeave(hit);fireEvent.pointerLeave(map);
+ expect(map.querySelector('.built-hover-point')).toBeNull();
+});
