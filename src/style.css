@@ -464,3 +464,8 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .plan-breakdown { margin:6px 0; font-size:12px; }
 
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+
+.speed-input { display:flex; align-items:center; gap:3px; }
+.workbench .speed-input input { width:64px; min-width:0; appearance:textfield; }
+.speed-input input::-webkit-inner-spin-button { appearance:none; }
+.workbench .speed-input button { padding:3px 7px; }

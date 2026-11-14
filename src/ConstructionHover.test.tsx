@@ -62,7 +62,7 @@ test("drawing details follow the cursor without hover and diagnose an invalid ca
 test('hover only speed and highlight clear on leaving; small endpoints are visually distinct',async()=>{
  vi.stubGlobal('PointerEvent',MouseEvent);
  const map=await start();
- fireEvent.change(screen.getByRole('spinbutton',{name:'線路の設計最高速度'}),{target:{value:'80'}});
+ fireEvent.change(screen.getByRole('spinbutton',{name:'線路の目標最高速度'}),{target:{value:'80'}});
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:250,clientY:130});fireEvent.click(map,{clientX:320,clientY:130});
  expect(document.querySelector('.curve-speed-label')).toBeNull();
  const anchors=map.querySelectorAll('.draft-anchor');

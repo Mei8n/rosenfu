@@ -71,7 +71,7 @@ test('an alignment used by a service can start and submit an extension',async()=
 test('extension inherits non-default design speed and prevents changing its setting',async()=>{
  const map=await start({alignments:[{...line,design_speed_kmh:95}]});
  fireEvent.click(map,{clientX:250,clientY:130});
- const input=screen.getByRole('spinbutton',{name:'線路の設計最高速度'}) as HTMLInputElement;
+ const input=screen.getByRole('spinbutton',{name:'線路の目標最高速度'}) as HTMLInputElement;
  expect(input.value).toBe('95');expect(input.disabled).toBe(true);
  fireEvent.click(map,{clientX:310,clientY:133});
  vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));

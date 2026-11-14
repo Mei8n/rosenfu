@@ -49,7 +49,7 @@ test("tram defaults road following on, blocks unsupported drawing and constructi
 });
 
 test('individual path design speeds survive plan switches and are sent together',async()=>{
- const map=await start(),speed=()=>screen.getByRole('spinbutton',{name:'線路の設計最高速度'}) as HTMLInputElement;
+ const map=await start(),speed=()=>screen.getByRole('spinbutton',{name:'線路の目標最高速度'}) as HTMLInputElement;
  const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
  fireEvent.change(speed(),{target:{value:'95'}});click(180,130);click(230,130);click(230,130);
  click(300,200);fireEvent.change(speed(),{target:{value:'80'}});click(360,200);
@@ -59,4 +59,12 @@ test('individual path design speeds survive plan switches and are sent together'
  vi.mocked(invoke).mockRejectedValueOnce(Error('retain speed'));fireEvent.click(panel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/retain speed/);
  const requests=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='build_plan')![1] as {alignments:{designSpeedKmh:number}[]};
  expect(requests.alignments.map(path=>path.designSpeedKmh).sort()).toEqual([80,95]);
+});
+
+test('target speed accepts exact input and adjusts by 20 within existing limits',async()=>{
+ await start();const speed=screen.getByLabelText('線路の目標最高速度') as HTMLInputElement;
+ const down=screen.getByRole('button',{name:'目標最高速度を20 km/h下げる'}),up=screen.getByRole('button',{name:'目標最高速度を20 km/h上げる'});
+ fireEvent.change(speed,{target:{value:'135'}});fireEvent.click(up);expect(speed.value).toBe('155');fireEvent.click(down);expect(speed.value).toBe('135');
+ fireEvent.change(speed,{target:{value:'10'}});fireEvent.click(down);expect(speed.value).toBe('1');expect((down as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.change(speed,{target:{value:'590'}});fireEvent.click(up);expect(speed.value).toBe('600');expect((up as HTMLButtonElement).disabled).toBe(true);
 });
