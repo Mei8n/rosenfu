@@ -290,7 +290,8 @@ export function App() {
   // Invalid geometry is diagnostic only. Never commit this fallback chord.
   const candidateLine = hoverPoint && !draftFinished && draftPoints.length ? (previewLine.length > draftLine.length ? previewLine.slice(Math.max(0,draftLine.length-1)) : [draftPoints[draftPoints.length-1],hoverPoint]) : [];
   const [cursorPosition,setCursorPosition]=useState<{x:number;y:number;width:number;height:number}|null>(null);
-  useEffect(()=>{setHoverPoint(null);setCursorPosition(null);},[camera]);
+  const drawingCursor=useRef<{point:GeoPoint;width:number;height:number}|null>(null);
+  useEffect(()=>{drawingCursor.current=null;setHoverPoint(null);setCursorPosition(null);},[camera]);
   function endpointDistance(point:GeoPoint, end:GeoPoint, width:number,height:number) {
     const a=project(end.latitude,end.longitude,camera),b=project(point.latitude,point.longitude,camera);
     return Math.hypot(a.x-b.x,a.y-b.y)*mapViewport(width,height).scale;
@@ -300,9 +301,10 @@ export function App() {
     const end=draftPoints[draftPoints.length-1];
     return endpointDistance(point,end,width,height)<=8?end:null;
   }
-  function drawingPoint(point:GeoPoint,width:number,height:number) {
+  function drawingPoint(point:GeoPoint,width:number,height:number,disableStraightSnap=false) {
     if(draftFinished||!draftPoints.length)return point;
     const target=destinationTarget(point,width,height);if(target)return target.point;
+    if(disableStraightSnap)return point;
     const metresPerPixel=2*Math.PI*6371000*Math.cos(draftPoints[0].latitude*Math.PI/180)/(256*2**camera.zoom*mapViewport(width,height).scale);
     return draftEditedGeometry?snapStraight(draftLine.slice(-2),point,metresPerPixel):snapStraight(draftPoints,point,metresPerPixel,previousPoint);
   }
@@ -741,7 +743,8 @@ export function App() {
     if (enabled && !referenceCopy.active && mapMode === "draw" && activeTool === "tracks" && !gestureRef.current) {
       const rect=event.currentTarget.getBoundingClientRect(),point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
       setCursorPosition(point?{x:event.clientX-rect.left,y:event.clientY-rect.top,width:rect.width,height:rect.height}:null);
-      setHoverPoint(point && !snappedEndpoint(point,rect.width,rect.height)?drawingPoint(point,rect.width,rect.height):null);
+      drawingCursor.current=point?{point,width:rect.width,height:rect.height}:null;
+      setHoverPoint(point && !snappedEndpoint(point,rect.width,rect.height)?drawingPoint(point,rect.width,rect.height,event.ctrlKey):null);
     }
     const gesture = gestureRef.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
@@ -853,7 +856,7 @@ export function App() {
         return;
       }
       const destination=destinationTarget(coordinates,rect.width,rect.height);
-      coordinates=destination?.point??drawingPoint(coordinates,rect.width,rect.height);
+      coordinates=destination?.point??drawingPoint(coordinates,rect.width,rect.height,event.ctrlKey);
       const editedForAppend=draftEditedGeometry&&redoPoints.length?(draftPoints.length>=2?{version:1 as const,anchors:draftPoints,line:draftLine}:undefined):draftPoints.length?draftEditedGeometry:undefined;
       const candidate=plannedGeometry([...draftPoints,coordinates],editedForAppend,previousPoint);if(candidate.error){setHoverPoint(coordinates);return;}
       const targetRef=destination?{alignmentId:destination.alignment.id,endpoint:destination.endpoint}:undefined;
@@ -993,6 +996,22 @@ export function App() {
       if (event.key === "Escape") { if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
+  });
+  useEffect(() => {
+    const refresh=(disableStraightSnap:boolean)=>{
+      const cursor=drawingCursor.current;
+      if(!cursor||!enabled||referenceCopy.active||mapMode!=="draw"||activeTool!=="tracks"||gestureRef.current||anchorGesture.current)return;
+      const {point,width,height}=cursor;
+      setHoverPoint(!snappedEndpoint(point,width,height)?drawingPoint(point,width,height,disableStraightSnap):null);
+    };
+    const modifier=(event:KeyboardEvent)=>{
+      if(event.key!=="Control"||event.repeat)return;
+      if(event.target instanceof HTMLElement&&(event.target.isContentEditable||/INPUT|SELECT|TEXTAREA/.test(event.target.tagName)))return;
+      refresh(event.type==="keydown");
+    };
+    const blur=()=>{drawingCursor.current=null;setHoverPoint(null);};
+    window.addEventListener("keydown",modifier);window.addEventListener("keyup",modifier);window.addEventListener("blur",blur);
+    return ()=>{window.removeEventListener("keydown",modifier);window.removeEventListener("keyup",modifier);window.removeEventListener("blur",blur);};
   });
   function submitStation(event: FormEvent) {
     event.preventDefault();
@@ -1227,7 +1246,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
+            }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
