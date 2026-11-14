@@ -86,3 +86,131 @@ fn gap_cusp_foreign_owner_and_self_are_atomic_errors() {
         assert_eq!(w.snapshot(), &before);
     }
 }
+
+#[test]
+fn connected_corridor_crosses_empty_alignment_and_preserves_service_keys() {
+    let mut w = World::default();
+    let p = w.add_player("P".into()).unwrap();
+    let c = w.add_company(p, "C".into()).unwrap();
+    let a = w
+        .build_alignment(c, "A".into(), vec![point(139.), point(139.1)])
+        .unwrap();
+    let b = w
+        .build_alignment(c, "Empty bridge".into(), vec![point(139.1), point(139.2)])
+        .unwrap();
+    let d = w
+        .build_alignment(c, "D".into(), vec![point(139.2), point(139.3)])
+        .unwrap();
+    let s = w
+        .place_station_on_alignment(c, "S".into(), a, 0.5, 100., 10.)
+        .unwrap();
+    let t = w
+        .place_station_on_alignment(c, "T".into(), d, 0.5, 100., 10.)
+        .unwrap();
+    assert_eq!(
+        w.route_candidates(s, t).unwrap().status,
+        RouteSearchStatus::NoPath
+    );
+    w.connect_alignment_endpoints(
+        c,
+        end(a, AlignmentEndpoint::End),
+        end(b, AlignmentEndpoint::Start),
+    )
+    .unwrap();
+    w.connect_alignment_endpoints(
+        c,
+        end(b, AlignmentEndpoint::End),
+        end(d, AlignmentEndpoint::Start),
+    )
+    .unwrap();
+    let found = w.route_candidates(s, t).unwrap();
+    assert_eq!(found.status, RouteSearchStatus::Unique);
+    let segments = found.candidates[0].segments.clone();
+    assert_eq!(segments.len(), 1);
+    assert!(
+        matches!(&segments[0],RouteSegment::ConnectedAlignments{connections,..} if connections.len()==2)
+    );
+    assert_eq!(
+        w.route_candidates(t, s).unwrap().status,
+        RouteSearchStatus::Unique
+    );
+    let route = w
+        .add_planned_route(c, "Through".into(), s, segments.clone(), vec![s, t])
+        .unwrap();
+    let preview = w.preview_service_path(s, segments.clone()).unwrap();
+    let service = w
+        .add_service_path(
+            c,
+            "Train".into(),
+            s,
+            segments,
+            preview
+                .occurrences
+                .iter()
+                .map(|o| o.reference.clone())
+                .collect(),
+        )
+        .unwrap();
+    assert_eq!(w.route_path_stations(route).unwrap(), vec![s, t]);
+    let old = w.snapshot().clone();
+    w.extend_alignment(
+        c,
+        d,
+        AlignmentEndpoint::End,
+        vec![point(139.3), point(139.4)],
+    )
+    .unwrap();
+    assert_eq!(old.route_paths, w.snapshot().route_paths);
+    assert_eq!(old.service_paths, w.snapshot().service_paths);
+    assert_eq!(
+        w.service_path_occurrences(service)
+            .unwrap()
+            .iter()
+            .map(|o| o.station_id)
+            .collect::<Vec<_>>(),
+        vec![s, t]
+    );
+    // Removing a required connection invalidates the saved route, atomically.
+    let before = w.snapshot().clone();
+    let mut invalid = before.clone();
+    invalid.alignment_connections.pop();
+    assert!(World::new(invalid).is_err());
+    assert_eq!(w.snapshot(), &before);
+}
+
+#[test]
+fn corridor_preserves_added_intermediate_stations_but_rejects_fake_links() {
+    let mut w = World::default();
+    let p = w.add_player("P".into()).unwrap();
+    let c = w.add_company(p, "C".into()).unwrap();
+    let a = w
+        .build_alignment(c, "A".into(), vec![point(139.), point(139.1)])
+        .unwrap();
+    let b = w
+        .build_alignment(c, "B".into(), vec![point(139.1), point(139.2)])
+        .unwrap();
+    let s = w
+        .place_station_on_alignment(c, "S".into(), a, 0.2, 100., 10.)
+        .unwrap();
+    let t = w
+        .place_station_on_alignment(c, "T".into(), b, 0.8, 100., 10.)
+        .unwrap();
+    let link = AlignmentConnection {
+        a: end(a, AlignmentEndpoint::End),
+        b: end(b, AlignmentEndpoint::Start),
+    };
+    let segment = RouteSegment::ConnectedAlignments {
+        from: s,
+        to: t,
+        connections: vec![link.clone()],
+    };
+    assert!(w.preview_service_path(s, vec![segment.clone()]).is_err());
+    w.connect_alignment_endpoints(c, link.a, link.b).unwrap();
+    let route = w
+        .add_planned_route(c, "Through".into(), s, vec![segment], vec![s, t])
+        .unwrap();
+    let mid = w
+        .place_station_on_alignment(c, "Mid".into(), a, 0.8, 100., 10.)
+        .unwrap();
+    assert_eq!(w.route_path_stations(route).unwrap(), vec![s, mid, t]);
+}

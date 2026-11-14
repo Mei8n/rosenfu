@@ -174,6 +174,28 @@ impl WorldDraft {
             }
             for leg in &path.legs {
                 match leg.segment {
+                    RouteSegment::ConnectedAlignments {
+                        ref connections, ..
+                    } => {
+                        for id in connections
+                            .iter()
+                            .flat_map(|link| [link.a.alignment_id, link.b.alignment_id])
+                        {
+                            if self
+                                .alignments
+                                .iter()
+                                .find(|a| a.id == id)
+                                .map(|a| &a.points)
+                                != old
+                                    .alignments
+                                    .iter()
+                                    .find(|a| a.id == id)
+                                    .map(|a| &a.points)
+                            {
+                                return Err(WorldError::ServicePathEditUnsupported);
+                            }
+                        }
+                    }
                     RouteSegment::Alignment { alignment_id, .. } => {
                         if self
                             .alignments

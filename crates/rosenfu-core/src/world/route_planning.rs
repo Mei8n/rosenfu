@@ -10,6 +10,12 @@ const MAX_HOPS: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RouteSegment {
+    /// Explicit ordered endpoint corridor, preserving each infrastructure ID.
+    ConnectedAlignments {
+        from: StationId,
+        to: StationId,
+        connections: Vec<AlignmentConnection>,
+    },
     Track {
         track_id: TrackId,
     },
@@ -132,6 +138,16 @@ fn graph(data: &WorldDraft) -> Graph {
                 },
             });
         }
+    }
+    for (from, to, connections) in alignment_connections::corridor_edges(data) {
+        graph.get_mut(&from).expect("validated station").push(Edge {
+            to,
+            segment: RouteSegment::ConnectedAlignments {
+                from,
+                to,
+                connections,
+            },
+        });
     }
     graph
 }

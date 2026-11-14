@@ -41,6 +41,8 @@ Existing occupied endpoints cannot subsequently be extended away from their link
    stations, speed caps, provenance and batch rollback.
 
 ## Current milestone
-Only the core endpoint pair and validation API have been implemented. There is no
-UI connect action or cross-alignment route traversal yet. Do not present this
-milestone as a fixed connection bug.
+The endpoint model, validation API, cross-alignment corridor route search and
+service traversal are implemented and core/storage tests pass. Empty connecting
+alignments and existing service keys are preserved. UI/session construction and
+plan destinations remain in progress. Do not present this milestone as a fixed
+connection bug.
