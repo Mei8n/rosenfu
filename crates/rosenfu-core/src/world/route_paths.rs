@@ -24,6 +24,16 @@ pub(super) fn resolve_path(
     let mut current = start;
     for segment in segments {
         let next: Vec<StationId> = match *segment {
+            RouteSegment::ConnectedAlignments {
+                from,
+                to,
+                ref connections,
+            } => {
+                if current != from {
+                    return Err(RoutePlanningError::InvalidSegment);
+                }
+                alignment_connections::resolve_corridor(data, from, to, connections)?
+            }
             RouteSegment::Track { track_id } => {
                 let t = data
                     .tracks

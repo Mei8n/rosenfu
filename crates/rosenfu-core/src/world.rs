@@ -111,6 +111,9 @@ impl ViewState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    /// Explicit, non-branching infrastructure endpoint links.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alignment_connections: Vec<AlignmentConnection>,
     /// Optional local presentation metadata, independent of physical world geometry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_state: Option<ViewState>,
@@ -155,6 +158,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            alignment_connections: vec![],
             view_state: None,
             construction_plans: None,
             route_paths: vec![],
@@ -182,6 +186,7 @@ pub enum WorldError {
     InvalidConstructionPlans,
     InvalidViewState,
     InvalidAlignment,
+    InvalidAlignmentConnection,
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
@@ -380,6 +385,7 @@ impl WorldDraft {
         ids(self.services.iter().map(|x| x.id.0), "service")?;
         ids(self.alignments.iter().map(|x| x.id.0), "alignment")?;
         self.validate_alignments()?;
+        self.validate_alignment_connections()?;
         let maximum_id = self
             .players
             .iter()
@@ -510,6 +516,8 @@ impl WorldDraft {
     }
 }
 
+mod alignment_connections;
+pub use alignment_connections::{AlignmentConnection, AlignmentEndpointRef};
 mod alignment;
 pub use alignment::{Alignment, AlignmentEndpoint, GeoPoint, StationPlacement, TrackType};
 
@@ -518,6 +526,7 @@ mod tests {
     use super::*;
     fn sample() -> WorldDraft {
         WorldDraft {
+            alignment_connections: vec![],
             view_state: None,
             construction_plans: None,
             route_paths: vec![],

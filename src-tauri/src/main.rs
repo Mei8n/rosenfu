@@ -66,6 +66,7 @@ fn build_alignment_from_reference(
                 provenance,
             }),
             extension: None,
+            destination: None,
         }])
 }
 #[tauri::command]
@@ -87,6 +88,7 @@ fn build_alignment(
             stations: vec![],
             reference: None,
             extension: None,
+            destination: None,
         }])
 }
 #[tauri::command]
@@ -110,6 +112,7 @@ fn build_alignment_with_stations(
             stations,
             reference,
             extension: None,
+            destination: None,
         }])
 }
 #[tauri::command]

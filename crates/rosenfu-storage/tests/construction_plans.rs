@@ -115,3 +115,33 @@ fn schema_eleven_plan_without_geometry_remains_unchanged() {
         rosenfu_storage::SCHEMA_VERSION
     );
 }
+
+#[test]
+fn destination_and_redo_destination_survive_plan_save() {
+    let mut payload = serde_json::to_value(plans()).unwrap();
+    let a = json!({"latitude":35.0,"longitude":139.0});
+    let b = json!({"latitude":35.0,"longitude":139.01});
+    payload["draftPoints"] = json!([a, b]);
+    payload["draftExtension"] = json!({"alignmentId":"1","endpoint":"end"});
+    payload["draftDestination"] = json!({"alignmentId":"2","endpoint":"start"});
+    let parked = &mut payload["parkedPaths"][0];
+    parked["extension"] = json!({"alignmentId":"3","endpoint":"start"});
+    parked["redo"] = json!([b]);
+    parked["redoDestination"] = json!({"alignmentId":"4","endpoint":"end"});
+    let world = World::new(WorldDraft {
+        construction_plans: Some(serde_json::from_value(payload.clone()).unwrap()),
+        ..WorldDraft::default()
+    })
+    .unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+    payload["draftPoints"] = json!([a]);
+    payload.as_object_mut().unwrap().remove("draftDestination");
+    payload["draftRedoDestination"] = json!({"alignmentId":"2","endpoint":"start"});
+    payload["redoPoints"] = json!([b]);
+    let world = World::new(WorldDraft {
+        construction_plans: Some(serde_json::from_value(payload).unwrap()),
+        ..WorldDraft::default()
+    })
+    .unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+}
