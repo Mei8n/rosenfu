@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
+import styles from "./style.css?raw";
 import {afterEach,expect,test,vi} from "vitest";
 import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
@@ -153,6 +154,9 @@ for(const endpoint of ['start','end'] as const)test(`tangent guide follows built
 test('built line list keeps a unique selectable label without repetitive metadata',async()=>{
  await start({alignments:[{...line,name:'新しい線路'}]});
  expect(screen.queryByRole('button',{name:'線路 3'})).toBeNull();
+ const css=document.createElement('style');css.textContent=styles;document.head.append(css);
+ expect(getComputedStyle(document.querySelector('.construction-list')!).display).toBe('none');
+ css.remove();
  fireEvent.click(screen.getByRole('button',{name:'選択'}));
  const entry=screen.getByRole('button',{name:'線路 3'});
  expect(entry.textContent).toBe('線路 3');

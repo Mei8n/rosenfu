@@ -484,4 +484,10 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 
 /* Construction keeps its drawing cursor over existing tracks. */
 .workbench .placement-enabled .alignment-hit,
-.workbench .placement-enabled .track-connection { cursor: crosshair; }
+.workbench .placement-enabled .track-connection,
+.workbench .placement-enabled .draft-anchor,
+.workbench .placement-enabled .parked-anchor,
+.workbench .placement-enabled .anchor-drag-hit,
+.workbench .placement-enabled .station-marker { cursor: crosshair; }
+
+.workbench .construction-list[hidden] { display: none; }

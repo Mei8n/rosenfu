@@ -139,7 +139,7 @@ test("plan redo, duplicate rejection and display controls",async()=>{
 
 test("20m equivalent inputs preserve fractional metre lengths when creating and editing",async()=>{
  const snapshot={...placed,station_placements:[{...placed.station_placements[0],length_m:231.5,width_m:17}]};
- await start(snapshot);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 35/}));
+ await start(snapshot);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 35/}));
  expect(screen.queryByLabelText("選択駅のホーム長 (m)")).toBeNull();
  expect((screen.getByLabelText("選択駅の長さ") as HTMLInputElement).value).toBe("11.575");
  fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12.125"}});
@@ -178,7 +178,7 @@ test("low-zoom endpoint previews use the full-platform corrected center",async()
  }
 });
 test("reference name is automatic and does not place or rename until confirmed",async()=>{
- const map=await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 /}));expect(screen.queryByLabelText("新しい駅名")).toBeNull();
+ const map=await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 /}));expect(screen.queryByLabelText("新しい駅名")).toBeNull();
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
  const pack={format:"rosenfu-reference-stations",version:1,dataset:{id:"names",revision:"1",source:"local fixture",license:"test",bounds:{west:139,east:140,south:35,north:36}},stations:[{osmType:"node",osmId:"1",name:"参考中央",latitude:35.67504,longitude:139.756,kind:"station"}]};
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:500,text:()=>Promise.resolve(JSON.stringify(pack))}]}});await screen.findByText("names / 1 / 1件");
@@ -316,3 +316,5 @@ test("automatic drawing dragging at the endpoint never finishes or adds an ancho
 });
 
  test("construction omits redundant controls without removing keyboard editing",async()=>{await start();expect(screen.queryByRole("button",{name:"1点戻す"})).toBeNull();expect(screen.queryByRole("button",{name:"やり直す"})).toBeNull();expect(document.querySelector(".reference-tools")?.hasAttribute("hidden")).toBe(true);expect(document.querySelector(".track-editor")?.textContent).not.toContain("運行経路用：駅間接続");});
+
+test("station placement hides management controls while retaining management access",async()=>{await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));expect(screen.queryByRole("region",{name:"駅名の自動設定"})).toBeNull();expect(screen.queryByRole("button",{name:"指定座標に配置"})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置を取り消す"})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置をやり直す"})).toBeNull();expect(screen.queryByRole("heading",{name:"配置済みの駅"})).toBeNull();fireEvent.click(screen.getByRole("tab",{name:"駅"}));expect(screen.getByRole("heading",{name:"配置済みの駅"})).toBeTruthy();expect(screen.getByRole("button",{name:"指定座標に配置"})).toBeTruthy();});

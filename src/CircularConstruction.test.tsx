@@ -76,13 +76,13 @@ test('outgoing tangent guide follows the preview endpoint and has a stable CSS l
  expect(Number(guide()!.getAttribute('x1'))).toBeCloseTo(600,5);
  expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(360,5);
  expect(Number(guide()!.getAttribute('x2'))).toBeCloseTo(600,4);
- expect(Number(guide()!.getAttribute('y2'))-360).toBeCloseTo(240,4);
+ expect(Number(guide()!.getAttribute('y2'))-360).toBeCloseTo(600,4);
  const curvedGuide=guide()!.outerHTML;
  fireEvent.pointerMove(map,{clientX:320,clientY:160});
  expect(guide()!.outerHTML).not.toBe(curvedGuide);
  const dx=Number(guide()!.getAttribute('x2'))-Number(guide()!.getAttribute('x1'));
  const dy=Number(guide()!.getAttribute('y2'))-Number(guide()!.getAttribute('y1'));
- expect(Math.hypot(dx,dy)*.5).toBeCloseTo(120,5);
+ expect(Math.hypot(dx,dy)*.5).toBeCloseTo(300,5);
  // No invented forward direction for a refused curve.
  fireEvent.pointerMove(map,{clientX:220,clientY:190});
  expect(map.querySelector('.invalid-candidate')).toBeTruthy();

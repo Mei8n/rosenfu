@@ -124,7 +124,7 @@ test("a parked redo-only path remains selectable and can recover without deletin
  click(180,130);click(230,130);click(230,130);click(320,200);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});click(230,130);
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(screen.getByText("内訳"));fireEvent.click(screen.getByRole("button",{name:"経路 2"}));
+ fireEvent.click(screen.getByText("内訳"));fireEvent.click(screen.getByRole("button",{name:"経路 2",hidden:true}));
  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  click(360,200);expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);

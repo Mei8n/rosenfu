@@ -69,7 +69,7 @@ test("station map placement requires a previously built alignment", async () => 
 test("coordinate entry supports keyboard-accessible placement and preserves state on failure", async () => {
   desktop(); renderStationEditor(); await screen.findByText(/test-version/);
   vi.mocked(invoke).mockRejectedValueOnce(new Error("invalid station"));
-  fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
+  fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   expect((await screen.findByRole("alert")).querySelector("span")).toHaveProperty("textContent", "処理できませんでした: invalid station");
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
   expect(screen.getByText(/まだ駅はありません/)).toBeTruthy();
@@ -87,12 +87,12 @@ test("save and load errors retain the current snapshot", async () => {
   expect(screen.getByText(/まだ駅はありません/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   await screen.findByText("保存したワールドを読み込みました。");
-  expect(screen.getByRole("button", { name: /中央 35.67500/ })).toBeTruthy();
+  expect(screen.getByRole("button", { name: /中央 35.67500/, hidden:true })).toBeTruthy();
 });
 
 test("loading over unsaved station edits requires an explicit choice", async () => {
   desktop(); renderStationEditor(); await screen.findByText(/test-version/);
-  fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
+  fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   await screen.findByText("新駅を配置しました。");
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   expect(invoke).not.toHaveBeenCalledWith("load_world");
@@ -106,7 +106,7 @@ test("loading over unsaved station edits requires an explicit choice", async () 
 
 test("pending operations block duplicate actions and successful save clears dirty state", async () => {
   desktop(); renderStationEditor(); await screen.findByText(/test-version/);
-  fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
+  fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   await screen.findByText("未保存の変更あり");
   let finish!: (value: { saved: boolean }) => void;
   vi.mocked(invoke).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
@@ -430,7 +430,7 @@ test("tile result metadata is discarded when tiles leave the viewport and zoom r
 test("camera changes do not edit world IDs/coordinates and legacy reload restores default view", async () => {
   desktop(); renderStationEditor(); await screen.findByText(/test-version/);
   const originalSnapshot = JSON.stringify(populated);
-  fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
+  fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   await screen.findByText("新駅を配置しました。");
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   await screen.findByText("ワールドと未着工計画を保存しました。");
@@ -873,7 +873,7 @@ test("persisted alignment route is shown and protected against legacy editing",a
  expect(screen.getByLabelText("路線名").closest("fieldset")?.disabled).toBe(true);
  fireEvent.submit(screen.getByLabelText("路線名").closest("form")!);
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="save_route")).toBe(false);
- fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:/^中央 35/}));
+ fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^中央 35/}));
  expect(screen.getAllByText(/路線: 新方式本線/).length).toBeGreaterThan(0);
 });
 test("candidate apply invokes RoutePath save and marks world unsaved",async()=>{

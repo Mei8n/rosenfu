@@ -32,17 +32,17 @@ async function place(){const map=screen.getByRole("img",{name:"駅配置用OpenS
 async function ready(){await waitFor(()=>expect((document.querySelector(".save-controls button:last-child") as HTMLButtonElement).disabled).toBe(false));}
 const undo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});const redo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
 test("station undo and redo preserve failed history, issue a fresh ID and protect existing stations",async()=>{
- const failures=await start();await place();failures.remove=true;undo();await screen.findByText(/delete failure/);await ready();expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す"}) as HTMLButtonElement).disabled).toBe(false);
- failures.remove=false;undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();expect(invoke).toHaveBeenCalledWith("delete_station",{stationId:"20"});expect(region(".station-directory").getByRole("button",{name:/^既存駅 /})).toBeTruthy();
- failures.place=true;redo();await screen.findByText(/place failure/);await ready();expect((region(".station-history").getByRole("button",{name:"駅設置をやり直す"}) as HTMLButtonElement).disabled).toBe(false);
+ const failures=await start();await place();failures.remove=true;undo();await screen.findByText(/delete failure/);await ready();expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す",hidden:true}) as HTMLButtonElement).disabled).toBe(false);
+ failures.remove=false;undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();expect(invoke).toHaveBeenCalledWith("delete_station",{stationId:"20"});expect(region(".station-directory").getByRole("button",{name:/^既存駅 /,hidden:true})).toBeTruthy();
+ failures.place=true;redo();await screen.findByText(/place failure/);await ready();expect((region(".station-history").getByRole("button",{name:"駅設置をやり直す",hidden:true}) as HTMLButtonElement).disabled).toBe(false);
  failures.place=false;redo();await screen.findByText(/駅を再設置しました/);await ready();undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();expect(invoke).toHaveBeenCalledWith("delete_station",{stationId:"21"});
 });
 test("successful save closes history while failed save preserves it",async()=>{
- const failures=await start();await place();failures.save=true;fireEvent.click(region(".save-controls").getByRole("button",{name:"保存"}));await screen.findByText(/save failure/);await ready();expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す"}) as HTMLButtonElement).disabled).toBe(false);
+ const failures=await start();await place();failures.save=true;fireEvent.click(region(".save-controls").getByRole("button",{name:"保存"}));await screen.findByText(/save failure/);await ready();expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す",hidden:true}) as HTMLButtonElement).disabled).toBe(false);
  failures.save=false;fireEvent.click(region(".save-controls").getByRole("button",{name:"保存"}));await screen.findByText("ワールドと未着工計画を保存しました。");await ready();undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });
 test("references block station undo without consuming history",async()=>{
- await start();await place();fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.change(screen.getByLabelText("接続元の駅"),{target:{value:"20"}});fireEvent.change(screen.getByLabelText("接続先の駅"),{target:{value:"10"}});fireEvent.click(screen.getByRole("button",{name:"線路を接続"}));await screen.findByText("線路を接続しました。");await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));undo();await screen.findByText(/駅設置Undo不可: 接続線路/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す"}) as HTMLButtonElement).disabled).toBe(false);
+ await start();await place();fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.change(screen.getByLabelText("接続元の駅"),{target:{value:"20"}});fireEvent.change(screen.getByLabelText("接続先の駅"),{target:{value:"10"}});fireEvent.click(screen.getByRole("button",{name:"線路を接続"}));await screen.findByText("線路を接続しました。");await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));undo();await screen.findByText(/駅設置Undo不可: 接続線路/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す",hidden:true}) as HTMLButtonElement).disabled).toBe(false);
 });
 test("text inputs keep native undo and track drafts have shortcut priority",async()=>{
  await start();await place();fireEvent.keyDown(screen.getByLabelText("駅の長さ"),{key:"z",ctrlKey:true});expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
@@ -50,7 +50,7 @@ test("text inputs keep native undo and track drafts have shortcut priority",asyn
 });
 test("world load ends history and a new placement discards redo",async()=>{
  await start();await place();undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();await place();redo();await screen.findByText("やり直せる駅設置履歴はありません。");await ready();expect(vi.mocked(invoke).mock.calls.filter(([command])=>(command==="place_station_on_alignment"||command==="build_plan"))).toHaveLength(2);
- fireEvent.click(region(".save-controls").getByRole("button",{name:"読込"}));fireEvent.click(region(".load-confirm").getByRole("button",{name:"読込を続ける"}));await screen.findByText("保存したワールドを読み込みました。");await ready();undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(region(".station-directory").getByRole("button",{name:/^既存駅 /})).toBeTruthy();
+ fireEvent.click(region(".save-controls").getByRole("button",{name:"読込"}));fireEvent.click(region(".load-confirm").getByRole("button",{name:"読込を続ける"}));await screen.findByText("保存したワールドを読み込みました。");await ready();undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(region(".station-directory").getByRole("button",{name:/^既存駅 /,hidden:true})).toBeTruthy();
 });
 test("repeated keydown cannot issue duplicate station deletion",async()=>{
  await start();await place();const implementation=vi.mocked(invoke).getMockImplementation()!;let finish!:(value:unknown)=>void;
@@ -61,14 +61,14 @@ test("repeated keydown cannot issue duplicate station deletion",async()=>{
 test("multiple placements undo and redo in LIFO order",async()=>{
  await start();await place();await place();undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();undo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="delete_station")).toHaveLength(2));
  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="delete_station").map(([,args])=>(args as any).stationId)).toEqual(["21","20"]);
- await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置をやり直す"}) as HTMLButtonElement).disabled).toBe(false));redo();await screen.findByText(/駅を再設置しました/);await ready();redo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>(command==="place_station_on_alignment"||command==="build_plan"))).toHaveLength(4));
- await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す"}) as HTMLButtonElement).disabled).toBe(false));undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();expect(invoke).toHaveBeenCalledWith("delete_station",{stationId:"23"});
+ await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置をやり直す",hidden:true}) as HTMLButtonElement).disabled).toBe(false));redo();await screen.findByText(/駅を再設置しました/);await ready();redo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>(command==="place_station_on_alignment"||command==="build_plan"))).toHaveLength(4));
+ await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す",hidden:true}) as HTMLButtonElement).disabled).toBe(false));undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();expect(invoke).toHaveBeenCalledWith("delete_station",{stationId:"23"});
 });
 test("failed world load retains the station history",async()=>{
  const failures=await start();await place();failures.load=true;fireEvent.click(region(".save-controls").getByRole("button",{name:"読込"}));fireEvent.click(region(".load-confirm").getByRole("button",{name:"読込を続ける"}));await screen.findByText(/load failure/);await ready();undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();expect(invoke).toHaveBeenCalledWith("delete_station",{stationId:"20"});
 });
 test.each(["name","size"])("successful station %s edit ends placement history",async kind=>{
- await start();await place();fireEvent.click(region(".station-directory").getByRole("button",{name:/^新駅 /}));
+ await start();await place();fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(region(".station-directory").getByRole("button",{name:/^新駅 /}));
  if(kind==="name"){fireEvent.change(screen.getByLabelText("選択駅の名前"),{target:{value:"改名駅"}});fireEvent.click(screen.getByRole("button",{name:"駅名を適用"}));await screen.findByText(/駅名を変更しました/);await ready();}
  else{fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12"}});await screen.findByText("ホーム寸法を変更しました。保存でファイルに反映します。");await ready();}
  undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
