@@ -1,3 +1,4 @@
+import {twoEndedJoin} from "./twoEndedJoin";
 import {destinationJoinError,occupiedEndpoint} from "./destinationJoin";
 import type {EndpointConnection} from "./destinationJoin";
 import {anchorDragFeedback} from "./anchorDragFeedback";
@@ -283,7 +284,17 @@ export function App() {
   }
   const previousPoint=extensionPrevious(draftExtension);
   const draftGeometry = useMemo(() => plannedGeometry(draftPoints,draftEditedGeometry,previousPoint), [draftPoints,draftEditedGeometry,previousPoint]);
-  const previewGeometry = useMemo(() => plannedGeometry(hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints,draftEditedGeometry,previousPoint), [draftPoints, hoverPoint, mapMode, draftFinished,previousPoint,draftEditedGeometry]);
+  function fittedDestination(anchors:GeoPoint[],edited:typeof draftEditedGeometry) {
+    if(!draftExtension||anchors.length<2)return edited;
+    const end=anchors.at(-1)!;
+    const target=alignments.flatMap(alignment=>[
+      {id:alignment.id,endpoint:"start",point:alignment.points[0],inside:alignment.points[1]},
+      {id:alignment.id,endpoint:"end",point:alignment.points.at(-1),inside:alignment.points.at(-2)},
+    ]).find(e=>!(e.id===draftExtension.alignmentId&&e.endpoint===draftExtension.endpoint)&&e.point?.latitude===end.latitude&&e.point?.longitude===end.longitude);
+    return target?.inside?twoEndedJoin(anchors,edited,previousPoint,target.inside)??edited:edited;
+  }
+  const previewAnchors=hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints;
+  const previewGeometry = plannedGeometry(previewAnchors,previewAnchors!==draftPoints?fittedDestination(previewAnchors,draftEditedGeometry):draftEditedGeometry,previousPoint);
   const draftLine = draftGeometry.points;
   const previewLine = previewGeometry.points;
   const draftInvalid = Boolean(draftGeometry.error);
@@ -864,7 +875,8 @@ export function App() {
       }
       const destination=destinationTarget(coordinates,rect.width,rect.height);
       coordinates=destination?.point??drawingPoint(coordinates,rect.width,rect.height,event.ctrlKey);
-      const editedForAppend=draftEditedGeometry&&redoPoints.length?(draftPoints.length>=2?{version:1 as const,anchors:draftPoints,line:draftLine}:undefined):draftPoints.length?draftEditedGeometry:undefined;
+      let editedForAppend=draftEditedGeometry&&redoPoints.length?(draftPoints.length>=2?{version:1 as const,anchors:draftPoints,line:draftLine}:undefined):draftPoints.length?draftEditedGeometry:undefined;
+      if(destination)editedForAppend=fittedDestination([...draftPoints,coordinates],editedForAppend);
       const candidate=plannedGeometry([...draftPoints,coordinates],editedForAppend,previousPoint);if(candidate.error){setHoverPoint(coordinates);return;}
       const targetRef=destination?{alignmentId:destination.alignment.id,endpoint:destination.endpoint}:undefined;
       const targetError=joinError(candidate.points,draftExtension,targetRef);if(targetError){setError(targetError);return;}
