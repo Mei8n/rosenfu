@@ -81,7 +81,8 @@ test('extension inherits non-default design speed and prevents changing its sett
 test('endpoint hover previews the exact clicked extension and clears on leave',async()=>{
  const map=await start();
  fireEvent.pointerMove(map,{clientX:253,clientY:132});
- expect(screen.getByText(/既存の終点にスナップ/)).toBeTruthy();
+ expect(screen.queryByText(/既存の終点にスナップ/)).toBeNull();
+ expect(map.parentElement?.querySelector('.drawing-tooltip')).toBeNull();
  expect(map.querySelector('.endpoint-snap-ring')?.getAttribute('data-allowed')).toBe('true');
  fireEvent.pointerLeave(map);
  expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
@@ -119,7 +120,8 @@ test('planned endpoint feedback takes precedence over built endpoints as clickin
  fireEvent.click(map,{clientX:400,clientY:220});
  fireEvent.click(map,{clientX:400,clientY:220});
  fireEvent.pointerMove(map,{clientX:402,clientY:221});
- expect(screen.getByText(/計画の終点にスナップ/)).toBeTruthy();
+ expect(screen.queryByText(/計画の終点にスナップ/)).toBeNull();
+ expect(map.querySelector(".endpoint-snap-ring")).toBeTruthy();
  fireEvent.click(map,{clientX:402,clientY:221});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
@@ -135,4 +137,24 @@ for(const endpoint of ['start','end'] as const)test(`tangent guide follows built
  const delta=Number(guide.getAttribute('x2'))-Number(guide.getAttribute('x1'));
  expect(endpoint==='start'?delta<0:delta>0).toBe(true);
  expect(Number(guide.getAttribute('y1'))).toBeCloseTo(Number(guide.getAttribute('y2')),5);
+});
+
+ test('empty drawing canvas shows no instructional popup but retains drawing measurements',async()=>{
+ const map=await start();
+ fireEvent.pointerMove(map,{clientX:320,clientY:240});
+ expect(screen.queryByText('始点をクリック')).toBeNull();
+ expect(map.parentElement?.querySelector('.drawing-tooltip')).toBeNull();
+ fireEvent.click(map,{clientX:320,clientY:240});
+ fireEvent.pointerMove(map,{clientX:430,clientY:240});
+ expect(map.parentElement?.querySelector('.drawing-tooltip')?.textContent).toContain('速度上限');
+ expect(screen.queryByText('最後の点をもう一度クリックで終了')).toBeNull();
+ });
+
+test('built line list keeps a unique selectable label without repetitive metadata',async()=>{
+ await start({alignments:[{...line,name:'新しい線路'}]});
+ const entry=screen.getByRole('button',{name:'線路 3'});
+ expect(entry.textContent).toBe('線路 3');
+ expect(screen.queryByText('出典記録なし')).toBeNull();
+ fireEvent.click(entry);
+ expect(screen.queryByText('出典記録なし')).toBeNull();
 });
