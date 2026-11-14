@@ -71,6 +71,7 @@ pub struct WorldEditor {
     observed_autosave: Option<(PathBuf, rosenfu_storage::FileVersion)>,
     autosave_blocked: bool,
     autosave_replace_allowed: bool,
+    deleted_alignment: Option<(WorldDraft, WorldDraft)>,
 }
 impl WorldEditor {
     pub fn preview_service_path(
@@ -158,6 +159,7 @@ impl WorldEditor {
             observed_autosave: None,
             autosave_blocked: false,
             autosave_replace_allowed: false,
+            deleted_alignment: None,
         }
     }
     pub fn company_setup_required(&self) -> bool {
@@ -648,6 +650,78 @@ impl WorldEditor {
             .map_err(|error| error.to_string())?;
         Ok(self.snapshot())
     }
+    pub fn delete_alignment_with_plans(
+        &mut self,
+        id: AlignmentId,
+        plans: rosenfu_core::world::ConstructionPlans,
+    ) -> Result<WorldDraft, String> {
+        let mut candidate = self.clone();
+        let mut draft = candidate.snapshot();
+        draft.construction_plans = Some(plans);
+        candidate.world.replace(draft).map_err(|e| e.to_string())?;
+        let result = candidate.delete_alignment(id)?;
+        *self = candidate;
+        Ok(result)
+    }
+    /// Delete one whole alignment, never its dependent equipment or services.
+    pub fn delete_alignment(&mut self, id: AlignmentId) -> Result<WorldDraft, String> {
+        let before = self.snapshot();
+        let mut draft = before.clone();
+        if !draft
+            .alignments
+            .iter()
+            .any(|a| a.id == id && a.owner == self.company)
+        {
+            return Err("削除する自社線路が見つかりません。".into());
+        }
+        if draft.station_placements.iter().any(|s| s.alignment_id == id)
+            || draft.route_paths.iter().any(|p| p.segments.iter().any(|s| matches!(s, rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } if *alignment_id == id)))
+            || draft.service_paths.iter().any(|p| p.legs.iter().any(|l| matches!(l.segment, rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } if alignment_id == id)))
+        {
+            return Err("駅・路線・系統が使用中の線路は削除できません。".into());
+        }
+        if draft.construction_plans.as_ref().is_some_and(|p| {
+            p.draft_extension
+                .as_ref()
+                .is_some_and(|e| e.alignment_id == id)
+                || p.parked_paths
+                    .iter()
+                    .any(|p| p.extension.as_ref().is_some_and(|e| e.alignment_id == id))
+                || p.planned_stations
+                    .iter()
+                    .any(|s| s.alignment_id == Some(id))
+        }) {
+            return Err("未着工計画が使用中の線路は削除できません。".into());
+        }
+        draft.alignments.retain(|a| a.id != id);
+        draft.alignment_provenance.retain(|p| p.alignment_id != id);
+        let mut candidate = self.clone();
+        candidate.world.replace(draft).map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        let after = candidate.snapshot();
+        candidate.deleted_alignment = Some((before, after.clone()));
+        *self = candidate;
+        Ok(after)
+    }
+
+    /// Restores only the most recent deletion, without overwriting later edits.
+    pub fn undo_alignment_deletion(&mut self) -> Result<WorldDraft, String> {
+        let (before, after) = self
+            .deleted_alignment
+            .as_ref()
+            .ok_or("元に戻せる線路削除がありません。")?;
+        if &self.snapshot() != after {
+            return Err("削除後に変更・保存したため、この削除は元に戻せません。".into());
+        }
+        let mut candidate = self.clone();
+        // Exact post-delete snapshot equality above permits restoration of retired IDs.
+        candidate.world = World::new(before.clone()).map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        candidate.deleted_alignment = None;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
+
     pub fn delete_track(&mut self, track_id: TrackId) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.delete_track_unchecked(track_id)?;
@@ -1064,6 +1138,7 @@ impl WorldEditor {
                 Err(error) => return Err(error.to_string()),
             }
         };
+        candidate.deleted_alignment = None;
         candidate.loaded_path = Some(manual_path.to_owned());
         candidate.manual_version = Some(manual_version);
         candidate.manual_repair_allowed = repair_allowed;
@@ -1098,6 +1173,7 @@ impl WorldEditor {
             return Err("編集範囲外の路線を含むため読み込めません。".into());
         }
         let company = data.companies[0].id;
+        self.deleted_alignment = None;
         self.world = candidate;
         self.company = company;
         self.company_setup_required = false;
@@ -1352,6 +1428,76 @@ mod tests {
                 &restored.snapshot()
             );
         }
+    }
+    #[test]
+    fn alignment_deletion_is_atomic_reversible_and_saved() {
+        let mut editor = WorldEditor::new();
+        editor
+            .build_alignment(
+                "A".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 35.0,
+                        longitude: 139.0,
+                    },
+                    GeoPoint {
+                        latitude: 35.1,
+                        longitude: 139.1,
+                    },
+                ],
+            )
+            .unwrap();
+        let before = editor.snapshot();
+        let id = before.alignments[0].id;
+        assert!(editor.delete_alignment(AlignmentId(999)).is_err());
+        assert_eq!(editor.snapshot(), before);
+        let after = editor.delete_alignment(id).unwrap();
+        assert!(after.alignments.is_empty());
+        assert_eq!(after.next_id, before.next_id);
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        editor.delete_alignment(id).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deleted.json");
+        editor.save(&path).unwrap();
+        let mut restored = WorldEditor::new();
+        assert!(restored.load(&path).unwrap().alignments.is_empty());
+        editor.add_station("S".into(), 35.0, 139.0).unwrap();
+        let edited = editor.snapshot();
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), edited);
+    }
+    #[test]
+    fn alignment_deletion_refuses_stations_and_plan_references() {
+        let mut editor = WorldEditor::new();
+        editor
+            .build_alignment(
+                "A".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 35.0,
+                        longitude: 139.0,
+                    },
+                    GeoPoint {
+                        latitude: 35.1,
+                        longitude: 139.1,
+                    },
+                ],
+            )
+            .unwrap();
+        let id = editor.snapshot().alignments[0].id;
+        let mut plans = draft_plans();
+        plans.draft_extension = Some(
+            serde_json::from_value(serde_json::json!({"alignmentId":id,"endpoint":"end"})).unwrap(),
+        );
+        let before = editor.snapshot();
+        assert!(editor.delete_alignment_with_plans(id, plans).is_err());
+        assert_eq!(editor.snapshot(), before);
+        editor
+            .place_station_on_alignment("S".into(), id, 0.5, 100.0, 12.0)
+            .unwrap();
+        let before = editor.snapshot();
+        assert!(editor.delete_alignment(id).is_err());
+        assert_eq!(editor.snapshot(), before);
     }
     #[test]
     fn oversized_edits_preserve_world_and_setup_state() {

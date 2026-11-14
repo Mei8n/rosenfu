@@ -159,6 +159,24 @@ fn delete_station(
         .delete_station(station_id)
 }
 #[tauri::command]
+fn delete_alignment(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignment_id: AlignmentId,
+    construction_plans: rosenfu_core::world::ConstructionPlans,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .delete_alignment_with_plans(alignment_id, construction_plans)
+}
+#[tauri::command]
+fn undo_alignment_deletion(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .undo_alignment_deletion()
+}
+#[tauri::command]
 fn delete_track(
     editor: State<'_, Mutex<WorldEditor>>,
     track_id: TrackId,
@@ -413,6 +431,8 @@ fn main() {
             rename_station,
             delete_station,
             delete_track,
+            delete_alignment,
+            undo_alignment_deletion,
             rename_company,
             save_route,
             save_planned_route,

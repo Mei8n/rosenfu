@@ -1,3 +1,4 @@
+import {TrackDeleteDialog} from "./TrackDeleteDialog";
 import {anchorDragPreview} from "./anchorDragPreview";
 import {plannedGeometry, type EditedGeometry} from "./editedGeometry";
 import {plannedTrackSpeed} from "./plannedTrackSpeed";
@@ -239,6 +240,10 @@ export function App() {
   function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} setDraftFinished(false); if (!draftPoints.length) return; setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
   function redoPoint() { if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) return; setDraftFinished(false); setDraftPoints(points => [...points, redoPoints[redoPoints.length-1]]); setRedoPoints(points => points.slice(0,-1)); setHoverPoint(null); }
   const [alignmentId, setAlignmentId] = useState("");
+  const [selectedPlanPath,setSelectedPlanPath]=useState<number|null>(null);
+  const [trackDeleteConfirm,setTrackDeleteConfirm]=useState(false);
+  const [trackDeleteUndo,setTrackDeleteUndo]=useState<{kind:"built";world:World;plans:string}|{kind:"plan";before:ConstructionPlans;after:string;world:World|null}|null>(null);
+
   const stationNamesVisible=displaySettings.settings.stationNamesVisible;
   const setStationNamesVisible=(value:boolean)=>displaySettings.update({stationNamesVisible:value});
   const [platformLength, setPlatformLength] = useState("200");
@@ -443,6 +448,51 @@ export function App() {
     setTrackType(restored.trackType);setDesignSpeedKmh(restored.designSpeedKmh);setRoadFollowing(restored.roadFollowing);setPlannedStations(restored.plannedStations);
     nextPlanId.current=ids.plan;nextPathId.current=ids.path;nextPlannedStationId.current=ids.station;
     setSavedPlanFingerprint(JSON.stringify(restored));
+  }
+  function alignmentReferences(id:string){
+    if(world?.alignments?.find(a=>a.id===id)?.owner!==world?.companies[0]?.id)return "他社の線路";
+    const refs:string[]=[];
+    if(world?.station_placements?.some(p=>p.alignment_id===id))refs.push("駅");
+    if(world?.route_paths?.some(p=>p.segments.some(s=>s.kind==="alignment"&&s.alignment_id===id)))refs.push("路線");
+    if(world?.service_paths?.some(p=>p.legs.some(l=>l.segment.kind==="alignment"&&l.segment.alignment_id===id)))refs.push("系統");
+    if(draftExtension?.alignmentId===id||parkedPaths.some(p=>p.extension?.alignmentId===id)||plannedStations.some(s=>s.alignmentId===id))refs.push("未着工計画");
+    return refs.join("・");
+  }
+  const selectedTrackExists=selectedPlanPath!==null
+    ?selectedPlanPath===activePathId?draftPoints.length>0:parkedPaths.some(p=>p.id===selectedPlanPath)
+    :!!selectedAlignment;
+  const selectedTrackReferences=selectedPlanPath!==null
+    ?plannedStations.some(s=>s.pathId===selectedPlanPath)?"計画駅":""
+    :alignmentId?alignmentReferences(alignmentId):"";
+  function selectTrackPath(id:number){
+    if(!enabled||mapMode!=="move"||suppressSelectionClick.current)return;
+    setSelectedPlanPath(id);setAlignmentId("");setTrackDeleteConfirm(false);
+  }
+  function deleteSelectedTrack(){
+    if(!enabled||unapplied||!selectedTrackExists||selectedTrackReferences)return;
+    if(selectedPlanPath!==null){
+      const id=selectedPlanPath,before=constructionPlans;
+      const after:ConstructionPlans=id===activePathId?{...before,draftPoints:[],draftEditedGeometry:undefined,redoPoints:[],draftExtension:null,draftFinished:false}:{...before,parkedPaths:before.parkedPaths.filter(p=>p.id!==id)};
+      const saved=savedPlanFingerprint;
+      restoreConstructionPlans(after);setSavedPlanFingerprint(saved);
+      setTrackDeleteUndo({kind:"plan",before,after:JSON.stringify(after),world});
+      setSelectedPlanPath(null);setTrackDeleteConfirm(false);return;
+    }
+    void perform(async()=>{
+      const snapshot=await invoke<World>("delete_alignment",{alignmentId,constructionPlans});
+      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint});
+      setAlignmentId("");setTrackDeleteConfirm(false);
+    });
+  }
+  const canUndoTrackDelete=trackDeleteUndo?.kind==="built"
+    ?trackDeleteUndo.world===world&&trackDeleteUndo.plans===planFingerprint
+    :trackDeleteUndo?.world===world&&trackDeleteUndo?.after===planFingerprint;
+  function undoTrackDelete(){
+    if(!enabled||!trackDeleteUndo||!canUndoTrackDelete)return;
+    if(trackDeleteUndo.kind==="plan"){
+      const saved=savedPlanFingerprint;restoreConstructionPlans(trackDeleteUndo.before);setSavedPlanFingerprint(saved);setTrackDeleteUndo(null);return;
+    }
+    void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteUndo(null);});
   }
   function stationReferences(id: string) {
     const links = world?.tracks.filter((track) => track.from === id || track.to === id) ?? [];
@@ -993,7 +1043,7 @@ export function App() {
       referenceCopy.clear();setCandidateDirty(false);setPendingGraphChange(null);
       setCompanySetupRequired(false);
       clearStationHistory();
-      setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreConstructionPlans(snapshot.construction_plans);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setStationFrom(""); setStationTo(""); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
+      setTrackDeleteUndo(null);setSelectedPlanPath(null);setTrackDeleteConfirm(false);setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreConstructionPlans(snapshot.construction_plans);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setStationFrom(""); setStationTo(""); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
       setNotice(source==="auto"?"自動保存から復元しました。手動保存データは上書きしていません。必要なら保存してください。":"保存したワールドを読み込みました。");
     });
   }
@@ -1049,6 +1099,12 @@ export function App() {
             </div>
             <span>ZL {Number(camera.zoom.toFixed(2))} / Web Mercator</span><span>駅表示：ZL15以上はホーム帯、ZL15未満は点（寸法は不変）</span>
           </div>
+          <div className="track-selection-controls" role="group" aria-label="線路選択">
+            <button type="button" className="secondary" disabled={!enabled} aria-pressed={mapMode==="move"&&activeTool==="inactive"} onClick={()=>{setActiveTool("inactive");changeMapMode("move");setTrackDeleteConfirm(false);}}>選択</button>
+            {selectedTrackExists&&mapMode==="move"&&<><span>{selectedPlanPath!==null?"計画線路 "+selectedPlanPath:"線路 "+alignmentId}</span><button type="button" className="danger" disabled={!enabled||unapplied||!!selectedTrackReferences} onClick={()=>setTrackDeleteConfirm(true)}>選択線路を削除</button>{selectedTrackReferences&&<small>削除不可：{selectedTrackReferences}が使用中</small>}</>}
+            {trackDeleteUndo&&<button type="button" className="secondary" disabled={!enabled||!canUndoTrackDelete} onClick={undoTrackDelete}>線路削除を元に戻す</button>}
+          </div>
+          {trackDeleteConfirm&&selectedTrackExists&&<TrackDeleteDialog busy={busy} blocked={!enabled||unapplied||!!selectedTrackReferences} error={error} onCancel={()=>setTrackDeleteConfirm(false)} onDelete={deleteSelectedTrack}/>}
           <div className="camera-controls" aria-label="地図表示操作">
             <label><input type="checkbox" checked={stationNamesVisible} onChange={event=>setStationNamesVisible(event.target.checked)}/>駅名を表示</label>
             <div className="map-mode-controls" role="group" aria-label="地図の操作モード"><button className="secondary" disabled={activeTool === "tracks"} aria-pressed={mapMode === "move"} onClick={() => { changeMapMode("move"); }}>移動</button><button className="secondary" aria-pressed={mapMode === "place"} disabled={!enabled || activeTool !== "stations"} onClick={() => { changeMapMode("place"); }}>駅配置</button><span>ドラッグで移動 / 縦ホイールでカーソル位置をズーム</span></div>
@@ -1107,17 +1163,17 @@ export function App() {
                 <path d={drawPath(alignment.points)} className="alignment-sleepers" />
                 <path d={drawPath(alignment.points)} className={alignmentId === alignment.id ? "alignment-path alignment-selected" : "alignment-path"} />
                 {routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={index} d={drawPath(points)} className="alignment-path route-assigned-section" />)}
-                <path d={drawPath(alignment.points)} className="alignment-hit" onClick={(event) => { if (mapMode === "move" && !suppressSelectionClick.current) { event.stopPropagation(); setAlignmentId(alignment.id); } }} />
+                <path d={drawPath(alignment.points)} className="alignment-hit" onClick={(event) => { if (mapMode === "move" && !suppressSelectionClick.current) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
               </g>)}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {referenceCopy.active&&referenceCopy.plan.build&&<path d={drawPath(referenceCopy.plan.build.points)} className="draft-path reference-copy-preview" style={referenceCopy.roadFollow?{stroke:"#298746"}:undefined} pointerEvents="none"/>}
-              {parkedPaths.map(plan=><g key={plan.id}><path d={drawPath(plan.line)} className="draft-path parked-plan" data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
+              {parkedPaths.map(plan=><g key={plan.id}><path d={drawPath(plan.line)} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
 
               {!referenceCopy.active && guideCenter && guideEdge && <circle className="curve-circle-guide" cx={guideCenter.x} cy={guideCenter.y} r={Math.hypot(guideEdge.x-guideCenter.x,guideEdge.y-guideCenter.y)} fill="none" stroke={previewError ? "#b34c4c" : "#65716b"} strokeWidth="1" opacity=".6" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
-              {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className="draft-path confirmed-draft" pointerEvents="none" />}
+              {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className={"draft-path confirmed-draft"+(mapMode==="move"&&selectedPlanPath===activePathId?" track-explicit-selection":"")} pointerEvents="none" />}
               {!referenceCopy.active&&candidateLine.length > 1 && <path d={drawPath(candidateLine)} className={"draft-path candidate-draft"+(previewError?" invalid-candidate":"")} pointerEvents="none" />}
-              {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
+              {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(activePathId);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
               {endpointCandidate&&focusMarker(endpointCandidate.point,"anchor","endpoint-snap-ring",endpointCandidateAllowed)}
               {showPlanHover&&!endpointCandidate&&planHover&&hoveredPlan&&focusMarker(nearestOnAlignment(hoveredPlan.line,planHover.point).point,"line","plan-hover-point")}
               {drawAnchors(draftPoints)}
@@ -1195,7 +1251,7 @@ export function App() {
             <div className="route-actions"><button className="secondary" disabled={!enabled || (!draftPoints.length&&!anchorUndo.length)} onClick={undoPoint}>1点戻す</button><button className="secondary" disabled={!enabled || (!redoPoints.length&&!anchorRedo.length)} onClick={redoPoint}>やり直す</button><button className="secondary" disabled={!enabled || !planHasContent} onClick={clearCurrentPlan}>下書きを消去</button></div>
             <button className="full-width track-submit" disabled={!enabled || referenceCopy.active || !planBuildable} onClick={commitAlignment}>計画を着工</button><p className="tool-helper">計画は着工まで未確定です。建設費・維持費は未計算。</p>
 
-            <ul className="construction-list">{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name&&a.name!=="新しい線路"?a.name:`線路 ${a.id}`}</button></li>)}</ul>
+            <ul className="construction-list">{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id);setSelectedPlanPath(null);setTrackDeleteConfirm(false);changeMapMode("move"); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name&&a.name!=="新しい線路"?a.name:`線路 ${a.id}`}</button></li>)}</ul>
             {selectedAlignment&&world?.alignment_provenance?.some(p=>p.alignment_id===selectedAlignment.id)&&<AlignmentProvenance alignment={selectedAlignment} provenances={world?.alignment_provenance?.filter(p=>p.alignment_id===selectedAlignment.id)} sourceRecords={world?.source_records??[]}/>}
             <details className="legacy-tools"><summary>運行経路用：駅間接続</summary>
             <div className="track-heading"><h3 id="track-editor-title">駅を線路でつなぐ</h3><span className="count" aria-label="線路数">{world?.tracks.length ?? 0}</span></div>
