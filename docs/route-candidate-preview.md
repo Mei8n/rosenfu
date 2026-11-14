@@ -1,6 +1,8 @@
 # Route candidate preview API
 
-Current note (2026-11-13): schema 4 below records the introduction of RoutePath, not the current save version (7). Alignment-based ServicePath creation now exists; see [service path design](service-path-design.md) for its original design and [operating-service model](operating-services.md) for the operating-service boundary. This API is a bounded construction helper, not passenger routing; see [research integration](trainsworld-findings-integration-audit.md).
+> 本文には導入時点の履歴を含みます。現在の全体状況は[実装方針](implementation-plan.md)、書出スキーマは[保存仕様](storage.md)を参照してください。新しい節・後続仕様を優先します。
+
+Current note (2026-11-13): schema 4 below records the introduction of RoutePath, not the current save version (9). Alignment-based ServicePath creation now exists; see [service path design](service-path-design.md) for its original design and [operating-service model](operating-services.md) for the operating-service boundary. This API is a bounded construction helper, not passenger routing; see [research integration](trainsworld-findings-integration-audit.md).
 
 Candidate search and preview remain read-only. Explicit saving now persists physical paths and station membership in schema 4, without creating tracks or services. Existing Route and OperatingService data remain independent.
 
