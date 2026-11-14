@@ -1,3 +1,4 @@
+import {MapCredits} from "./MapCredits";
 import {snapReferenceStart} from "./referenceEndpointSnap";
 import {extensionJoinError} from "./extensionJoin";
 import {stationTarget, type StationLine} from "./stationTarget";
@@ -893,23 +894,31 @@ export function App() {
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
         <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={() => requestLoad("manual")}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
       </div>
-      {status === "preview" && <p className="banner">ブラウザでの画面確認です。表示はサンプルデータで、駅の配置・線路接続・保存・読込はデスクトップ版で利用できます。</p>}
-      {status === "loading" && <p className="banner" role="status">共通エンジンからワールドを読み込んでいます。</p>}
-      {status === "error" && <div className="banner error"><p>共通エンジンに接続できませんでした。</p><button onClick={() => setAttempt((x) => x + 1)}>再試行</button></div>}
-      {closeGuard.closeError && !closeGuard.confirmClose && <div className="banner" role="alert">{closeGuard.closeError}</div>}
-      {autosave.permission==="blocked" && <div className="banner" role="status">以前の自動保存を保護するため、自動保存を保留しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の保留を確認</button></div>}
-      {autosave.message.includes("失敗") && <div className="banner" role="status">オートセーブの確認または保存に失敗しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の状態を確認</button></div>}
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
       {pendingGraphChange && <div className="banner load-confirm" role="alert"><p>参考線データを変更すると、現在の実在形状に沿う敷設・道路追従の未着工計画を破棄します。変更しますか。</p><button className="secondary" onClick={()=>setPendingGraphChange(null)}>計画に戻る</button><button disabled={!enabled} onClick={()=>{referenceCopy.clear();setGraphBundle(pendingGraphChange.bundle);setPendingGraphChange(null);}}>参考計画を破棄して変更</button></div>}
       {confirmLoad && <div className="banner load-confirm" role="alert"><p>読込すると、未着工計画（実在形状に沿う敷設・道路追従を含む）、未保存の建設内容と未適用の下書きが破棄され、保存時点の状態に置き換わります。</p><button className="secondary" disabled={busy} onClick={() => setConfirmLoad(false)}>戻る</button><button disabled={busy} onClick={()=>load()}>読込を続ける</button></div>}
+      {pendingDelete && <div className="banner load-confirm" role="alert"><p>{pendingDelete.kind === "station" ? "駅「" + (stationsById.get(pendingDelete.id)?.name ?? pendingDelete.id) + "」" : "線路 ID " + pendingDelete.id}を削除しますか。連鎖削除は行いません。適用後は保存が必要です。</p><button className="secondary" disabled={busy} onClick={() => setPendingDelete(null)}>削除をやめる</button><button className="danger" disabled={!enabled || unapplied || !!(pendingDelete.kind === "station" ? stationReferences(pendingDelete.id) : trackReferences(pendingDelete.id))} onClick={deleteEquipment}>削除を確定</button></div>}
+      <div className="workspace">
+        <section className="map-panel" aria-labelledby="map-title">
+          <div className="map-notices" aria-label="通知">
+      {closeGuard.closeError && !closeGuard.confirmClose && <div className="banner" role="alert">{closeGuard.closeError}</div>}
+
+      {status === "preview" && <p className="banner">ブラウザでの画面確認です。表示はサンプルデータで、駅の配置・線路接続・保存・読込はデスクトップ版で利用できます。</p>}
+      {status === "loading" && <p className="banner" role="status">共通エンジンからワールドを読み込んでいます。</p>}
+      {status === "error" && <div className="banner error"><p>共通エンジンに接続できませんでした。</p><button onClick={() => setAttempt((x) => x + 1)}>再試行</button></div>}
+      {autosave.permission==="blocked" && <div className="banner" role="status">以前の自動保存を保護するため、自動保存を保留しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の保留を確認</button></div>}
+      {autosave.message.includes("失敗") && <div className="banner" role="status">オートセーブの確認または保存に失敗しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の状態を確認</button></div>}
       {saveBlocked && <p className="draft-warning">駅設定・会社・路線・系統の下書きを適用、または破棄してから手動保存してください。自動保存も適用済みの内容だけが対象です。</p>}
       {hasPlans && <p className="draft-warning">未着工計画は保存されません。建設済みワールドは保存でき、画面上の計画はそのまま残ります。</p>}
       {unapplied && (activeTool === "stations" || activeTool === "tracks") && <p className="draft-warning">設備削除は未適用の下書きを適用・破棄してから行えます。</p>}
-      {pendingDelete && <div className="banner load-confirm" role="alert"><p>{pendingDelete.kind === "station" ? "駅「" + (stationsById.get(pendingDelete.id)?.name ?? pendingDelete.id) + "」" : "線路 ID " + pendingDelete.id}を削除しますか。連鎖削除は行いません。適用後は保存が必要です。</p><button className="secondary" disabled={busy} onClick={() => setPendingDelete(null)}>削除をやめる</button><button className="danger" disabled={!enabled || unapplied || !!(pendingDelete.kind === "station" ? stationReferences(pendingDelete.id) : trackReferences(pendingDelete.id))} onClick={deleteEquipment}>削除を確定</button></div>}
       {error && !companySetupRequired && <ErrorNotice message={error} revision={errorRevision} onDismiss={()=>setError("")}/>}
       {displaySettings.error && <div className="display-settings-warning" role="status">{displaySettings.status}</div>}
-      <div className="workspace">
-        <section className="map-panel" aria-labelledby="map-title">
+          {background !== "sample" && <div className={`tile-status ${tileStatus.failed ? "tile-error" : ""}`}>
+            <p role="status">{cameraPending ? "表示移動中。新しいタイルの取得を待機しています。" : tileStatus.loaded + tileStatus.failed < tileStatus.total ? `${provider.title}を読み込み中（${tileStatus.loaded} / ${tileStatus.total}）` : tileStatus.failed ? "地図の一部を表示できません。" : `${provider.title}を表示中（${tileStatus.total}枚）`}</p>
+            {tileStatus.failed > 0 && <p role="alert">{tileStatus.failed}枚の読み込みに失敗しました。自動再試行やサンプルへの自動切替は行いません。</p>}
+            <button className="secondary" onClick={() => setBackground("sample")}>サンプル背景に戻す</button>
+          </div>}
+          </div>
           <div className="panel-heading"><div><h3 id="map-title">{background === "sample" ? "駅配置サンプル" : provider.title}</h3><p>{background === "sample" ? "自作サンプル背景 / 実地図ではありません" : provider.title + " / オンライン"}</p></div><span className="north-label" aria-label="上が北">N ↑</span></div>
           <details className="map-options"><summary>地図・表示設定</summary><div className="display-settings"><p>背景を含む表示設定は端末内に自動保存。World保存・共有とは別です。初回はOSM（オンライン）。選択は次回も復元します。サンプル選択中は画像通信しません。サンプルは模式図で、オフライン実地図ではありません。</p><p>{displaySettings.status}</p><button type="button" className="secondary" onClick={displaySettings.reset}>表示設定を既定に戻す</button><span>配色</span><button className="secondary" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>{theme === "light" ? "ダークに切替" : "ライトに切替"}</button>
   <label>線の太さ<input aria-label="線の太さ" type="range" min="2" max="8" value={lineWidth} onChange={e=>setLineWidth(Number(e.target.value))}/></label>
@@ -936,11 +945,6 @@ export function App() {
           <ReferenceGraphControls bundle={graphBundle} visible={graphVisible} onBundle={bundle=>{if(referenceCopy.active)setPendingGraphChange({bundle});else setGraphBundle(bundle);}} onVisible={setGraphVisible} total={graphDisplay.total} shown={graphDisplay.edges.length} zoom={camera.zoom}/>
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
-          {background !== "sample" && <div className={`tile-status ${tileStatus.failed ? "tile-error" : ""}`}>
-            <p role="status">{cameraPending ? "表示移動中。新しいタイルの取得を待機しています。" : tileStatus.loaded + tileStatus.failed < tileStatus.total ? `${provider.title}を読み込み中（${tileStatus.loaded} / ${tileStatus.total}）` : tileStatus.failed ? "地図の一部を表示できません。" : `${provider.title}を表示中（${tileStatus.total}枚）`}</p>
-            {tileStatus.failed > 0 && <p role="alert">{tileStatus.failed}枚の読み込みに失敗しました。自動再試行やサンプルへの自動切替は行いません。</p>}
-            <button className="secondary" onClick={() => setBackground("sample")}>サンプル背景に戻す</button>
-          </div>}
           {(activeTool === "tracks" || activeTool === "inactive") && !referenceCopy.active && !dragging && !(mapMode==="draw" && cursorPosition && draftPoints.length>0 && !draftFinished) && planHover && hoveredPlan && hoveredPlan.line.length > 1 && <div className="construction-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-145,planHover.y+18))}}><strong>{hoveredPlan.name.trim() || "線路計画"} · {Math.round(alignmentLength(hoveredPlan.line))} m</strong><div>{hoveredGeometry?.error ? "敷設不可："+hoveredGeometry.error : "基本条件OK（地形等は未判定）"}</div><small>最小半径（近似）：{Number.isFinite(hoveredGeometry?.minimumRadiusM ?? Infinity) ? Math.round(hoveredGeometry!.minimumRadiusM)+" m" : "直線"}<br/>制限速度：未算定<br/>費用倍率・建設費・維持費：未計算</small></div>}
             <div className="map-surface">
             {activeTool === "tracks" && <div className="construction-toolbar" role="group" aria-label="線路敷設設定">            <TrackTypeControls value={trackType} roadFollowing={roadFollowing} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType} onRoadFollowing={value=>{setRoadFollowing(value);setHoverPoint(null);}}/>
@@ -1023,18 +1027,8 @@ export function App() {
               </g>
             </svg>
             <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
-            <div className="map-coordinates">{bounds.south.toFixed(4)}–{bounds.north.toFixed(4)}°N / {bounds.west.toFixed(4)}–{bounds.east.toFixed(4)}°E</div>
           </div>
-          <footer className="map-footer">
-            {referenceVisible && referencePack && <div className="reference-attribution">参考駅: {referencePack.dataset.source} / {referencePack.dataset.license}（背景・ゲーム駅とは別）<br/><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">参考駅データ: © OpenStreetMap contributors</a></div>}
-            {graphBundle&&graphVisible&&<span>参考線: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> / セッション限定・網羅性未保証</span>}
-            {background === "sample" ? <span>背景は独自作成の模式図で、地理的な対応はありません。外部タイルは使用していません。</span> : <div className="map-attribution">
-              <a href={provider.attributionUrl} target="_blank" rel="noopener">{provider.attribution}</a>
-              <p>架空の鉄道設備を重畳表示。背景地図とは別データです。</p>
-              <p>画像はオンライン取得。アプリによるオフライン保存・同梱は行いません。</p>
-            </div>}
-            <span>線形は試作 / 勾配・分岐・OSMネットワーク自動追従は未対応</span>
-          </footer>
+          <MapCredits background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={!!graphBundle && graphVisible}/>
         </section>
         <aside className={panelCollapsed ? "side-panel collapsed" : "side-panel"}><div className="inspector-title"><span>RAILWAY WORKSPACE</span><button className="secondary" aria-label={panelCollapsed ? "操作パネルを開く" : "操作パネルを畳む"} onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? "+" : "−"}</button></div>
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
