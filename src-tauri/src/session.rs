@@ -914,12 +914,26 @@ impl WorldEditor {
         plans: Option<rosenfu_core::world::ConstructionPlans>,
         automatic: bool,
     ) -> Result<(), String> {
+        self.save_with_view(path, plans, None, automatic)
+    }
+    /// Persist local single-player view and plans atomically with the world.
+    /// Omitted metadata preserves the previous value for older callers.
+    pub fn save_with_view(
+        &mut self,
+        path: &Path,
+        plans: Option<rosenfu_core::world::ConstructionPlans>,
+        view: Option<rosenfu_core::world::ViewState>,
+        automatic: bool,
+    ) -> Result<(), String> {
         let mut candidate = self.clone();
+        let mut draft = candidate.snapshot();
         if let Some(plans) = plans {
-            let mut draft = candidate.snapshot();
             draft.construction_plans = Some(plans);
-            candidate.world = World::new(draft).map_err(|e| e.to_string())?;
         }
+        if let Some(view) = view {
+            draft.view_state = Some(view);
+        }
+        candidate.world = World::new(draft).map_err(|e| e.to_string())?;
         if automatic {
             candidate.autosave(path)?;
         } else {
@@ -1115,6 +1129,61 @@ impl WorldEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn view_manual_autosave_and_invalid_save_preserve_data() {
+        use rosenfu_core::world::ViewState;
+        let dir = tempfile::tempdir().unwrap();
+        let manual = dir.path().join("manual.json");
+        let auto = dir.path().join("auto.json");
+        let view = ViewState {
+            latitude: 35.7,
+            longitude: 139.8,
+            zoom: 17.25,
+        };
+        let mut editor = WorldEditor::new();
+        editor
+            .save_with_view(&manual, None, Some(view), false)
+            .unwrap();
+        let mut restored = WorldEditor::new();
+        assert_eq!(restored.load(&manual).unwrap().view_state, Some(view));
+        let bytes = std::fs::read(&manual).unwrap();
+        let before = editor.snapshot();
+        assert!(editor
+            .save_with_view(&manual, None, Some(ViewState { zoom: 21.0, ..view }), false)
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(std::fs::read(&manual).unwrap(), bytes);
+        assert!(editor
+            .save_with_view(
+                &auto,
+                None,
+                Some(ViewState {
+                    latitude: f64::NAN,
+                    ..view
+                }),
+                true
+            )
+            .is_err());
+        assert!(!auto.exists());
+        assert_eq!(editor.snapshot(), before);
+        let next = ViewState { zoom: 18.5, ..view };
+        editor
+            .save_with_view(&auto, None, Some(next), true)
+            .unwrap();
+        assert_eq!(
+            restored.load_autosave(&auto, &manual).unwrap().view_state,
+            Some(next)
+        );
+        assert_eq!(std::fs::read(&manual).unwrap(), bytes);
+        editor.save_with_plans(&manual, None, false).unwrap();
+        assert_eq!(
+            rosenfu_storage::load_world(&manual)
+                .unwrap()
+                .snapshot()
+                .view_state,
+            Some(next)
+        );
+    }
     fn draft_plans() -> rosenfu_core::world::ConstructionPlans {
         serde_json::from_value(serde_json::json!({
             "version":1,"plans":[{"id":1,"name":"計画"}],"parkedPaths":[],

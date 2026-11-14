@@ -112,6 +112,6 @@ fn schema_eleven_plan_without_geometry_remains_unchanged() {
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&encode(&restored).unwrap()).unwrap()
             ["schema_version"],
-        12
+        rosenfu_storage::SCHEMA_VERSION
     );
 }

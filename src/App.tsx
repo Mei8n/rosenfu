@@ -63,6 +63,7 @@ type OperatingService = { id: string; owner: string; name: string; start: string
 type RoutePath = { route_id: string; segments: Segment[]; member_stations: string[] };
 type World = {
   construction_plans?: ConstructionPlans | null;
+  view_state?: Camera | null;
   route_paths?: RoutePath[];
   service_paths?: ServicePath[];
   source_records?: SourceRecord[];
@@ -105,6 +106,11 @@ export function App() {
   const [centerLatitude, setCenterLatitude] = useState(DEFAULT_CAMERA.latitude.toFixed(5));
   const [centerLongitude, setCenterLongitude] = useState(DEFAULT_CAMERA.longitude.toFixed(5));
   const [cameraError, setCameraError] = useState("");
+  const [savedViewFingerprint,setSavedViewFingerprint]=useState(JSON.stringify(DEFAULT_CAMERA));
+  function restoreView(view:Camera|null|undefined){
+    const next=view?cameraAt(view.latitude,view.longitude,view.zoom):DEFAULT_CAMERA;
+    changeCamera(next);setSavedViewFingerprint(JSON.stringify(next));
+  }
   const displaySettings=useDisplaySettings();
   const background=displaySettings.settings.background;
   const setBackground=(value:"sample"|"gsi"|"osm")=>displaySettings.update({background:value});
@@ -433,8 +439,9 @@ export function App() {
   const [savedPlanFingerprint,setSavedPlanFingerprint]=useState(()=>JSON.stringify(emptyConstructionPlans()));
   const plansDirty=planFingerprint!==savedPlanFingerprint;
   const unapplied = saveBlocked || referenceCopy.active;
-  const autosaveSnapshot=useMemo(()=>({world,constructionPlans}),[world,constructionPlans]);
-  const autosave=useAutosave({ready:status==="ready",dirty:(dirty||plansDirty)&&!companySetupRequired,world:autosaveSnapshot,constructionPlans,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
+  const viewDirty=JSON.stringify(camera)!==savedViewFingerprint;
+  const autosaveSnapshot=useMemo(()=>({world,constructionPlans,camera}),[world,constructionPlans,camera]);
+  const autosave=useAutosave({ready:status==="ready",dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired,world:autosaveSnapshot,constructionPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined){
     const restored=value??emptyConstructionPlans(),ids=nextConstructionIds(restored);
@@ -526,7 +533,7 @@ export function App() {
     setStatus("loading");
     Promise.all([invoke<EngineInfo>("engine_info"), invoke<World>("world_snapshot")]).then(
       ([engine, snapshot]) => {
-        if (active) { setInfo(engine); setCompanySetupRequired(engine.company_setup_required===true); setWorld(snapshot); restoreConstructionPlans(snapshot.construction_plans);setCompanyName(snapshot.companies[0]?.name ?? ""); setStatus("ready"); }
+        if (active) { setInfo(engine); setCompanySetupRequired(engine.company_setup_required===true); setWorld(snapshot); restoreConstructionPlans(snapshot.construction_plans);restoreView(snapshot.view_state);setCompanyName(snapshot.companies[0]?.name ?? ""); setStatus("ready"); }
       },
       (failure) => {
         if (active) { setError(detail(failure)); setStatus("error"); }
@@ -978,7 +985,8 @@ export function App() {
   function save() {
     if (saveBlocked) return;
     void perform(async () => {
-      await invoke<{ saved: boolean }>("save_world",{constructionPlans});
+      await invoke<{ saved: boolean }>("save_world",{constructionPlans,viewState:camera});
+      setSavedViewFingerprint(JSON.stringify(camera));
       setSavedPlanFingerprint(planFingerprint);
       setDirty(false);setStationUndo(history=>history.filter(entry=>entry.planned));setStationRedo(history=>history.filter(entry=>entry.planned)); setNotice(referenceCopy.active?"ワールドと未着工計画を保存しました。選択中の参照候補は計画に追加するまで保存されません。":"ワールドと未着工計画を保存しました。");
     });
@@ -988,6 +996,7 @@ export function App() {
     setConfirmLoad(false);
     void perform(async () => {
       const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_world");
+      restoreView(snapshot.view_state);
       setRestoredAutosaveEpoch(source==="auto"?worldEpoch+1:-1);
       setWorldEpoch(value=>value+1);
       referenceCopy.clear();setCandidateDirty(false);setPendingGraphChange(null);

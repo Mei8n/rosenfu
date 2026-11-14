@@ -16,7 +16,7 @@ mod legacy_v6;
 mod legacy_v7;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 12;
+pub const SCHEMA_VERSION: u64 = 13;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -125,7 +125,7 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         4 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(value)?)?)?,
         5 => legacy_v6::migrate(legacy_v5::migrate(value)?)?,
         6 => legacy_v6::migrate(value)?,
-        7 | 8 | 9 | 10 | 11 | SCHEMA_VERSION => {
+        7 | 8 | 9 | 10 | 11 | 12 | SCHEMA_VERSION => {
             if [
                 "route_paths",
                 "service_paths",

@@ -341,6 +341,7 @@ fn allow_autosave_replacement(
 fn autosave_world(
     app: tauri::AppHandle,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
+    view_state: Option<rosenfu_core::world::ViewState>,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<SaveResult, String> {
     let path = autosave_path(&app)?;
@@ -349,7 +350,7 @@ fn autosave_world(
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .save_with_plans(&path, construction_plans, true)?;
+        .save_with_view(&path, construction_plans, view_state, true)?;
     Ok(SaveResult { saved: true })
 }
 #[tauri::command]
@@ -370,6 +371,7 @@ struct SaveResult {
 fn save_world(
     app: tauri::AppHandle,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
+    view_state: Option<rosenfu_core::world::ViewState>,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<SaveResult, String> {
     let path = save_path(&app)?;
@@ -378,7 +380,7 @@ fn save_world(
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .save_with_plans(&path, construction_plans, false)?;
+        .save_with_view(&path, construction_plans, view_state, false)?;
     Ok(SaveResult { saved: true })
 }
 #[tauri::command]
