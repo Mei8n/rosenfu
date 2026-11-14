@@ -700,11 +700,15 @@ export function App() {
   const endpointCandidate=enabled&&activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!roadFollowingBlocked&&!dragging&&(draftFinished||!draftPoints.length)&&hoverPoint&&cursorPosition
     ?startTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
   const endpointCandidateAllowed=endpointCandidate?.kind!=="built"||endpointCandidate.alignment.owner===world?.companies[0]?.id;
-  // Use the committed end tangent, exactly as snapStraight does. The preview
-  // curve's moving end direction must not rotate this straight-ahead guide.
-  const tangentGuideStart=draftPoints.length?project(draftPoints[draftPoints.length-1].latitude,draftPoints[draftPoints.length-1].longitude,camera):null;
-  const tangentGuide=activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!draftFinished&&!dragging&&draftGeometry.tangent&&tangentGuideStart
-    ?{start:tangentGuideStart,end:{x:tangentGuideStart.x+draftGeometry.tangent.x*Math.hypot(MAP_VIEWBOX.width,MAP_VIEWBOX.height)*2,y:tangentGuideStart.y-draftGeometry.tangent.y*Math.hypot(MAP_VIEWBOX.width,MAP_VIEWBOX.height)*2}}:null;
+  // Show where the current preview would continue, not the tangent at its
+  // already-fixed start. Invalid previews have no reliable outgoing tangent.
+  const guideGeometry=hoverPoint?previewGeometry:draftGeometry;
+  const guideEndPoint=guideGeometry.points.at(-1);
+  const tangentGuideStart=guideEndPoint?project(guideEndPoint.latitude,guideEndPoint.longitude,camera):null;
+  const guideScale=cursorPosition?mapViewport(cursorPosition.width,cursorPosition.height).scale:viewport.scale;
+  const guideLength=120/guideScale;
+  const tangentGuide=activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!draftFinished&&!dragging&&!anchorPreview&&guideGeometry.tangent&&tangentGuideStart
+    ?{start:tangentGuideStart,end:{x:tangentGuideStart.x+guideGeometry.tangent.x*guideLength,y:tangentGuideStart.y-guideGeometry.tangent.y*guideLength}}:null;
 
   function mapClick(event: MouseEvent<SVGSVGElement>) {
     smoothZoom.cancel();
@@ -1104,7 +1108,7 @@ export function App() {
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {referenceCopy.active&&referenceCopy.plan.build&&<path d={drawPath(referenceCopy.plan.build.points)} className="draft-path reference-copy-preview" style={referenceCopy.roadFollow?{stroke:"#298746"}:undefined} pointerEvents="none"/>}
               {parkedPaths.map(plan=><g key={plan.id}><path d={drawPath(plan.line)} className={"draft-path parked-plan"+(showPlanHover&&planHover?.id===plan.id?" plan-hovered":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
-              {tangentGuide&&<line className="construction-tangent-guide" aria-label="直線延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+              {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
               {!referenceCopy.active && guideCenter && guideEdge && <circle className="curve-circle-guide" cx={guideCenter.x} cy={guideCenter.y} r={Math.hypot(guideEdge.x-guideCenter.x,guideEdge.y-guideCenter.y)} fill="none" stroke={previewError ? "#b34c4c" : "#65716b"} strokeWidth="1" opacity=".6" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
               {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className={"draft-path confirmed-draft"+(showPlanHover&&planHover?.id===activePathId?" plan-hovered":"")} pointerEvents="none" />}
               {!referenceCopy.active&&candidateLine.length > 1 && <path d={drawPath(candidateLine)} className={"draft-path candidate-draft"+(previewError?" invalid-candidate":"")} pointerEvents="none" />}

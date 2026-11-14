@@ -58,7 +58,7 @@ test('automatic straights and curves need no mode switch, use identical preview/
  expect(points.map((point,index)=>{const p=project(point.latitude,point.longitude);return(index?'L':'M')+p.x+','+p.y;}).join(' ')).toBe(finalPreview);
 });
 
-test('straight-ahead tangent guide stays anchored while a curve preview moves and follows the committed curve',async()=>{
+test('outgoing tangent guide follows the preview endpoint and has a stable CSS length',async()=>{
  vi.stubGlobal('PointerEvent',MouseEvent);
  const world={next_id:'3',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'R'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
  vi.mocked(isTauri).mockReturnValue(true);
@@ -69,25 +69,32 @@ test('straight-ahead tangent guide stays anchored while a curve preview moves an
  const guide=()=>map.querySelector('.construction-tangent-guide');
  fireEvent.click(map,{clientX:180,clientY:130});expect(guide()).toBeNull();
  fireEvent.click(map,{clientX:250,clientY:130});
- const horizontal=guide()!.outerHTML;
  expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(Number(guide()!.getAttribute('y2')),5);
  expect(guide()!.getAttribute('pointer-events')).toBe('none');
  fireEvent.pointerMove(map,{clientX:300,clientY:180});
  expect(map.querySelector('.curve-circle-guide')).toBeTruthy();
- expect(guide()!.outerHTML).toBe(horizontal);
+ expect(Number(guide()!.getAttribute('x1'))).toBeCloseTo(600,5);
+ expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(360,5);
+ expect(Number(guide()!.getAttribute('x2'))).toBeCloseTo(600,4);
+ expect(Number(guide()!.getAttribute('y2'))-360).toBeCloseTo(240,4);
+ const curvedGuide=guide()!.outerHTML;
  fireEvent.pointerMove(map,{clientX:320,clientY:160});
- expect(guide()!.outerHTML).toBe(horizontal);
- // Even a refused backward preview retains the reference direction.
+ expect(guide()!.outerHTML).not.toBe(curvedGuide);
+ const dx=Number(guide()!.getAttribute('x2'))-Number(guide()!.getAttribute('x1'));
+ const dy=Number(guide()!.getAttribute('y2'))-Number(guide()!.getAttribute('y1'));
+ expect(Math.hypot(dx,dy)*.5).toBeCloseTo(120,5);
+ // No invented forward direction for a refused curve.
  fireEvent.pointerMove(map,{clientX:220,clientY:190});
  expect(map.querySelector('.invalid-candidate')).toBeTruthy();
- expect(guide()!.outerHTML).toBe(horizontal);
+ expect(guide()).toBeNull();
  fireEvent.click(map,{clientX:300,clientY:180});
  expect(Number(guide()!.getAttribute('x1'))).toBeCloseTo(600,5);
  expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(360,5);
  expect(Number(guide()!.getAttribute('x2'))).toBeCloseTo(600,4);
  expect(Number(guide()!.getAttribute('y2'))).toBeGreaterThan(360);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
- expect(guide()!.outerHTML).toBe(horizontal);
+ expect(Number(guide()!.getAttribute('x1'))).toBeCloseTo(500,5);
+ expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(Number(guide()!.getAttribute('y2')),5);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  fireEvent.click(map,{clientX:300,clientY:180});
  expect(guide()).toBeNull();
