@@ -1,5 +1,7 @@
 import {plannedTrackSpeed} from "./plannedTrackSpeed";
 import {emptyConstructionPlans,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
+import {UserGuide} from "./UserGuide";
+import {MapCredits} from "./MapCredits";
 import {snapReferenceStart} from "./referenceEndpointSnap";
 import {extensionJoinError} from "./extensionJoin";
 import {stationTarget, type StationLine} from "./stationTarget";
@@ -285,7 +287,7 @@ export function App() {
   function newPath() {
     const current=parkCurrentPlan();
     setParkedPaths(paths=>current?[...paths,current]:paths);
-    setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);changeMapMode("draw");
+    setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function newIndependentPlan() {
     if (!enabled || referenceCopy.active) return;
@@ -296,16 +298,17 @@ export function App() {
     const target=parkedPaths.find(path=>path.id===id);if(!target||target.reference)return;
     const current=parkCurrentPlan();
     setParkedPaths(paths=>[...paths.filter(path=>path.id!==id),...(current?[current]:[])]);
-    setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode("draw");
+    setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function choosePlan(id:number){
     if(id===activePlanId)return;
     const path=parkedPaths.find(path=>path.planId===id&&!path.reference);
     if(path)selectPath(path.id);else{newPath();setActivePlanId(id);}
   }
+  function stationPlanId(station:PlannedStation){return station.planId??(station.pathId===activePathId?activePlanId:parkedPaths.find(path=>path.id===station.pathId)?.planId);}
   function clearCurrentPlan(){
     const ids=new Set([activePathId,...parkedPaths.filter(path=>path.planId===activePlanId).map(path=>path.id)]);
-    ids.forEach(discardPlanStations);setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
+    ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
     setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
   }
   const [planHover, setPlanHover] = useState<{id:number;x:number;y:number;point:GeoPoint} | null>(null);
@@ -392,7 +395,7 @@ export function App() {
   const stationPreview=activeTool==="stations"&&mapMode==="place"&&!dragging&&!stationSelection?.error?stationSelection?.target?.polygon??[]:[];
   const previewCenter=stationSelection?.target?.center??null;
   const plannedPlatforms=plannedStations.map(station=>{
-    const line=stationLines.find(line=>line.pathId===station.pathId);
+    const line=stationLines.find(line=>station.alignmentId?line.pathId===undefined&&line.id===station.alignmentId:line.pathId===station.pathId);
     const nearest=line?nearestOnAlignment(line.points,station.point):null;
     const polygon=line&&nearest?stationPolygon(line.points,nearest.position,station.lengthM,12):[];
     const half=line?station.lengthM/alignmentLength(line.points)/2:0;
@@ -679,24 +682,29 @@ export function App() {
   }
 
   const currentPaths:PlannedPath[]=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,designSpeedKmh,trackType,roadFollowing,extension:draftExtension}]:[])];
-  const planBuildable=currentPaths.length>0&&currentPaths.every(path=>path.line.length>=2&&!(path.reference?extensionJoinError(path.points,extensionPrevious(path.extension)):circularAlignment(path.points,extensionPrevious(path.extension)).error)&&!(path.trackType==="tram"&&path.roadFollowing));
+  const currentStations=plannedPlatforms.filter(item=>stationPlanId(item.station)===activePlanId);
+  const planHasContent=currentPaths.length>0||currentStations.length>0;
+  const planBuildable=planHasContent&&currentPaths.every(path=>path.line.length>=2&&!(path.reference?extensionJoinError(path.points,extensionPrevious(path.extension)):circularAlignment(path.points,extensionPrevious(path.extension)).error)&&!(path.trackType==="tram"&&path.roadFollowing));
   function commitAlignment() {
     if (!enabled || !planBuildable) return;
     void perform(async () => {
       const ids=new Set(currentPaths.map(path=>path.id));
-      if(plannedPlatforms.some(item=>ids.has(item.station.pathId)&&!item.valid))throw Error("計画駅が線路に収まりません。線形を元に戻すか、計画駅を取り消してください。");
+      if(currentStations.some(item=>!item.valid))throw Error("計画駅が線路に収まりません。線形を元に戻すか、計画駅を取り消してください。");
       const requests=currentPaths.map(path=>({name:alignmentName,points:path.line,trackType:path.trackType,designSpeedKmh:path.designSpeedKmh,extension:path.extension??undefined,reference:path.reference?{sourceRecord:path.reference.sourceRecord,provenance:path.reference.provenance}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===path.id).map(item=>({name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}))}));
+      const stations=currentStations.filter(item=>item.station.alignmentId).map(item=>({alignmentId:item.station.alignmentId!,name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}));
       const first=requests[0];
-      const batch=requests.length>1||requests.some(request=>request.extension||request.reference);
-      const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests}:first.stations.length?first:{name:first.name,points:first.points,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh});
+      const batch=stations.length>0||requests.length>1||requests.some(request=>request.extension||request.reference);
+      const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh});
       const extendedIds=new Set(requests.flatMap(request=>request.extension?[request.extension.alignmentId]:[]));
       const keepHistory=(entry:StationHistoryEntry)=>Boolean(entry.planned)||!entry.placement||!extendedIds.has(entry.placement.alignment_id);
       setStationUndo(history=>history.filter(keepHistory));setStationRedo(history=>history.filter(keepHistory));
-      ids.forEach(discardPlanStations);setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
+      ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
       const created=snapshot.alignments?.find(a=>!alignments.some(old=>old.id===a.id));
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
       if(created)setAlignmentId(created.id);
-      changeMapMode("draw");setNotice("線路を建設しました。次は駅タブからホームを配置できます。");
+      const builtStations=snapshot.stations.filter(station=>!world?.stations.some(old=>old.id===station.id)).map(station=>({station,placement:snapshot.station_placements?.find(p=>p.station_id===station.id)}));
+      setStationUndo(history=>[...history,...builtStations].slice(-50));setStationRedo([]);
+      changeMapMode(activeTool==="stations"?"place":"draw");setNotice(requests.length?"線路を建設しました。計画駅も反映しました。":"計画駅を建設しました。");
     });
   }
   function placePlatformAt(point:GeoPoint,width:number,height:number) {
@@ -706,18 +714,12 @@ export function App() {
     if(selection.error||!selection.target){setError(selection.error);return;}
     const {line,position,center}=selection.target;
     const name=automaticStationName(center,referenceRepository,[...(world?.stations.map(s=>s.name)??[]),...plannedStations.map(s=>s.name)]).name;
-    if(line.pathId!==undefined){
-      const planned={id:"planned:"+nextPlannedStationId.current++,pathId:line.pathId,name,point:center,lengthM:Number(platformLength)};
-      setPlannedStations(items=>[...items,planned]);
-      setStationUndo(items=>[...items,{station:{id:planned.id,owner:"",name,...center},planned}].slice(-50));setStationRedo([]);
-      setError("");setNotice(name+"を線路計画に配置しました。線路の着工時に一緒に建設します。");return;
-    }
-    void perform(async () => {
-      const snapshot = await invoke<World>("place_station_on_alignment", { name, alignmentId:line.id, position, lengthM:Number(platformLength), widthM:12 });
-      recordStation(snapshot);
-      setWorld(snapshot);setDirty(true);setConfirmLoad(false);
-      setNotice(name+"を線路に沿って配置しました。");
-    });
+    const planId=line.pathId===undefined?activePlanId:line.pathId===activePathId||line.pathId===-1?activePlanId:parkedPaths.find(path=>path.id===line.pathId)?.planId;
+    if(planId===undefined){setError("駅の所属計画が見つかりません。");return;}
+    const planned:PlannedStation={id:"planned:"+nextPlannedStationId.current++,...(line.pathId===undefined?{alignmentId:line.id}:{pathId:line.pathId}),planId,name,point:center,lengthM:Number(platformLength)};
+    setPlannedStations(items=>[...items,planned]);
+    setStationUndo(items=>[...items,{station:{id:planned.id,owner:"",name,...center},planned}].slice(-50));setStationRedo([]);
+    setError("");setNotice(name+"を計画に追加しました。計画を着工するまで建設されません。");
   }
   function resizePlatform(event: FormEvent) {
     event.preventDefault();
@@ -759,7 +761,7 @@ export function App() {
     const entry=stationRedo.at(-1);if(!entry){setNotice("やり直せる駅設置履歴はありません。");return;}
     if(pendingDelete||pendingStation||confirmLoad){setError("表示中の確認を完了または取り消してください。");return;}
     if(entry.planned){
-      if(!stationLines.some(line=>line.pathId===entry.planned!.pathId)){setError("元の線路計画がありません。");return;}
+      if(!stationLines.some(line=>entry.planned!.alignmentId?line.pathId===undefined&&line.id===entry.planned!.alignmentId:line.pathId===entry.planned!.pathId)){setError("元の線路計画がありません。");return;}
       setPlannedStations(items=>[...items,entry.planned!]);setStationRedo(items=>items.slice(0,-1));setStationUndo(items=>[...items,entry]);setNotice("計画駅を再設置しました。");return;
     }
     const blocked=stationHistoryBlock();if(blocked){setError(blocked);return;}
@@ -920,23 +922,31 @@ export function App() {
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
         <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={() => requestLoad("manual")}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
       </div>
-      {status === "preview" && <p className="banner">ブラウザでの画面確認です。表示はサンプルデータで、駅の配置・線路接続・保存・読込はデスクトップ版で利用できます。</p>}
-      {status === "loading" && <p className="banner" role="status">共通エンジンからワールドを読み込んでいます。</p>}
-      {status === "error" && <div className="banner error"><p>共通エンジンに接続できませんでした。</p><button onClick={() => setAttempt((x) => x + 1)}>再試行</button></div>}
-      {closeGuard.closeError && !closeGuard.confirmClose && <div className="banner" role="alert">{closeGuard.closeError}</div>}
-      {autosave.permission==="blocked" && <div className="banner" role="status">以前の自動保存を保護するため、自動保存を保留しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の保留を確認</button></div>}
-      {autosave.message.includes("失敗") && <div className="banner" role="status">オートセーブの確認または保存に失敗しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の状態を確認</button></div>}
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
       {pendingGraphChange && <div className="banner load-confirm" role="alert"><p>参考線データを変更すると、現在の実在形状に沿う敷設・道路追従の未着工計画を破棄します。変更しますか。</p><button className="secondary" onClick={()=>setPendingGraphChange(null)}>計画に戻る</button><button disabled={!enabled} onClick={()=>{referenceCopy.clear();setGraphBundle(pendingGraphChange.bundle);setPendingGraphChange(null);}}>参考計画を破棄して変更</button></div>}
       {confirmLoad && <div className="banner load-confirm" role="alert"><p>読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。</p><button className="secondary" disabled={busy} onClick={() => setConfirmLoad(false)}>戻る</button><button disabled={busy} onClick={()=>load()}>読込を続ける</button></div>}
+      {pendingDelete && <div className="banner load-confirm" role="alert"><p>{pendingDelete.kind === "station" ? "駅「" + (stationsById.get(pendingDelete.id)?.name ?? pendingDelete.id) + "」" : "線路 ID " + pendingDelete.id}を削除しますか。連鎖削除は行いません。適用後は保存が必要です。</p><button className="secondary" disabled={busy} onClick={() => setPendingDelete(null)}>削除をやめる</button><button className="danger" disabled={!enabled || unapplied || !!(pendingDelete.kind === "station" ? stationReferences(pendingDelete.id) : trackReferences(pendingDelete.id))} onClick={deleteEquipment}>削除を確定</button></div>}
+      <div className="workspace">
+        <section className="map-panel" aria-labelledby="map-title">
+          <div className="map-notices" aria-label="通知">
+      {closeGuard.closeError && !closeGuard.confirmClose && <div className="banner" role="alert">{closeGuard.closeError}</div>}
+
+      {status === "preview" && <p className="banner">ブラウザでの画面確認です。表示はサンプルデータで、駅の配置・線路接続・保存・読込はデスクトップ版で利用できます。</p>}
+      {status === "loading" && <p className="banner" role="status">共通エンジンからワールドを読み込んでいます。</p>}
+      {status === "error" && <div className="banner error"><p>共通エンジンに接続できませんでした。</p><button onClick={() => setAttempt((x) => x + 1)}>再試行</button></div>}
+      {autosave.permission==="blocked" && <div className="banner" role="status">以前の自動保存を保護するため、自動保存を保留しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の保留を確認</button></div>}
+      {autosave.message.includes("失敗") && <div className="banner" role="status">オートセーブの確認または保存に失敗しています。<button className="secondary" onClick={()=>chooseMainTab("saves")}>自動保存の状態を確認</button></div>}
       {saveBlocked && <p className="draft-warning">駅設定・会社・路線・系統の下書きを適用、または破棄してから手動保存してください。自動保存も適用済みの内容だけが対象です。</p>}
       {hasPlans && <p className="draft-warning">未着工計画は保存されません。建設済みワールドは保存でき、画面上の計画はそのまま残ります。</p>}
       {unapplied && (activeTool === "stations" || activeTool === "tracks") && <p className="draft-warning">設備削除は未適用の下書きを適用・破棄してから行えます。</p>}
-      {pendingDelete && <div className="banner load-confirm" role="alert"><p>{pendingDelete.kind === "station" ? "駅「" + (stationsById.get(pendingDelete.id)?.name ?? pendingDelete.id) + "」" : "線路 ID " + pendingDelete.id}を削除しますか。連鎖削除は行いません。適用後は保存が必要です。</p><button className="secondary" disabled={busy} onClick={() => setPendingDelete(null)}>削除をやめる</button><button className="danger" disabled={!enabled || unapplied || !!(pendingDelete.kind === "station" ? stationReferences(pendingDelete.id) : trackReferences(pendingDelete.id))} onClick={deleteEquipment}>削除を確定</button></div>}
       {error && !companySetupRequired && <ErrorNotice message={error} revision={errorRevision} onDismiss={()=>setError("")}/>}
       {displaySettings.error && <div className="display-settings-warning" role="status">{displaySettings.status}</div>}
-      <div className="workspace">
-        <section className="map-panel" aria-labelledby="map-title">
+          {background !== "sample" && <div className={`tile-status ${tileStatus.failed ? "tile-error" : ""}`}>
+            <p role="status">{cameraPending ? "表示移動中。新しいタイルの取得を待機しています。" : tileStatus.loaded + tileStatus.failed < tileStatus.total ? `${provider.title}を読み込み中（${tileStatus.loaded} / ${tileStatus.total}）` : tileStatus.failed ? "地図の一部を表示できません。" : `${provider.title}を表示中（${tileStatus.total}枚）`}</p>
+            {tileStatus.failed > 0 && <p role="alert">{tileStatus.failed}枚の読み込みに失敗しました。自動再試行やサンプルへの自動切替は行いません。</p>}
+            <button className="secondary" onClick={() => setBackground("sample")}>サンプル背景に戻す</button>
+          </div>}
+          </div>
           <div className="panel-heading"><div><h3 id="map-title">{background === "sample" ? "駅配置サンプル" : provider.title}</h3><p>{background === "sample" ? "自作サンプル背景 / 実地図ではありません" : provider.title + " / オンライン"}</p></div><span className="north-label" aria-label="上が北">N ↑</span></div>
           <details className="map-options"><summary>地図・表示設定</summary><div className="display-settings"><p>背景を含む表示設定は端末内に自動保存。World保存・共有とは別です。初回はOSM（オンライン）。選択は次回も復元します。サンプル選択中は画像通信しません。サンプルは模式図で、オフライン実地図ではありません。</p><p>{displaySettings.status}</p><button type="button" className="secondary" onClick={displaySettings.reset}>表示設定を既定に戻す</button><span>配色</span><button className="secondary" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>{theme === "light" ? "ダークに切替" : "ライトに切替"}</button>
   <label>線の太さ<input aria-label="線の太さ" type="range" min="2" max="8" value={lineWidth} onChange={e=>setLineWidth(Number(e.target.value))}/></label>
@@ -964,12 +974,7 @@ export function App() {
           <ReferenceGraphControls bundle={graphBundle} visible={graphVisible} onBundle={bundle=>{if(referenceCopy.active)setPendingGraphChange({bundle});else setGraphBundle(bundle);}} onVisible={setGraphVisible} total={graphDisplay.total} shown={graphDisplay.edges.length} zoom={camera.zoom}/>
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
-          {background !== "sample" && <div className={`tile-status ${tileStatus.failed ? "tile-error" : ""}`}>
-            <p role="status">{cameraPending ? "表示移動中。新しいタイルの取得を待機しています。" : tileStatus.loaded + tileStatus.failed < tileStatus.total ? `${provider.title}を読み込み中（${tileStatus.loaded} / ${tileStatus.total}）` : tileStatus.failed ? "地図の一部を表示できません。" : `${provider.title}を表示中（${tileStatus.total}枚）`}</p>
-            {tileStatus.failed > 0 && <p role="alert">{tileStatus.failed}枚の読み込みに失敗しました。自動再試行やサンプルへの自動切替は行いません。</p>}
-            <button className="secondary" onClick={() => setBackground("sample")}>サンプル背景に戻す</button>
-          </div>}
-
+          {(activeTool === "tracks" || activeTool === "inactive") && !referenceCopy.active && !dragging && !(mapMode==="draw" && cursorPosition && draftPoints.length>0 && !draftFinished) && planHover && hoveredPlan && hoveredPlan.line.length > 1 && <div className="construction-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-145,planHover.y+18))}}><strong>{hoveredPlan.name.trim() || "線路計画"} · {Math.round(alignmentLength(hoveredPlan.line))} m</strong><div>{hoveredGeometry?.error ? "敷設不可："+hoveredGeometry.error : "基本条件OK（地形等は未判定）"}</div><small>最小半径（近似）：{Number.isFinite(hoveredGeometry?.minimumRadiusM ?? Infinity) ? Math.round(hoveredGeometry!.minimumRadiusM)+" m" : "直線"}<br/>制限速度：未算定<br/>費用倍率・建設費・維持費：未計算</small></div>}
             <div className="map-surface">
             {activeTool==="stations"&&<fieldset className="construction-toolbar station-toolbar" disabled={!enabled} aria-label="駅設置設定"><PlatformLengthInput id="platform-length" label="駅の長さ" value={platformLength} onChange={setPlatformLength} compact/></fieldset>}
             {activeTool==="stations"&&mapMode==="place"&&!dragging&&cursorPosition&&stationCursor&&stationSelection?.error&&<div className="construction-tooltip station-placement-error" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{stationSelection.error}</div>}
@@ -1060,20 +1065,11 @@ export function App() {
               </g>
             </svg>
             <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
-            <div className="map-coordinates">{bounds.south.toFixed(4)}–{bounds.north.toFixed(4)}°N / {bounds.west.toFixed(4)}–{bounds.east.toFixed(4)}°E</div>
           </div>
-          <footer className="map-footer">
-            {referenceVisible && referencePack && <div className="reference-attribution">参考駅: {referencePack.dataset.source} / {referencePack.dataset.license}（背景・ゲーム駅とは別）<br/><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">参考駅データ: © OpenStreetMap contributors</a></div>}
-            {graphBundle&&graphVisible&&<span>参考線: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> / セッション限定・網羅性未保証</span>}
-            {background === "sample" ? <span>背景は独自作成の模式図で、地理的な対応はありません。外部タイルは使用していません。</span> : <div className="map-attribution">
-              <a href={provider.attributionUrl} target="_blank" rel="noopener">{provider.attribution}</a>
-              <p>架空の鉄道設備を重畳表示。背景地図とは別データです。</p>
-              <p>画像はオンライン取得。アプリによるオフライン保存・同梱は行いません。</p>
-            </div>}
-            <span>線形は試作 / 勾配・分岐・OSMネットワーク自動追従は未対応</span>
-          </footer>
+          <MapCredits background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={!!graphBundle && graphVisible}/>
         </section>
-        <aside className={panelCollapsed ? "side-panel collapsed" : "side-panel"}><div className="inspector-title"><span>RAILWAY WORKSPACE</span><button className="secondary" aria-label={panelCollapsed ? "操作パネルを開く" : "操作パネルを畳む"} onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? "+" : "−"}</button></div>
+        <aside className={panelCollapsed ? "side-panel collapsed" : "side-panel"}>
+          <UserGuide /><div className="inspector-title"><span>RAILWAY WORKSPACE</span><button className="secondary" aria-label={panelCollapsed ? "操作パネルを開く" : "操作パネルを畳む"} onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? "+" : "−"}</button></div>
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
           <nav className="editor-tabs construction-tabs" role="tablist" aria-label="建設ツール" hidden={mainTab!=="construction"}>
             {([["tracks","線路"],["stations","駅設置"]] as const).map(([tool,label],index)=><button key={tool} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":"place");}} onKeyDown={event=>{if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const next=event.key==="Home"?"tracks":event.key==="End"?"stations":index===0?"stations":"tracks";setActiveTool(next);changeMapMode(next==="tracks"?"draw":"place");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
@@ -1084,9 +1080,11 @@ export function App() {
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
           <section className="station-editor" role="tabpanel" id="panel-stations" aria-labelledby="tab-stations" hidden={activeTool !== "stations"}>
             <div className="section-number">02 / STATION</div><h3 id="editor-title">線路にホームを置く</h3>
+            <div role="group" aria-label="駅の建設計画"><strong>編集中：{planName.trim() || `計画 ${activePlanId}`}</strong>{plans.filter(plan=>plan.id!==activePlanId).map(plan=><button key={plan.id} className="secondary" disabled={!enabled||referenceCopy.active} onClick={()=>{choosePlan(plan.id);changeMapMode("place");}}>{plan.name.trim()||`計画 ${plan.id}`} を編集</button>)}<button className="secondary" disabled={!enabled||referenceCopy.active||!planHasContent} onClick={()=>{newIndependentPlan();changeMapMode("place");}}>別の計画を追加</button><button disabled={!enabled||referenceCopy.active||!planBuildable} onClick={commitAlignment}>計画を着工</button></div>
+            <p className="tool-helper">建設済み線路上の駅も計画に追加します。選択中の計画を着工すると、線路と駅をまとめて建設します。</p>
             <p className="muted">置きたい位置にカーソルを合わせてクリック。建設済み・計画中の線路を自動で選び、カーブにも沿って配置します。</p>
             <fieldset disabled={!enabled}>
-              <p className="field-hint" role="status">{stationSelection?.error || (stationSelection?.target ? "クリックで駅を配置。そのまま続けて配置できます。" : "線路にカーソルを重ねるとホームを表示します。")}</p>
+              <p className="field-hint" role="status">{stationSelection?.error || (stationSelection?.target ? "クリックで計画に追加。そのまま続けて配置できます。" : "線路にカーソルを重ねるとホームを表示します。")}</p>
               <p className="field-hint">地図をTabで選択し、矢印キーで位置を動かしてEnterで配置。ドラッグは地図移動。</p>
             </fieldset>
             <StationNamePreview pack={referencePack} repository={referenceRepository} point={stationPreview.length>=4?previewCenter:null} existingNames={[...(world?.stations.map(s=>s.name)??[]),...plannedStations.map(s=>s.name)]}/>
@@ -1099,18 +1097,18 @@ export function App() {
             </fieldset></form></details>
           </section>
           <section className="track-editor" role="tabpanel" id="panel-tracks" aria-labelledby="tab-tracks" hidden={activeTool !== "tracks"}>
-            <div className="section-number">01 / CONSTRUCTION</div><h3>線路を描く</h3>
-            <p className="muted">駅より先に線路を建設。地図に点を打って経路を決めます。</p>
-            <ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/>
-            <button className="secondary full-width" disabled={!enabled || referenceCopy.active || !currentPaths.length} onClick={newIndependentPlan}>別の線路計画を追加</button>
-            <div role="group" aria-label="未着工の線路計画"><strong>編集中：{planName.trim() || `計画 ${activePlanId}`}（{currentPaths.length}経路）</strong>{plans.filter(plan=>plan.id!==activePlanId).map(plan=><button key={plan.id} className="secondary" disabled={!enabled || referenceCopy.active} onClick={()=>choosePlan(plan.id)}>{plan.name.trim() || `計画 ${plan.id}`} を編集</button>)}</div>
+            <div className="section-number">01 / CONSTRUCTION</div><h3>線路</h3>
+            <p className="muted">地図をクリックして線路を描きます。</p>
+            <details className="reference-tools" open={referenceCopy.active || undefined}><summary>実在線路・道路に沿う</summary><ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/></details>
+            <button className="secondary full-width" disabled={!enabled || referenceCopy.active || !planHasContent} aria-label="別の線路計画を追加" onClick={newIndependentPlan}>＋ 新しい計画</button>
+            <div role="group" aria-label="未着工の線路計画"><strong>編集中：{planName.trim() || `計画 ${activePlanId}`}（{currentPaths.length}経路）・{currentStations.length}駅</strong>{plans.filter(plan=>plan.id!==activePlanId).map(plan=><button key={plan.id} className="secondary" disabled={!enabled || referenceCopy.active} onClick={()=>choosePlan(plan.id)}>{plan.name.trim() || `計画 ${plan.id}`} を編集</button>)}</div>
             <p className="tool-helper">離れた経路も同時に計画できます。着工・消去は編集中の計画だけが対象です。タブ移動では計画は残ります。保存した未着工計画は、次回読み込んだときに復元できます。</p>
             <div role="group" aria-label="計画内の経路">{currentPaths.map(path=><button key={path.id} className="secondary" disabled={!enabled||referenceCopy.active||path.id===activePathId||!!path.reference} aria-pressed={path.id===activePathId} onClick={()=>selectPath(path.id)}>経路 {path.id}（{path.reference?"実在形状・編集固定 / ":""}{path.points.length}点・やり直し{path.redo.length}点）</button>)}</div>
-            <label htmlFor="construction-plan-name">計画名（任意）</label><input id="construction-plan-name" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled || referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/><p className="field-hint">名前なしでも計画・着工できます。路線名や線路名ではなく、この画面で計画を見分けるための名前です。</p>
+            <label htmlFor="construction-plan-name">計画名（任意）</label><input id="construction-plan-name" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled || referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/>
             <div className="build-summary"><div><strong>{draftPoints.length}</strong><span>線形点</span></div><div><strong>{alignments.length}</strong><span>建設済み線路</span></div></div>
-            <div className="route-actions"><button className="secondary" disabled={!enabled || !draftPoints.length} onClick={undoPoint}>1点戻す</button><button className="secondary" disabled={!enabled || !redoPoints.length} onClick={redoPoint}>やり直す</button><button className="secondary" disabled={!enabled || !currentPaths.length} onClick={clearCurrentPlan}>下書きを消去</button></div>
+            <div className="route-actions"><button className="secondary" disabled={!enabled || !draftPoints.length} onClick={undoPoint}>1点戻す</button><button className="secondary" disabled={!enabled || !redoPoints.length} onClick={redoPoint}>やり直す</button><button className="secondary" disabled={!enabled || !planHasContent} onClick={clearCurrentPlan}>下書きを消去</button></div>
             <button className="full-width track-submit" disabled={!enabled || referenceCopy.active || !planBuildable} onClick={commitAlignment}>計画を着工</button><p className="tool-helper">計画は着工まで未確定です。建設費・維持費は未計算。</p>
-            <p className="tool-helper">ドラッグは移動。自由描画にはOSM追従なし。実在線路・道路に沿う敷設は別の操作です。</p>
+
             <ul className="construction-list">{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name}（{TRACK_TYPE_LABELS[a.track_type]??"通常"}）<small>選択</small></button><small>{world?.alignment_provenance?.some(p=>p.alignment_id===a.id)?"参考OSM由来":"出典記録なし"}</small></li>)}</ul>
             {selectedAlignment&&<AlignmentProvenance alignment={selectedAlignment} provenances={world?.alignment_provenance?.filter(p=>p.alignment_id===selectedAlignment.id)} sourceRecords={world?.source_records??[]}/>}
             <details className="legacy-tools"><summary>運行経路用：駅間接続</summary>
@@ -1127,12 +1125,12 @@ export function App() {
             {world?.tracks.length ? <ul className="track-list">{world.tracks.map((track) => <li key={track.id}><span>{stationsById.get(track.from)?.name ?? track.from} ↔ {stationsById.get(track.to)?.name ?? track.to} (ID {track.id})</span><button className="secondary danger" disabled={!enabled || unapplied || !!trackReferences(track.id)} onClick={() => setPendingDelete({ kind: "track", id: track.id })}>線路 {track.id} を削除</button>{trackReferences(track.id) && <small>削除不可: {trackReferences(track.id)}</small>}</li>)}</ul> : <p className="field-hint">駅を2つ配置すると接続できます。</p>}</details>
           </section>
           </div>
-          <section hidden={activeTool!=="stations" && activeTool!=="station-management"} className="station-history"><p className="field-hint">取消対象: {stationUndo.at(-1)?.station.name ?? "なし"} / Undo {stationUndo.length}件・Redo {stationRedo.length}件</p><div className="route-actions"><button type="button" className="secondary" disabled={!enabled || !stationUndo.length} onClick={undoStation}>駅設置を取り消す</button><button type="button" className="secondary" disabled={!enabled || !stationRedo.length} onClick={redoStation}>駅設置をやり直す</button></div><p className="field-hint">Ctrl+Z / Ctrl+Shift+Z：このセッションの新規駅設置のみ（最大50件）。参照付き駅は不可。建設済み駅は保存で履歴終了。未着工駅の履歴は保存後も維持。読込・駅名/寸法変更・手動駅削除で履歴終了。Redoは駅IDを再発行。参照駅は対象外。線路ツールの点下書きがあれば点のUndo/Redoを優先します。</p></section>
+          <section hidden={activeTool!=="stations" && activeTool!=="station-management"} className="station-history"><p className="field-hint">取消対象: {stationUndo.at(-1)?.station.name ?? "なし"} / Undo {stationUndo.length}件・Redo {stationRedo.length}件</p><div className="route-actions"><button type="button" className="secondary" disabled={!enabled || !stationUndo.length} onClick={undoStation}>駅設置を取り消す</button><button type="button" className="secondary" disabled={!enabled || !stationRedo.length} onClick={redoStation}>駅設置をやり直す</button></div></section>
           <section id="workspace-panel-stations" role="tabpanel" className="station-directory" aria-labelledby="workspace-tab-stations" hidden={activeTool !== "stations" && activeTool !== "station-management"}><div className="directory-heading"><h3 id="stations-title">配置済みの駅</h3><span className="count">{world?.stations.length ?? 0}</span></div>
             {world?.stations.length ? <ul>{world.stations.map((station) => <li key={station.id}><button className={`station-entry ${selected === station.id ? "selected" : ""}`} onClick={() => selectStation(station.id)}><span>{station.name}</span><small>{station.latitude.toFixed(5)}, {station.longitude.toFixed(5)}</small></button></li>)}</ul> : <p className="empty-state">まだ駅はありません。<br />最初の駅を配置してみましょう。</p>}
           </section>
           <section hidden={activeTool !== "stations" && activeTool !== "station-management"}>
-            {selectedStation && <div className="equipment-editor"><h4>駅設定 · ID {selectedStation.id}</h4><p className="field-hint">設置後も駅名・ホーム長を変更できます。有人・無人・委託などの運営形態、維持費・満足度への反映は今後実装予定です。</p><div className="station-detail-name"><strong onDoubleClick={beginStationNameEdit}>{selectedStation.name}</strong><button ref={stationNameEditButton} type="button" className="secondary" disabled={!enabled} aria-label="選択駅の名前を編集" onClick={beginStationNameEdit}>✎ 編集</button></div><p className="field-hint">駅名をダブルクリック、または編集ボタンで入力へ。Enterで適用、Escで取消。</p>
+            {selectedStation && <div className="equipment-editor"><h4>駅設定 · ID {selectedStation.id}</h4><p className="field-hint">設置後も駅名・ホーム長を変更できます。有人・無人・委託などの運営形態、維持費・満足度への反映は今後実装予定です。</p><div className="station-detail-name"><strong onDoubleClick={beginStationNameEdit}>{selectedStation.name}</strong><button ref={stationNameEditButton} type="button" className="secondary" disabled={!enabled} aria-label="選択駅の名前を編集" onClick={beginStationNameEdit}>✎ 編集</button></div>
               {world?.station_placements?.some((p) => p.station_id === selectedStation.id) && <form onSubmit={resizePlatform}><fieldset disabled={!enabled}><div className="coordinate-fields"><PlatformLengthInput id="edit-platform-length" label="選択駅の長さ" value={editLength} onChange={setEditLength}/></div><div className="route-actions"><button type="submit" className="secondary" disabled={!platformDirty || !editLength || !Number.isFinite(Number(editLength)) || Number(editLength) < 40 || Number(editLength) > 400}>ホーム寸法を適用</button><button type="button" className="secondary" disabled={!platformDirty} onClick={() => { if(selectedPlacement){setEditLength(String(selectedPlacement.length_m));setEditWidth(String(selectedPlacement.width_m));} }}>ホーム長の下書きを破棄</button></div></fieldset></form>}
               <form onSubmit={renameStation}><fieldset disabled={!enabled}><label htmlFor="edit-station-name">選択駅の名前</label><input ref={stationNameInput} id="edit-station-name" onKeyDown={event=>{if(event.key!=="Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode===229)return;event.preventDefault();event.stopPropagation();if(!enabled || busyRef.current)return;setEditStationName(selectedStation.name);stationNameEditButton.current?.focus();}} maxLength={80} value={editStationName} onChange={(event) => setEditStationName(event.target.value)} /><div className="route-actions"><button type="submit" disabled={!enabled || !stationDirty || !editStationName.trim()}>駅名を適用</button><button type="button" className="secondary" disabled={!enabled || !stationDirty} onClick={() => setEditStationName(selectedStation.name)}>駅名下書きを破棄</button></div></fieldset></form>
               <button className="secondary danger" disabled={!enabled || unapplied || !!stationReferences(selectedStation.id)} onClick={() => setPendingDelete({ kind: "station", id: selectedStation.id })}>選択駅を削除</button>

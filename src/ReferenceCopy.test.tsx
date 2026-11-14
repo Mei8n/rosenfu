@@ -24,8 +24,10 @@ const empty={next_id:'3',players:[{id:'1',name:'Player'}],companies:[{id:'2',own
 test('App drag does not select, explicit click choices preview the exact atomic build payload',async()=>{
  vi.stubGlobal('PointerEvent',MouseEvent);const bundle=fixture();const dx=DEFAULT_CAMERA.longitude-135,dy=DEFAULT_CAMERA.latitude-35;bundle.graph.nodes=bundle.graph.nodes.map(n=>({...n,latitude:n.latitude+dy,longitude:n.longitude+dx}));bundle.graph.dataset.bounds={west:DEFAULT_CAMERA.longitude-.01,east:DEFAULT_CAMERA.longitude+.01,south:DEFAULT_CAMERA.latitude-.01,north:DEFAULT_CAMERA.latitude+.01};
  vi.mocked(readReferenceGraphBundle).mockResolvedValue(bundle);vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'copy-test'}:empty);
- const view=render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/copy-test/);fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});await screen.findByText(/synthetic-test/);
- fireEvent.change(screen.getByLabelText('線路の種類'),{target:{value:'high_speed'}});fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));expect(screen.getByLabelText('線路の種類').matches(':disabled')).toBe(true);const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ const view=render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/copy-test/);// Settle async bundle validation and its reset effect before starting selection.
+ await act(async()=>{fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});});await screen.findByText(/synthetic-test/);
+ fireEvent.change(screen.getByLabelText('線路の種類'),{target:{value:'high_speed'}});await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
+ await copyPanel().findByText('地図をクリックして起点候補を表示してください。');expect(screen.getByLabelText('線路の種類').matches(':disabled')).toBe(true);const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
  fireEvent.pointerDown(map,{clientX:500,clientY:300,button:0});fireEvent.pointerMove(map,{clientX:510,clientY:300});fireEvent.pointerUp(map,{clientX:510,clientY:300});fireEvent.click(map,{clientX:510,clientY:300});expect(copyPanel().queryAllByRole('button',{name:/候補 \d/})).toHaveLength(0);
  // Restore camera after the pan, then select with a complete normal pointer sequence.
  fireEvent.click(screen.getByText('東京へ戻る',{selector:'button'}));
@@ -42,8 +44,10 @@ test('reference plan station is session-only and included in atomic provenance-p
  vi.mocked(readReferenceGraphBundle).mockResolvedValue(bundle);
  vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'station-copy-test'}:empty);
  const view=render(<App/>);await screen.findByText(/station-copy-test/);
- fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});
- await screen.findByText(/synthetic-test/);fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));
+ // Settle async bundle validation and its reset effect before starting selection.
+ await act(async()=>{fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});});
+ await screen.findByText(/synthetic-test/);await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
+ await copyPanel().findByText('地図をクリックして起点候補を表示してください。');
  const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
  async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.click(map,{clientX:point.x,clientY:point.y});fireEvent.click(await copyPanel().findByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
  await pick(start,'0');await pick(end,'1');
@@ -67,11 +71,13 @@ test('reference following requires an explicit endpoint target and sends source 
  vi.mocked(readReferenceGraphBundle).mockResolvedValue(bundle);
  vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'reference-extension-test'}:world);
  const view=render(<App/>);await screen.findByText(/reference-extension-test/);
- fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});
+ // Settle async bundle validation and its reset effect before starting selection.
+ await act(async()=>{fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});});
  await screen.findByText(/synthetic-test/);
  const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
  fireEvent.click(map,{clientX:200,clientY:450});fireEvent.click(map,{clientX:300,clientY:450});fireEvent.click(map,{clientX:300,clientY:450});
  await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
+ await copyPanel().findByText('地図をクリックして起点候補を表示してください。');
  async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.click(map,{clientX:point.x,clientY:point.y});fireEvent.click(await copyPanel().findByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
  await pick({...start,longitude:start.longitude+.00002},'0');await pick(end,'1');
  const method=copyPanel().getByLabelText('敷設方法') as HTMLSelectElement;

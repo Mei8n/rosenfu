@@ -58,7 +58,12 @@ pub struct ConstructionPath {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionStation {
     pub id: String,
-    pub path_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment_id: Option<AlignmentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<u64>,
     pub name: String,
     pub point: GeoPoint,
     pub length_m: f64,
@@ -137,7 +142,21 @@ impl ConstructionPlans {
             if !valid_id(id)
                 || station.id != format!("planned:{id}")
                 || !stations.insert(id)
-                || !paths.contains(&station.path_id)
+                || match (station.path_id, station.alignment_id) {
+                    (Some(path), None) => {
+                        let owner = if path == self.active_path_id {
+                            Some(self.active_plan_id)
+                        } else {
+                            self.parked_paths
+                                .iter()
+                                .find(|p| p.id == path)
+                                .map(|p| p.plan_id)
+                        };
+                        owner.is_none() || station.plan_id.is_some_and(|id| Some(id) != owner)
+                    }
+                    (None, Some(_)) => station.plan_id.is_none_or(|id| !plans.contains(&id)),
+                    _ => true,
+                }
                 || station.name.len() > 4096
                 || !valid_points(&[station.point])
                 || !station.length_m.is_finite()

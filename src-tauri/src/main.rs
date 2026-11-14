@@ -116,11 +116,12 @@ fn build_alignment_with_stations(
 fn build_plan(
     editor: State<'_, Mutex<WorldEditor>>,
     alignments: Vec<session::PlannedAlignment>,
+    stations: Option<Vec<session::PlannedBuiltStation>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .build_plan(alignments)
+        .build_construction_plan(alignments, stations.unwrap_or_default())
 }
 #[tauri::command]
 fn place_station_on_alignment(

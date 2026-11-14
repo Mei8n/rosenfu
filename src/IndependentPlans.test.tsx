@@ -150,3 +150,21 @@ test("manual round-trip restores multiple plans, paths, stations, redo and indep
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));expect(trackPanel().getByText(/編集中：計画 3/)).toBeTruthy();
 });
+
+test('built-line stations remain separate plans until atomic construction, and persist without new tracks',async()=>{
+ const map=await start(built);fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
+ fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(2);
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='place_station_on_alignment'||c==='build_plan')).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'別の計画を追加'}));fireEvent.click(map,{clientX:250,clientY:150});expect(map.querySelectorAll('.planned-station')).toHaveLength(3);
+ vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/ワールドと未着工計画を保存しました/);
+ const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
+ expect(saved.parkedPaths).toHaveLength(0);expect(saved.plannedStations.map(s=>s.planId)).toEqual([1,1,2]);expect(saved.plannedStations.every(s=>s.alignmentId==='3'&&s.pathId===undefined)).toBe(true);
+ await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
+ vi.mocked(invoke).mockResolvedValueOnce({...built,construction_plans:saved});fireEvent.click(screen.getByRole('button',{name:'読込'}));await screen.findByText('保存したワールドを読み込みました。');await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
+ fireEvent.click(screen.getByRole('button',{name:'計画 1 を編集'}));
+ vi.mocked(invoke).mockRejectedValueOnce(Error('station batch rejected'));fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText(/station batch rejected/);expect(map.querySelectorAll('.planned-station')).toHaveLength(3);
+ const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as {alignments:unknown[];stations:unknown[]};expect(request.alignments).toHaveLength(0);expect(request.stations).toHaveLength(2);
+ await waitFor(()=>expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false));vi.mocked(invoke).mockResolvedValueOnce(placed);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText('計画駅を建設しました。');expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ fireEvent.click(screen.getByRole('button',{name:'計画 2 を編集'}));expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});

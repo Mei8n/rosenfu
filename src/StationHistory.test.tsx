@@ -16,7 +16,7 @@ function region(selector:string){
 }
 async function start(){let world=structuredClone(initial);let id=20;const failures={remove:false,place:false,save:false,load:false};vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async(command,args)=>{
  if(command==="engine_info")return {name:"Rosenfu",version:"history-test"};if(command==="world_snapshot")return world;
- if(command==="place_station_on_alignment") {if(failures.place)throw Error("place failure");const p=args as any;const station={id:String(id++),owner:"2",name:p.name,latitude:35.67504,longitude:139.75};world={...world,stations:[...world.stations,station],station_placements:[...world.station_placements,{station_id:station.id,alignment_id:p.alignmentId,position:p.position,length_m:p.lengthM,width_m:p.widthM}]};return world;}
+ if(command==="place_station_on_alignment"||command==="build_plan") {if(failures.place)throw Error("place failure");const p=command==="build_plan"?(args as any).stations[0]:args as any;const station={id:String(id++),owner:"2",name:p.name,latitude:35.67504,longitude:139.75};world={...world,stations:[...world.stations,station],station_placements:[...world.station_placements,{station_id:station.id,alignment_id:p.alignmentId,position:p.position,length_m:p.lengthM,width_m:p.widthM}]};return world;}
  if(command==="delete_station"){if(failures.remove)throw Error("delete failure");const stationId=(args as any).stationId;world={...world,stations:world.stations.filter(s=>s.id!==stationId),station_placements:world.station_placements.filter(p=>p.station_id!==stationId)};return world;}
  if(command==="add_track"){world={...world,tracks:[{id:"99",owner:"2",...(args as any)}]};return world;}
  if(command==="save_world"){if(failures.save)throw Error("save failure");return {saved:true};}
@@ -28,7 +28,7 @@ async function start(){let world=structuredClone(initial);let id=20;const failur
  if(command==="load_world"){if(failures.load)throw Error("load failure");world=structuredClone(initial);return world;}
  throw Error(command);
  });render(<App/>);await screen.findByText(/history-test/);await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));return failures;}
-async function place(){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:250,clientY:150});await screen.findByText(/を線路に沿って配置しました/);await ready();}
+async function place(){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:250,clientY:150});await screen.findByText(/を計画に追加しました/);fireEvent.click(region(".station-editor").getByRole("button",{name:"計画を着工"}));await screen.findByText(/計画駅を建設しました/);await ready();}
 async function ready(){await waitFor(()=>expect((document.querySelector(".save-controls button:last-child") as HTMLButtonElement).disabled).toBe(false));}
 const undo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});const redo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
 test("station undo and redo preserve failed history, issue a fresh ID and protect existing stations",async()=>{
@@ -49,7 +49,7 @@ test("text inputs keep native undo and track drafts have shortcut priority",asyn
  fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"線路"}));const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:200,clientY:130});undo();expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);redo();expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });
 test("world load ends history and a new placement discards redo",async()=>{
- await start();await place();undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();await place();redo();await screen.findByText("やり直せる駅設置履歴はありません。");await ready();expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="place_station_on_alignment")).toHaveLength(2);
+ await start();await place();undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();await place();redo();await screen.findByText("やり直せる駅設置履歴はありません。");await ready();expect(vi.mocked(invoke).mock.calls.filter(([command])=>(command==="place_station_on_alignment"||command==="build_plan"))).toHaveLength(2);
  fireEvent.click(region(".save-controls").getByRole("button",{name:"読込"}));fireEvent.click(region(".load-confirm").getByRole("button",{name:"読込を続ける"}));await screen.findByText("保存したワールドを読み込みました。");await ready();undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(region(".station-directory").getByRole("button",{name:/^既存駅 /})).toBeTruthy();
 });
 test("repeated keydown cannot issue duplicate station deletion",async()=>{
@@ -61,7 +61,7 @@ test("repeated keydown cannot issue duplicate station deletion",async()=>{
 test("multiple placements undo and redo in LIFO order",async()=>{
  await start();await place();await place();undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();undo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="delete_station")).toHaveLength(2));
  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="delete_station").map(([,args])=>(args as any).stationId)).toEqual(["21","20"]);
- await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置をやり直す"}) as HTMLButtonElement).disabled).toBe(false));redo();await screen.findByText(/駅を再設置しました/);await ready();redo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="place_station_on_alignment")).toHaveLength(4));
+ await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置をやり直す"}) as HTMLButtonElement).disabled).toBe(false));redo();await screen.findByText(/駅を再設置しました/);await ready();redo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>(command==="place_station_on_alignment"||command==="build_plan"))).toHaveLength(4));
  await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す"}) as HTMLButtonElement).disabled).toBe(false));undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();expect(invoke).toHaveBeenCalledWith("delete_station",{stationId:"23"});
 });
 test("failed world load retains the station history",async()=>{

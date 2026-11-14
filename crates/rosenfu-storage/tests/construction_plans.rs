@@ -56,3 +56,28 @@ fn invalid_plan_payload_is_rejected_without_overwriting_old_save() {
     value["world"]["construction_plans"] = json!({"version":999});
     assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
 }
+
+#[test]
+fn schema_ten_path_station_and_schema_eleven_built_station_roundtrip() {
+    let legacy = World::new(WorldDraft {
+        construction_plans: Some(plans()),
+        ..WorldDraft::default()
+    })
+    .unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&encode(&legacy).unwrap()).unwrap();
+    value["schema_version"] = json!(10);
+    assert_eq!(
+        decode(&serde_json::to_vec(&value).unwrap()).unwrap(),
+        legacy
+    );
+    let station = &mut value["world"]["construction_plans"]["plannedStations"][0];
+    station.as_object_mut().unwrap().remove("pathId");
+    station["alignmentId"] = json!("999");
+    station["planId"] = json!(2);
+    value["schema_version"] = json!(11);
+    // Stale infrastructure references remain editable drafts, validated at build time.
+    let restored = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(decode(&encode(&restored).unwrap()).unwrap(), restored);
+    value["world"]["construction_plans"]["plannedStations"][0]["pathId"] = json!(3);
+    assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
+}
