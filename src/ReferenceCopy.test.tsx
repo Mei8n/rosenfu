@@ -26,7 +26,7 @@ test('App drag does not select, explicit click choices preview the exact atomic 
  vi.mocked(readReferenceGraphBundle).mockResolvedValue(bundle);vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'copy-test'}:empty);
  const view=render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/copy-test/);// Settle async bundle validation and its reset effect before starting selection.
  await act(async()=>{fireEvent.change(screen.getByLabelText('参考線バンドル3ファイル'),{target:{files:[new File(['x'],'graph.json')]}});});await screen.findByText(/synthetic-test/);
- fireEvent.change(screen.getByLabelText('線路の種類'),{target:{value:'high_speed'}});await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
+ fireEvent.click(screen.getByRole('button',{name:'高速'}));await act(async()=>{fireEvent.click(copyPanel().getByRole('button',{name:'実在線路・道路に沿う敷設を開始'}));});
  await copyPanel().findByText('地図をクリックして起点候補を表示してください。');expect(screen.getByLabelText('線路の種類').matches(':disabled')).toBe(true);const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
  fireEvent.pointerDown(map,{clientX:500,clientY:300,button:0});fireEvent.pointerMove(map,{clientX:510,clientY:300});fireEvent.pointerUp(map,{clientX:510,clientY:300});fireEvent.click(map,{clientX:510,clientY:300});expect(copyPanel().queryAllByRole('button',{name:/候補 \d/})).toHaveLength(0);
  // Restore camera after the pan, then select with a complete normal pointer sequence.
