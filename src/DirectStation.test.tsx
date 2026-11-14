@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
+import {act,cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:vi.fn()}));
@@ -35,6 +35,9 @@ test("direct hover and click places planned stations without committing tracks; 
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.click(screen.getByRole("tab",{name:"路線"}));expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/建設済みワールドを保存しました/);
+ // The notice can render before perform() releases the async busy guard.
+ // Redo is a subsequent user action, so wait for controls to become usable.
+ await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
  expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.click(screen.getByRole("button",{name:"読込"}));fireEvent.click(screen.getByRole("button",{name:"読込を続ける"}));await screen.findByText("保存したワールドを読み込みました。");
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
@@ -77,6 +80,25 @@ test("saving the built world preserves both undo and redo for unbuilt stations",
  const map=await start();fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
  fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/建設済みワールドを保存しました/);
+ // The notice can render before perform() releases the async busy guard.
+ // Redo is a subsequent user action, so wait for controls to become usable.
+ await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
+});
+
+
+test("pending save locks editing without consuming a planned-station redo",async()=>{
+ const map=await start();fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
+ let complete!:(value:{saved:boolean})=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>{complete=resolve;}));
+ const save=screen.getByRole("button",{name:"保存"}) as HTMLButtonElement;
+ fireEvent.click(save);expect(save.disabled).toBe(true);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
+ await act(async()=>{complete({saved:true});});
+ expect(save.disabled).toBe(false);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
 });
