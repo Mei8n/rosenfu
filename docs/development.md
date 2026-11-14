@@ -132,9 +132,9 @@ VS Codeのデバッグ／リリースビルドとhot reloadタスクは、先に
 ### 共同開発者のVS Code初回セットアップ
 
 1. OS別のTauri前提条件、Node.js 24、Rust stableを導入し、`node --version`、`npm --version`、`cargo --version`がIDEのターミナルでも動くことを確認する。
-2. `git clone https://github.com/Mei8n/rosenfu.git`後に`cd rosenfu`、`git switch feat/application-foundation`。`package.json`と`Cargo.toml`があるリポジトリルートをVS Codeで開く。
+2. `git clone https://github.com/Mei8n/rosenfu.git`後に`cd rosenfu`、`git switch main`。`package.json`と`Cargo.toml`があるリポジトリルートをVS Codeで開く。
 3. WindowsはMicrosoft C/C++拡張（`ms-vscode.cpptools`）、macOS / LinuxはCodeLLDB拡張（`vadimcn.vscode-lldb`）を導入する。Rust Analyzerも推奨。拡張は自動導入されない。
-4. 「実行とデバッグ」でOSに対応する`Rosenfu: debug desktop (...)`を選びF5。依存同期→フロント／Rustデバッグビルド→ネイティブデバッガの順で起動する。初回のRustビルドは時間がかかる。
+4. 「実行とデバッグ」でOSに対応する`Rosenfu: debug desktop (...)`を選びF5。依存同期→Rust差分ビルド→Vite開発サーバー→ネイティブデバッガの順で起動する。初回のRustビルドは時間がかかる。
 5. Rust側のブレークポイントを使って停止・再開を確認する。React/TypeScript側の調査にはWebViewの開発者ツールを使う。F5のネイティブデバッガがJSのブレークポイントまで扱うわけではない。
 
 更新後はアプリとデバッグを終了してから`git pull --ff-only`し、再度F5を実行する。ローカル変更がある場合は先に保全し、強制リセットしない。
@@ -165,3 +165,25 @@ npm の `allow-scripts` に関する `esbuild` 警告は、インストールス
 [tinypool の worker options](https://github.com/advisories/GHSA-5gmw-xhrv-c9v3)・
 [run options](https://github.com/advisories/GHSA-85c8-ppgw-ccpr)、
 [npm のスクリプト方針](https://docs.npmjs.com/cli/v11/using-npm/config/)
+
+## F5 の開発用起動と組み込み版の確認
+
+通常の `Rosenfu: debug desktop (...)` は、Vite開発サーバーと
+`cargo build --locked -p rosenfu-desktop` を使用します。毎回のフロントエンド本番ビルド・
+アセット埋め込みを避け、UIの変更はホットリロードで確認します。
+Rustの変更にはデバッグ停止と再度F5が必要です。ネイティブのブレークポイント・変数確認は維持します。
+TypeScriptの型検査は `npm run build` とCIで別途実行します。
+
+- Viteがポート1420で起動完了するまでデバッガを起動しません。ポートを別のプロセスが使用中なら失敗し、勝手に別ポートへ切り替えません。
+- デバッグ終了時は `postDebugTask` で、このワークスペースのデバッグ用Viteだけを停止します。他のNodeプロセスやゲームには触れません。
+- 起動失敗・IDE異常終了後に残った場合は「タスクの実行」から `Rosenfu: stop debug UI` を実行します。次のF5でも先に停止を試みます。
+- 同じチェックアウトでF5を同時起動しないでください。別のチェックアウトでもポート1420は共有されるため同時起動できません。
+- `Rosenfu: debug embedded desktop (...)` は従来の `tauri build --debug --no-bundle` です。開発サーバーなしで配布相当のアセットを確認するときに選択します。
+
+初回やRust・依存関係更新後のコンパイル／リンク時間は残ります。起動時間の保証ではありません。
+繰り返し遅い場合は無変更・UI変更・Rust変更を分けて計測し、
+`cargo build --locked -p rosenfu-desktop --timings` の結果とrust-analyzer出力のロック待ちを確認します。
+デバッグ情報削除やセキュリティソフト除外、キャッシュ削除は行いません。
+
+根拠: [Tauri公式のVS Codeデバッグ設定](https://v2.tauri.app/develop/debug/vscode/)、
+[Cargoビルド性能の計測・改善](https://doc.rust-lang.org/cargo/guide/build-performance.html)。

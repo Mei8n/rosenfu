@@ -15,14 +15,21 @@ The recommendations do not install extensions automatically.
 1. Set a breakpoint in a Rust command, for example `engine_info` in
    `src-tauri/src/main.rs`.
 2. Select **Rosenfu: debug desktop (Windows)** in Run and Debug, then press F5.
-3. The pre-launch task builds the frontend and a debug desktop executable.
+3. The pre-launch task synchronizes dependencies, incrementally builds Rust,
+   and starts Vite on port 1420 before launching the native debugger.
 4. Trigger the command in the app. Inspect variables, step, or continue with F5.
 
-This configuration embeds the built frontend. It does **not** start Vite or
-use port 1420, avoiding conflicts with a separately running development server.
-It does not hot-reload: restart debugging to rebuild frontend or Rust changes.
-The first debug build can take several minutes. Do not select "Debug Anyway"
-if the build fails.
+The normal configuration uses the development server. Frontend changes hot-reload;
+Rust changes require stopping and starting debugging again. Debugger stop also stops
+the workspace-owned Vite server. If launching fails or the IDE crashes, run
+**Rosenfu: stop debug UI**; the next F5 also performs this cleanup first.
+Other Node processes are never terminated. Do not debug the same checkout twice
+at once. A separately running server on port 1420 must be stopped by its owner.
+
+Select **Rosenfu: debug embedded desktop (Windows)** to use the previous built-in
+frontend workflow, with no server or hot reload. Both retain Rust debug symbols.
+Initial native builds and Rust relinking can still take minutes; this change does
+not guarantee a particular startup time. Do not select "Debug Anyway" if a task fails.
 
 ## Hot reload and attach
 
@@ -42,7 +49,7 @@ In a debug desktop app, open WebView developer tools with Ctrl+Shift+I
 (or Inspect from the context menu when available).
 Use Console and Elements for frontend diagnostics. The F5 configuration
 debugs Rust, not React. For original-source debugging with Vite's development
-output, use the hot-reload workflow above.
+output, use normal F5 or the hot-reload workflow above.
 
 ## Build and tests
 
@@ -55,5 +62,5 @@ output, use the hot-reload workflow above.
   Output: `target/debug/rosenfu-desktop.exe`.
 
 These tasks do not commit, publish, package an installer, or change global
-VS Code settings. Debugger configurations are Windows-specific; the project
-itself continues to support its existing OS build workflows.
+VS Code settings. Windows uses cppvsdbg; macOS/Linux use CodeLLDB. Native GUI breakpoint tests
+are separate from the three-OS CI build checks.

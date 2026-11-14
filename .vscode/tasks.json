@@ -136,6 +136,82 @@
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Rosenfu: build native dev",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--locked",
+        "-p",
+        "rosenfu-desktop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "dependsOn": [
+        "Rosenfu: prepare dependencies"
+      ],
+      "dependsOrder": "sequence"
+    },
+    {
+      "label": "Rosenfu: stop debug UI",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "scripts/debug-dev-server.mjs",
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Rosenfu: debug UI",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "scripts/debug-dev-server.mjs",
+        "start"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "rosenfu-dev",
+        "pattern": {
+          "regexp": "^(.*):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^ROSENFU_DEV_STARTING$",
+          "endsPattern": "^ROSENFU_DEV_READY$"
+        }
+      },
+      "runOptions": {
+        "instanceLimit": 1
+      },
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "Rosenfu: prepare dev debug",
+      "dependsOn": [
+        "Rosenfu: stop debug UI",
+        "Rosenfu: build native dev",
+        "Rosenfu: debug UI"
+      ],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
     }
   ]
 }
