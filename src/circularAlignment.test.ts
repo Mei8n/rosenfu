@@ -49,7 +49,7 @@ test('right-hand arc has midpoint; straight and refused backward segments add no
  expect(tight.error).toMatch(/25m/);expect(tight.arcs).toHaveLength(1);
 });
 test('provisional curve speeds use explicit game model without fake straight speeds',()=>{
- expect([25,300,1000,2000,8000].map(provisionalCurveSpeed)).toEqual([18,62,113,160,321]);
+ expect([25,100,300,500,1000,2000,8000].map(provisionalCurveSpeed)).toEqual([22,44,76,98,139,197,394]);
  for(const radius of [0,-1,NaN,Infinity,-Infinity])expect(provisionalCurveSpeed(radius)).toBeNull();
 });
 

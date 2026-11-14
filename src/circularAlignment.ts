@@ -7,7 +7,7 @@ export type CircularDraft={points:GeoPoint[];arcs:CircularArc[];guide:CircleGuid
 /** Provisional game-balance curve limit, not an actual train speed or engineering standard.
  * A straight segment (infinite radius) and invalid radii have no curve speed. */
 export function provisionalCurveSpeed(radiusM:number):number|null {
- return Number.isFinite(radiusM)&&radiusM>0?Math.floor(3.6*Math.sqrt(radiusM)):null;
+ return Number.isFinite(radiusM)&&radiusM>0?Math.floor(3.6*Math.sqrt(radiusM*1.5)):null;
 }
 /** Incremental tangent arcs in a locally scaled Mercator plane. The first chord
  * establishes heading; adding a point never changes an earlier segment.
