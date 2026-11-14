@@ -77,3 +77,13 @@ test('extension inherits non-default design speed and prevents changing its sett
  vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({designSpeedKmh:95})])})));
 });
+
+for(const endpoint of ['start','end'] as const)test(`tangent guide follows built ${endpoint} extension direction`,async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:endpoint==='start'?180:250,clientY:130});
+ const guide=map.querySelector('.construction-tangent-guide')!;
+ expect(guide).toBeTruthy();
+ const delta=Number(guide.getAttribute('x2'))-Number(guide.getAttribute('x1'));
+ expect(endpoint==='start'?delta<0:delta>0).toBe(true);
+ expect(Number(guide.getAttribute('y1'))).toBeCloseTo(Number(guide.getAttribute('y2')),5);
+});
