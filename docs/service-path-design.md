@@ -1,6 +1,6 @@
 # Alignment上の運行系統: ServicePath設計案
 
-状態: **設計提案。本文は実装完了を意味しない。** 2026-11-12。
+状態: **schema 5導入時の設計記録**（2026-11-12）。新規ServicePathの作成・保存は実装あり。既存編集等の未完了分は[実装方針](implementation-plan.md)と[系統仕様](operating-services.md)へ集約し、本文の提案全体を実装済み/全て未実装とは扱わない。
 
 ## 目的と現状
 
