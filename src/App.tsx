@@ -797,7 +797,7 @@ export function App() {
   }
   function startTarget(coordinates:GeoPoint,width:number,height:number) {
         const candidates=[...(draftFinished?[{id:activePathId,points:draftPoints}]:[]),...parkedPaths.filter(path=>path.planId===activePlanId&&!path.reference)]
-          .filter(plan=>plan.points.length>=2)
+          .filter(plan=>plan.points.length>=1)
           .map(plan=>({id:plan.id,distance:endpointDistance(coordinates,plan.points[plan.points.length-1],width,height)}))
           .filter(plan=>plan.distance<=8).sort((a,b)=>a.distance-b.distance);
 
