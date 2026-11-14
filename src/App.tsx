@@ -228,6 +228,8 @@ export function App() {
   function undoPoint() { setDraftFinished(false); if (!draftPoints.length) return; setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
   function redoPoint() { if (!redoPoints.length) return; setDraftFinished(false); setDraftPoints(points => [...points, redoPoints[redoPoints.length-1]]); setRedoPoints(points => points.slice(0,-1)); setHoverPoint(null); }
   const [alignmentId, setAlignmentId] = useState("");
+  const stationNamesVisible=displaySettings.settings.stationNamesVisible;
+  const setStationNamesVisible=(value:boolean)=>displaySettings.update({stationNamesVisible:value});
   const [platformLength, setPlatformLength] = useState("200");
   const platformWidth = "12";
   const [editLength, setEditLength] = useState("200");
@@ -562,7 +564,7 @@ export function App() {
   function pointerMove(event: ReactPointerEvent<SVGSVGElement>) {
     if(enabled&&referenceCopy.active&&referenceCopy.roadFollow&&mapMode==="draw"&&!gestureRef.current){const p=coordinatesFromClient(event.clientX,event.clientY,event.currentTarget.getBoundingClientRect(),camera);if(p)void referenceCopy.hover(p);}
 
-    if(enabled&&activeTool==="stations"&&mapMode==="place"&&!gestureRef.current)setStationCursor(coordinatesFromClient(event.clientX,event.clientY,event.currentTarget.getBoundingClientRect(),camera));
+    if(enabled&&activeTool==="stations"&&mapMode==="place"&&!gestureRef.current){const rect=event.currentTarget.getBoundingClientRect();setStationCursor(coordinatesFromClient(event.clientX,event.clientY,rect,camera));setCursorPosition({x:event.clientX-rect.left,y:event.clientY-rect.top});}
     if (enabled && !referenceCopy.active && mapMode === "draw" && activeTool === "tracks" && !gestureRef.current) {
       const rect=event.currentTarget.getBoundingClientRect(),point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
       setCursorPosition(point?{x:event.clientX-rect.left,y:event.clientY-rect.top}:null);
@@ -696,7 +698,7 @@ export function App() {
   }
   function resizePlatform(event: FormEvent) {
     event.preventDefault();
-    if (!enabled || !selected || !platformDirty || !Number.isFinite(Number(editLength)) || Number(editLength) < 20 || Number(editLength) > 1000) return;
+    if (!enabled || !selected || !platformDirty || !Number.isFinite(Number(editLength)) || Number(editLength) < 40 || Number(editLength) > 400) return;
     void perform(async () => {
       const snapshot = await invoke<World>("update_station_placement", { stationId: selected, lengthM: Number(editLength), widthM: Number(editWidth) });
       const placement = snapshot.station_placements?.find(p => p.station_id === selected);
@@ -927,6 +929,7 @@ export function App() {
             <span>ZL {Number(camera.zoom.toFixed(2))} / Web Mercator</span><span>駅表示：ZL15以上はホーム帯、ZL15未満は点（寸法は不変）</span>
           </div>
           <div className="camera-controls" aria-label="地図表示操作">
+            <label><input type="checkbox" checked={stationNamesVisible} onChange={event=>setStationNamesVisible(event.target.checked)}/>駅名を表示</label>
             <div className="map-mode-controls" role="group" aria-label="地図の操作モード"><button className="secondary" disabled={activeTool === "tracks"} aria-pressed={mapMode === "move"} onClick={() => { changeMapMode("move"); }}>移動</button><button className="secondary" aria-pressed={mapMode === "place"} disabled={!enabled || activeTool !== "stations"} onClick={() => { changeMapMode("place"); }}>駅配置</button><span>ドラッグで移動 / 縦ホイールでカーソル位置をズーム</span></div>
             <div className="camera-buttons"><button className="secondary" aria-label="西へ移動" onClick={() => changeCamera(panCamera(camera, -300, 0))}>←</button><button className="secondary" aria-label="北へ移動" onClick={() => changeCamera(panCamera(camera, 0, -180))}>↑</button><button className="secondary" aria-label="南へ移動" onClick={() => changeCamera(panCamera(camera, 0, 180))}>↓</button><button className="secondary" aria-label="東へ移動" onClick={() => changeCamera(panCamera(camera, 300, 0))}>→</button><button className="secondary" aria-label="縮小" disabled={camera.zoom <= MIN_ZOOM} onClick={() => zoomFromControls(-1)}>−</button><button className="secondary" aria-label="拡大" disabled={camera.zoom >= MAX_ZOOM} onClick={() => zoomFromControls(1)}>＋</button><button className="secondary" onClick={() => changeCamera(DEFAULT_CAMERA)}>東京へ戻る</button></div>
             <form className="camera-coordinate-form" onSubmit={moveToCoordinates}><label htmlFor="camera-latitude">中心緯度</label><input id="camera-latitude" type="number" step="any" min={BOUNDS.south} max={BOUNDS.north} value={centerLatitude} onChange={(event) => setCenterLatitude(event.target.value)} /><label htmlFor="camera-longitude">中心経度</label><input id="camera-longitude" type="number" step="any" min={BOUNDS.west} max={BOUNDS.east} value={centerLongitude} onChange={(event) => setCenterLongitude(event.target.value)} /><button className="secondary" type="submit">座標へ移動</button></form>
@@ -943,6 +946,8 @@ export function App() {
           </div>}
           {(activeTool === "tracks" || activeTool === "inactive") && !referenceCopy.active && !dragging && !(mapMode==="draw" && cursorPosition && draftPoints.length>0 && !draftFinished) && planHover && hoveredPlan && hoveredPlan.line.length > 1 && <div className="construction-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-145,planHover.y+18))}}><strong>{hoveredPlan.name.trim() || "線路計画"} · {Math.round(alignmentLength(hoveredPlan.line))} m</strong><div>{hoveredGeometry?.error ? "敷設不可："+hoveredGeometry.error : "基本条件OK（地形等は未判定）"}</div><small>最小半径（近似）：{Number.isFinite(hoveredGeometry?.minimumRadiusM ?? Infinity) ? Math.round(hoveredGeometry!.minimumRadiusM)+" m" : "直線"}<br/>制限速度：未算定<br/>費用倍率・建設費・維持費：未計算</small></div>}
             <div className="map-surface">
+            {activeTool==="stations"&&<fieldset className="construction-toolbar station-toolbar" disabled={!enabled} aria-label="駅設置設定"><PlatformLengthInput id="platform-length" label="駅の長さ" value={platformLength} onChange={setPlatformLength} compact/></fieldset>}
+            {activeTool==="stations"&&mapMode==="place"&&!dragging&&cursorPosition&&stationCursor&&stationSelection?.error&&<div className="construction-tooltip station-placement-error" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{stationSelection.error}</div>}
             {activeTool === "tracks" && <div className="construction-toolbar" role="group" aria-label="線路敷設設定">            <TrackTypeControls value={trackType} roadFollowing={roadFollowing} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType} onRoadFollowing={value=>{setRoadFollowing(value);setHoverPoint(null);}}/>
             <label>設計最高速度 (km/h)<input aria-label="線路の設計最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/></label>
             <small>接線に近づけると直線、離すと曲線になります</small>
@@ -961,6 +966,7 @@ export function App() {
               const p=stationCursor??{latitude:camera.latitude,longitude:camera.longitude};
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
+              const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale});}
             }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { referenceCopy.clearHover();setCursorPosition(null);setPlanHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
@@ -993,9 +999,8 @@ export function App() {
               {!referenceCopy.active&&candidateLine.length > 1 && <path d={drawPath(candidateLine)} className={"draft-path candidate-draft"+(previewError?" invalid-candidate":"")} pointerEvents="none" />}
               {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
               {draftPoints.map((point,index) => { const p = project(point.latitude,point.longitude,camera); return <rect key={index} x={p.x-4} y={p.y-4} width="8" height="8" className="draft-anchor" />; })}
-              {activeTool==="stations"&&mapMode==="place"&&!dragging&&stationCursor&&stationSelection?.error&&<text className="station-placement-error" x={Math.min(680,Math.max(12,project(stationCursor.latitude,stationCursor.longitude,camera).x+16))} y={Math.max(24,project(stationCursor.latitude,stationCursor.longitude,camera).y-16)} fill="#b34c4c" pointerEvents="none">{stationSelection.target?stationSelection.error:"駅は線路上に置いてください"}</text>}
-              {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className="planned-station" pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform"/>:<circle cx={p.x} cy={p.y} r="5" fill={valid?"#777":"#b34c4c"}/>}<text x={p.x+10} y={p.y-8}>{station.name}（計画）</text></g>;})}
-              {stationPreview.length >= 4 && (detailedStations ? <path d={drawPath(stationPreview) + "Z"} className="station-platform" opacity=".65" pointerEvents="none" /> : <circle cx={project(previewCenter!.latitude,previewCenter!.longitude,camera).x} cy={project(previewCenter!.latitude,previewCenter!.longitude,camera).y} r="5" className="station-platform station-dot" opacity=".65" pointerEvents="none" />)}
+              {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className="planned-station" pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform"/>:<circle cx={p.x} cy={p.y} r="5" fill={valid?"#777":"#b34c4c"}/>}{stationNamesVisible&&<text x={p.x+10} y={p.y-8}>{station.name}（計画）</text>}</g>;})}
+              {stationPreview.length >= 4 && <path d={drawPath(stationPreview) + "Z"} className="station-platform station-placement-preview" opacity=".65" pointerEvents="none" />}
               {world?.tracks.map((track) => {
                 const fromPlacement = world?.station_placements?.find((p) => p.station_id === track.from);
                 const toPlacement = world?.station_placements?.find((p) => p.station_id === track.to);
@@ -1017,7 +1022,7 @@ export function App() {
                 const placement = world?.station_placements?.find((p) => p.station_id === station.id);
                 const polygon = stationPolygons.get(station.id);
                 return <g key={station.id} pointerEvents={activeTool==="stations"&&mapMode==="place"?"none":undefined} className={"station-marker" + (selected === station.id ? " selected" : "") + (routeVisual.stations.has(station.id) ? "" : " route-unassigned")} onClick={(event) => { event.stopPropagation(); if (!suppressSelectionClick.current) selectStation(station.id); }}>
-                  <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations ? <circle cx={x} cy={y} r="5" className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}<text x={x + 18} y={y + 5}>{station.name}</text>
+                  <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations ? <circle cx={x} cy={y} r="5" className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}{stationNamesVisible&&<text x={x + 18} y={y + 5}>{station.name}</text>}
                 </g>;
               })}
               </g>
@@ -1049,7 +1054,6 @@ export function App() {
             <div className="section-number">02 / STATION</div><h3 id="editor-title">線路にホームを置く</h3>
             <p className="muted">置きたい位置にカーソルを合わせてクリック。建設済み・計画中の線路を自動で選び、カーブにも沿って配置します。</p>
             <fieldset disabled={!enabled}>
-              <PlatformLengthInput id="platform-length" label="ホーム長 (20m級・両相当)" value={platformLength} onChange={setPlatformLength}/>
               <p className="field-hint" role="status">{stationSelection?.error || (stationSelection?.target ? "クリックで駅を配置。そのまま続けて配置できます。" : "線路にカーソルを重ねるとホームを表示します。")}</p>
               <p className="field-hint">地図をTabで選択し、矢印キーで位置を動かしてEnterで配置。ドラッグは地図移動。</p>
             </fieldset>
@@ -1097,7 +1101,7 @@ export function App() {
           </section>
           <section hidden={activeTool !== "stations" && activeTool !== "station-management"}>
             {selectedStation && <div className="equipment-editor"><h4>駅設定 · ID {selectedStation.id}</h4><p className="field-hint">設置後も駅名・ホーム長を変更できます。有人・無人・委託などの運営形態、維持費・満足度への反映は今後実装予定です。</p><div className="station-detail-name"><strong onDoubleClick={beginStationNameEdit}>{selectedStation.name}</strong><button ref={stationNameEditButton} type="button" className="secondary" disabled={!enabled} aria-label="選択駅の名前を編集" onClick={beginStationNameEdit}>✎ 編集</button></div><p className="field-hint">駅名をダブルクリック、または編集ボタンで入力へ。Enterで適用、Escで取消。</p>
-              {world?.station_placements?.some((p) => p.station_id === selectedStation.id) && <form onSubmit={resizePlatform}><fieldset disabled={!enabled}><div className="coordinate-fields"><PlatformLengthInput id="edit-platform-length" label="選択駅のホーム長 (20m級・両相当)" value={editLength} onChange={setEditLength}/></div><div className="route-actions"><button type="submit" className="secondary" disabled={!platformDirty || !editLength || !Number.isFinite(Number(editLength)) || Number(editLength) < 20 || Number(editLength) > 1000}>ホーム寸法を適用</button><button type="button" className="secondary" disabled={!platformDirty} onClick={() => { if(selectedPlacement){setEditLength(String(selectedPlacement.length_m));setEditWidth(String(selectedPlacement.width_m));} }}>ホーム長の下書きを破棄</button></div></fieldset></form>}
+              {world?.station_placements?.some((p) => p.station_id === selectedStation.id) && <form onSubmit={resizePlatform}><fieldset disabled={!enabled}><div className="coordinate-fields"><PlatformLengthInput id="edit-platform-length" label="選択駅の長さ" value={editLength} onChange={setEditLength}/></div><div className="route-actions"><button type="submit" className="secondary" disabled={!platformDirty || !editLength || !Number.isFinite(Number(editLength)) || Number(editLength) < 40 || Number(editLength) > 400}>ホーム寸法を適用</button><button type="button" className="secondary" disabled={!platformDirty} onClick={() => { if(selectedPlacement){setEditLength(String(selectedPlacement.length_m));setEditWidth(String(selectedPlacement.width_m));} }}>ホーム長の下書きを破棄</button></div></fieldset></form>}
               <form onSubmit={renameStation}><fieldset disabled={!enabled}><label htmlFor="edit-station-name">選択駅の名前</label><input ref={stationNameInput} id="edit-station-name" onKeyDown={event=>{if(event.key!=="Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode===229)return;event.preventDefault();event.stopPropagation();if(!enabled || busyRef.current)return;setEditStationName(selectedStation.name);stationNameEditButton.current?.focus();}} maxLength={80} value={editStationName} onChange={(event) => setEditStationName(event.target.value)} /><div className="route-actions"><button type="submit" disabled={!enabled || !stationDirty || !editStationName.trim()}>駅名を適用</button><button type="button" className="secondary" disabled={!enabled || !stationDirty} onClick={() => setEditStationName(selectedStation.name)}>駅名下書きを破棄</button></div></fieldset></form>
               <button className="secondary danger" disabled={!enabled || unapplied || !!stationReferences(selectedStation.id)} onClick={() => setPendingDelete({ kind: "station", id: selectedStation.id })}>選択駅を削除</button>
               {stationReferences(selectedStation.id) && <p className="field-hint">削除不可: {stationReferences(selectedStation.id)}</p>}

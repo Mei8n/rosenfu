@@ -47,7 +47,7 @@ test('reference plan station is session-only and included in atomic provenance-p
  const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
  async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.click(map,{clientX:point.x,clientY:point.y});fireEvent.click(await copyPanel().findByRole('button',{name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
  await pick(start,'0');await pick(end,'1');
- fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));fireEvent.change(screen.getByLabelText('ホーム長 (20m級・両相当)'),{target:{value:'3'}});
+ fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));fireEvent.change(screen.getByLabelText('駅の長さ'),{target:{value:'3'}});
  fireEvent.click(map,{clientX:500,clientY:300});expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='place_station_on_alignment'||c==='build_alignment_with_stations')).toBe(false);
  fireEvent.click(screen.getByRole('tab',{name:'線路'}));

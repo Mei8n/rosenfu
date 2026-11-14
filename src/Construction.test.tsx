@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { App } from "./App";
 import { project, DEFAULT_CAMERA } from "./map";
-import { alignmentLength, pointOnAlignment } from "./alignment";
+import { alignmentLength, pointOnAlignment, stationPolygon } from "./alignment";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 window.PointerEvent=MouseEvent as typeof PointerEvent;
 afterEach(() => { localStorage.removeItem("rosenfu.display-settings"); cleanup(); vi.resetAllMocks(); });
@@ -77,7 +77,7 @@ test("line-constrained station previews then commits metric platform dimensions"
   const map=await start(built);
   fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
   expect(screen.queryByLabelText("新しい駅名")).toBeNull();expect(screen.queryByLabelText("幅 (m)")).toBeNull();
-  fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"12"}});
+  fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"12"}});
   fireEvent.pointerMove(map,{clientX:250,clientY:150});
   expect(map.querySelector(".station-platform")).toBeTruthy();
   expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
@@ -92,7 +92,7 @@ test("line-constrained station previews then commits metric platform dimensions"
 });
 test("placement rejects distant clicks and keeps station operation uncalled",async()=>{
  const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
- fireEvent.click(map,{clientX:250,clientY:20});await screen.findByText(/処理できませんでした: 線路の近くを選んで/);
+ fireEvent.click(map,{clientX:250,clientY:20});await screen.findByText(/処理できませんでした: 駅は線路上に置いてください/);
  expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
  fireEvent.click(screen.getByRole("button",{name:"エラー通知を閉じる"}));
  expect(screen.queryByText(/処理できませんでした/)).toBeNull();
@@ -100,7 +100,7 @@ test("placement rejects distant clicks and keeps station operation uncalled",asy
 test("existing platform resize preserves ID and duplicate submits are blocked",async()=>{
   const map=await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
   fireEvent.click(document.querySelector(".station-entry")!);
-  fireEvent.change(screen.getByLabelText("選択駅のホーム長 (20m級・両相当)"),{target:{value:"16"}});
+  fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"16"}});
   let finish!: (value:unknown)=>void;
   vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
   const button=screen.getByRole("button",{name:"ホーム寸法を適用"});
@@ -119,7 +119,7 @@ test("keyboard position previews a platform and too-long platform is blocked",as
  expect(screen.getAllByText("この線路に収まるホーム長を指定してください。").length).toBeGreaterThan(0);
  fireEvent.keyDown(map,{key:"Enter"});
  expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
- fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"5"}});
+ fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"5"}});
  expect(map.querySelector(".station-platform")).toBeTruthy();
  vi.mocked(invoke).mockResolvedValueOnce(placed);
  fireEvent.keyDown(map,{key:"Enter"});
@@ -142,13 +142,14 @@ test("20m equivalent inputs preserve fractional metre lengths when creating and 
  const snapshot={...placed,station_placements:[{...placed.station_placements[0],length_m:231.5,width_m:17}]};
  await start(snapshot);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:/^新駅 35/}));
  expect(screen.queryByLabelText("選択駅のホーム長 (m)")).toBeNull();
- expect((screen.getByLabelText("選択駅のホーム長 (20m級・両相当)") as HTMLInputElement).value).toBe("11.575");
- fireEvent.change(screen.getByLabelText("選択駅のホーム長 (20m級・両相当)"),{target:{value:"12.125"}});
- expect((screen.getByLabelText("選択駅のホーム長 (20m級・両相当)") as HTMLInputElement).value).toBe("12.125");
+ expect((screen.getByLabelText("選択駅の長さ") as HTMLInputElement).value).toBe("11.575");
+ fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12.125"}});
+ expect((screen.getByLabelText("選択駅の長さ") as HTMLInputElement).value).toBe("12.125");
  vi.mocked(invoke).mockResolvedValueOnce(snapshot);fireEvent.click(screen.getByRole("button",{name:"ホーム寸法を適用"}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("update_station_placement",{stationId:"4",lengthM:242.5,widthM:17}));
- fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"2.25"}});
- expect((screen.getByLabelText("ホーム長 (20m級・両相当)") as HTMLInputElement).value).toBe("2.25");
+ fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
+ fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"2.25"}});
+ expect((screen.getByLabelText("駅の長さ") as HTMLInputElement).value).toBe("2.25");
 });
 
 test("station display switches exactly across ZL14 and ZL15 without changing dimensions",async()=>{
@@ -168,17 +169,14 @@ test("station display switches exactly across ZL14 and ZL15 without changing dim
 });
 test("low-zoom endpoint previews use the full-platform corrected center",async()=>{
  const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
- fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"12"}});
- const half=120/alignmentLength(alignment.points);
+ fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"12"}});
  for(const position of [0,1]){
   const hover=project(alignment.points[position].latitude,alignment.points[position].longitude,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
-  const dot=map.querySelector("circle.station-platform")!;
-  const point=pointOnAlignment(alignment.points,position===0?half:1-half);
-  const expected=project(point.latitude,point.longitude,DEFAULT_CAMERA);
-  expect(Number(dot.getAttribute("cx"))).toBeCloseTo(expected.x,8);
-  expect(Number(dot.getAttribute("cy"))).toBeCloseTo(expected.y,8);
-  const endpoint=project(alignment.points[position].latitude,alignment.points[position].longitude,DEFAULT_CAMERA);
-  expect(Math.abs(Number(dot.getAttribute("cx"))-endpoint.x)).toBeGreaterThan(0);
+  const preview=map.querySelector("path.station-placement-preview")!;
+  expect(map.querySelector("circle.station-platform")).toBeNull();
+  const polygon=stationPolygon(alignment.points,position,240,12);
+  const expected=polygon.map(p=>project(p.latitude,p.longitude,DEFAULT_CAMERA));
+  expect(preview.getAttribute("d")).toBe(expected.map((p,i)=>`${i?"L":"M"}${p.x},${p.y}`).join(" ")+"Z");
  }
 });
 test("reference name is automatic and does not place or rename until confirmed",async()=>{
@@ -193,7 +191,7 @@ test("reference name is automatic and does not place or rename until confirmed",
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="rename_station")).toBe(false);
 });
 test("reference name distance uses corrected platform center at both alignment endpoints",async()=>{
- const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.change(screen.getByLabelText("ホーム長 (20m級・両相当)"),{target:{value:"12"}});
+ const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"12"}});
  const half=120/alignmentLength(alignment.points),startPoint=pointOnAlignment(alignment.points,half),endPoint=pointOnAlignment(alignment.points,1-half);
  const pack={format:"rosenfu-reference-stations",version:1,dataset:{id:"endpoint-names",revision:"1",source:"test",license:"test",bounds:{west:139,east:140,south:35,north:36}},stations:[{osmType:"node",osmId:"1",name:"始端中心",...startPoint,kind:"station"},{osmType:"node",osmId:"2",name:"終端中心",...endPoint,kind:"station"}]};
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:1000,text:()=>Promise.resolve(JSON.stringify(pack))}]}});await screen.findByText("endpoint-names / 1 / 2件");

@@ -391,3 +391,10 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .construction-help { position:relative; font-size:11px; }
 .construction-help p { position:absolute; top:20px; right:0; width:220px; padding:8px; background:var(--surface); border:1px solid var(--edge); }
 .construction-toolbar select { background:var(--surface-alt); color:var(--ink); }
+
+.station-toolbar { margin:0; min-width:0; }
+.station-length-control { display:flex; align-items:center; gap:6px; font-size:12px; }
+.station-length-control label { margin:0; font-size:12px; }
+.station-length-control input { width:54px; padding:3px; margin:0; text-align:center; font-size:12px; }
+.station-length-control button { padding:2px 8px; min-width:26px; font-size:14px; }
+.workbench .station-placement-error { width:max-content; max-width:min(230px,calc(100% - 16px)); font-size:11px; color:var(--ink); }
