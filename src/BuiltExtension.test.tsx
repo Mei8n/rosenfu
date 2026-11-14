@@ -152,6 +152,8 @@ for(const endpoint of ['start','end'] as const)test(`tangent guide follows built
 
 test('built line list keeps a unique selectable label without repetitive metadata',async()=>{
  await start({alignments:[{...line,name:'新しい線路'}]});
+ expect(screen.queryByRole('button',{name:'線路 3'})).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));
  const entry=screen.getByRole('button',{name:'線路 3'});
  expect(entry.textContent).toBe('線路 3');
  expect(screen.queryByText('出典記録なし')).toBeNull();

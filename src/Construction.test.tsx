@@ -55,7 +55,7 @@ test("draft undo, cancel and load confirmation preserve intentional construction
   expect(screen.queryByText("Backspace")).toBeNull();
   expect(screen.queryByText("移動モード")).toBeNull();
   // Shortcuts still bubble from focused toolbar controls after map editing.
-  const drawButton=screen.getByRole("button",{name:"1点戻す"});
+  const drawButton=screen.getByRole("tab",{name:"線路"});
   drawButton.focus();
   fireEvent.keyDown(drawButton,{key:"z",ctrlKey:true});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
@@ -128,8 +128,8 @@ test("keyboard position previews a platform and too-long platform is blocked",as
 test("plan redo, duplicate rejection and display controls",async()=>{
  const map=await start();
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:250,clientY:160});
- fireEvent.click(screen.getByRole("button",{name:"1点戻す"})); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
- fireEvent.click(screen.getByRole("button",{name:"やり直す"})); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  fireEvent.click(map,{clientX:250,clientY:160});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect(screen.queryByText("敷設不可：重複する点があります")).toBeNull();
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
@@ -314,3 +314,5 @@ test("automatic drawing dragging at the endpoint never finishes or adds an ancho
  pointer("pointerdown",390,190);pointer("pointerup",390,190);fireEvent.click(map,{clientX:390,clientY:190,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
 });
+
+ test("construction omits redundant controls without removing keyboard editing",async()=>{await start();expect(screen.queryByRole("button",{name:"1点戻す"})).toBeNull();expect(screen.queryByRole("button",{name:"やり直す"})).toBeNull();expect(document.querySelector(".reference-tools")?.hasAttribute("hidden")).toBe(true);expect(document.querySelector(".track-editor")?.textContent).not.toContain("運行経路用：駅間接続");});

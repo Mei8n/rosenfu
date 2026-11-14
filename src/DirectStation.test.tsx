@@ -67,7 +67,7 @@ test("drag does not place a station and clearing one independent plan only remov
 });
 test("changing a plan so its station no longer fits blocks construction until station is removed",async()=>{
  const map=await start();fireEvent.click(map,{clientX:310,clientY:150});
- fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("button",{name:"1点戻す"}));
+ fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
  fireEvent.click(map,{clientX:250,clientY:150});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));
  await screen.findByText(/計画駅が線路に収まりません/);
  expect(invoke).not.toHaveBeenCalledWith("build_alignment_with_stations",expect.anything());

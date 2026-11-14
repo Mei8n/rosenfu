@@ -1327,25 +1327,13 @@ export function App() {
               <button className="full-width" type="submit">指定座標に配置</button>
             </fieldset></form></details>
           </section>
-          <section className="track-editor" role="tabpanel" id="panel-tracks" aria-labelledby="tab-tracks" hidden={activeTool !== "tracks"}>
+          <section className="track-editor" role="tabpanel" id="panel-tracks" aria-labelledby="tab-tracks" hidden={activeTool !== "tracks" && activeTool !== "inactive"}>
 
-            <details className="reference-tools" open={referenceCopy.active || undefined}><summary>実在線路・道路に沿う</summary><ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/></details>
-            <div className="route-actions"><button className="secondary" disabled={!enabled || (!draftPoints.length&&!anchorUndo.length)} onClick={undoPoint}>1点戻す</button><button className="secondary" disabled={!enabled || (!redoPoints.length&&!anchorRedo.length)} onClick={redoPoint}>やり直す</button></div>
+            <details className="reference-tools" hidden open={referenceCopy.active || undefined}><summary>実在線路・道路に沿う</summary><ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/></details>
 
-            <ul className="construction-list">{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id);setSelectedPlanPath(null);setTrackDeleteConfirm(false);changeMapMode("move"); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name&&a.name!=="新しい線路"?a.name:`線路 ${a.id}`}</button></li>)}</ul>
+            <ul className="construction-list" hidden={mapMode==="draw"}>{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id);setSelectedPlanPath(null);setTrackDeleteConfirm(false);changeMapMode("move"); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name&&a.name!=="新しい線路"?a.name:`線路 ${a.id}`}</button></li>)}</ul>
             {selectedAlignment&&world?.alignment_provenance?.some(p=>p.alignment_id===selectedAlignment.id)&&<AlignmentProvenance alignment={selectedAlignment} provenances={world?.alignment_provenance?.filter(p=>p.alignment_id===selectedAlignment.id)} sourceRecords={world?.source_records??[]}/>}
-            <details className="legacy-tools"><summary>運行経路用：駅間接続</summary>
-            <div className="track-heading"><h3 id="track-editor-title">駅を線路でつなぐ</h3><span className="count" aria-label="線路数">{world?.tracks.length ?? 0}</span></div>
-            <p className="muted">2駅を直線で接続します。線形・距離・速度はまだ再現していません。</p>
-            <form onSubmit={submitTrack}><fieldset disabled={!enabled}>
-              <label htmlFor="track-from">接続元の駅</label>
-              <select id="track-from" value={stationFrom} onChange={(event) => setStationFrom(event.target.value)}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
-              <label htmlFor="track-to" className="track-to-label">接続先の駅</label>
-              <select id="track-to" value={stationTo} onChange={(event) => setStationTo(event.target.value)}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
-              {stationFrom && stationFrom === stationTo && <p className="field-hint">異なる2駅を選択してください。</p>}
-              <button className="full-width track-submit" type="submit" disabled={!enabled || !validEndpoints}>線路を接続</button>
-            </fieldset></form>
-            {world?.tracks.length ? <ul className="track-list">{world.tracks.map((track) => <li key={track.id}><span>{stationsById.get(track.from)?.name ?? track.from} ↔ {stationsById.get(track.to)?.name ?? track.to} (ID {track.id})</span><button className="secondary danger" disabled={!enabled || unapplied || !!trackReferences(track.id)} onClick={() => setPendingDelete({ kind: "track", id: track.id })}>線路 {track.id} を削除</button>{trackReferences(track.id) && <small>削除不可: {trackReferences(track.id)}</small>}</li>)}</ul> : <p className="field-hint">駅を2つ配置すると接続できます。</p>}</details>
+
           </section>
           </div>
           <section hidden={activeTool!=="stations" && activeTool!=="station-management"} className="station-history"><p className="field-hint">取消対象: {stationUndo.at(-1)?.station.name ?? "なし"} / Undo {stationUndo.length}件・Redo {stationRedo.length}件</p><div className="route-actions"><button type="button" className="secondary" disabled={!enabled || !stationUndo.length} onClick={undoStation}>駅設置を取り消す</button><button type="button" className="secondary" disabled={!enabled || !stationRedo.length} onClick={redoStation}>駅設置をやり直す</button></div></section>
@@ -1362,6 +1350,18 @@ export function App() {
             {pendingStation && <div className="inline-confirm" role="alert"><p>{platformDirty ? "駅名・ホーム長の下書きを破棄して別駅を選びますか。" : "駅名の下書きを破棄して別駅を選びますか。"}</p><button className="secondary" disabled={busy} onClick={() => setPendingStation(null)}>駅名編集を続ける</button><button disabled={busy} onClick={() => { const placement = world?.station_placements?.find(p=>p.station_id===pendingStation.id); setEditLength(String(placement?.length_m ?? 200));setEditWidth(String(placement?.width_m ?? 12));setMainTab("stations"); setActiveTool("station-management");setSelected(pendingStation.id); setEditStationName(stationsById.get(pendingStation.id)?.name ?? ""); setPendingStation(null); setPendingDelete(null); }}>{platformDirty ? "駅設定下書きを破棄して切替" : "駅名下書きを破棄して切替"}</button></div>}
           </section>
           <section className="route-editor" role="tabpanel" id="workspace-panel-routes" aria-labelledby="workspace-tab-routes" hidden={activeTool !== "routes"}>
+            <details className="legacy-tools"><summary>運行経路用：駅間接続</summary>
+            <div className="track-heading"><h3 id="track-editor-title">駅を線路でつなぐ</h3><span className="count" aria-label="線路数">{world?.tracks.length ?? 0}</span></div>
+            <p className="muted">2駅を直線で接続します。線形・距離・速度はまだ再現していません。</p>
+            <form onSubmit={submitTrack}><fieldset disabled={!enabled}>
+              <label htmlFor="track-from">接続元の駅</label>
+              <select id="track-from" value={stationFrom} onChange={(event) => setStationFrom(event.target.value)}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
+              <label htmlFor="track-to" className="track-to-label">接続先の駅</label>
+              <select id="track-to" value={stationTo} onChange={(event) => setStationTo(event.target.value)}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
+              {stationFrom && stationFrom === stationTo && <p className="field-hint">異なる2駅を選択してください。</p>}
+              <button className="full-width track-submit" type="submit" disabled={!enabled || !validEndpoints}>線路を接続</button>
+            </fieldset></form>
+            {world?.tracks.length ? <ul className="track-list">{world.tracks.map((track) => <li key={track.id}><span>{stationsById.get(track.from)?.name ?? track.from} ↔ {stationsById.get(track.to)?.name ?? track.to} (ID {track.id})</span><button className="secondary danger" disabled={!enabled || unapplied || !!trackReferences(track.id)} onClick={() => setPendingDelete({ kind: "track", id: track.id })}>線路 {track.id} を削除</button>{trackReferences(track.id) && <small>削除不可: {trackReferences(track.id)}</small>}</li>)}</ul> : <p className="field-hint">駅を2つ配置すると接続できます。</p>}</details>
             <div className="section-number">03 / ROUTE</div>
             <h3>路線を定義する</h3><p className="muted">線路設備とは独立した、順序付きの経路です。停車駅やダイヤは設定しません。</p>
             <RouteCandidatePreview resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={!routeDirty} onSave={applyPlannedRoute} onApply={(start, tracks) => {

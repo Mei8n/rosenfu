@@ -128,10 +128,10 @@ async function renderWithStations(snapshot: unknown = twoStations) {
   desktop();
   vi.mocked(invoke).mockResolvedValueOnce({ name: "Rosenfu", version: "test-version" }).mockResolvedValueOnce(snapshot);
   renderStationEditor(); await screen.findByText(/test-version/);
-  fireEvent.click(region(".editor-tabs").getByRole("tab", { name: "線路" }));
+  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
 }
 function selectEndpoints() {
-  fireEvent.click(screen.getByRole("tab", { name: "建設" }));fireEvent.click(screen.getByRole("tab", { name: "線路" }));
+  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
   fireEvent.change(screen.getByLabelText("接続元の駅"), { target: { value: "3" } });
   fireEvent.change(screen.getByLabelText("接続先の駅"), { target: { value: "4" } });
 }
@@ -196,7 +196,7 @@ test("pending track addition blocks all duplicate edits and load resets endpoint
 });
 
 test("browser preview contains a synthetic track without enabling edits", () => {
-  vi.mocked(isTauri).mockReturnValue(false); renderStationEditor(); fireEvent.click(screen.getByRole("tab", { name: "建設" }));fireEvent.click(screen.getByRole("tab", { name: "線路" }));
+  vi.mocked(isTauri).mockReturnValue(false); renderStationEditor(); fireEvent.click(screen.getByRole("tab", { name: "路線" }));
   expect(screen.getByLabelText("線路数").textContent).toBe("1");
   expect(screen.getByRole("img", { name: "駅配置用サンプル地図" }).querySelectorAll(".track-connection")).toHaveLength(1);
   expect((screen.getByRole("button", { name: "線路を接続" }) as HTMLButtonElement).disabled).toBe(true);
@@ -766,12 +766,12 @@ test("equipment references and local drafts prevent deletion, while unreferenced
   expect(screen.getByText(/削除不可: 接続線路/)).toBeTruthy();
   fireEvent.click(screen.getByRole("tab", { name: "路線" }));
   fireEvent.change(screen.getByLabelText("路線名"), { target: { value: "未適用" } });
-  fireEvent.click(screen.getByRole("tab", { name: "建設" }));fireEvent.click(screen.getByRole("tab", { name: "線路" }));
+  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
   expect((screen.getByRole("button", { name: "線路 5 を削除" }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole("tab", { name: "路線" }));
   fireEvent.click(screen.getByRole("button", { name: "下書きを破棄" }));
   fireEvent.click(screen.getByRole("button", { name: "下書きを破棄して切替" }));
-  fireEvent.click(screen.getByRole("tab", { name: "建設" }));fireEvent.click(screen.getByRole("tab", { name: "線路" }));
+  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
   fireEvent.click(screen.getByRole("button", { name: "線路 5 を削除" }));
   fireEvent.click(screen.getByRole("button", { name: "削除を確定" }));
   await screen.findByText("設備を削除しました。保存でファイルに反映します。");
@@ -782,7 +782,7 @@ test("equipment references and local drafts prevent deletion, while unreferenced
 
 test("route and service references are explained and browser equipment editing stays disabled", async () => {
   await editEquipment(serviceNetwork, async () => { throw new Error("must not invoke"); });
-  fireEvent.click(screen.getByRole("tab", { name: "建設" }));fireEvent.click(screen.getByRole("tab", { name: "線路" }));
+  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
   expect((screen.getByRole("button", { name: "線路 5 を削除" }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText(/削除不可:.*系統: 折返し系統/)).toBeTruthy();
   cleanup(); vi.mocked(invoke).mockClear(); vi.mocked(isTauri).mockReturnValue(false);
