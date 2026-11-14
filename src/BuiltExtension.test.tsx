@@ -194,7 +194,12 @@ for(const sourceEnd of ['start','end'] as const)for(const targetEnd of ['start',
  fireEvent.click(map,{clientX:sourceEnd==='end'?250:180,clientY:130});
  fireEvent.pointerMove(map,{clientX:x+2,clientY:131});
  expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('true');
- fireEvent.click(map,{clientX:x+2,clientY:131});
+ const hit=map.querySelector('[data-alignment-id="4"] .alignment-hit')!;
+ fireEvent.pointerDown(hit,{clientX:x+2,clientY:131,pointerId:1,button:0,isPrimary:true});
+ fireEvent.pointerUp(map,{clientX:x+2,clientY:131,pointerId:1,button:0,isPrimary:true});
+ fireEvent.click(hit,{clientX:x+2,clientY:131});
+ // A follow-up click must not accidentally detach the planned endpoint link.
+ fireEvent.click(hit,{clientX:x+2,clientY:131,detail:1});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
