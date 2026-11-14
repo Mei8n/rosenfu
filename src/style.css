@@ -491,3 +491,8 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .placement-enabled .station-marker { cursor: crosshair; }
 
 .workbench .construction-list[hidden] { display: none; }
+/* Separate plan selection from path hover: other plans remain visible, but neutral. */
+.workbench .inactive-plan .draft-path { stroke:#89939d; }
+.workbench .inactive-plan .draft-anchor,.workbench .inactive-plan .parked-anchor { stroke:#89939d;fill:#e3e7eb; }
+.workbench .planned-station.inactive-plan .station-platform { fill:#b1bac3;stroke:#78838e; }
+.workbench .planned-station.inactive-plan text { fill:#78838e; }

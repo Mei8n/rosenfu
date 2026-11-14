@@ -23,3 +23,19 @@ export function removeConstructionPlan(value:ConstructionPlans,id:number):Constr
   draftExtension:path?.extension??null,draftDestination:path?.destination,draftRedoDestination:path?.redoDestination,draftFinished:!!path,
   trackType:path?.trackType??value.trackType,designSpeedKmh:path?.designSpeedKmh??value.designSpeedKmh,roadFollowing:path?.roadFollowing??value.roadFollowing};
 }
+
+/** Drop only empty plan headers at persistence boundaries, never in-progress anchors or undo data. */
+export function compactEmptyPlans(value:ConstructionPlans):ConstructionPlans{
+ const occupied=new Set(value.parkedPaths.filter(path=>path.points.length||path.redo.length||path.line.length||path.reference||path.editedGeometry||path.extension||path.destination||path.redoDestination).map(path=>path.planId));
+ if(value.draftPoints.length||value.redoPoints.length||value.draftEditedGeometry||value.draftExtension||value.draftDestination||value.draftRedoDestination)occupied.add(value.activePlanId);
+ for(const station of value.plannedStations){
+  const owner=station.planId??(station.pathId===value.activePathId?value.activePlanId:value.parkedPaths.find(path=>path.id===station.pathId)?.planId);
+  // Preserve ambiguous legacy data instead of guessing which empty header owns it.
+  if(owner===undefined)return value;
+  occupied.add(owner);
+ }
+ if(!occupied.size)return {...value,plans:[{id:value.activePlanId,name:""}]};
+ let result=value;
+ for(const plan of value.plans)if(!occupied.has(plan.id))result=removeConstructionPlan(result,plan.id);
+ return result;
+}

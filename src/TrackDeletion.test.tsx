@@ -78,3 +78,14 @@ test("planned anchors also select their path in selection mode",async()=>{
  expect(map.querySelector(".confirmed-draft")?.classList.contains("track-explicit-selection")).toBe(true);
  expect(vi.mocked(invoke).mock.calls.some(([cmd])=>cmd==="delete_alignment"||cmd==="build_plan")).toBe(false);
 });
+
+test("empty-plan persistence cleanup does not invalidate in-session track undo",async()=>{
+ const {emptyConstructionPlans}=await import("./constructionPlans");
+ const plans={...emptyConstructionPlans(),plans:[{id:1,name:"A"},{id:2,name:"B"}],draftPoints:alignment.points,parkedPaths:[{id:2,planId:2,name:"",points:alignment.points,line:alignment.points,redo:[],trackType:"normal",designSpeedKmh:120,roadFollowing:false,extension:null}]};
+ const map=await start({...empty,construction_plans:plans});
+ fireEvent.click(screen.getByRole("button",{name:"選択"}));fireEvent.click(map.querySelector('[data-plan-hover-id="2"]')!);
+ fireEvent.click(screen.getByRole("button",{name:"選択線路を削除"}));fireEvent.click(screen.getByRole("button",{name:"線路を削除"}));
+ expect((screen.getByRole("button",{name:"線路削除を元に戻す"}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole("button",{name:"線路削除を元に戻す"}));
+ expect(map.querySelector(".parked-plan")).not.toBeNull();
+});
