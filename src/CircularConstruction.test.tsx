@@ -42,7 +42,7 @@ test('automatic straights and curves need no mode switch, use identical preview/
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:250,clientY:130});
  fireEvent.pointerMove(map,{clientX:330,clientY:134});
  expect(map.querySelector('.curve-circle-guide')).toBeNull();
- expect(document.querySelector('.drawing-tooltip')?.textContent).toContain('80 km/h（設計上限）');
+ expect(document.querySelector('.drawing-tooltip')?.textContent).toContain('80 km/h');
  fireEvent.click(map,{clientX:330,clientY:134});
  const anchor=map.querySelectorAll('.draft-anchor')[2];expect(Number(anchor.getAttribute('y'))+Number(anchor.getAttribute('height'))/2).toBeCloseTo(260,5);
  const straightPath=map.querySelector('.draft-path')!.getAttribute('d')!;

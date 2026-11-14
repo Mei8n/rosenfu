@@ -403,7 +403,6 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
   color: var(--text-color, #fff);
   pointer-events: none;
 }
-.workbench .draft-path.plan-hovered { stroke:#80cbc4; stroke-width:7; }
 .workbench .draft-anchor,.workbench .parked-anchor { pointer-events:none; fill:#fff; stroke:#263849; stroke-width:1; }
 .workbench .draft-anchor.draft-endpoint,.workbench .parked-anchor.draft-endpoint { fill:#fff1f7; stroke:#d95187; stroke-width:1.8; }
 .plan-hover-tooltip { white-space:nowrap; pointer-events:none; }
