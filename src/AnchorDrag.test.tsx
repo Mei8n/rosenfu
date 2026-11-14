@@ -31,3 +31,31 @@ test('Escape and pointercancel never commit preview or leave stale click suppres
  const map=await setup(),before=shape(map);startDrag(map);fireEvent.keyDown(document.body,{key:'Escape'});expect(shape(map)).toBe(before);expect(map.querySelector('.anchor-drag-preview')).toBeNull();
  startDrag(map);fireEvent.pointerCancel(map);expect(shape(map)).toBe(before);expect(map.querySelector('.anchor-drag-preview')).toBeNull();
 });
+test('point addition and anchor movement undo in chronological order',async()=>{
+ const map=await setup(),before=shape(map);startDrag(map);fireEvent.pointerUp(map,{clientX:250,clientY:160});const moved=shape(map);
+ // Real clicks reset the previous drag click suppression.
+ fireEvent.pointerDown(map,{clientX:400,clientY:150,button:0});fireEvent.pointerUp(map,{clientX:400,clientY:150});fireEvent.click(map,{clientX:400,clientY:150});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(4);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(shape(map)).toBe(moved);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(shape(map)).toBe(before);
+});
+test('clicking last anchor without dragging still finishes the line',async()=>{
+ const map=await setup(),anchor=map.querySelector('[data-anchor-index="2"]')!,before=shape(map);
+ fireEvent.pointerDown(anchor,{clientX:350,clientY:150,button:0});fireEvent.pointerUp(map,{clientX:350,clientY:150});fireEvent.click(map,{clientX:350,clientY:150});
+ expect(shape(map)).toBe(before);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
+ fireEvent.pointerDown(map,{clientX:150,clientY:210,button:0});fireEvent.pointerUp(map,{clientX:150,clientY:210});fireEvent.click(map,{clientX:150,clientY:210});
+ expect(map.querySelectorAll('.parked-plan')).toHaveLength(1);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+});
+test('moving a plan preserves its station but refuses construction until geometry or station is corrected',async()=>{
+ const map=await setup();fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));fireEvent.click(map,{clientX:250,clientY:150});expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));startDrag(map);fireEvent.pointerUp(map,{clientX:250,clientY:160});
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText(/計画駅が線路に収まりません/);
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='build_alignment_with_stations')).toBe(false);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+});
+test('parking and reselecting edited geometry never regenerates the old curve',async()=>{
+ const map=await setup();startDrag(map);fireEvent.pointerUp(map,{clientX:250,clientY:160});const after=shape(map);
+ fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));expect(map.querySelector('.parked-plan')!.getAttribute('d')).toBe(after);
+ fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));expect(shape(map)).toBe(after);
+});

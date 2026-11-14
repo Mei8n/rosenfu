@@ -24,3 +24,16 @@ test('endpoint movement retains opposite anchor and degenerate and tight shapes 
  expect(sampledGeometry([p(0),p(1),p(1,1)]).error).not.toBeNull();
  expect(plannedGeometry([p(0),p(200,1),p(400)],{version:1,anchors,line}).error).not.toBeNull();
 });
+test('resampling a curved plan does not invent a much tighter curve at every chord boundary',()=>{
+ const anchors=[p(0),p(200),p(400,100),p(500,300)],old=circularAlignment(anchors);
+ expect(old.error).toBeNull();
+ const target={...anchors[1],latitude:anchors[1].latitude+1e-7};
+ const edited=anchorDragPreview(old.points,anchors,1,target);
+ const current=sampledGeometry(edited.line);
+ expect(current.error).toBeNull();expect(current.minimumRadiusM).toBeGreaterThan(old.minimumRadiusM*.8);
+});
+test('edited extension still enforces the backend five-degree join angle',()=>{
+ const anchors=[p(0),p(100,100)],geometry:EditedGeometry={version:1,anchors,line:anchors};
+ expect(plannedGeometry(anchors,geometry,p(-100)).error).toContain('接合角');
+ const straight=[p(0),p(100)];expect(plannedGeometry(straight,{version:1,anchors:straight,line:straight},p(-100)).error).toBeNull();
+});

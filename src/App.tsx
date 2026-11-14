@@ -1,5 +1,5 @@
 import {anchorDragPreview} from "./anchorDragPreview";
-import {plannedGeometry, sampledGeometry, type EditedGeometry} from "./editedGeometry";
+import {plannedGeometry, type EditedGeometry} from "./editedGeometry";
 import {plannedTrackSpeed} from "./plannedTrackSpeed";
 import {emptyConstructionPlans,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
 import {UserGuide} from "./UserGuide";
@@ -201,9 +201,9 @@ export function App() {
   const [draftFinished, setDraftFinished] = useState(false);
   const [draftPoints, setDraftPoints] = useState<GeoPoint[]>([]);
   const [draftEditedGeometry,setDraftEditedGeometry]=useState<EditedGeometry|undefined>();
-  type AnchorEdit={id:number;before:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[]};after:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[]}};
+  type AnchorEdit={kind?:"point";id:number;before:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[]};after:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[]}};
   const [anchorUndo,setAnchorUndo]=useState<AnchorEdit[]>([]),[anchorRedo,setAnchorRedo]=useState<AnchorEdit[]>([]);
-  type AnchorGesture={pointerId:number;id:number;index:number;startX:number;startY:number;points:GeoPoint[];line:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];preview:EditedGeometry|null;error:string|null;snapped:boolean};
+  type AnchorGesture={pointerId:number;id:number;index:number;startX:number;startY:number;points:GeoPoint[];line:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];previous?:GeoPoint;preview:EditedGeometry|null;error:string|null;snapped:boolean};
   const anchorGesture=useRef<AnchorGesture|null>(null);
   const [anchorPreview,setAnchorPreview]=useState<AnchorGesture|null>(null);
   useEffect(()=>{cancelAnchorGesture();},[camera,activeTool,mapSize]);
@@ -307,7 +307,7 @@ export function App() {
     const target=parkedPaths.find(path=>path.id===id);if(!target||target.reference)return;
     const current=parkCurrentPlan();
     setParkedPaths(paths=>[...paths.filter(path=>path.id!==id),...(current?[current]:[])]);
-    setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setDraftEditedGeometry(target.editedGeometry);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
+    setAnchorUndo([]);setAnchorRedo([]);setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setDraftEditedGeometry(target.editedGeometry);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function choosePlan(id:number){
     if(id===activePlanId)return;
@@ -577,7 +577,7 @@ export function App() {
   }
   function undoAnchor(redo:boolean){
     const history=redo?anchorRedo:anchorUndo,entry=history.at(-1);if(!entry)return;
-    applyAnchorEdit(entry.id,redo?entry.after:entry.before);
+    applyAnchorEdit(entry.id,redo?entry.after:entry.before);if(entry.kind==="point"&&entry.id===activePathId)setDraftFinished(false);
     if(redo){setAnchorRedo(items=>items.slice(0,-1));setAnchorUndo(items=>[...items,entry]);}else{setAnchorUndo(items=>items.slice(0,-1));setAnchorRedo(items=>[...items,entry]);}
   }
   function cancelAnchorGesture(){
@@ -589,14 +589,14 @@ export function App() {
     const path=id===activePathId?parkCurrentPlan():parkedPaths.find(p=>p.id===id);
     if(!path||path.reference||path.roadFollowing||path.points.length<2||(index===0&&path.extension))return;
     event.stopPropagation();smoothZoom.cancel();cancelMapGesture();
-    const gesture:AnchorGesture={pointerId:event.pointerId,id,index,startX:event.clientX,startY:event.clientY,points:path.points,line:path.line,geometry:path.editedGeometry,redo:path.redo,preview:null,error:null,snapped:false};
+    const gesture:AnchorGesture={pointerId:event.pointerId,id,index,startX:event.clientX,startY:event.clientY,points:path.points,line:path.line,geometry:path.editedGeometry,redo:path.redo,previous:extensionPrevious(path.extension),preview:null,error:null,snapped:false};
     anchorGesture.current=gesture;setAnchorPreview(gesture);setHoverPoint(null);setPlanHover(null);
     svgRef.current?.setPointerCapture?.(event.pointerId);
   }
   function moveAnchorGesture(event:ReactPointerEvent<SVGSVGElement>){
     const gesture=anchorGesture.current;if(!gesture||gesture.pointerId!==event.pointerId)return;
     if(!gesture.preview&&Math.hypot(event.clientX-gesture.startX,event.clientY-gesture.startY)<5)return;
-    const rect=event.currentTarget.getBoundingClientRect();let target=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
+    const rect=event.currentTarget.getBoundingClientRect();setCursorPosition({x:event.clientX-rect.left,y:event.clientY-rect.top,width:rect.width,height:rect.height});let target=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
     if(!target)return;
     const anchors=[...alignments.flatMap(line=>[line.points[0],line.points.at(-1)!]),...parkedPaths.filter(p=>p.id!==gesture.id).flatMap(p=>p.points),...(gesture.id!==activePathId?draftPoints:[])];
     const nearest=anchors.map(point=>({point,distance:endpointDistance(target!,point,rect.width,rect.height)})).sort((a,b)=>a.distance-b.distance)[0];
@@ -609,7 +609,7 @@ export function App() {
     const preview=anchorDragPreview(gesture.line,gesture.points,gesture.index,target);
     const points=gesture.points.map((point,index)=>index===gesture.index?target!:point);
     const geometry:EditedGeometry={version:1,anchors:points,line:preview.line};
-    const validation=sampledGeometry(preview.line);
+    const validation=plannedGeometry(points,geometry,gesture.previous);
     gesture.preview=geometry;gesture.error=preview.error||validation.error;
     // Do not silently create a zero-length anchor interval, even if sampling obscures it.
     if(points.some((point,index)=>index>0&&distanceM(point,points[index-1])<.1))gesture.error="アンカーが重なっています";
@@ -746,7 +746,7 @@ export function App() {
       const candidate=plannedGeometry([...draftPoints,coordinates],editedForAppend,previousPoint);if(candidate.error){setHoverPoint(coordinates);return;}
       if (draftPoints.length && distanceM(draftPoints[draftPoints.length - 1], coordinates) < .1) return;
       if (draftPoints.length >= 128) { setError("線形点は128点までです。一度建設を確定してください。"); return; }
-      setAnchorUndo([]);setAnchorRedo([]);setDraftEditedGeometry(editedForAppend);setDraftPoints((points) => [...points, coordinates]); setRedoPoints([]); setHoverPoint(null); return;
+      setAnchorUndo(items=>[...items,{kind:"point" as const,id:activePathId,before:{points:draftPoints,geometry:draftEditedGeometry,redo:[...redoPoints,coordinates]},after:{points:[...draftPoints,coordinates],geometry:editedForAppend,redo:[]}}].slice(-50));setAnchorRedo([]);setDraftEditedGeometry(editedForAppend);setDraftPoints((points) => [...points, coordinates]); setRedoPoints([]); setHoverPoint(null); return;
     }
     if (activeTool !== "stations" || mapMode !== "place") return;
     if(event.detail>=2)return;
@@ -1057,11 +1057,12 @@ export function App() {
             <label>設計最高速度 (km/h)<input aria-label="線路の設計最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/></label>
             <small>接線に近づけると直線、離すと曲線になります</small>
 <details className="construction-help"><summary>説明</summary><p>設計最高速度は線路の上限で、車両性能とは別です。初期値は通常120・高速300・トラム50 km/h、入力範囲1〜600 km/hの暫定ゲーム設定です。延伸は元の線路の値を引き継ぎます。速度に連動する費用や種類別の曲線・勾配規格差は未実装です。道路追従は左側の「限定道路追従」から開始できます。</p></details></div>}
-            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
+            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
               <strong>{roadFollowingBlocked?"道路追従を開始するか、道路に合わせるをOFFにしてください":previewError?`敷設不可：${previewError}`:hoverPoint&&draftPoints.length?"基本条件OK（地形等は未判定）":draftPoints.length?"最後の点をもう一度クリックで終了":"始点をクリック"}</strong>
               {draftPoints.length>0&&<><div>計画 {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div><div>半径（近似）：{circleGuide?`${Math.round(circleGuide.radiusM)} m`:"直線 / 終端"}</div>{!previewError&&<div>線路の最高速度 {Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh)} km/h{circleGuide?"（曲線制限は暫定）":"（設計上限）"}</div>}</>}
               <small>建設費・維持費：未計算</small>
             </div>}
+            {anchorPreview?.preview&&cursorPosition&&<div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{anchorPreview.error??(anchorPreview.snapped?"位置合わせ（接続は変更しません）":"アンカーを移動")}</div>}
             {endpointCandidate&&cursorPosition&&<div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-100,cursorPosition.y+18))}}>
               <strong>{!endpointCandidateAllowed?"他社の線路は延伸できません":endpointCandidate.kind==="plan"?"計画の終点にスナップ · クリックで続けて描く":(endpointCandidate.alignment.name||"既存線路")+"の"+(endpointCandidate.endpoint==="start"?"始点":"終点")+"にスナップ · クリックで延伸"}</strong>
             </div>}

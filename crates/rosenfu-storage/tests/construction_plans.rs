@@ -99,3 +99,19 @@ fn edited_plan_shape_roundtrips_without_reconstruction() {
     invalid.construction_plans = Some(serde_json::from_value(payload).unwrap());
     assert!(World::new(invalid).is_err());
 }
+
+#[test]
+fn schema_eleven_plan_without_geometry_remains_unchanged() {
+    let mut draft = WorldDraft::default();
+    draft.construction_plans = Some(plans());
+    let world = World::new(draft).unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
+    value["schema_version"] = json!(11);
+    let restored = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(restored, world);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&encode(&restored).unwrap()).unwrap()
+            ["schema_version"],
+        12
+    );
+}
