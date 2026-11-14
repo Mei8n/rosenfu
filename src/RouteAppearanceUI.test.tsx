@@ -15,11 +15,11 @@ test("map marks only saved route members and shows station dots below detail zoo
  expect(map.querySelectorAll('.station-marker.route-unassigned')).toHaveLength(1);
  expect(map.querySelector('.station-marker.route-unassigned')?.textContent).toContain('未所属駅');
  expect(map.querySelectorAll('.route-assigned-section')).toHaveLength(1);
- for(let i=0;i<3;i++)fireEvent.click(screen.getByRole('button',{name:'拡大'}));
- await screen.findByText('ZL 15 / Web Mercator');
+ for(let i=0;i<1;i++)fireEvent.click(screen.getByRole('button',{name:'拡大'}));
+ await screen.findByText('ZL 13 / Web Mercator');
  await waitFor(()=>expect(map.querySelectorAll('.station-marker circle.station-dot')).toHaveLength(0));
  expect(map.querySelectorAll('.station-marker path.station-platform')).toHaveLength(2);
  fireEvent.click(screen.getByRole('button',{name:'縮小'}));
- await screen.findByText('ZL 14 / Web Mercator');
+ await screen.findByText('ZL 12 / Web Mercator');
  expect(map.querySelectorAll('.station-marker circle.station-dot')).toHaveLength(2);
 });

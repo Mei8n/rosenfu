@@ -9,7 +9,7 @@ import { alignmentLength, pointOnAlignment } from "./alignment";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 afterEach(() => { localStorage.removeItem("rosenfu.display-settings"); cleanup(); vi.resetAllMocks(); });
 const alignment = { id:"3",owner:"2",name:"試験線",points:[{latitude:35.67504,longitude:139.72},{latitude:35.67504,longitude:139.78}] };
-const trackPanel = () => within(document.querySelector<HTMLElement>(".track-editor")!);
+const trackPanel = () => within(document.querySelector<HTMLElement>(".construction-content")!);
 const empty = {next_id:"3",players:[{id:"1",name:"Player"}],companies:[{id:"2",owner:"1",name:"Railway"}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
 const built = {...empty,next_id:"4",alignments:[alignment]};
 const placed = {...built,next_id:"5",stations:[{id:"4",owner:"2",name:"新駅",latitude:35.67504,longitude:139.75}],station_placements:[{station_id:"4",alignment_id:"3",position:.5,length_m:200,width_m:12}]};
@@ -75,7 +75,7 @@ test("plan names are optional, editable per independent plan and never become ph
  expect(trackPanel().getByRole("button",{name:/山側に変更 を編集/})).toBeTruthy();
  vi.mocked(invoke).mockResolvedValueOnce(built);fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
  const payload=vi.mocked(invoke).mock.calls.find(([command])=>command==="build_alignment")?.[1] as {name:string};expect(payload.name).toBe("新しい線路");
- await waitFor(()=>expect((trackPanel().getByRole("button",{name:/山側に変更 を編集/}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(trackPanel().getByRole("button",{name:/山側に変更 を編集/}));fireEvent.change(name(),{target:{value:""}});expect(trackPanel().getByText(/編集中：計画 1/)).toBeTruthy();
+ await waitFor(()=>expect((trackPanel().getByRole("button",{name:/山側に変更 を編集/}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(trackPanel().getByRole("button",{name:/山側に変更 を編集/}));fireEvent.change(name(),{target:{value:""}});expect(name().placeholder).toBe("計画 1");
 });
 
 test("manual save includes plans and retains active, parked and redo; later edits require a load guard",async()=>{
@@ -94,7 +94,7 @@ test("one explicit plan groups disconnected paths and atomically builds only its
  const station=(x:number,y:number)=>{fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));click(x,y);fireEvent.click(screen.getByRole("tab",{name:"線路"}));};
  click(180,130);click(230,130);station(205,130);click(230,130);
  click(320,200);click(360,200);station(340,200);
- expect(trackPanel().getByText(/編集中：計画 1（2経路）/)).toBeTruthy();
+ expect(trackPanel().getByText(/2経路 ·/)).toBeTruthy();
  expect(trackPanel().queryByRole("button",{name:/計画 2 を編集/})).toBeNull();
  expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.click(trackPanel().getByRole("button",{name:"別の線路計画を追加"}));click(180,240);click(230,240);station(205,240);
@@ -115,7 +115,7 @@ test("resuming a parked path preserves its point redo and station within the sam
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
  click(280,130);expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
- expect(trackPanel().getByText(/編集中：計画 1（2経路）/)).toBeTruthy();
+ expect(trackPanel().getByText(/2経路 ·/)).toBeTruthy();
  fireEvent.click(trackPanel().getByRole("button",{name:"下書きを消去"}));expect(map.querySelectorAll(".planned-station")).toHaveLength(0);expect(map.querySelectorAll(".draft-path")).toHaveLength(0);
 });
 
@@ -124,7 +124,7 @@ test("a parked redo-only path remains selectable and can recover without deletin
  click(180,130);click(230,130);click(230,130);click(320,200);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});click(230,130);
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(screen.getByRole("button",{name:"経路 2（0点・やり直し1点）"}));
+ fireEvent.click(screen.getByText("内訳"));fireEvent.click(screen.getByRole("button",{name:"経路 2"}));
  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  click(360,200);expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
@@ -148,7 +148,7 @@ test("manual round-trip restores multiple plans, paths, stations, redo and indep
  expect(map.querySelectorAll('.parked-plan')).toHaveLength(2);expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
  await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
- fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));expect(trackPanel().getByText(/編集中：計画 3/)).toBeTruthy();
+ fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));expect((trackPanel().getByLabelText("計画名（任意）") as HTMLInputElement).placeholder).toBe("計画 3");
 });
 
 test('built-line stations remain separate plans until atomic construction, and persist without new tracks',async()=>{
@@ -156,7 +156,7 @@ test('built-line stations remain separate plans until atomic construction, and p
  fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
  expect(map.querySelectorAll('.planned-station')).toHaveLength(2);
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='place_station_on_alignment'||c==='build_plan')).toBe(false);
- fireEvent.click(screen.getByRole('button',{name:'別の計画を追加'}));fireEvent.click(map,{clientX:250,clientY:150});expect(map.querySelectorAll('.planned-station')).toHaveLength(3);
+ fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));fireEvent.click(map,{clientX:250,clientY:150});expect(map.querySelectorAll('.planned-station')).toHaveLength(3);
  vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/ワールドと未着工計画を保存しました/);
  const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
  expect(saved.parkedPaths).toHaveLength(0);expect(saved.plannedStations.map(s=>s.planId)).toEqual([1,1,2]);expect(saved.plannedStations.every(s=>s.alignmentId==='3'&&s.pathId===undefined)).toBe(true);
@@ -167,4 +167,16 @@ test('built-line stations remain separate plans until atomic construction, and p
  const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as {alignments:unknown[];stations:unknown[]};expect(request.alignments).toHaveLength(0);expect(request.stations).toHaveLength(2);
  await waitFor(()=>expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false));vi.mocked(invoke).mockResolvedValueOnce(placed);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText('計画駅を建設しました。');expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
  fireEvent.click(screen.getByRole('button',{name:'計画 2 を編集'}));expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('construction shares one plan panel between track and station tools, and help lives in settings',async()=>{
+ await start();
+ expect(screen.getAllByRole('region',{name:'建設計画'})).toHaveLength(1);
+ expect(screen.queryByText('操作ガイド')?.closest('[hidden]')).toBeTruthy();
+ fireEvent.change(screen.getByLabelText('計画名（任意）'),{target:{value:'共通案'}});
+ fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
+ expect((screen.getByLabelText('計画名（任意）') as HTMLInputElement).value).toBe('共通案');
+ expect(screen.getAllByRole('button',{name:'計画を着工'})).toHaveLength(1);
+ fireEvent.click(screen.getByRole('tab',{name:'設定'}));
+ expect(screen.getByText('操作ガイド').closest('[hidden]')).toBeNull();
 });

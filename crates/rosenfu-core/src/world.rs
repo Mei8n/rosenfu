@@ -83,10 +83,37 @@ pub struct OperatingService {
     pub tracks: Vec<TrackId>,
     pub stops: Vec<u32>,
 }
+/// Single-player local presentation metadata. This is not simulation state and
+/// must not be used as shared camera authority by future multiplayer protocols.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewState {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub zoom: f64,
+}
+impl ViewState {
+    pub fn validate(&self) -> Result<(), WorldError> {
+        if self.latitude.is_finite()
+            && self.longitude.is_finite()
+            && self.zoom.is_finite()
+            && (20.0..=46.0).contains(&self.latitude)
+            && (122.0..=154.0).contains(&self.longitude)
+            && (4.0..=20.0).contains(&self.zoom)
+        {
+            Ok(())
+        } else {
+            Err(WorldError::InvalidViewState)
+        }
+    }
+}
 /// An editable candidate. Validate before applying or loading it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    /// Optional local presentation metadata, independent of physical world geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_state: Option<ViewState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub construction_plans: Option<ConstructionPlans>,
     #[serde(default)]
@@ -128,6 +155,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            view_state: None,
             construction_plans: None,
             route_paths: vec![],
             service_paths: vec![],
@@ -152,6 +180,7 @@ pub enum WorldError {
     MissingReference(&'static str),
     InvalidCoordinate,
     InvalidConstructionPlans,
+    InvalidViewState,
     InvalidAlignment,
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
@@ -337,6 +366,9 @@ fn name(value: &str, entity: &'static str) -> Result<(), WorldError> {
 }
 impl WorldDraft {
     pub fn validate(&self) -> Result<(), WorldError> {
+        if let Some(view) = self.view_state {
+            view.validate()?;
+        }
         if let Some(plans) = &self.construction_plans {
             plans.validate()?;
         }
@@ -486,6 +518,7 @@ mod tests {
     use super::*;
     fn sample() -> WorldDraft {
         WorldDraft {
+            view_state: None,
             construction_plans: None,
             route_paths: vec![],
             service_paths: vec![],

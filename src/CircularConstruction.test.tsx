@@ -35,7 +35,7 @@ test('automatic straights and curves need no mode switch, use identical preview/
  vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'auto-test'}:world);
  render(<App/>);fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));await screen.findByText(/auto-test/);
  expect(screen.queryByRole('button',{name:/^(直線|曲線)$/})).toBeNull();
- const speed=screen.getByRole('spinbutton',{name:'線路の設計最高速度'});
+ const speed=screen.getByRole('spinbutton',{name:'線路の目標最高速度'});
  fireEvent.change(speed,{target:{value:'80'}});
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});

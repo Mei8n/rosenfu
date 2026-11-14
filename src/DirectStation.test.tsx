@@ -72,7 +72,7 @@ test("changing a plan so its station no longer fits blocks construction until st
  await screen.findByText(/計画駅が線路に収まりません/);
  expect(invoke).not.toHaveBeenCalledWith("build_alignment_with_stations",expect.anything());
  expect(invoke).not.toHaveBeenCalledWith("build_alignment",expect.anything());
- fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("button",{name:"計画駅 新駅 を削除"}));
+ fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByText("内訳"));fireEvent.click(screen.getByRole("button",{name:"計画駅 新駅 を削除"}));
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
 });
 

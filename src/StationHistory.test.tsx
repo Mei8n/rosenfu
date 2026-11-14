@@ -28,7 +28,7 @@ async function start(){let world=structuredClone(initial);let id=20;const failur
  if(command==="load_world"){if(failures.load)throw Error("load failure");world=structuredClone(initial);return world;}
  throw Error(command);
  });render(<App/>);await screen.findByText(/history-test/);await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));return failures;}
-async function place(){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:250,clientY:150});await screen.findByText(/を計画に追加しました/);fireEvent.click(region(".station-editor").getByRole("button",{name:"計画を着工"}));await screen.findByText(/計画駅を建設しました/);await ready();}
+async function place(){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:250,clientY:150});await screen.findByText(/を計画に追加しました/);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/計画駅を建設しました/);await ready();}
 async function ready(){await waitFor(()=>expect((document.querySelector(".save-controls button:last-child") as HTMLButtonElement).disabled).toBe(false));}
 const undo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});const redo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
 test("station undo and redo preserve failed history, issue a fresh ID and protect existing stations",async()=>{
@@ -70,7 +70,7 @@ test("failed world load retains the station history",async()=>{
 test.each(["name","size"])("successful station %s edit ends placement history",async kind=>{
  await start();await place();fireEvent.click(region(".station-directory").getByRole("button",{name:/^新駅 /}));
  if(kind==="name"){fireEvent.change(screen.getByLabelText("選択駅の名前"),{target:{value:"改名駅"}});fireEvent.click(screen.getByRole("button",{name:"駅名を適用"}));await screen.findByText(/駅名を変更しました/);await ready();}
- else{fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12"}});fireEvent.click(screen.getByRole("button",{name:"ホーム寸法を適用"}));await screen.findByText("ホーム寸法を変更しました。保存でファイルに反映します。");await ready();}
+ else{fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12"}});await screen.findByText("ホーム寸法を変更しました。保存でファイルに反映します。");await ready();}
  undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });
 test("RoutePath membership reference blocks station undo even without Track connections",async()=>{

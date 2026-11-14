@@ -32,7 +32,7 @@ fn schema_eight_alignment_without_design_speed_loads_and_nine_roundtrips_cap() {
     );
     restored.set_alignment_design_speed(id, 240.0).unwrap();
     let encoded = encode(&restored).unwrap();
-    assert_eq!(SCHEMA_VERSION, 12);
+    assert_eq!(SCHEMA_VERSION, 13);
     assert_eq!(decode(&encoded).unwrap(), restored);
     old["world"]["alignments"][0]["design_speed_kmh"] = 0.into();
     assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());

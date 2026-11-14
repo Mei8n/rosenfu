@@ -71,7 +71,7 @@ test('an alignment used by a service can start and submit an extension',async()=
 test('extension inherits non-default design speed and prevents changing its setting',async()=>{
  const map=await start({alignments:[{...line,design_speed_kmh:95}]});
  fireEvent.click(map,{clientX:250,clientY:130});
- const input=screen.getByRole('spinbutton',{name:'線路の設計最高速度'}) as HTMLInputElement;
+ const input=screen.getByRole('spinbutton',{name:'線路の目標最高速度'}) as HTMLInputElement;
  expect(input.value).toBe('95');expect(input.disabled).toBe(true);
  fireEvent.click(map,{clientX:310,clientY:133});
  vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
@@ -157,4 +157,32 @@ test('built line list keeps a unique selectable label without repetitive metadat
  expect(screen.queryByText('出典記録なし')).toBeNull();
  fireEvent.click(entry);
  expect(screen.queryByText('出典記録なし')).toBeNull();
+});
+
+test('built track midpoint hover is visual only and matches endpoint marker size',async()=>{
+ const map=await start(),hit=map.querySelector('.alignment-hit')!;
+ fireEvent.pointerEnter(hit,{clientX:210,clientY:130});
+ const marker=map.querySelector('.built-hover-point')!;
+ expect(marker.getAttribute('data-kind')).toBe('line');const radius=marker.getAttribute('r');
+ expect(marker.parentElement?.getAttribute('pointer-events')).toBe('none');
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>/^(build|place|extend|add)_/.test(command))).toBe(false);
+ fireEvent.pointerMove(hit,{clientX:250,clientY:130});
+ expect(map.querySelector('.built-hover-point')).toBeNull();
+ expect(map.querySelector('.endpoint-snap-ring')?.getAttribute('r')).toBe(radius);
+ fireEvent.pointerLeave(hit);fireEvent.pointerLeave(map);
+ expect(map.querySelector('.built-hover-point')).toBeNull();
+});
+
+test('inactive hover selects the nearest endpoint when both endpoints are nearby',async()=>{
+ const map=await start({alignments:[{...line,points:[point(180,130),point(183,130)]}]});
+ fireEvent.keyDown(window,{key:'Escape'});
+ const hit=map.querySelector('.alignment-hit')!;
+ fireEvent.pointerEnter(hit,{clientX:183,clientY:130});
+ const marker=map.querySelector('.built-hover-point')!;
+ expect(marker).toBeTruthy();
+ expect(marker.getAttribute('data-kind')).toBe('anchor');
+ const endPath=hit.getAttribute('d')!.match(/-?\d+(?:\.\d+)?/g)!;
+ expect(Number(marker.getAttribute('cx'))).toBeCloseTo(Number(endPath[endPath.length-2]),3);
 });

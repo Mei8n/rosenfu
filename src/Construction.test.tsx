@@ -103,9 +103,8 @@ test("existing platform resize preserves ID and duplicate submits are blocked",a
   fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"16"}});
   let finish!: (value:unknown)=>void;
   vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
-  const button=screen.getByRole("button",{name:"ホーム寸法を適用"});
-  fireEvent.click(button);fireEvent.click(button);
-  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="update_station_placement")).toHaveLength(1);
+  expect(screen.queryByRole("button",{name:"ホーム寸法を適用"})).toBeNull();
+  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="update_station_placement")).toHaveLength(1));
   expect(invoke).toHaveBeenCalledWith("update_station_placement",{stationId:"4",lengthM:320,widthM:12});
   finish({...placed,station_placements:[{...placed.station_placements[0],length_m:320}]});
   await waitFor(()=>expect(screen.getByText("ホーム寸法を変更しました。保存でファイルに反映します。")).toBeTruthy());
@@ -145,25 +144,24 @@ test("20m equivalent inputs preserve fractional metre lengths when creating and 
  expect((screen.getByLabelText("選択駅の長さ") as HTMLInputElement).value).toBe("11.575");
  fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12.125"}});
  expect((screen.getByLabelText("選択駅の長さ") as HTMLInputElement).value).toBe("12.125");
- vi.mocked(invoke).mockResolvedValueOnce(snapshot);fireEvent.click(screen.getByRole("button",{name:"ホーム寸法を適用"}));
+ vi.mocked(invoke).mockResolvedValueOnce({...snapshot,station_placements:[{...snapshot.station_placements[0],length_m:242.5}]});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("update_station_placement",{stationId:"4",lengthM:242.5,widthM:17}));
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
  fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"2.25"}});
  expect((screen.getByLabelText("駅の長さ") as HTMLInputElement).value).toBe("2.25");
 });
 
-test("station display switches exactly across ZL14 and ZL15 without changing dimensions",async()=>{
+test("station display switches exactly across ZL12 and ZL13 without changing dimensions",async()=>{
  const map=await start(placed);
  const zoomIn=()=>fireEvent.click(screen.getByRole("button",{name:"拡大"}));
- zoomIn();zoomIn();
- await screen.findByText("ZL 14 / Web Mercator");
+ await screen.findByText("ZL 12 / Web Mercator");
  expect(map.querySelector(".station-marker circle.station-dot")).toBeTruthy();
  expect(map.querySelector(".station-marker path.station-platform")).toBeNull();
- zoomIn();await screen.findByText("ZL 15 / Web Mercator");
+ zoomIn();await screen.findByText("ZL 13 / Web Mercator");
  await waitFor(()=>expect(map.querySelector(".station-marker circle.station-dot")).toBeNull());
  expect(map.querySelector(".station-marker path.station-platform")).toBeTruthy();
  fireEvent.click(screen.getByRole("button",{name:"縮小"}));
- await screen.findByText("ZL 14 / Web Mercator");
+ await screen.findByText("ZL 12 / Web Mercator");
  expect(map.querySelector(".station-marker circle.station-dot")).toBeTruthy();
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="update_station_placement")).toBe(false);
 });

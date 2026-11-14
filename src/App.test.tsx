@@ -427,7 +427,7 @@ test("tile result metadata is discarded when tiles leave the viewport and zoom r
   expect(invoke).not.toHaveBeenCalled();
 });
 
-test("camera changes neither edit world IDs/coordinates nor reset on save and reload", async () => {
+test("camera changes do not edit world IDs/coordinates and legacy reload restores default view", async () => {
   desktop(); renderStationEditor(); await screen.findByText(/test-version/);
   const originalSnapshot = JSON.stringify(populated);
   fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
@@ -443,8 +443,8 @@ test("camera changes neither edit world IDs/coordinates nor reset on save and re
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   await screen.findByText("保存したワールドを読み込みました。");
-  expect((screen.getByLabelText("中心緯度") as HTMLInputElement).value).toBe("43.06000");
-  expect((screen.getByLabelText("中心経度") as HTMLInputElement).value).toBe("141.35000");
+  expect((screen.getByLabelText("中心緯度") as HTMLInputElement).value).toBe(DEFAULT_CAMERA.latitude.toFixed(5));
+  expect((screen.getByLabelText("中心経度") as HTMLInputElement).value).toBe(DEFAULT_CAMERA.longitude.toFixed(5));
   expect(screen.getByRole("button", { name: /中央 35.67500, 139.75000/ })).toBeTruthy();
   expect(JSON.stringify(populated)).toBe(originalSnapshot);
   expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="add_station")).toHaveLength(1);

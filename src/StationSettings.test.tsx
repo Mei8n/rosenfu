@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
+import {act,cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:vi.fn()}));
@@ -16,7 +16,7 @@ async function setup(){
 }
 test("length draft blocks save and station switching; cancel preserves draft and discard resets",async()=>{
  const editor=await setup();
- expect((editor.getByRole("button",{name:"ホーム寸法を適用"}) as HTMLButtonElement).disabled).toBe(true);
+ expect(editor.queryByRole("button",{name:"ホーム寸法を適用"})).toBeNull();
  fireEvent.change(editor.getByLabelText("選択駅の長さ"),{target:{value:"12"}});
  expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(within(document.querySelector(".station-directory") as HTMLElement).getByRole("button",{name:/第二駅/}));
@@ -34,12 +34,58 @@ test("failed length edit keeps draft; retry preserves stored width and permits s
  const editor=await setup();const input=editor.getByLabelText("選択駅の長さ");
  fireEvent.change(input,{target:{value:"12.5"}});
  vi.mocked(invoke).mockRejectedValueOnce(Error("resize rejected"));
- fireEvent.click(editor.getByRole("button",{name:"ホーム寸法を適用"}));await screen.findByText(/resize rejected/);
+ await screen.findByText(/resize rejected/);
  expect((input as HTMLInputElement).value).toBe("12.5");
  vi.mocked(invoke).mockResolvedValueOnce({...world,station_placements:[{...world.station_placements[0],length_m:250},world.station_placements[1]]});
- fireEvent.click(editor.getByRole("button",{name:"ホーム寸法を適用"}));
+ fireEvent.click(editor.getByRole("button",{name:"長さ変更を再試行"}));
  await screen.findByText("ホーム寸法を変更しました。保存でファイルに反映します。");
  expect(invoke).toHaveBeenCalledWith("update_station_placement",{stationId:"4",lengthM:250,widthM:17});
  await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
- expect((editor.getByRole("button",{name:"ホーム寸法を適用"}) as HTMLButtonElement).disabled).toBe(true);
+ expect(editor.queryByRole("button",{name:"ホーム寸法を適用"})).toBeNull();
+});
+test("automatic length updates coalesce typing, serialize requests and preserve newer input",async()=>{
+ const editor=await setup();const input=editor.getByLabelText('選択駅の長さ') as HTMLInputElement;
+ let finish!:(value:unknown)=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+ fireEvent.change(input,{target:{value:'11'}});fireEvent.change(input,{target:{value:'12'}});
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('update_station_placement',{stationId:'4',lengthM:240,widthM:17}));
+ expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='update_station_placement')).toHaveLength(1);
+ expect(input.disabled).toBe(false);expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.change(input,{target:{value:'14'}});
+ vi.mocked(invoke).mockResolvedValueOnce({...world,stations:[{...world.stations[0],longitude:139.751},world.stations[1]],station_placements:[{...world.station_placements[0],length_m:280,position:.51},world.station_placements[1]]});
+ finish({...world,station_placements:[{...world.station_placements[0],length_m:240},world.station_placements[1]]});
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('update_station_placement',{stationId:'4',lengthM:280,widthM:17}));
+ await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
+ expect(input.value).toBe('14');expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='update_station_placement')).toHaveLength(2);
+});
+test("invalid editing is not applied and failed lengths do not retry on their own",async()=>{
+ const editor=await setup();const input=editor.getByLabelText('選択駅の長さ');
+ for(const value of ['', '1', '21']){fireEvent.change(input,{target:{value}});await new Promise(resolve=>setTimeout(resolve,180));}
+ expect(vi.mocked(invoke).mock.calls.some(([cmd])=>cmd==='update_station_placement')).toBe(false);
+ vi.mocked(invoke).mockRejectedValueOnce(Error('too long for alignment'));fireEvent.change(input,{target:{value:'20'}});
+ await screen.findByText(/too long for alignment/);await new Promise(resolve=>setTimeout(resolve,350));
+ expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='update_station_placement')).toHaveLength(1);
+ expect((input as HTMLInputElement).value).toBe('20');expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.click(editor.getByRole('button',{name:'ホーム長の下書きを破棄'}));expect((input as HTMLInputElement).value).toBe('10');
+});
+test("station name display preference is discoverable in Settings and restores on reopen",async()=>{
+ await setup();fireEvent.click(screen.getByRole('tab',{name:'設定'}));
+ const panel=within(document.querySelector('#workspace-panel-settings') as HTMLElement);
+ const checkbox=panel.getByRole('checkbox',{name:'駅名を表示'}) as HTMLInputElement;
+ expect(checkbox.checked).toBe(false);expect(screen.getAllByLabelText('駅名を表示')).toHaveLength(1);
+ fireEvent.click(checkbox);expect(document.querySelectorAll('.station-marker text')).toHaveLength(2);
+ cleanup();await setup();fireEvent.click(screen.getByRole('tab',{name:'設定'}));
+ expect((screen.getByRole('checkbox',{name:'駅名を表示'}) as HTMLInputElement).checked).toBe(true);
+ expect(document.querySelectorAll('.station-marker text')).toHaveLength(2);
+});
+
+test("closing stays guarded when input returns to the saved length while an update is in flight",async()=>{
+ const editor=await setup();const input=editor.getByLabelText('選択駅の長さ');let finish!:(value:unknown)=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+ fireEvent.change(input,{target:{value:'12'}});await waitFor(()=>expect(invoke).toHaveBeenCalledWith('update_station_placement',{stationId:'4',lengthM:240,widthM:17}));
+ fireEvent.change(input,{target:{value:'10'}});
+ const closing=new Event('beforeunload',{cancelable:true});window.dispatchEvent(closing);expect(closing.defaultPrevented).toBe(true);
+ vi.mocked(invoke).mockResolvedValueOnce(world);
+ await act(async()=>finish({...world,station_placements:[{...world.station_placements[0],length_m:240},world.station_placements[1]]}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('update_station_placement',{stationId:'4',lengthM:200,widthM:17}));
 });

@@ -86,3 +86,12 @@ test('autosave includes plan-only edits and sends a consistent snapshot, not lat
  const second={...first,plans:[{id:1,name:'変更後'}]};const changed={...props,constructionPlans:second,world:{id:1,plans:second}};h.rerender(changed);
  await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(invoke).toHaveBeenLastCalledWith('autosave_world',{constructionPlans:second});
 });
+test('autosave captures latest camera together with matching world and skips unchanged view snapshots',async()=>{
+ vi.useFakeTimers();vi.mocked(invoke).mockImplementation(async c=>c==='autosave_status'?{available:false}:{saved:true});
+ const first={latitude:35,longitude:139,zoom:12},second={latitude:34,longitude:135,zoom:16};
+ const props={ready:true,dirty:true,world:{view:first},viewState:first,epoch:0,busyRef:{current:false},setBusy:vi.fn()};
+ const h=renderHook(p=>useAutosave(p),{initialProps:props});await act(async()=>{});
+ h.rerender({...props,world:{view:second},viewState:second});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(invoke).toHaveBeenCalledWith('autosave_world',{viewState:second});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='autosave_world')).toHaveLength(1);
+});

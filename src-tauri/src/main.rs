@@ -159,6 +159,24 @@ fn delete_station(
         .delete_station(station_id)
 }
 #[tauri::command]
+fn delete_alignment(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignment_id: AlignmentId,
+    construction_plans: rosenfu_core::world::ConstructionPlans,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .delete_alignment_with_plans(alignment_id, construction_plans)
+}
+#[tauri::command]
+fn undo_alignment_deletion(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .undo_alignment_deletion()
+}
+#[tauri::command]
 fn delete_track(
     editor: State<'_, Mutex<WorldEditor>>,
     track_id: TrackId,
@@ -341,6 +359,7 @@ fn allow_autosave_replacement(
 fn autosave_world(
     app: tauri::AppHandle,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
+    view_state: Option<rosenfu_core::world::ViewState>,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<SaveResult, String> {
     let path = autosave_path(&app)?;
@@ -349,7 +368,7 @@ fn autosave_world(
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .save_with_plans(&path, construction_plans, true)?;
+        .save_with_view(&path, construction_plans, view_state, true)?;
     Ok(SaveResult { saved: true })
 }
 #[tauri::command]
@@ -370,6 +389,7 @@ struct SaveResult {
 fn save_world(
     app: tauri::AppHandle,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
+    view_state: Option<rosenfu_core::world::ViewState>,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<SaveResult, String> {
     let path = save_path(&app)?;
@@ -378,7 +398,7 @@ fn save_world(
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .save_with_plans(&path, construction_plans, false)?;
+        .save_with_view(&path, construction_plans, view_state, false)?;
     Ok(SaveResult { saved: true })
 }
 #[tauri::command]
@@ -413,6 +433,8 @@ fn main() {
             rename_station,
             delete_station,
             delete_track,
+            delete_alignment,
+            undo_alignment_deletion,
             rename_company,
             save_route,
             save_planned_route,
