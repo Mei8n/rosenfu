@@ -1,6 +1,6 @@
-# Built endpoint connections (work in progress)
+# Built endpoint connections
 
-This branch is not ready for integration or user testing.
+Implementation is under final integrated verification. Native GUI interaction has not been verified.
 
 ## Verified cause
 The UI only offers endpoint candidates before drawing or after finishing.
@@ -21,7 +21,7 @@ tangents within 5 degrees (same sampled-tangent tolerance as existing extensions
 Different speed caps remain distinct; a connecting segment must not overwrite them.
 Existing occupied endpoints cannot subsequently be extended away from their link.
 
-## Next implementation stages
+## Implemented integration scope
 1. Add an explicit cross-alignment corridor RouteSegment carrying its ordered
    endpoint links and station endpoints. Resolve it using persisted links, not
    preview geometry. Extend graph search to walk degree-two endpoint chains,
@@ -43,6 +43,8 @@ Existing occupied endpoints cannot subsequently be extended away from their link
 ## Current milestone
 The endpoint model, validation API, cross-alignment corridor route search and
 service traversal are implemented and core/storage tests pass. Empty connecting
-alignments and existing service keys are preserved. UI/session construction and
-plan destinations remain in progress. Do not present this milestone as a fixed
-connection bug.
+alignments and existing service keys are preserved. UI/session construction, plan destination persistence and undo/redo, explicit
+deletion guards and TypeScript corridor rendering are now included. Independent
+source review found three core issues (rings, search bounds and occupied endpoint
+loops); all three were corrected and covered by regression tests. Final combined
+CI and native GUI verification remain separate completion gates.

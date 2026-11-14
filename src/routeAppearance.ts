@@ -1,7 +1,10 @@
+import {corridorSpans} from "./connectedCorridor";
+import type {EndpointConnection} from "./destinationJoin";
 import { alignmentLength, distanceM, pointOnAlignment } from "./alignment";
 import type { GeoPoint } from "./alignment";
 import type { Segment } from "./RouteCandidatePreview";
 type AppearanceWorld = {
+  alignment_connections?:EndpointConnection[];
   routes: {id:string;start:string;tracks:string[]}[];
   tracks: {id:string;from:string;to:string}[];
   stations:{id:string}[];
@@ -20,7 +23,11 @@ export function routeAppearance(world: AppearanceWorld | null) {
   function section(alignmentId:string,from:string,to:string){
     const a=alignments.get(alignmentId),p=placements.get(from),q=placements.get(to);
     if(!a||!p||!q||p.alignment_id!==alignmentId||q.alignment_id!==alignmentId)return;
-    const lo=Math.min(p.position,q.position),hi=Math.max(p.position,q.position),total=alignmentLength(a.points);
+    range(alignmentId,p.position,q.position);
+  }
+  function range(alignmentId:string,begin:number,finish:number){
+    const a=alignments.get(alignmentId);if(!a)return;
+    const lo=Math.min(begin,finish),hi=Math.max(begin,finish),total=alignmentLength(a.points);
     if(total<=0||lo<0||hi>1||lo===hi)return;
     const points=[pointOnAlignment(a.points,lo)];let distance=0;
     for(let i=1;i<a.points.length;i++){distance+=distanceM(a.points[i-1],a.points[i]);if(distance/total>lo&&distance/total<hi)points.push(a.points[i]);}
@@ -32,7 +39,7 @@ export function routeAppearance(world: AppearanceWorld | null) {
     const path=world.route_paths?.find(p=>p.route_id===route.id);
     if(path){
       for(const id of path.member_stations)if(knownStations.has(id))stations.add(id);
-      for(const s of path.segments)if(s.kind==="track")track(s.track_id);else section(s.alignment_id,s.from,s.to);
+      for(const s of path.segments)if(s.kind==="track")track(s.track_id);else if(s.kind==="alignment")section(s.alignment_id,s.from,s.to);else {try{for(const span of corridorSpans(s,world))range(span.alignmentId,span.begin,span.finish);}catch{/* Invalid/stale metadata never paints unrelated tracks. */}}
     }else{
       if(knownStations.has(route.start))stations.add(route.start);
       for(const id of route.tracks){track(id);const t=trackById.get(id);if(t){if(knownStations.has(t.from))stations.add(t.from);if(knownStations.has(t.to))stations.add(t.to);}}

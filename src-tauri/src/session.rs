@@ -57,6 +57,35 @@ pub struct PlannedAlignment {
     pub stations: Vec<PlannedStation>,
     pub reference: Option<PlannedAlignmentReference>,
     pub extension: Option<PlannedAlignmentExtension>,
+    pub destination: Option<PlannedAlignmentExtension>,
+}
+
+#[derive(Clone)]
+struct PendingManualReplacement {
+    path: PathBuf,
+    version: rosenfu_storage::FileVersion,
+    token: String,
+}
+#[derive(serde::Serialize)]
+pub struct ManualReplacementRequired {
+    pub token: String,
+    pub company_name: String,
+}
+#[derive(serde::Serialize)]
+pub struct ManualSaveResult {
+    pub saved: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement_required: Option<ManualReplacementRequired>,
+}
+fn next_manual_token() -> Result<String, String> {
+    static NEXT: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+    let mut sequence = NEXT.lock().map_err(|_| "保存確認番号を作成できません。")?;
+    *sequence = sequence
+        .checked_add(1)
+        .ok_or("保存確認番号を作成できません。")?;
+    // Correlation nonce, not an authentication credential. Unique across editor
+    // instances in this process; clients must never infer an approved baseline.
+    Ok(format!("{:x}-{:x}", std::process::id(), *sequence))
 }
 
 #[derive(Clone)]
@@ -72,6 +101,7 @@ pub struct WorldEditor {
     autosave_blocked: bool,
     autosave_replace_allowed: bool,
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
+    pending_manual_replacement: Option<PendingManualReplacement>,
 }
 impl WorldEditor {
     pub fn preview_service_path(
@@ -160,6 +190,7 @@ impl WorldEditor {
             autosave_blocked: false,
             autosave_replace_allowed: false,
             deleted_alignment: None,
+            pending_manual_replacement: None,
         }
     }
     pub fn company_setup_required(&self) -> bool {
@@ -340,6 +371,7 @@ impl WorldEditor {
             stations,
             reference,
             extension: None,
+            destination: None,
         }])
     }
 
@@ -369,6 +401,9 @@ impl WorldEditor {
             )?;
         }
         for alignment in alignments {
+            if alignment.destination.is_some() && alignment.extension.is_none() {
+                return Err("接続先を指定するには既存線路から延伸してください。".into());
+            }
             if let Some(extension) = alignment.extension {
                 let old = candidate
                     .world
@@ -442,6 +477,22 @@ impl WorldEditor {
                         station.length_m,
                         station.width_m,
                     )?;
+                }
+                if let Some(destination) = alignment.destination {
+                    candidate
+                        .world
+                        .connect_alignment_endpoints(
+                            candidate.company,
+                            rosenfu_core::world::AlignmentEndpointRef {
+                                alignment_id: extension.alignment_id,
+                                endpoint: extension.endpoint,
+                            },
+                            rosenfu_core::world::AlignmentEndpointRef {
+                                alignment_id: destination.alignment_id,
+                                endpoint: destination.endpoint,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
                 }
                 continue;
             }
@@ -619,8 +670,8 @@ impl WorldEditor {
             return Err("削除する駅が見つかりません。".into());
         }
         if candidate.service_paths.iter().any(|p|self.world.service_path_occurrences(p.service_id).is_ok_and(|occurrences|occurrences.iter().any(|o|o.station_id==station_id)))
-            || candidate.service_paths.iter().any(|p|p.stops.iter().any(|stop|matches!(stop,rosenfu_core::world::StationOccurrenceRef::OnLeg{station_id:id,..} if *id==station_id)) || p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Alignment{from,to,..} if from==station_id || to==station_id)))
-            || candidate.route_paths.iter().any(|p| p.member_stations.contains(&station_id) || p.segments.iter().any(|segment| matches!(segment, rosenfu_core::world::RouteSegment::Alignment { from, to, .. } if *from == station_id || *to == station_id)))
+            || candidate.service_paths.iter().any(|p|p.stops.iter().any(|stop|matches!(stop,rosenfu_core::world::StationOccurrenceRef::OnLeg{station_id:id,..} if *id==station_id)) || p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Alignment{from,to,..} | rosenfu_core::world::RouteSegment::ConnectedAlignments{from,to,..} if from==station_id || to==station_id)))
+            || candidate.route_paths.iter().any(|p| p.member_stations.contains(&station_id) || p.segments.iter().any(|segment| matches!(segment, rosenfu_core::world::RouteSegment::Alignment { from, to, .. } | rosenfu_core::world::RouteSegment::ConnectedAlignments { from,to,.. } if *from == station_id || *to == station_id)))
             || candidate
             .tracks
             .iter()
@@ -674,6 +725,13 @@ impl WorldEditor {
         {
             return Err("削除する自社線路が見つかりません。".into());
         }
+        if draft
+            .alignment_connections
+            .iter()
+            .any(|c| c.a.alignment_id == id || c.b.alignment_id == id)
+        {
+            return Err("接続に使われている線路は削除できません。".into());
+        }
         if draft.station_placements.iter().any(|s| s.alignment_id == id)
             || draft.route_paths.iter().any(|p| p.segments.iter().any(|s| matches!(s, rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } if *alignment_id == id)))
             || draft.service_paths.iter().any(|p| p.legs.iter().any(|l| matches!(l.segment, rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } if alignment_id == id)))
@@ -681,9 +739,23 @@ impl WorldEditor {
             return Err("駅・路線・系統が使用中の線路は削除できません。".into());
         }
         if draft.construction_plans.as_ref().is_some_and(|p| {
-            p.draft_extension
+            p.draft_redo_destination
                 .as_ref()
                 .is_some_and(|e| e.alignment_id == id)
+                || p.parked_paths.iter().any(|path| {
+                    path.redo_destination
+                        .as_ref()
+                        .is_some_and(|e| e.alignment_id == id)
+                })
+                || p.draft_destination
+                    .as_ref()
+                    .is_some_and(|e| e.alignment_id == id)
+                || p.parked_paths
+                    .iter()
+                    .any(|p| p.destination.as_ref().is_some_and(|e| e.alignment_id == id))
+                || p.draft_extension
+                    .as_ref()
+                    .is_some_and(|e| e.alignment_id == id)
                 || p.parked_paths
                     .iter()
                     .any(|p| p.extension.as_ref().is_some_and(|e| e.alignment_id == id))
@@ -981,6 +1053,103 @@ impl WorldEditor {
         }
         Ok(self.snapshot())
     }
+    /// A fresh world may replace an existing healthy save only after approval of
+    /// this exact observed version. Loaded-session conflicts stay ordinary errors.
+    pub fn request_manual_save(
+        &mut self,
+        path: &Path,
+        plans: Option<rosenfu_core::world::ConstructionPlans>,
+        view: Option<rosenfu_core::world::ViewState>,
+    ) -> Result<ManualSaveResult, String> {
+        self.pending_manual_replacement = None;
+        if self.company_setup_required {
+            return Err("会社名を設定してから保存してください。".into());
+        }
+        if self.loaded_path.is_none()
+            && rosenfu_storage::file_version(path).map_err(|e| e.to_string())?
+                != rosenfu_storage::FileVersion::Missing
+        {
+            let (previous, version) =
+                rosenfu_storage::load_world_with_version(path).map_err(|e| e.to_string())?;
+            let token = next_manual_token()?;
+            let company_name = previous
+                .snapshot()
+                .companies
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" / ");
+            self.pending_manual_replacement = Some(PendingManualReplacement {
+                path: path.to_owned(),
+                version,
+                token: token.clone(),
+            });
+            return Ok(ManualSaveResult {
+                saved: false,
+                replacement_required: Some(ManualReplacementRequired {
+                    token,
+                    company_name,
+                }),
+            });
+        }
+        self.save_with_view(path, plans, view, false)?;
+        Ok(ManualSaveResult {
+            saved: true,
+            replacement_required: None,
+        })
+    }
+    pub fn cancel_manual_save(&mut self, token: &str) {
+        if self
+            .pending_manual_replacement
+            .as_ref()
+            .is_some_and(|pending| pending.token == token)
+        {
+            self.pending_manual_replacement = None;
+        }
+    }
+    pub fn confirm_manual_save(
+        &mut self,
+        path: &Path,
+        token: &str,
+        plans: Option<rosenfu_core::world::ConstructionPlans>,
+        view: Option<rosenfu_core::world::ViewState>,
+    ) -> Result<ManualSaveResult, String> {
+        let pending = self
+            .pending_manual_replacement
+            .as_ref()
+            .filter(|pending| pending.token == token)
+            .ok_or("保存確認が無効です。もう一度保存してください。")?;
+        if pending.path != path {
+            return Err("保存確認の対象が一致しません。".into());
+        }
+        let pending = self
+            .pending_manual_replacement
+            .take()
+            .ok_or("保存確認がありません。")?;
+        if self.loaded_path.is_some() || self.company_setup_required {
+            return Err("保存対象のセッションが変更されています。".into());
+        }
+        let mut candidate = self.clone();
+        let mut draft = candidate.snapshot();
+        if let Some(plans) = plans {
+            draft.construction_plans = Some(plans);
+        }
+        if let Some(view) = view {
+            draft.view_state = Some(view);
+        }
+        candidate.world = World::new(draft).map_err(|e| e.to_string())?;
+        let (_, version) =
+            rosenfu_storage::save_world_if_version(path, &candidate.world, &pending.version)
+                .map_err(|e| e.to_string())?;
+        candidate.loaded_path = Some(path.to_owned());
+        candidate.manual_version = Some(version);
+        candidate.manual_repair_allowed = false;
+        *self = candidate;
+        Ok(ManualSaveResult {
+            saved: true,
+            replacement_required: None,
+        })
+    }
     /// Save a candidate atomically: a failed validation/write leaves editor state unchanged.
     pub fn save_with_plans(
         &mut self,
@@ -1030,6 +1199,7 @@ impl WorldEditor {
             rosenfu_storage::save_world_if_version(path, &self.world, expected)
         };
         let (_, version) = result.map_err(|e| e.to_string())?;
+        self.pending_manual_replacement = None;
         self.loaded_path = Some(path.to_owned());
         self.manual_version = Some(version);
         self.manual_repair_allowed = false;
@@ -1191,6 +1361,7 @@ impl WorldEditor {
         self.world = candidate;
         self.company = company;
         self.company_setup_required = false;
+        self.pending_manual_replacement = None;
         self.loaded_path = Some(path.to_owned());
         self.manual_version = Some(version);
         self.manual_repair_allowed = false;
@@ -1205,6 +1376,141 @@ impl WorldEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fresh_company(name: &str) -> WorldEditor {
+        let mut editor = WorldEditor::new();
+        editor.rename_company(name.into()).unwrap();
+        editor
+    }
+    fn pending_token(editor: &mut WorldEditor, path: &Path) -> String {
+        let result = editor.request_manual_save(path, None, None).unwrap();
+        assert!(!result.saved);
+        result.replacement_required.unwrap().token
+    }
+    #[test]
+    fn fresh_manual_replacement_requires_confirmation_and_preserves_backup_and_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        let auto = dir.path().join("auto.json");
+        let mut old = fresh_company("Old company");
+        old.save(&path).unwrap();
+        old.autosave(&auto).unwrap();
+        let old_bytes = std::fs::read(&path).unwrap();
+        let auto_bytes = std::fs::read(&auto).unwrap();
+        let mut new = fresh_company("New company");
+        let before = new.snapshot();
+        let result = new.request_manual_save(&path, None, None).unwrap();
+        let required = result.replacement_required.unwrap();
+        assert!(!result.saved);
+        assert_eq!(required.company_name, "Old company");
+        assert_eq!(new.snapshot(), before);
+        assert_eq!(std::fs::read(&path).unwrap(), old_bytes);
+        assert!(
+            new.confirm_manual_save(&path, &required.token, None, None)
+                .unwrap()
+                .saved
+        );
+        assert_eq!(
+            rosenfu_storage::load_world(&path)
+                .unwrap()
+                .snapshot()
+                .companies[0]
+                .name,
+            "New company"
+        );
+        assert_eq!(
+            std::fs::read(rosenfu_storage::backup_path(&path)).unwrap(),
+            old_bytes
+        );
+        assert_eq!(std::fs::read(&auto).unwrap(), auto_bytes);
+        assert!(new
+            .confirm_manual_save(&path, &required.token, None, None)
+            .is_err());
+    }
+    #[test]
+    fn pending_manual_nonce_cancel_new_request_and_invalid_confirmation_are_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        fresh_company("Old").save(&path).unwrap();
+        let disk = std::fs::read(&path).unwrap();
+        let mut editor = fresh_company("New");
+        let before = editor.snapshot();
+        let first = pending_token(&mut editor, &path);
+        let second = pending_token(&mut editor, &path);
+        assert_ne!(first, second);
+        editor.cancel_manual_save(&first);
+        assert!(editor
+            .confirm_manual_save(&path, &first, None, None)
+            .is_err());
+        editor.cancel_manual_save(&second);
+        assert!(editor
+            .confirm_manual_save(&path, &second, None, None)
+            .is_err());
+        let third = pending_token(&mut editor, &path);
+        let invalid = rosenfu_core::world::ViewState {
+            latitude: 0.0,
+            longitude: 0.0,
+            zoom: 0.0,
+        };
+        assert!(editor
+            .confirm_manual_save(&path, &third, None, Some(invalid))
+            .is_err());
+        assert!(editor
+            .confirm_manual_save(&path, &third, None, None)
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(std::fs::read(&path).unwrap(), disk);
+    }
+    #[test]
+    fn replacement_conflicts_disappearance_and_loaded_sessions_never_force_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        fresh_company("Old").save(&path).unwrap();
+        let mut one = fresh_company("One");
+        let mut two = fresh_company("Two");
+        let t1 = pending_token(&mut one, &path);
+        let t2 = pending_token(&mut two, &path);
+        let before = two.snapshot();
+        one.confirm_manual_save(&path, &t1, None, None).unwrap();
+        let disk = std::fs::read(&path).unwrap();
+        assert!(two.confirm_manual_save(&path, &t2, None, None).is_err());
+        assert_eq!(two.snapshot(), before);
+        assert_eq!(std::fs::read(&path).unwrap(), disk);
+        // A loaded session never gets a replacement offer when another writer updates it.
+        let mut loaded = WorldEditor::new();
+        loaded.load(&path).unwrap();
+        one.rename_company("changed".into()).unwrap();
+        one.save(&path).unwrap();
+        assert!(loaded.request_manual_save(&path, None, None).is_err());
+        let token = pending_token(&mut two, &path);
+        two.load(&path).unwrap();
+        assert!(two.confirm_manual_save(&path, &token, None, None).is_err());
+        let mut three = fresh_company("Three");
+        let token = pending_token(&mut three, &path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(three
+            .confirm_manual_save(&path, &token, None, None)
+            .is_err());
+        assert!(!path.exists());
+    }
+    #[test]
+    fn new_manual_save_rejects_setup_corrupt_and_future_schema_without_touching_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        let mut editor = WorldEditor::new();
+        assert!(editor.request_manual_save(&path, None, None).is_err());
+        assert!(!path.exists());
+        editor.rename_company("New".into()).unwrap();
+        for bytes in [
+            b"corrupt".to_vec(),
+            br#"{"format":"rosenfu-world","schema_version":999,"world":{}}"#.to_vec(),
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(editor.request_manual_save(&path, None, None).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert!(editor.request_manual_save(&path, None, None).unwrap().saved);
+    }
     #[test]
     fn view_manual_autosave_and_invalid_save_preserve_data() {
         use rosenfu_core::world::ViewState;
@@ -2385,6 +2691,7 @@ mod tests {
         // Attribution on an earlier path must roll back if any later path fails.
         let attributed_path = || PlannedAlignment {
             extension: None,
+            destination: None,
             name: "Attributed".into(),
             points: points.clone(),
             track_type: rosenfu_core::world::TrackType::Tram,
@@ -2483,6 +2790,7 @@ mod tests {
                 source_record: source.clone(),
                 provenance: provenance.clone(),
             }),
+            destination: None,
             extension: Some(PlannedAlignmentExtension {
                 alignment_id: id,
                 endpoint: rosenfu_core::world::AlignmentEndpoint::End,
@@ -2762,6 +3070,7 @@ mod tests {
             design_speed_kmh: None,
             stations: vec![],
             reference: None,
+            destination: None,
             extension: Some(PlannedAlignmentExtension {
                 alignment_id: a.id,
                 endpoint: rosenfu_core::world::AlignmentEndpoint::Start,
@@ -2794,6 +3103,7 @@ mod tests {
             stations: vec![planned_station(0.5)],
             reference: None,
             extension: None,
+            destination: None,
         }
     }
 
@@ -2886,6 +3196,7 @@ mod tests {
                 design_speed_kmh: None,
                 stations: vec![planned_station(0.5)],
                 reference: None,
+                destination: None,
                 extension: Some(PlannedAlignmentExtension {
                     alignment_id: old.id,
                     endpoint,
@@ -2978,6 +3289,7 @@ mod tests {
                 design_speed_kmh: None,
                 stations: vec![planned_station(0.5)],
                 reference: None,
+                destination: None,
                 extension: Some(PlannedAlignmentExtension {
                     alignment_id: a,
                     endpoint,
@@ -3053,6 +3365,7 @@ mod tests {
             design_speed_kmh: None,
             stations: vec![],
             reference: None,
+            destination: None,
             extension: Some(PlannedAlignmentExtension {
                 alignment_id: old.id,
                 endpoint: rosenfu_core::world::AlignmentEndpoint::End,
@@ -3065,5 +3378,157 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
         let after = editor.build_plan(vec![extension()]).unwrap();
         assert_eq!(after.alignments[0].design_speed_kmh, Some(95.0));
+    }
+}
+
+#[cfg(test)]
+mod endpoint_join_tests {
+    use super::*;
+    use rosenfu_core::world::{AlignmentEndpoint, TrackType};
+    fn p(longitude: f64) -> GeoPoint {
+        GeoPoint {
+            latitude: 35.0,
+            longitude,
+        }
+    }
+    #[test]
+    fn endpoint_join_is_atomic_in_all_orientations_and_survives_save() {
+        for source_end in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+            for target_end in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+                let mut editor = WorldEditor::new();
+                let mut a_points = vec![p(139.0), p(139.01)];
+                let mut b_points = vec![p(139.02), p(139.03)];
+                if source_end == AlignmentEndpoint::Start {
+                    a_points.reverse();
+                }
+                if target_end == AlignmentEndpoint::End {
+                    b_points.reverse();
+                }
+                let a = editor
+                    .world
+                    .build_alignment(editor.company, "A".into(), a_points)
+                    .unwrap();
+                let b = editor
+                    .world
+                    .build_alignment(editor.company, "B".into(), b_points)
+                    .unwrap();
+                editor.world.set_alignment_design_speed(b, 80.).unwrap();
+                let sa = editor
+                    .world
+                    .place_station_on_alignment(editor.company, "A駅".into(), a, 0.5, 100., 12.)
+                    .unwrap();
+                let sb = editor
+                    .world
+                    .place_station_on_alignment(editor.company, "B駅".into(), b, 0.5, 100., 12.)
+                    .unwrap();
+                let sa2 = editor
+                    .world
+                    .place_station_on_alignment(editor.company, "A駅2".into(), a, 0.8, 100., 12.)
+                    .unwrap();
+                let segments = vec![rosenfu_core::world::RouteSegment::Alignment {
+                    alignment_id: a,
+                    from: sa,
+                    to: sa2,
+                }];
+                editor
+                    .world
+                    .add_planned_route(
+                        editor.company,
+                        "既存路線".into(),
+                        sa,
+                        segments.clone(),
+                        vec![sa, sa2],
+                    )
+                    .unwrap();
+                let preview = editor.preview_service_path(sa, segments.clone()).unwrap();
+                editor
+                    .create_service_path(
+                        "既存系統".into(),
+                        sa,
+                        segments,
+                        preview
+                            .occurrences
+                            .into_iter()
+                            .map(|o| o.reference)
+                            .collect(),
+                    )
+                    .unwrap();
+                let before = editor.snapshot();
+                let request = || PlannedAlignment {
+                    name: "延伸".into(),
+                    points: vec![p(139.01), p(139.02)],
+                    track_type: TrackType::Normal,
+                    design_speed_kmh: Some(120.),
+                    stations: vec![],
+                    reference: None,
+                    extension: Some(PlannedAlignmentExtension {
+                        alignment_id: a,
+                        endpoint: source_end,
+                    }),
+                    destination: Some(PlannedAlignmentExtension {
+                        alignment_id: b,
+                        endpoint: target_end,
+                    }),
+                };
+                let mut invalid = request();
+                invalid.points.clear();
+                assert!(editor.build_plan(vec![request(), invalid]).is_err());
+                assert_eq!(editor.snapshot(), before);
+                let after = editor.build_plan(vec![request()]).unwrap();
+                assert_eq!(after.alignments.len(), 2);
+                assert_eq!(after.alignments[1], before.alignments[1]);
+                assert_eq!(after.stations, before.stations);
+                assert_eq!(after.next_id, before.next_id);
+                assert_eq!(after.alignment_connections.len(), 1);
+                assert_eq!(after.routes, before.routes);
+                assert_eq!(after.route_paths, before.route_paths);
+                assert_eq!(after.services, before.services);
+                assert_eq!(after.service_paths, before.service_paths);
+                assert_eq!(
+                    editor.world.route_candidates(sa, sb).unwrap().status,
+                    rosenfu_core::world::RouteSearchStatus::Unique
+                );
+                assert!(editor.delete_alignment(a).unwrap_err().contains("接続"));
+                assert!(editor.delete_alignment(b).unwrap_err().contains("接続"));
+                assert_eq!(editor.snapshot(), after);
+                let dir = tempfile::tempdir().unwrap();
+                let file = dir.path().join("joined.rosenfu");
+                editor.save(&file).unwrap();
+                assert_eq!(WorldEditor::new().load(&file).unwrap(), after);
+            }
+        }
+    }
+    #[test]
+    fn moved_or_missing_target_cannot_publish_the_extension() {
+        let mut editor = WorldEditor::new();
+        let a = editor
+            .world
+            .build_alignment(editor.company, "A".into(), vec![p(139.), p(139.01)])
+            .unwrap();
+        let b = editor
+            .world
+            .build_alignment(editor.company, "B".into(), vec![p(139.021), p(139.03)])
+            .unwrap();
+        let before = editor.snapshot();
+        for target in [b, AlignmentId(999), a] {
+            let request = PlannedAlignment {
+                name: "延伸".into(),
+                points: vec![p(139.01), p(139.02)],
+                track_type: TrackType::Normal,
+                design_speed_kmh: Some(120.),
+                stations: vec![],
+                reference: None,
+                extension: Some(PlannedAlignmentExtension {
+                    alignment_id: a,
+                    endpoint: AlignmentEndpoint::End,
+                }),
+                destination: Some(PlannedAlignmentExtension {
+                    alignment_id: target,
+                    endpoint: AlignmentEndpoint::Start,
+                }),
+            };
+            assert!(editor.build_plan(vec![request]).is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
     }
 }
