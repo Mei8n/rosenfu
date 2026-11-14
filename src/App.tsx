@@ -283,25 +283,20 @@ export function App() {
     return alignment&&extension?(extension.endpoint==="start"?alignment.points[1]:alignment.points.at(-2)):undefined;
   }
   const previousPoint=extensionPrevious(draftExtension);
+  const [cursorPosition,setCursorPosition]=useState<{x:number;y:number;width:number;height:number}|null>(null);
   const draftGeometry = useMemo(() => plannedGeometry(draftPoints,draftEditedGeometry,previousPoint), [draftPoints,draftEditedGeometry,previousPoint]);
-  function fittedDestination(anchors:GeoPoint[],edited:typeof draftEditedGeometry) {
-    if(!draftExtension||anchors.length<2)return edited;
-    const end=anchors.at(-1)!;
-    const target=alignments.flatMap(alignment=>[
-      {id:alignment.id,endpoint:"start",point:alignment.points[0],inside:alignment.points[1]},
-      {id:alignment.id,endpoint:"end",point:alignment.points.at(-1),inside:alignment.points.at(-2)},
-    ]).find(e=>!(e.id===draftExtension.alignmentId&&e.endpoint===draftExtension.endpoint)&&e.point?.latitude===end.latitude&&e.point?.longitude===end.longitude);
-    return target?.inside?twoEndedJoin(anchors,edited,previousPoint,target.inside)??edited:edited;
+  function fittedDestination(anchors:GeoPoint[],edited:typeof draftEditedGeometry,target:ReturnType<typeof destinationTarget>) {
+    const inside=target?.endpoint==="start"?target.alignment.points[1]:target?.alignment.points.at(-2);
+    return inside?twoEndedJoin(anchors,edited,previousPoint,inside)??edited:edited;
   }
   const previewAnchors=hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints;
-  const previewGeometry = plannedGeometry(previewAnchors,previewAnchors!==draftPoints?fittedDestination(previewAnchors,draftEditedGeometry):draftEditedGeometry,previousPoint);
+  const previewGeometry = plannedGeometry(previewAnchors,previewAnchors!==draftPoints?fittedDestination(previewAnchors,draftEditedGeometry,hoverPoint&&cursorPosition?destinationTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null):draftEditedGeometry,previousPoint);
   const draftLine = draftGeometry.points;
   const previewLine = previewGeometry.points;
   const draftInvalid = Boolean(draftGeometry.error);
   const previewError = previewGeometry.error;
   // Invalid geometry is diagnostic only. Never commit this fallback chord.
   const candidateLine = hoverPoint && !draftFinished && draftPoints.length ? (previewLine.length > draftLine.length ? previewLine.slice(Math.max(0,draftLine.length-1)) : [draftPoints[draftPoints.length-1],hoverPoint]) : [];
-  const [cursorPosition,setCursorPosition]=useState<{x:number;y:number;width:number;height:number}|null>(null);
   const drawingCursor=useRef<{point:GeoPoint;width:number;height:number}|null>(null);
   useEffect(()=>{drawingCursor.current=null;setHoverPoint(null);setCursorPosition(null);},[camera]);
   function endpointDistance(point:GeoPoint, end:GeoPoint, width:number,height:number) {
@@ -876,7 +871,7 @@ export function App() {
       const destination=destinationTarget(coordinates,rect.width,rect.height);
       coordinates=destination?.point??drawingPoint(coordinates,rect.width,rect.height,event.ctrlKey);
       let editedForAppend=draftEditedGeometry&&redoPoints.length?(draftPoints.length>=2?{version:1 as const,anchors:draftPoints,line:draftLine}:undefined):draftPoints.length?draftEditedGeometry:undefined;
-      if(destination)editedForAppend=fittedDestination([...draftPoints,coordinates],editedForAppend);
+      if(destination)editedForAppend=fittedDestination([...draftPoints,coordinates],editedForAppend,destination);
       const candidate=plannedGeometry([...draftPoints,coordinates],editedForAppend,previousPoint);if(candidate.error){setHoverPoint(coordinates);return;}
       const targetRef=destination?{alignmentId:destination.alignment.id,endpoint:destination.endpoint}:undefined;
       const targetError=joinError(candidate.points,draftExtension,targetRef);if(targetError){setError(targetError);return;}
