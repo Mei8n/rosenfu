@@ -1,3 +1,5 @@
+import {anchorDragPreview} from "./anchorDragPreview";
+import {plannedGeometry, type EditedGeometry} from "./editedGeometry";
 import {plannedTrackSpeed} from "./plannedTrackSpeed";
 import {emptyConstructionPlans,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
 import {UserGuide} from "./UserGuide";
@@ -47,7 +49,7 @@ import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromC
 import { GsiBackground } from "./GsiBackground";
 import type { Camera } from "./map";
 import type { TileStatus } from "./GsiBackground";
-import { circularAlignment, provisionalCurveSpeed, snapStraight } from "./circularAlignment";
+import { provisionalCurveSpeed, snapStraight } from "./circularAlignment";
 import { nearestOnAlignment, stationPolygon, alignmentLength, distanceM, pointOnAlignment } from "./alignment";
 type GeoPoint = { latitude: number; longitude: number };
 type Alignment = { id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
@@ -198,6 +200,13 @@ export function App() {
   const alignmentName = "新しい線路";
   const [draftFinished, setDraftFinished] = useState(false);
   const [draftPoints, setDraftPoints] = useState<GeoPoint[]>([]);
+  const [draftEditedGeometry,setDraftEditedGeometry]=useState<EditedGeometry|undefined>();
+  type AnchorEdit={kind?:"point";id:number;before:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[]};after:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[]}};
+  const [anchorUndo,setAnchorUndo]=useState<AnchorEdit[]>([]),[anchorRedo,setAnchorRedo]=useState<AnchorEdit[]>([]);
+  type AnchorGesture={pointerId:number;id:number;index:number;startX:number;startY:number;points:GeoPoint[];line:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];previous?:GeoPoint;preview:EditedGeometry|null;error:string|null;snapped:boolean};
+  const anchorGesture=useRef<AnchorGesture|null>(null);
+  const [anchorPreview,setAnchorPreview]=useState<AnchorGesture|null>(null);
+  useEffect(()=>{cancelAnchorGesture();},[camera,activeTool,mapSize]);
   const [draftExtension,setDraftExtension]=useState<Extension|null>(null);
   const [parkedPaths, setParkedPaths] = useState<PlannedPath[]>([]);
   const [activePathId, setActivePathId] = useState(1);
@@ -227,8 +236,8 @@ export function App() {
   const setContrast=(value:number)=>displaySettings.update({contrast:value});
   const setPanelWidth=(value:number)=>displaySettings.update({panelWidth:value});
   const setTextSize=(value:number)=>displaySettings.update({textSize:value});
-  function undoPoint() { setDraftFinished(false); if (!draftPoints.length) return; setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
-  function redoPoint() { if (!redoPoints.length) return; setDraftFinished(false); setDraftPoints(points => [...points, redoPoints[redoPoints.length-1]]); setRedoPoints(points => points.slice(0,-1)); setHoverPoint(null); }
+  function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} setDraftFinished(false); if (!draftPoints.length) return; setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
+  function redoPoint() { if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) return; setDraftFinished(false); setDraftPoints(points => [...points, redoPoints[redoPoints.length-1]]); setRedoPoints(points => points.slice(0,-1)); setHoverPoint(null); }
   const [alignmentId, setAlignmentId] = useState("");
   const stationNamesVisible=displaySettings.settings.stationNamesVisible;
   const setStationNamesVisible=(value:boolean)=>displaySettings.update({stationNamesVisible:value});
@@ -249,8 +258,8 @@ export function App() {
     return alignment&&extension?(extension.endpoint==="start"?alignment.points[1]:alignment.points.at(-2)):undefined;
   }
   const previousPoint=extensionPrevious(draftExtension);
-  const draftGeometry = useMemo(() => circularAlignment(draftPoints,previousPoint), [draftPoints,previousPoint]);
-  const previewGeometry = useMemo(() => circularAlignment(hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints,previousPoint), [draftPoints, hoverPoint, mapMode, draftFinished,previousPoint]);
+  const draftGeometry = useMemo(() => plannedGeometry(draftPoints,draftEditedGeometry,previousPoint), [draftPoints,draftEditedGeometry,previousPoint]);
+  const previewGeometry = useMemo(() => plannedGeometry(hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints,draftEditedGeometry,previousPoint), [draftPoints, hoverPoint, mapMode, draftFinished,previousPoint,draftEditedGeometry]);
   const draftLine = draftGeometry.points;
   const previewLine = previewGeometry.points;
   const draftInvalid = Boolean(draftGeometry.error);
@@ -271,7 +280,7 @@ export function App() {
   function drawingPoint(point:GeoPoint,width:number,height:number) {
     if(draftFinished||!draftPoints.length)return point;
     const metresPerPixel=2*Math.PI*6371000*Math.cos(draftPoints[0].latitude*Math.PI/180)/(256*2**camera.zoom*mapViewport(width,height).scale);
-    return snapStraight(draftPoints,point,metresPerPixel,previousPoint);
+    return draftEditedGeometry?snapStraight(draftLine.slice(-2),point,metresPerPixel):snapStraight(draftPoints,point,metresPerPixel,previousPoint);
   }
   const circleGuide = !draftFinished && hoverPoint && mapMode === "draw" ? previewGeometry.guide : null;
   const guideCenter = circleGuide ? project(circleGuide.center.latitude,circleGuide.center.longitude,camera) : null;
@@ -282,12 +291,12 @@ export function App() {
     setStationRedo(items=>items.filter(entry=>entry.planned?.pathId!==id));
   }
   function parkCurrentPlan(): PlannedPath | null {
-    return draftPoints.length || redoPoints.length ? {id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,designSpeedKmh,trackType,roadFollowing,extension:draftExtension} : null;
+    return draftPoints.length || redoPoints.length ? {id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,editedGeometry:draftEditedGeometry,designSpeedKmh,trackType,roadFollowing,extension:draftExtension} : null;
   }
   function newPath() {
     const current=parkCurrentPlan();
     setParkedPaths(paths=>current?[...paths,current]:paths);
-    setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);changeMapMode(activeTool==="stations"?"place":"draw");
+    setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function newIndependentPlan() {
     if (!enabled || referenceCopy.active) return;
@@ -298,7 +307,7 @@ export function App() {
     const target=parkedPaths.find(path=>path.id===id);if(!target||target.reference)return;
     const current=parkCurrentPlan();
     setParkedPaths(paths=>[...paths.filter(path=>path.id!==id),...(current?[current]:[])]);
-    setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
+    setAnchorUndo([]);setAnchorRedo([]);setActivePlanId(target.planId);setDraftFinished(false);setActivePathId(target.id);setDraftExtension(target.extension);setDraftPoints(target.points);setDraftEditedGeometry(target.editedGeometry);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function choosePlan(id:number){
     if(id===activePlanId)return;
@@ -309,14 +318,14 @@ export function App() {
   function clearCurrentPlan(){
     const ids=new Set([activePathId,...parkedPaths.filter(path=>path.planId===activePlanId).map(path=>path.id)]);
     ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
-    setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
+    setDraftFinished(false);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
   }
   const [planHover, setPlanHover] = useState<{id:number;x:number;y:number;point:GeoPoint} | null>(null);
   useEffect(() => { setPlanHover(null); }, [draftPoints, parkedPaths, activeTool, camera, world]);
-  const hoveredPlan = planHover?.id === activePathId ? {name:planName,line:draftLine,points:draftPoints,reference:undefined,designSpeedKmh,extension:draftExtension} : parkedPaths.find(plan=>plan.id===planHover?.id);
+  const hoveredPlan = planHover?.id === activePathId ? {name:planName,line:draftLine,points:draftPoints,editedGeometry:draftEditedGeometry,reference:undefined,designSpeedKmh,extension:draftExtension} : parkedPaths.find(plan=>plan.id===planHover?.id);
   const hoveredExtension=hoveredPlan?.extension?alignments.find(a=>a.id===hoveredPlan.extension!.alignmentId):null;
   const hoveredPrevious=hoveredExtension?(hoveredPlan!.extension!.endpoint==="end"?hoveredExtension.points.at(-2):hoveredExtension.points[1]):undefined;
-  const hoveredGeometry = hoveredPlan&&!hoveredPlan.reference ? circularAlignment(hoveredPlan.points,hoveredPrevious) : null;
+  const hoveredGeometry = hoveredPlan&&!hoveredPlan.reference ? plannedGeometry(hoveredPlan.points,hoveredPlan.editedGeometry,hoveredPrevious) : null;
   const hoveredSpeed=hoveredGeometry&&planHover?plannedTrackSpeed(hoveredGeometry,planHover.point,hoveredPlan!.designSpeedKmh):null;
 
   function hoverPlan(event: ReactPointerEvent<SVGPathElement>, id:number) {
@@ -326,7 +335,11 @@ export function App() {
   }
   const viewport = mapViewport(mapSize.width,mapSize.height);
   const drawPath = (points: GeoPoint[]) => points.map((point, index) => { const p = project(point.latitude, point.longitude, camera); return (index ? "L" : "M") + p.x + "," + p.y; }).join(" ");
-  const drawAnchors=(points:GeoPoint[],parked=false)=>points.map((point,index) => { const p = project(point.latitude,point.longitude,camera),size=5/viewport.scale,endpoint=index===0||index===points.length-1; return <rect key={index} x={p.x-size/2} y={p.y-size/2} width={size} height={size} className={(parked?"parked-anchor":"draft-anchor")+(endpoint?" draft-endpoint":"")} vectorEffect="non-scaling-stroke" />; });
+  const drawAnchors=(points:GeoPoint[],parked=false,id=activePathId)=>points.map((point,index) => {
+    const p=project(point.latitude,point.longitude,camera),size=5/viewport.scale,hit=22/viewport.scale,endpoint=index===0||index===points.length-1;
+    return <g key={index}><rect x={p.x-size/2} y={p.y-size/2} width={size} height={size} className={(parked?"parked-anchor":"draft-anchor")+(endpoint?" draft-endpoint":"")} vectorEffect="non-scaling-stroke"/>
+      <rect onPointerDown={event=>beginAnchorGesture(event,id,index)} data-anchor-index={index} data-anchor-path={id} x={p.x-hit/2} y={p.y-hit/2} width={hit} height={hit} className="anchor-drag-hit"/></g>;
+  });
   const [companyName, setCompanyName] = useState("");
   const [routeId, setRouteId] = useState<string | null>(null);
   const [routeName, setRouteName] = useState("新路線");
@@ -357,7 +370,7 @@ export function App() {
     function wheel(event: WheelEvent) {
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || !Number.isFinite(event.deltaY) || event.deltaY === 0 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
       event.preventDefault();
-      if (gestureRef.current) return;
+      if (gestureRef.current || anchorGesture.current) return;
       const rect=svg!.getBoundingClientRect();
       const location=coordinatesFromClient(event.clientX,event.clientY,rect,cameraRef.current);
       if(!location)return;
@@ -390,7 +403,7 @@ export function App() {
   const referenceExtensionError=referenceExtensionKey?(!referenceExtension?"延伸対象の端点が参照形状に一致しません。起点を選び直してください。":referenceExtension.alignment.owner!==world?.companies[0]?.id?"他社の線路には延伸できません。":extensionJoinError(referenceExtension.build.points,extensionPrevious({alignmentId:referenceExtension.alignment.id,endpoint:referenceExtension.endpoint}))):null;
   const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
   useEffect(()=>{setReferenceExtensionKey("");},[referenceCopy.active,graphBundle]);
-  const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referenceCopy.plan.build?[{id:"reference-plan",pathId:-1,points:referenceCopy.plan.build.points}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:plan.reference?!!extensionJoinError(plan.points,extensionPrevious(plan.extension)):!!circularAlignment(plan.points,extensionPrevious(plan.extension)).error})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
+  const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referenceCopy.plan.build?[{id:"reference-plan",pathId:-1,points:referenceCopy.plan.build.points}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:plan.reference?!!extensionJoinError(plan.points,extensionPrevious(plan.extension)):!!plannedGeometry(plan.points,plan.editedGeometry,extensionPrevious(plan.extension)).error})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
   const stationSelection=stationCursor?stationTarget(stationLines,stationCursor,Number(platformLength),camera,mapSize.width>0&&mapSize.height>0?mapViewport(mapSize.width,mapSize.height).scale:1):null;
   const stationPreview=activeTool==="stations"&&mapMode==="place"&&!dragging&&!stationSelection?.error?stationSelection?.target?.polygon??[]:[];
   const previewCenter=stationSelection?.target?.center??null;
@@ -406,9 +419,9 @@ export function App() {
   useEffect(()=>{if(!referenceCopy.active)discardPlanStations(-1);},[referenceCopy.active]);
   const graphNodesById=useMemo(()=>new Map(graphBundle?.graph.nodes.map(node=>[node.osmId,node])??[]),[graphBundle]);
   useEffect(()=>{referenceCopy.clearHover();},[camera]);
-  const saveBlocked = candidateDirty || routeDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
+  const saveBlocked = !!anchorPreview || candidateDirty || routeDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
   const hasPlans = plannedStations.length>0 || draftPoints.length > 0 || redoPoints.length > 0 || parkedPaths.length > 0 || referenceCopy.active;
-  const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,plans,parkedPaths,activePathId,activePlanId,draftPoints,redoPoints,draftExtension,trackType,designSpeedKmh,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[plans,parkedPaths,activePathId,activePlanId,draftPoints,redoPoints,draftExtension,trackType,designSpeedKmh,roadFollowing,plannedStations,draftFinished]);
+  const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,trackType,designSpeedKmh,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,trackType,designSpeedKmh,roadFollowing,plannedStations,draftFinished]);
   const planFingerprint=JSON.stringify(constructionPlans);
   const [savedPlanFingerprint,setSavedPlanFingerprint]=useState(()=>JSON.stringify(emptyConstructionPlans()));
   const plansDirty=planFingerprint!==savedPlanFingerprint;
@@ -419,7 +432,7 @@ export function App() {
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined){
     const restored=value??emptyConstructionPlans(),ids=nextConstructionIds(restored);
     setPlans(restored.plans);setParkedPaths(restored.parkedPaths);setActivePathId(restored.activePathId);setActivePlanId(restored.activePlanId);
-    setDraftPoints(restored.draftPoints);setRedoPoints(restored.redoPoints);setDraftExtension(restored.draftExtension);setDraftFinished(restored.draftFinished);
+    setDraftPoints(restored.draftPoints);setDraftEditedGeometry(restored.draftEditedGeometry);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints(restored.redoPoints);setDraftExtension(restored.draftExtension);setDraftFinished(restored.draftFinished);
     setTrackType(restored.trackType);setDesignSpeedKmh(restored.designSpeedKmh);setRoadFollowing(restored.roadFollowing);setPlannedStations(restored.plannedStations);
     nextPlanId.current=ids.plan;nextPathId.current=ids.path;nextPlannedStationId.current=ids.station;
     setSavedPlanFingerprint(JSON.stringify(restored));
@@ -555,8 +568,64 @@ export function App() {
   function changeMapMode(mode: "move" | "place" | "draw") {
     setError("");
     const wasGesturing = gestureRef.current !== null;
-    cancelMapGesture(); setMapMode(mode);setStationCursor(null); setCursorPosition(null); setHoverPoint(null); setPlanHover(null);
+    cancelAnchorGesture();cancelMapGesture(); setMapMode(mode);setStationCursor(null); setCursorPosition(null); setHoverPoint(null); setPlanHover(null);
     if (!wasGesturing) { suppressMapClick.current = false; suppressSelectionClick.current = false; }
+  }
+  function applyAnchorEdit(id:number,value:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[]}){
+    if(id===activePathId){setDraftPoints(value.points);setDraftEditedGeometry(value.geometry);setRedoPoints(value.redo);setHoverPoint(null);}
+    else setParkedPaths(paths=>paths.map(path=>path.id===id?{...path,points:value.points,editedGeometry:value.geometry,line:plannedGeometry(value.points,value.geometry,extensionPrevious(path.extension)).points,redo:value.redo}:path));
+  }
+  function undoAnchor(redo:boolean){
+    const history=redo?anchorRedo:anchorUndo,entry=history.at(-1);if(!entry)return;
+    applyAnchorEdit(entry.id,redo?entry.after:entry.before);if(entry.kind==="point"&&entry.id===activePathId)setDraftFinished(false);
+    if(redo){setAnchorRedo(items=>items.slice(0,-1));setAnchorUndo(items=>[...items,entry]);}else{setAnchorUndo(items=>items.slice(0,-1));setAnchorRedo(items=>[...items,entry]);}
+  }
+  function cancelAnchorGesture(){
+    const gesture=anchorGesture.current;anchorGesture.current=null;setAnchorPreview(null);
+    if(gesture){suppressMapClick.current=true;suppressSelectionClick.current=true;if(svgRef.current?.hasPointerCapture?.(gesture.pointerId))svgRef.current.releasePointerCapture(gesture.pointerId);}
+  }
+  function beginAnchorGesture(event:ReactPointerEvent<SVGRectElement>,id:number,index:number){
+    if(!enabled||busyRef.current||activeTool!=="tracks"||referenceCopy.active||event.button!==0||event.isPrimary===false)return;
+    const path=id===activePathId?parkCurrentPlan():parkedPaths.find(p=>p.id===id);
+    if(!path||path.reference||path.roadFollowing||path.points.length<2||(index===0&&path.extension))return;
+    event.stopPropagation();smoothZoom.cancel();cancelMapGesture();
+    const gesture:AnchorGesture={pointerId:event.pointerId,id,index,startX:event.clientX,startY:event.clientY,points:path.points,line:path.line,geometry:path.editedGeometry,redo:path.redo,previous:extensionPrevious(path.extension),preview:null,error:null,snapped:false};
+    anchorGesture.current=gesture;setAnchorPreview(gesture);setHoverPoint(null);setPlanHover(null);
+    svgRef.current?.setPointerCapture?.(event.pointerId);
+  }
+  function moveAnchorGesture(event:ReactPointerEvent<SVGSVGElement>){
+    const gesture=anchorGesture.current;if(!gesture||gesture.pointerId!==event.pointerId)return;
+    if(!gesture.preview&&Math.hypot(event.clientX-gesture.startX,event.clientY-gesture.startY)<5)return;
+    const rect=event.currentTarget.getBoundingClientRect();setCursorPosition({x:event.clientX-rect.left,y:event.clientY-rect.top,width:rect.width,height:rect.height});let target=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
+    if(!target)return;
+    const anchors=[...alignments.flatMap(line=>[line.points[0],line.points.at(-1)!]),...parkedPaths.filter(p=>p.id!==gesture.id).flatMap(p=>p.points),...(gesture.id!==activePathId?draftPoints:[])];
+    const nearest=anchors.map(point=>({point,distance:endpointDistance(target!,point,rect.width,rect.height)})).sort((a,b)=>a.distance-b.distance)[0];
+    gesture.snapped=!!nearest&&nearest.distance<=14;if(gesture.snapped)target=nearest.point;
+    else {
+      const lines=[...alignments.map(line=>line.points),...parkedPaths.filter(path=>path.id!==gesture.id).map(path=>path.line),...(gesture.id!==activePathId?[draftLine]:[])];
+      const hit=lines.filter(line=>line.length>1).map(line=>nearestOnAlignment(line,target!).point).map(point=>({point,distance:endpointDistance(target!,point,rect.width,rect.height)})).sort((a,b)=>a.distance-b.distance)[0];
+      if(hit&&hit.distance<=6){target=hit.point;gesture.snapped=true;}
+    }
+    const preview=anchorDragPreview(gesture.line,gesture.points,gesture.index,target);
+    const points=gesture.points.map((point,index)=>index===gesture.index?target!:point);
+    const geometry:EditedGeometry={version:1,anchors:points,line:preview.line};
+    const validation=plannedGeometry(points,geometry,gesture.previous);
+    gesture.preview=geometry;gesture.error=preview.error||validation.error;
+    // Do not silently create a zero-length anchor interval, even if sampling obscures it.
+    if(points.some((point,index)=>index>0&&distanceM(point,points[index-1])<.1))gesture.error="アンカーが重なっています";
+    setAnchorPreview({...gesture});
+  }
+  function endAnchorGesture(event:ReactPointerEvent<SVGSVGElement>,canceled=false){
+    const gesture=anchorGesture.current;if(!gesture||gesture.pointerId!==event.pointerId)return;
+    if(!canceled)moveAnchorGesture(event);
+    const moved=!!gesture.preview;
+    if(!canceled&&gesture.preview&&!gesture.error){
+      const entry:AnchorEdit={id:gesture.id,before:{points:gesture.points,geometry:gesture.geometry,redo:gesture.redo},after:{points:gesture.preview.anchors,geometry:gesture.preview,redo:[]}};
+      applyAnchorEdit(gesture.id,entry.after);setAnchorUndo(items=>[...items,entry].slice(-50));setAnchorRedo([]);setError("");
+    }else if(!canceled&&gesture.error)setError(gesture.error);
+    cancelAnchorGesture();
+    // A click without dragging retains finish/extend semantics.
+    if(!moved&&!canceled){suppressMapClick.current=false;suppressSelectionClick.current=false;}
   }
   function pointerDown(event: ReactPointerEvent<SVGSVGElement>) {
     smoothZoom.cancel();
@@ -572,6 +641,7 @@ export function App() {
     suppressSelectionClick.current = false;
   }
   function pointerMove(event: ReactPointerEvent<SVGSVGElement>) {
+    if(anchorGesture.current){moveAnchorGesture(event);return;}
     if(enabled&&referenceCopy.active&&referenceCopy.roadFollow&&mapMode==="draw"&&!gestureRef.current){const p=coordinatesFromClient(event.clientX,event.clientY,event.currentTarget.getBoundingClientRect(),camera);if(p)void referenceCopy.hover(p);}
 
     if(enabled&&activeTool==="stations"&&mapMode==="place"&&!gestureRef.current){const rect=event.currentTarget.getBoundingClientRect();setStationCursor(coordinatesFromClient(event.clientX,event.clientY,rect,camera));setCursorPosition({x:event.clientX-rect.left,y:event.clientY-rect.top,width:rect.width,height:rect.height});}
@@ -589,6 +659,7 @@ export function App() {
     changeCamera(panCamera(gesture.camera, -dx / gesture.scale, -dy / gesture.scale));
   }
   function pointerEnd(event: ReactPointerEvent<SVGSVGElement>, canceled = false) {
+    if(anchorGesture.current){endAnchorGesture(event,canceled);return;}
     const gesture = gestureRef.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
     if (!canceled) pointerMove(event);
@@ -671,22 +742,23 @@ export function App() {
         return;
       }
       coordinates=drawingPoint(coordinates,rect.width,rect.height);
-      const candidate=circularAlignment([...draftPoints,coordinates],previousPoint);if(candidate.error){setHoverPoint(coordinates);return;}
+      const editedForAppend=draftEditedGeometry&&redoPoints.length?(draftPoints.length>=2?{version:1 as const,anchors:draftPoints,line:draftLine}:undefined):draftPoints.length?draftEditedGeometry:undefined;
+      const candidate=plannedGeometry([...draftPoints,coordinates],editedForAppend,previousPoint);if(candidate.error){setHoverPoint(coordinates);return;}
       if (draftPoints.length && distanceM(draftPoints[draftPoints.length - 1], coordinates) < .1) return;
       if (draftPoints.length >= 128) { setError("線形点は128点までです。一度建設を確定してください。"); return; }
-      setDraftPoints((points) => [...points, coordinates]); setRedoPoints([]); setHoverPoint(null); return;
+      setAnchorUndo(items=>[...items,{kind:"point" as const,id:activePathId,before:{points:draftPoints,geometry:draftEditedGeometry,redo:[...redoPoints,coordinates]},after:{points:[...draftPoints,coordinates],geometry:editedForAppend,redo:[]}}].slice(-50));setAnchorRedo([]);setDraftEditedGeometry(editedForAppend);setDraftPoints((points) => [...points, coordinates]); setRedoPoints([]); setHoverPoint(null); return;
     }
     if (activeTool !== "stations" || mapMode !== "place") return;
     if(event.detail>=2)return;
     placePlatformAt(coordinates,rect.width,rect.height);
   }
 
-  const currentPaths:PlannedPath[]=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,designSpeedKmh,trackType,roadFollowing,extension:draftExtension}]:[])];
+  const currentPaths:PlannedPath[]=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,editedGeometry:draftEditedGeometry,designSpeedKmh,trackType,roadFollowing,extension:draftExtension}]:[])];
   const currentStations=plannedPlatforms.filter(item=>stationPlanId(item.station)===activePlanId);
   const planHasContent=currentPaths.length>0||currentStations.length>0;
-  const planBuildable=planHasContent&&currentPaths.every(path=>path.line.length>=2&&!(path.reference?extensionJoinError(path.points,extensionPrevious(path.extension)):circularAlignment(path.points,extensionPrevious(path.extension)).error)&&!(path.trackType==="tram"&&path.roadFollowing));
+  const planBuildable=planHasContent&&currentPaths.every(path=>path.line.length>=2&&!(path.reference?extensionJoinError(path.points,extensionPrevious(path.extension)):plannedGeometry(path.points,path.editedGeometry,extensionPrevious(path.extension)).error)&&!(path.trackType==="tram"&&path.roadFollowing));
   function commitAlignment() {
-    if (!enabled || !planBuildable) return;
+    if (!enabled || !planBuildable || anchorGesture.current) return;
     void perform(async () => {
       const ids=new Set(currentPaths.map(path=>path.id));
       if(currentStations.some(item=>!item.valid))throw Error("計画駅が線路に収まりません。線形を元に戻すか、計画駅を取り消してください。");
@@ -700,7 +772,7 @@ export function App() {
       setStationUndo(history=>history.filter(keepHistory));setStationRedo(history=>history.filter(keepHistory));
       ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
       const created=snapshot.alignments?.find(a=>!alignments.some(old=>old.id===a.id));
-      setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftPoints([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
+      setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);
       if(created)setAlignmentId(created.id);
       const builtStations=snapshot.stations.filter(station=>!world?.stations.some(old=>old.id===station.id)).map(station=>({station,placement:snapshot.station_placements?.find(p=>p.station_id===station.id)}));
       setStationUndo(history=>[...history,...builtStations].slice(-50));setStationRedo([]);
@@ -786,10 +858,13 @@ export function App() {
       }
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==="z") {
         event.preventDefault();if(event.repeat || busyRef.current)return;
+        if(anchorGesture.current){cancelAnchorGesture();return;}
+        if(activeTool==="tracks" && (event.shiftKey?anchorRedo.length:anchorUndo.length)){undoAnchor(event.shiftKey);return;}
         if(referenceCopy.active && activeTool==="tracks"){if(event.shiftKey)referenceCopy.redoPick();else referenceCopy.undo();}
         else if(activeTool==="tracks" && (draftPoints.length || redoPoints.length)){if(event.shiftKey)redoPoint();else undoPoint();}
         else if(event.shiftKey)redoStation();else undoStation();return;
       }
+      if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
       if (event.key === "Escape") { if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
@@ -982,11 +1057,12 @@ export function App() {
             <label>設計最高速度 (km/h)<input aria-label="線路の設計最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/></label>
             <small>接線に近づけると直線、離すと曲線になります</small>
 <details className="construction-help"><summary>説明</summary><p>設計最高速度は線路の上限で、車両性能とは別です。初期値は通常120・高速300・トラム50 km/h、入力範囲1〜600 km/hの暫定ゲーム設定です。延伸は元の線路の値を引き継ぎます。速度に連動する費用や種類別の曲線・勾配規格差は未実装です。道路追従は左側の「限定道路追従」から開始できます。</p></details></div>}
-            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
+            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
               <strong>{roadFollowingBlocked?"道路追従を開始するか、道路に合わせるをOFFにしてください":previewError?`敷設不可：${previewError}`:hoverPoint&&draftPoints.length?"基本条件OK（地形等は未判定）":draftPoints.length?"最後の点をもう一度クリックで終了":"始点をクリック"}</strong>
               {draftPoints.length>0&&<><div>計画 {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div><div>半径（近似）：{circleGuide?`${Math.round(circleGuide.radiusM)} m`:"直線 / 終端"}</div>{!previewError&&<div>線路の最高速度 {Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh)} km/h{circleGuide?"（曲線制限は暫定）":"（設計上限）"}</div>}</>}
               <small>建設費・維持費：未計算</small>
             </div>}
+            {anchorPreview?.preview&&cursorPosition&&<div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{anchorPreview.error??(anchorPreview.snapped?"位置合わせ（接続は変更しません）":"アンカーを移動")}</div>}
             {endpointCandidate&&cursorPosition&&<div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-100,cursorPosition.y+18))}}>
               <strong>{!endpointCandidateAllowed?"他社の線路は延伸できません":endpointCandidate.kind==="plan"?"計画の終点にスナップ · クリックで続けて描く":(endpointCandidate.alignment.name||"既存線路")+"の"+(endpointCandidate.endpoint==="start"?"始点":"終点")+"にスナップ · クリックで延伸"}</strong>
             </div>}
@@ -1001,7 +1077,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { referenceCopy.clearHover();setCursorPosition(null);setPlanHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
+            }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setPlanHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
@@ -1027,7 +1103,7 @@ export function App() {
               </g>)}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {referenceCopy.active&&referenceCopy.plan.build&&<path d={drawPath(referenceCopy.plan.build.points)} className="draft-path reference-copy-preview" style={referenceCopy.roadFollow?{stroke:"#298746"}:undefined} pointerEvents="none"/>}
-              {parkedPaths.map(plan=><g key={plan.id}><path d={drawPath(plan.line)} className={"draft-path parked-plan"+(showPlanHover&&planHover?.id===plan.id?" plan-hovered":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true)}</g>)}
+              {parkedPaths.map(plan=><g key={plan.id}><path d={drawPath(plan.line)} className={"draft-path parked-plan"+(showPlanHover&&planHover?.id===plan.id?" plan-hovered":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="直線延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
               {!referenceCopy.active && guideCenter && guideEdge && <circle className="curve-circle-guide" cx={guideCenter.x} cy={guideCenter.y} r={Math.hypot(guideEdge.x-guideCenter.x,guideEdge.y-guideCenter.y)} fill="none" stroke={previewError ? "#b34c4c" : "#65716b"} strokeWidth="1" opacity=".6" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
               {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className={"draft-path confirmed-draft"+(showPlanHover&&planHover?.id===activePathId?" plan-hovered":"")} pointerEvents="none" />}
@@ -1036,6 +1112,7 @@ export function App() {
               {endpointCandidate&&(()=>{const p=project(endpointCandidate.point.latitude,endpointCandidate.point.longitude,camera);return <circle className="endpoint-snap-ring" data-allowed={endpointCandidateAllowed} cx={p.x} cy={p.y} r={10/mapViewport(cursorPosition!.width,cursorPosition!.height).scale} fill="none" stroke={endpointCandidateAllowed?"#14b8a6":"#ef4444"} strokeWidth="3" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;})()}
               {showPlanHover&&!endpointCandidate&&planHover&&hoveredPlan&&(()=>{const nearest=nearestOnAlignment(hoveredPlan.line,planHover.point).point,p=project(nearest.latitude,nearest.longitude,camera);return <circle className="plan-hover-point" cx={p.x} cy={p.y} r={5/viewport.scale} fill="none" stroke="#d95187" strokeWidth="1.5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;})()}
               {drawAnchors(draftPoints)}
+              {anchorPreview?.preview&&<g pointerEvents="none"><path d={drawPath(anchorPreview.preview.line)} className={"draft-path anchor-drag-preview"+(anchorPreview.error?" invalid-candidate":"")} /><circle cx={project(anchorPreview.preview.anchors[anchorPreview.index].latitude,anchorPreview.preview.anchors[anchorPreview.index].longitude,camera).x} cy={project(anchorPreview.preview.anchors[anchorPreview.index].latitude,anchorPreview.preview.anchors[anchorPreview.index].longitude,camera).y} r={9/viewport.scale} className={anchorPreview.snapped?"anchor-snap-ring snapped":"anchor-snap-ring"}/></g>}
               {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className="planned-station" pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform"/>:<circle cx={p.x} cy={p.y} r="5" fill={valid?"#777":"#b34c4c"}/>}{stationNamesVisible&&<text x={p.x+10} y={p.y-8}>{station.name}（計画）</text>}</g>;})}
               {stationPreview.length >= 4 && <path d={drawPath(stationPreview) + "Z"} className="station-platform station-placement-preview" opacity=".65" pointerEvents="none" />}
               {world?.tracks.map((track) => {
@@ -1106,7 +1183,7 @@ export function App() {
             <div role="group" aria-label="計画内の経路">{currentPaths.map(path=><button key={path.id} className="secondary" disabled={!enabled||referenceCopy.active||path.id===activePathId||!!path.reference} aria-pressed={path.id===activePathId} onClick={()=>selectPath(path.id)}>経路 {path.id}（{path.reference?"実在形状・編集固定 / ":""}{path.points.length}点・やり直し{path.redo.length}点）</button>)}</div>
             <label htmlFor="construction-plan-name">計画名（任意）</label><input id="construction-plan-name" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled || referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/>
             <div className="build-summary"><div><strong>{draftPoints.length}</strong><span>線形点</span></div><div><strong>{alignments.length}</strong><span>建設済み線路</span></div></div>
-            <div className="route-actions"><button className="secondary" disabled={!enabled || !draftPoints.length} onClick={undoPoint}>1点戻す</button><button className="secondary" disabled={!enabled || !redoPoints.length} onClick={redoPoint}>やり直す</button><button className="secondary" disabled={!enabled || !planHasContent} onClick={clearCurrentPlan}>下書きを消去</button></div>
+            <div className="route-actions"><button className="secondary" disabled={!enabled || (!draftPoints.length&&!anchorUndo.length)} onClick={undoPoint}>1点戻す</button><button className="secondary" disabled={!enabled || (!redoPoints.length&&!anchorRedo.length)} onClick={redoPoint}>やり直す</button><button className="secondary" disabled={!enabled || !planHasContent} onClick={clearCurrentPlan}>下書きを消去</button></div>
             <button className="full-width track-submit" disabled={!enabled || referenceCopy.active || !planBuildable} onClick={commitAlignment}>計画を着工</button><p className="tool-helper">計画は着工まで未確定です。建設費・維持費は未計算。</p>
 
             <ul className="construction-list">{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name}（{TRACK_TYPE_LABELS[a.track_type]??"通常"}）<small>選択</small></button><small>{world?.alignment_provenance?.some(p=>p.alignment_id===a.id)?"参考OSM由来":"出典記録なし"}</small></li>)}</ul>

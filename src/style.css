@@ -437,3 +437,10 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .map-credits-content p { margin:0 0 7px; }
 
 .map-credits > * { pointer-events:auto; }
+.workbench .draft-anchor,.workbench .parked-anchor { pointer-events:all; cursor:grab; }
+.workbench .anchor-drag-preview { stroke:#3dd6ce; stroke-width:4; }
+.workbench .anchor-drag-preview.invalid-candidate { stroke:#d9534f; }
+.anchor-snap-ring { fill:none;stroke:#eee;stroke-width:2;vector-effect:non-scaling-stroke; }
+.anchor-snap-ring.snapped { stroke:#30dbb4;stroke-width:3; }
+.workbench .draft-anchor,.workbench .parked-anchor { pointer-events:none; }
+.anchor-drag-hit { fill:transparent;stroke:none;pointer-events:all;cursor:grab; }

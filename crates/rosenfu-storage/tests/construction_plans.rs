@@ -81,3 +81,37 @@ fn schema_ten_path_station_and_schema_eleven_built_station_roundtrip() {
     value["world"]["construction_plans"]["plannedStations"][0]["pathId"] = json!(3);
     assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
 }
+
+#[test]
+fn edited_plan_shape_roundtrips_without_reconstruction() {
+    let mut payload = serde_json::to_value(plans()).unwrap();
+    let a = json!({"latitude":35.0,"longitude":139.0});
+    let b = json!({"latitude":35.001,"longitude":139.002});
+    let mid = json!({"latitude":35.0006,"longitude":139.001});
+    payload["draftPoints"] = json!([a, b]);
+    payload["draftEditedGeometry"] = json!({"version":1,"anchors":[a,b],"line":[a,mid,b]});
+    let mut draft = WorldDraft::default();
+    draft.construction_plans = Some(serde_json::from_value(payload.clone()).unwrap());
+    let world = World::new(draft).unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+    payload["draftEditedGeometry"]["version"] = json!(999);
+    let mut invalid = WorldDraft::default();
+    invalid.construction_plans = Some(serde_json::from_value(payload).unwrap());
+    assert!(World::new(invalid).is_err());
+}
+
+#[test]
+fn schema_eleven_plan_without_geometry_remains_unchanged() {
+    let mut draft = WorldDraft::default();
+    draft.construction_plans = Some(plans());
+    let world = World::new(draft).unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
+    value["schema_version"] = json!(11);
+    let restored = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(restored, world);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&encode(&restored).unwrap()).unwrap()
+            ["schema_version"],
+        12
+    );
+}
