@@ -391,15 +391,35 @@ fn save_world(
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
     view_state: Option<rosenfu_core::world::ViewState>,
     editor: State<'_, Mutex<WorldEditor>>,
-) -> Result<SaveResult, String> {
+) -> Result<session::ManualSaveResult, String> {
     let path = save_path(&app)?;
     std::fs::create_dir_all(path.parent().ok_or("invalid save path")?)
         .map_err(|e| e.to_string())?;
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .save_with_view(&path, construction_plans, view_state, false)?;
-    Ok(SaveResult { saved: true })
+        .request_manual_save(&path, construction_plans, view_state)
+}
+#[tauri::command]
+fn confirm_manual_save(
+    app: tauri::AppHandle,
+    token: String,
+    construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
+    view_state: Option<rosenfu_core::world::ViewState>,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<session::ManualSaveResult, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .confirm_manual_save(&save_path(&app)?, &token, construction_plans, view_state)
+}
+#[tauri::command]
+fn cancel_manual_save(token: String, editor: State<'_, Mutex<WorldEditor>>) -> Result<(), String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .cancel_manual_save(&token);
+    Ok(())
 }
 #[tauri::command]
 fn load_world(
@@ -440,6 +460,8 @@ fn main() {
             save_planned_route,
             save_service,
             save_world,
+            confirm_manual_save,
+            cancel_manual_save,
             autosave_world,
             autosave_status,
             allow_autosave_replacement,
