@@ -149,6 +149,7 @@ pub enum WorldError {
     MissingReference(&'static str),
     InvalidCoordinate,
     InvalidAlignment,
+    InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
     InvalidProvenance,

@@ -1,6 +1,6 @@
 # 参照形状と延伸区間の出典
 
-保存形式 schema 8。schema 1〜7 は読込時に移行し、元ファイルは保存するまで変更しない。
+保存形式 schema 9。schema 1〜8 は読込時に移行し、元ファイルは保存するまで変更しない。
 旧出典は元線形の点0から最終点までを指す範囲に変換する。
 
 `alignment_provenance` は線形IDと点範囲（start_point_index / end_point_index、両端を含む）で参照由来部分を表す。

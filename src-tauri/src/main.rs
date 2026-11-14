@@ -50,11 +50,23 @@ fn build_alignment_from_reference(
     source_record: rosenfu_core::world::SourceRecord,
     provenance: rosenfu_core::world::AlignmentProvenanceInput,
     track_type: rosenfu_core::world::TrackType,
+    design_speed_kmh: Option<f64>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .build_alignment_from_reference_typed(name, points, source_record, provenance, track_type)
+        .build_plan(vec![session::PlannedAlignment {
+            name,
+            points,
+            track_type,
+            design_speed_kmh,
+            stations: vec![],
+            reference: Some(session::PlannedAlignmentReference {
+                source_record,
+                provenance,
+            }),
+            extension: None,
+        }])
 }
 #[tauri::command]
 fn build_alignment(
@@ -62,11 +74,20 @@ fn build_alignment(
     name: String,
     points: Vec<GeoPoint>,
     track_type: rosenfu_core::world::TrackType,
+    design_speed_kmh: Option<f64>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .build_alignment_typed(name, points, track_type)
+        .build_plan(vec![session::PlannedAlignment {
+            name,
+            points,
+            track_type,
+            design_speed_kmh,
+            stations: vec![],
+            reference: None,
+            extension: None,
+        }])
 }
 #[tauri::command]
 fn build_alignment_with_stations(
@@ -76,11 +97,20 @@ fn build_alignment_with_stations(
     track_type: rosenfu_core::world::TrackType,
     stations: Vec<session::PlannedStation>,
     reference: Option<session::PlannedAlignmentReference>,
+    design_speed_kmh: Option<f64>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .build_alignment_with_stations(name, points, track_type, stations, reference)
+        .build_plan(vec![session::PlannedAlignment {
+            name,
+            points,
+            track_type,
+            design_speed_kmh,
+            stations,
+            reference,
+            extension: None,
+        }])
 }
 #[tauri::command]
 fn build_plan(

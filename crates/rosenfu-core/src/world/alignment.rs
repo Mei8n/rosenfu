@@ -6,13 +6,23 @@ pub struct GeoPoint {
     pub latitude: f64,
     pub longitude: f64,
 }
-/// Infrastructure class; performance and construction rules are not yet simulated.
+/// Infrastructure class; vehicle performance is not yet simulated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackType {
     Normal,
     HighSpeed,
     Tram,
+}
+impl TrackType {
+    /// Provisional gameplay defaults, not real-world infrastructure standards.
+    pub fn default_design_speed_kmh(self) -> f64 {
+        match self {
+            Self::Normal => 120.0,
+            Self::HighSpeed => 300.0,
+            Self::Tram => 50.0,
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +32,9 @@ pub struct Alignment {
     pub name: String,
     pub points: Vec<GeoPoint>,
     pub track_type: TrackType,
+    /// None preserves legacy saves and resolves to the track-type default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_speed_kmh: Option<f64>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +53,10 @@ fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
     6_371_000.0 * x.hypot(y)
 }
 impl Alignment {
+    pub fn effective_design_speed_kmh(&self) -> f64 {
+        self.design_speed_kmh
+            .unwrap_or_else(|| self.track_type.default_design_speed_kmh())
+    }
     pub fn length_m(&self) -> f64 {
         self.points.windows(2).map(|p| distance(p[0], p[1])).sum()
     }
@@ -63,6 +80,10 @@ impl WorldDraft {
     pub(super) fn validate_alignments(&self) -> Result<(), WorldError> {
         for a in &self.alignments {
             name(&a.name, "alignment")?;
+            let speed = a.effective_design_speed_kmh();
+            if !speed.is_finite() || !(1.0..=600.0).contains(&speed) {
+                return Err(WorldError::InvalidAlignmentDesignSpeed);
+            }
             if !self.companies.iter().any(|c| c.id == a.owner) {
                 return Err(WorldError::MissingReference("alignment.owner"));
             }
@@ -254,9 +275,26 @@ impl World {
                 name,
                 points,
                 track_type,
+                design_speed_kmh: None,
             })
         })
         .map(AlignmentId)
+    }
+    /// Change a newly constructed alignment's design cap, preserving atomic validation.
+    pub fn set_alignment_design_speed(
+        &mut self,
+        id: AlignmentId,
+        speed: f64,
+    ) -> Result<(), WorldError> {
+        let mut candidate = self.data.clone();
+        let alignment = candidate
+            .alignments
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or(WorldError::MissingReference("alignment"))?;
+        alignment.design_speed_kmh = Some(speed);
+        *self = Self::new(candidate)?;
+        Ok(())
     }
     pub fn place_station_on_alignment(
         &mut self,

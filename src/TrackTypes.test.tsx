@@ -47,3 +47,16 @@ test("tram defaults road following on, blocks unsupported drawing and constructi
  vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"tram"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="build_alignment")?.[1]).toMatchObject({trackType:"tram"});
 });
+
+test('individual path design speeds survive plan switches and are sent together',async()=>{
+ const map=await start(),speed=()=>screen.getByRole('spinbutton',{name:'線路の設計最高速度'}) as HTMLInputElement;
+ const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ fireEvent.change(speed(),{target:{value:'95'}});click(180,130);click(230,130);click(230,130);
+ click(300,200);fireEvent.change(speed(),{target:{value:'80'}});click(360,200);
+ fireEvent.click(panel().getByRole('button',{name:'別の線路計画を追加'}));
+ fireEvent.change(speed(),{target:{value:'60'}});click(150,240);click(200,240);
+ fireEvent.click(panel().getByRole('button',{name:/計画 1 を編集/}));expect(speed().value).toBe('95');
+ vi.mocked(invoke).mockRejectedValueOnce(Error('retain speed'));fireEvent.click(panel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/retain speed/);
+ const requests=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='build_plan')![1] as {alignments:{designSpeedKmh:number}[]};
+ expect(requests.alignments.map(path=>path.designSpeedKmh).sort()).toEqual([80,95]);
+});

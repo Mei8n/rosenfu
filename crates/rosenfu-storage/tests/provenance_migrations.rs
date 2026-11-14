@@ -76,7 +76,7 @@ fn schemas_one_through_five_preserve_all_fields_and_backup_bytes() {
         let world = load_world(&path).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
         let current: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
-        assert_eq!(current["schema_version"], 8);
+        assert_eq!(current["schema_version"], 9);
         for (key, value) in old["world"].as_object().unwrap() {
             assert_eq!(&current["world"][key], value, "v{version}: {key}");
         }

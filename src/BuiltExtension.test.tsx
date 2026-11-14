@@ -51,11 +51,11 @@ test('extending invalidates built station redo ratios from the old alignment len
  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});await screen.findByText(/やり直せる駅設置履歴はありません/);expect(vi.mocked(invoke).mock.calls).toHaveLength(count);
 });
 
-test('straight extension rejects an invalid join in preview without altering ordinary straight mode',async()=>{
- const map=await start();fireEvent.click(screen.getByRole("button",{name:/^直線$/}));
- fireEvent.click(map,{clientX:250,clientY:130});fireEvent.pointerMove(map,{clientX:250,clientY:190});
- expect(await screen.findByText(/接合角は5度以内/)).toBeTruthy();expect(map.querySelector('.invalid-candidate')).toBeTruthy();
- fireEvent.click(map,{clientX:250,clientY:190});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+test('automatic extension rejects a backward join in preview',async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:250,clientY:130});fireEvent.pointerMove(map,{clientX:220,clientY:190});
+ expect(await screen.findByText(/線路が折り返しています/)).toBeTruthy();expect(map.querySelector('.invalid-candidate')).toBeTruthy();
+ fireEvent.click(map,{clientX:220,clientY:190});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(map,{clientX:310,clientY:130});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
@@ -66,4 +66,14 @@ test('an alignment used by a service can start and submit an extension',async()=
  fireEvent.click(map,{clientX:250,clientY:130});expect(screen.getByText(/から延伸を計画しています/)).toBeTruthy();
  fireEvent.click(map,{clientX:310,clientY:130});vi.mocked(invoke).mockResolvedValueOnce(world);
  fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({extension:{alignmentId:'3',endpoint:'end'}})])})));
+});
+
+test('extension inherits non-default design speed and prevents changing its setting',async()=>{
+ const map=await start({alignments:[{...line,design_speed_kmh:95}]});
+ fireEvent.click(map,{clientX:250,clientY:130});
+ const input=screen.getByRole('spinbutton',{name:'線路の設計最高速度'}) as HTMLInputElement;
+ expect(input.value).toBe('95');expect(input.disabled).toBe(true);
+ fireEvent.click(map,{clientX:310,clientY:133});
+ vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({designSpeedKmh:95})])})));
 });

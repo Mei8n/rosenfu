@@ -3,7 +3,7 @@ const R=6371000, DEG=Math.PI/180;
 type XY={x:number;y:number};
 export type CircleGuide={center:GeoPoint;edge:GeoPoint;radiusM:number};
 export type CircularArc={segmentIndex:number;radiusM:number;midpoint:GeoPoint;startPointIndex:number;endPointIndex:number};
-export type CircularDraft={points:GeoPoint[];arcs:CircularArc[];guide:CircleGuide|null;minimumRadiusM:number;error:string|null};
+export type CircularDraft={points:GeoPoint[];arcs:CircularArc[];guide:CircleGuide|null;minimumRadiusM:number;error:string|null;tangent:XY|null};
 /** Provisional game-balance curve limit, not an actual train speed or engineering standard.
  * A straight segment (infinite radius) and invalid radii have no curve speed. */
 export function provisionalCurveSpeed(radiusM:number):number|null {
@@ -13,7 +13,7 @@ export function provisionalCurveSpeed(radiusM:number):number|null {
  * establishes heading; adding a point never changes an earlier segment.
  * Metre radii are local approximations, not a surveyed track design. */
 export function circularAlignment(anchors:GeoPoint[], previousPoint?:GeoPoint):CircularDraft {
- const result:CircularDraft={points:[],arcs:[],guide:null,minimumRadiusM:Infinity,error:null};
+ const result:CircularDraft={points:[],arcs:[],guide:null,minimumRadiusM:Infinity,error:null,tangent:null};
  if(!anchors.length)return result;
  if(anchors.some(p=>!Number.isFinite(p.latitude)||!Number.isFinite(p.longitude)||Math.abs(p.latitude)>80||Math.abs(p.longitude)>180)){result.error='座標が範囲外です';return result;}
  const origin=anchors[0],scale=R*Math.cos(origin.latitude*DEG),oy=Math.asinh(Math.tan(origin.latitude*DEG));
@@ -52,5 +52,19 @@ export function circularAlignment(anchors:GeoPoint[], previousPoint?:GeoPoint):C
   tangent={x:tangent.x*c-tangent.y*s,y:tangent.x*s+tangent.y*c};
   if(result.error)break;
  }
+ result.tangent=result.error?null:tangent;
  return result;
+}
+
+/** Snap only the new anchor to the exact outgoing tangent. The tolerance is
+ * screen-space (CSS pixels), bounded to a shallow angle to preserve deliberate
+ * bends near the endpoint. Existing anchors are never changed. */
+export function snapStraight(anchors:GeoPoint[],point:GeoPoint,metresPerPixel:number,previousPoint?:GeoPoint):GeoPoint {
+ const draft=circularAlignment(anchors,previousPoint),t=draft.tangent,end=anchors.at(-1);
+ if(!t||!end||!Number.isFinite(metresPerPixel)||metresPerPixel<=0)return point;
+ const scale=R*Math.cos(anchors[0].latitude*DEG),oy=Math.asinh(Math.tan(end.latitude*DEG));
+ const dx=(point.longitude-end.longitude)*DEG*scale,dy=(Math.asinh(Math.tan(point.latitude*DEG))-oy)*scale;
+ const forward=dx*t.x+dy*t.y,lateral=-dx*t.y+dy*t.x;
+ if(forward<=0||Math.abs(lateral)>8*metresPerPixel||Math.abs(Math.atan2(lateral,forward))>6*DEG)return point;
+ return {longitude:end.longitude+forward*t.x/scale/DEG,latitude:Math.atan(Math.sinh(oy+forward*t.y/scale))/DEG};
 }
