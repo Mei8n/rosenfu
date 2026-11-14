@@ -265,5 +265,24 @@ pub(super) fn corridor_edges(
             }
         }
     }
+    // Save order and endpoint-pair storage orientation must not change which
+    // candidate survives bounded search.
+    edges.sort_by_key(|(from, to, chain)| {
+        (
+            *from,
+            *to,
+            chain
+                .iter()
+                .map(|link| {
+                    (
+                        link.a.alignment_id,
+                        link.a.endpoint == AlignmentEndpoint::End,
+                        link.b.alignment_id,
+                        link.b.endpoint == AlignmentEndpoint::End,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
     (edges, truncated)
 }

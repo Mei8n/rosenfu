@@ -30,7 +30,11 @@ fn all_four_orientations_preserve_ids_stations_and_speed_caps() {
             let b = w.build_alignment(c, "B".into(), bp).unwrap();
             w.set_alignment_design_speed(a, 120.).unwrap();
             w.set_alignment_design_speed(b, 80.).unwrap();
-            w.place_station_on_alignment(c, "S".into(), a, 0.5, 100., 10.)
+            let s = w
+                .place_station_on_alignment(c, "S".into(), a, 0.5, 100., 10.)
+                .unwrap();
+            let t = w
+                .place_station_on_alignment(c, "T".into(), b, 0.5, 100., 10.)
                 .unwrap();
             let before = w.snapshot().clone();
             w.connect_alignment_endpoints(c, end(a, ae), end(b, be))
@@ -41,6 +45,14 @@ fn all_four_orientations_preserve_ids_stations_and_speed_caps() {
             assert_eq!(before.stations, after.stations);
             assert_eq!(before.next_id, after.next_id);
             assert_eq!(after.alignment_connections.len(), 1);
+            for (from, to) in [(s, t), (t, s)] {
+                let candidate = w.route_candidates(from, to).unwrap();
+                assert_eq!(candidate.status, RouteSearchStatus::Unique);
+                assert_eq!(candidate.candidates[0].stations, vec![from, to]);
+                assert!(w
+                    .preview_service_path(from, candidate.candidates[0].segments.clone())
+                    .is_ok());
+            }
             assert!(w
                 .connect_alignment_endpoints(c, end(b, be), end(a, ae))
                 .is_err());
@@ -285,6 +297,18 @@ fn ring_reports_both_paths_instead_of_false_unique() {
         let result = w.route_candidates(from, to).unwrap();
         assert_eq!(result.status, RouteSearchStatus::Ambiguous);
         assert_eq!(result.candidates.len(), 2);
+        let mut reordered = w.snapshot().clone();
+        reordered.alignment_connections.reverse();
+        for link in &mut reordered.alignment_connections {
+            std::mem::swap(&mut link.a, &mut link.b);
+        }
+        assert_eq!(
+            World::new(reordered)
+                .unwrap()
+                .route_candidates(from, to)
+                .unwrap(),
+            result
+        );
         for candidate in result.candidates {
             assert!(w.preview_service_path(from, candidate.segments).is_ok());
         }
