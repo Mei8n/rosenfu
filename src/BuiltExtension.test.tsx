@@ -186,3 +186,47 @@ test('inactive hover selects the nearest endpoint when both endpoints are nearby
  const endPath=hit.getAttribute('d')!.match(/-?\d+(?:\.\d+)?/g)!;
  expect(Number(marker.getAttribute('cx'))).toBeCloseTo(Number(endPath[endPath.length-2]),3);
 });
+
+for(const sourceEnd of ['start','end'] as const)for(const targetEnd of ['start','end'] as const)test(`joins built ${sourceEnd} to ${targetEnd} with exact endpoint and undoable target`,async()=>{
+ const x=sourceEnd==='end'?350:100,far=sourceEnd==='end'?420:40;
+ const target={...line,id:'4',name:'接続先',design_speed_kmh:80,points:targetEnd==='start'?[point(x,130),point(far,130)]:[point(far,130),point(x,130)]};
+ const map=await start({alignments:[line,target]});
+ fireEvent.click(map,{clientX:sourceEnd==='end'?250:180,clientY:130});
+ fireEvent.pointerMove(map,{clientX:x+2,clientY:131});
+ expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('true');
+ fireEvent.click(map,{clientX:x+2,clientY:131});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ vi.mocked(invoke).mockRejectedValueOnce(Error('late target changed'));
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText(/late target changed/);
+ const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as any;
+ expect(request.alignments[0].destination).toEqual({alignmentId:'4',endpoint:targetEnd});
+ expect(request.alignments[0].points.at(-1)).toEqual(point(x,130));
+ expect(request.alignments[0].designSpeedKmh).toBe(120);
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+});
+
+test('destination hover refuses mismatched track type and cannot submit a fake join',async()=>{
+ const target={...line,id:'4',track_type:'tram',points:[point(350,130),point(420,130)]};
+ const map=await start({alignments:[line,target]});
+ fireEvent.click(map,{clientX:250,clientY:130});
+ fireEvent.pointerMove(map,{clientX:350,clientY:130});
+ expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('false');
+ fireEvent.click(map,{clientX:350,clientY:130});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('restored undone destination is retained when redo finishes the path',async()=>{
+ const target={...line,id:'4',points:[point(350,130),point(420,130)]};
+ const plans={version:1,plans:[{id:1,name:''}],parkedPaths:[],activePathId:1,activePlanId:1,draftPoints:[point(250,130)],redoPoints:[point(350,130)],draftExtension:{alignmentId:'3',endpoint:'end'},draftRedoDestination:{alignmentId:'4',endpoint:'start'},trackType:'normal',designSpeedKmh:120,roadFollowing:false,plannedStations:[],draftFinished:true};
+ const map=await start({alignments:[line,target],construction_plans:plans});
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ vi.mocked(invoke).mockResolvedValueOnce(world);
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({destination:{alignmentId:'4',endpoint:'start'}})])})));
+});

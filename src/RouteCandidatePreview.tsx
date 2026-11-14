@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-export type Segment = { kind: "track"; track_id: string } | { kind: "alignment"; alignment_id: string; from: string; to: string };
+import type {EndpointConnection} from "./destinationJoin";
+export type Segment = { kind: "track"; track_id: string } | { kind: "alignment"; alignment_id: string; from: string; to: string } | {kind:"connected_alignments";from:string;to:string;connections:EndpointConnection[]};
 export type Candidate = { stations: string[]; segments: Segment[]; track_only: boolean };
 export type Candidates = { status: "no_path" | "unique" | "ambiguous" | "incomplete"; candidates: Candidate[]; truncated: boolean };
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };

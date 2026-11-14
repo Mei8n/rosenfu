@@ -14,6 +14,10 @@ pub struct ConstructionPlans {
     pub draft_edited_geometry: Option<EditedPlanGeometry>,
     pub redo_points: Vec<GeoPoint>,
     pub draft_extension: Option<ConstructionExtension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_destination: Option<ConstructionExtension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_redo_destination: Option<ConstructionExtension>,
     pub track_type: TrackType,
     pub design_speed_kmh: f64,
     pub road_following: bool,
@@ -48,6 +52,10 @@ pub struct ConstructionPath {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<ConstructionReference>,
     pub extension: Option<ConstructionExtension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<ConstructionExtension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo_destination: Option<ConstructionExtension>,
     pub id: u64,
     pub plan_id: u64,
     pub name: String,
@@ -138,6 +146,14 @@ impl ConstructionPlans {
         {
             return Err(invalid);
         }
+        if self.draft_destination.as_ref().is_some_and(|d| {
+            self.draft_extension
+                .as_ref()
+                .is_none_or(|e| e.alignment_id == d.alignment_id)
+                || self.draft_points.len() < 2
+        }) {
+            return Err(invalid);
+        }
         let mut plans = BTreeSet::new();
         for plan in &self.plans {
             if !valid_id(plan.id) || !plans.insert(plan.id) || plan.name.len() > 4096 {
@@ -149,6 +165,14 @@ impl ConstructionPlans {
         }
         let mut paths = BTreeSet::from([self.active_path_id]);
         for path in &self.parked_paths {
+            if path.destination.as_ref().is_some_and(|d| {
+                path.extension
+                    .as_ref()
+                    .is_none_or(|e| e.alignment_id == d.alignment_id)
+                    || path.points.len() < 2
+            }) {
+                return Err(invalid);
+            }
             if path
                 .edited_geometry
                 .as_ref()

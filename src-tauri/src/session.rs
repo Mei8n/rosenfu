@@ -57,6 +57,7 @@ pub struct PlannedAlignment {
     pub stations: Vec<PlannedStation>,
     pub reference: Option<PlannedAlignmentReference>,
     pub extension: Option<PlannedAlignmentExtension>,
+    pub destination: Option<PlannedAlignmentExtension>,
 }
 
 #[derive(Clone)]
@@ -340,6 +341,7 @@ impl WorldEditor {
             stations,
             reference,
             extension: None,
+            destination: None,
         }])
     }
 
@@ -369,6 +371,9 @@ impl WorldEditor {
             )?;
         }
         for alignment in alignments {
+            if alignment.destination.is_some() && alignment.extension.is_none() {
+                return Err("接続先を指定するには既存線路から延伸してください。".into());
+            }
             if let Some(extension) = alignment.extension {
                 let old = candidate
                     .world
@@ -442,6 +447,22 @@ impl WorldEditor {
                         station.length_m,
                         station.width_m,
                     )?;
+                }
+                if let Some(destination) = alignment.destination {
+                    candidate
+                        .world
+                        .connect_alignment_endpoints(
+                            candidate.company,
+                            rosenfu_core::world::AlignmentEndpointRef {
+                                alignment_id: extension.alignment_id,
+                                endpoint: extension.endpoint,
+                            },
+                            rosenfu_core::world::AlignmentEndpointRef {
+                                alignment_id: destination.alignment_id,
+                                endpoint: destination.endpoint,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
                 }
                 continue;
             }
@@ -619,8 +640,8 @@ impl WorldEditor {
             return Err("削除する駅が見つかりません。".into());
         }
         if candidate.service_paths.iter().any(|p|self.world.service_path_occurrences(p.service_id).is_ok_and(|occurrences|occurrences.iter().any(|o|o.station_id==station_id)))
-            || candidate.service_paths.iter().any(|p|p.stops.iter().any(|stop|matches!(stop,rosenfu_core::world::StationOccurrenceRef::OnLeg{station_id:id,..} if *id==station_id)) || p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Alignment{from,to,..} if from==station_id || to==station_id)))
-            || candidate.route_paths.iter().any(|p| p.member_stations.contains(&station_id) || p.segments.iter().any(|segment| matches!(segment, rosenfu_core::world::RouteSegment::Alignment { from, to, .. } if *from == station_id || *to == station_id)))
+            || candidate.service_paths.iter().any(|p|p.stops.iter().any(|stop|matches!(stop,rosenfu_core::world::StationOccurrenceRef::OnLeg{station_id:id,..} if *id==station_id)) || p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Alignment{from,to,..} | rosenfu_core::world::RouteSegment::ConnectedAlignments{from,to,..} if from==station_id || to==station_id)))
+            || candidate.route_paths.iter().any(|p| p.member_stations.contains(&station_id) || p.segments.iter().any(|segment| matches!(segment, rosenfu_core::world::RouteSegment::Alignment { from, to, .. } | rosenfu_core::world::RouteSegment::ConnectedAlignments { from,to,.. } if *from == station_id || *to == station_id)))
             || candidate
             .tracks
             .iter()
@@ -674,6 +695,13 @@ impl WorldEditor {
         {
             return Err("削除する自社線路が見つかりません。".into());
         }
+        if draft
+            .alignment_connections
+            .iter()
+            .any(|c| c.a.alignment_id == id || c.b.alignment_id == id)
+        {
+            return Err("接続に使われている線路は削除できません。".into());
+        }
         if draft.station_placements.iter().any(|s| s.alignment_id == id)
             || draft.route_paths.iter().any(|p| p.segments.iter().any(|s| matches!(s, rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } if *alignment_id == id)))
             || draft.service_paths.iter().any(|p| p.legs.iter().any(|l| matches!(l.segment, rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } if alignment_id == id)))
@@ -681,9 +709,23 @@ impl WorldEditor {
             return Err("駅・路線・系統が使用中の線路は削除できません。".into());
         }
         if draft.construction_plans.as_ref().is_some_and(|p| {
-            p.draft_extension
+            p.draft_redo_destination
                 .as_ref()
                 .is_some_and(|e| e.alignment_id == id)
+                || p.parked_paths.iter().any(|path| {
+                    path.redo_destination
+                        .as_ref()
+                        .is_some_and(|e| e.alignment_id == id)
+                })
+                || p.draft_destination
+                    .as_ref()
+                    .is_some_and(|e| e.alignment_id == id)
+                || p.parked_paths
+                    .iter()
+                    .any(|p| p.destination.as_ref().is_some_and(|e| e.alignment_id == id))
+                || p.draft_extension
+                    .as_ref()
+                    .is_some_and(|e| e.alignment_id == id)
                 || p.parked_paths
                     .iter()
                     .any(|p| p.extension.as_ref().is_some_and(|e| e.alignment_id == id))
@@ -2385,6 +2427,7 @@ mod tests {
         // Attribution on an earlier path must roll back if any later path fails.
         let attributed_path = || PlannedAlignment {
             extension: None,
+            destination: None,
             name: "Attributed".into(),
             points: points.clone(),
             track_type: rosenfu_core::world::TrackType::Tram,
@@ -2483,6 +2526,7 @@ mod tests {
                 source_record: source.clone(),
                 provenance: provenance.clone(),
             }),
+            destination: None,
             extension: Some(PlannedAlignmentExtension {
                 alignment_id: id,
                 endpoint: rosenfu_core::world::AlignmentEndpoint::End,
@@ -2762,6 +2806,7 @@ mod tests {
             design_speed_kmh: None,
             stations: vec![],
             reference: None,
+            destination: None,
             extension: Some(PlannedAlignmentExtension {
                 alignment_id: a.id,
                 endpoint: rosenfu_core::world::AlignmentEndpoint::Start,
@@ -2794,6 +2839,7 @@ mod tests {
             stations: vec![planned_station(0.5)],
             reference: None,
             extension: None,
+            destination: None,
         }
     }
 
@@ -2886,6 +2932,7 @@ mod tests {
                 design_speed_kmh: None,
                 stations: vec![planned_station(0.5)],
                 reference: None,
+                destination: None,
                 extension: Some(PlannedAlignmentExtension {
                     alignment_id: old.id,
                     endpoint,
@@ -2978,6 +3025,7 @@ mod tests {
                 design_speed_kmh: None,
                 stations: vec![planned_station(0.5)],
                 reference: None,
+                destination: None,
                 extension: Some(PlannedAlignmentExtension {
                     alignment_id: a,
                     endpoint,
@@ -3053,6 +3101,7 @@ mod tests {
             design_speed_kmh: None,
             stations: vec![],
             reference: None,
+            destination: None,
             extension: Some(PlannedAlignmentExtension {
                 alignment_id: old.id,
                 endpoint: rosenfu_core::world::AlignmentEndpoint::End,
@@ -3065,5 +3114,157 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
         let after = editor.build_plan(vec![extension()]).unwrap();
         assert_eq!(after.alignments[0].design_speed_kmh, Some(95.0));
+    }
+}
+
+#[cfg(test)]
+mod endpoint_join_tests {
+    use super::*;
+    use rosenfu_core::world::{AlignmentEndpoint, TrackType};
+    fn p(longitude: f64) -> GeoPoint {
+        GeoPoint {
+            latitude: 35.0,
+            longitude,
+        }
+    }
+    #[test]
+    fn endpoint_join_is_atomic_in_all_orientations_and_survives_save() {
+        for source_end in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+            for target_end in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+                let mut editor = WorldEditor::new();
+                let mut a_points = vec![p(139.0), p(139.01)];
+                let mut b_points = vec![p(139.02), p(139.03)];
+                if source_end == AlignmentEndpoint::Start {
+                    a_points.reverse();
+                }
+                if target_end == AlignmentEndpoint::End {
+                    b_points.reverse();
+                }
+                let a = editor
+                    .world
+                    .build_alignment(editor.company, "A".into(), a_points)
+                    .unwrap();
+                let b = editor
+                    .world
+                    .build_alignment(editor.company, "B".into(), b_points)
+                    .unwrap();
+                editor.world.set_alignment_design_speed(b, 80.).unwrap();
+                let sa = editor
+                    .world
+                    .place_station_on_alignment(editor.company, "A駅".into(), a, 0.5, 100., 12.)
+                    .unwrap();
+                let sb = editor
+                    .world
+                    .place_station_on_alignment(editor.company, "B駅".into(), b, 0.5, 100., 12.)
+                    .unwrap();
+                let sa2 = editor
+                    .world
+                    .place_station_on_alignment(editor.company, "A駅2".into(), a, 0.8, 100., 12.)
+                    .unwrap();
+                let segments = vec![rosenfu_core::world::RouteSegment::Alignment {
+                    alignment_id: a,
+                    from: sa,
+                    to: sa2,
+                }];
+                editor
+                    .world
+                    .add_planned_route(
+                        editor.company,
+                        "既存路線".into(),
+                        sa,
+                        segments.clone(),
+                        vec![sa, sa2],
+                    )
+                    .unwrap();
+                let preview = editor.preview_service_path(sa, segments.clone()).unwrap();
+                editor
+                    .create_service_path(
+                        "既存系統".into(),
+                        sa,
+                        segments,
+                        preview
+                            .occurrences
+                            .into_iter()
+                            .map(|o| o.reference)
+                            .collect(),
+                    )
+                    .unwrap();
+                let before = editor.snapshot();
+                let request = || PlannedAlignment {
+                    name: "延伸".into(),
+                    points: vec![p(139.01), p(139.02)],
+                    track_type: TrackType::Normal,
+                    design_speed_kmh: Some(120.),
+                    stations: vec![],
+                    reference: None,
+                    extension: Some(PlannedAlignmentExtension {
+                        alignment_id: a,
+                        endpoint: source_end,
+                    }),
+                    destination: Some(PlannedAlignmentExtension {
+                        alignment_id: b,
+                        endpoint: target_end,
+                    }),
+                };
+                let mut invalid = request();
+                invalid.points.clear();
+                assert!(editor.build_plan(vec![request(), invalid]).is_err());
+                assert_eq!(editor.snapshot(), before);
+                let after = editor.build_plan(vec![request()]).unwrap();
+                assert_eq!(after.alignments.len(), 2);
+                assert_eq!(after.alignments[1], before.alignments[1]);
+                assert_eq!(after.stations, before.stations);
+                assert_eq!(after.next_id, before.next_id);
+                assert_eq!(after.alignment_connections.len(), 1);
+                assert_eq!(after.routes, before.routes);
+                assert_eq!(after.route_paths, before.route_paths);
+                assert_eq!(after.services, before.services);
+                assert_eq!(after.service_paths, before.service_paths);
+                assert_eq!(
+                    editor.world.route_candidates(sa, sb).unwrap().status,
+                    rosenfu_core::world::RouteSearchStatus::Unique
+                );
+                assert!(editor.delete_alignment(a).unwrap_err().contains("接続"));
+                assert!(editor.delete_alignment(b).unwrap_err().contains("接続"));
+                assert_eq!(editor.snapshot(), after);
+                let dir = tempfile::tempdir().unwrap();
+                let file = dir.path().join("joined.rosenfu");
+                editor.save(&file).unwrap();
+                assert_eq!(WorldEditor::new().load(&file).unwrap(), after);
+            }
+        }
+    }
+    #[test]
+    fn moved_or_missing_target_cannot_publish_the_extension() {
+        let mut editor = WorldEditor::new();
+        let a = editor
+            .world
+            .build_alignment(editor.company, "A".into(), vec![p(139.), p(139.01)])
+            .unwrap();
+        let b = editor
+            .world
+            .build_alignment(editor.company, "B".into(), vec![p(139.021), p(139.03)])
+            .unwrap();
+        let before = editor.snapshot();
+        for target in [b, AlignmentId(999), a] {
+            let request = PlannedAlignment {
+                name: "延伸".into(),
+                points: vec![p(139.01), p(139.02)],
+                track_type: TrackType::Normal,
+                design_speed_kmh: Some(120.),
+                stations: vec![],
+                reference: None,
+                extension: Some(PlannedAlignmentExtension {
+                    alignment_id: a,
+                    endpoint: AlignmentEndpoint::End,
+                }),
+                destination: Some(PlannedAlignmentExtension {
+                    alignment_id: target,
+                    endpoint: AlignmentEndpoint::Start,
+                }),
+            };
+            assert!(editor.build_plan(vec![request]).is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
     }
 }
