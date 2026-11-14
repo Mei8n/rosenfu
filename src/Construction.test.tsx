@@ -252,7 +252,7 @@ test("invalid curve remains diagnostic and cannot add an anchor",async()=>{
  expect(map.querySelector(".invalid-candidate")).toBeNull();
 });
 
-test("invalid double click does not finish; selecting a parked plan resumes its endpoint",async()=>{
+test("invalid double click does not finish; selecting a parked plan waits for an explicit endpoint click",async()=>{
  const map=await start();
  fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
  fireEvent.click(map,{clientX:200,clientY:160,detail:1});fireEvent.click(map,{clientX:200,clientY:160,detail:2});
@@ -261,6 +261,7 @@ test("invalid double click does not finish; selecting a parked plan resumes its 
  expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
  fireEvent.click(screen.getByRole("button",{name:"別の線路計画を追加"}));
  fireEvent.click(screen.getByRole("button",{name:/計画 1 を編集/}));
+ fireEvent.click(map,{clientX:390,clientY:190,detail:1});
  fireEvent.click(map,{clientX:450,clientY:200,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(4);
 });

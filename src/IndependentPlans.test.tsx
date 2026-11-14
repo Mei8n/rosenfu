@@ -7,6 +7,8 @@ import { App } from "./App";
 import { project, DEFAULT_CAMERA } from "./map";
 import { alignmentLength, pointOnAlignment } from "./alignment";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
+HTMLDialogElement.prototype.showModal=function(){this.setAttribute("open","");};
+HTMLDialogElement.prototype.close=function(){this.removeAttribute("open");};
 afterEach(() => { localStorage.removeItem("rosenfu.display-settings"); cleanup(); vi.resetAllMocks(); });
 const alignment = { id:"3",owner:"2",name:"試験線",points:[{latitude:35.67504,longitude:139.72},{latitude:35.67504,longitude:139.78}] };
 const trackPanel = () => within(document.querySelector<HTMLElement>(".construction-content")!);
@@ -42,9 +44,9 @@ test("disconnected plans remain visible and build separately without losing the 
   expect(map.querySelectorAll(".draft-path")).toHaveLength(2);
   vi.mocked(invoke).mockResolvedValueOnce(built);
   fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
-  expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
+  expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
   expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false);
-  fireEvent.click(trackPanel().getByRole("button",{name:/計画 2 を編集/}));
+  expect(trackPanel().queryByRole("group",{name:"計画を選択"})).toBeNull();
   expect(map.querySelector(".draft-path:not(.parked-plan)")!.getAttribute("d")).toBe(second);
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
   fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
@@ -75,7 +77,7 @@ test("plan names are optional, editable per independent plan and never become ph
  expect(trackPanel().getByRole("button",{name:/山側に変更 を編集/})).toBeTruthy();
  vi.mocked(invoke).mockResolvedValueOnce(built);fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
  const payload=vi.mocked(invoke).mock.calls.find(([command])=>command==="build_alignment")?.[1] as {name:string};expect(payload.name).toBe("新しい線路");
- await waitFor(()=>expect((trackPanel().getByRole("button",{name:/山側に変更 を編集/}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(trackPanel().getByRole("button",{name:/山側に変更 を編集/}));fireEvent.change(name(),{target:{value:""}});expect(name().placeholder).toBe("計画 1");
+ await waitFor(()=>expect(name().value).toBe("山側に変更"));fireEvent.change(name(),{target:{value:""}});expect(name().placeholder).toBe("計画 1");
 });
 
 test("manual save includes plans and retains active, parked and redo; later edits require a load guard",async()=>{
@@ -104,8 +106,8 @@ test("one explicit plan groups disconnected paths and atomically builds only its
  const request=vi.mocked(invoke).mock.calls.find(([command])=>command==="build_plan")?.[1] as {alignments:{stations:unknown[]}[]};
  expect(request.alignments).toHaveLength(2);expect(request.alignments.map(path=>path.stations.length)).toEqual([1,1]);
  vi.mocked(invoke).mockResolvedValueOnce(built);fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
- expect(map.querySelectorAll(".planned-station")).toHaveLength(1);expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
- fireEvent.click(trackPanel().getByRole("button",{name:/計画 2 を編集/}));expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ expect(map.querySelectorAll(".planned-station")).toHaveLength(1);expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
+ expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
 });
 
 test("resuming a parked path preserves its point redo and station within the same plan",async()=>{
@@ -166,7 +168,7 @@ test('built-line stations remain separate plans until atomic construction, and p
  vi.mocked(invoke).mockRejectedValueOnce(Error('station batch rejected'));fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText(/station batch rejected/);expect(map.querySelectorAll('.planned-station')).toHaveLength(3);
  const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as {alignments:unknown[];stations:unknown[]};expect(request.alignments).toHaveLength(0);expect(request.stations).toHaveLength(2);
  await waitFor(()=>expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false));vi.mocked(invoke).mockResolvedValueOnce(placed);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText('計画駅を建設しました。');expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
- fireEvent.click(screen.getByRole('button',{name:'計画 2 を編集'}));expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
 });
 
 test('construction shares one plan panel between track and station tools, and help lives in settings',async()=>{
@@ -179,4 +181,41 @@ test('construction shares one plan panel between track and station tools, and he
  expect(screen.getAllByRole('button',{name:'計画を着工'})).toHaveLength(1);
  fireEvent.click(screen.getByRole('tab',{name:'設定'}));
  expect(screen.getByText('操作ガイド').closest('[hidden]')).toBeNull();
+});
+
+test("completed plans do not reappear as empty plan switcher entries after saving and restarting",async()=>{
+ const map=await start();
+ for(const [x,y] of [[180,130],[230,130]])fireEvent.click(map,{clientX:x,clientY:y});
+ fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));
+ for(const [x,y] of [[320,200],[360,200]])fireEvent.click(map,{clientX:x,clientY:y});
+ for(let i=0;i<2;i++){
+  vi.mocked(invoke).mockResolvedValueOnce(built);
+  fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));
+  await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
+ }
+ vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ await screen.findByText(/ワールドと未着工計画を保存しました/);
+ const payload=vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:unknown};
+ cleanup();await start({...built,construction_plans:payload.constructionPlans});
+ expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();
+});
+
+test('switching plans stays finished until an explicit endpoint click, including save restore',async()=>{
+ const map=await start();const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(180,130);click(230,130);fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));click(320,200);click(360,200);
+ fireEvent.click(trackPanel().getByRole('button',{name:'計画 1 を編集'}));
+ vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/ワールドと未着工計画を保存しました/);
+ const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
+ expect(saved.draftFinished).toBe(true);
+ cleanup();const restored=await start({...empty,construction_plans:saved});
+ fireEvent.click(restored,{clientX:230,clientY:130,detail:1});fireEvent.click(restored,{clientX:280,clientY:130,detail:1});expect(restored.querySelectorAll('.draft-anchor')).toHaveLength(3);
+});
+
+test('deleting a plan asks first and preserves other plans and built infrastructure',async()=>{
+ const map=await start(built);const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y});
+ click(180,130);click(230,130);fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));click(320,200);click(360,200);
+ fireEvent.click(trackPanel().getByRole('button',{name:'計画を削除'}));
+ let dialog=screen.getByRole('dialog',{name:'計画を削除'});fireEvent.click(within(dialog).getByRole('button',{name:'戻る'}));expect(map.querySelectorAll('.draft-path')).toHaveLength(2);
+ fireEvent.click(trackPanel().getByRole('button',{name:'計画を削除'}));dialog=screen.getByRole('dialog',{name:'計画を削除'});fireEvent.click(within(dialog).getByRole('button',{name:'削除する'}));
+ expect(map.querySelectorAll('.draft-path')).toHaveLength(1);expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='delete_alignment')).toBe(false);
 });
