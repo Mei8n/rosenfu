@@ -786,10 +786,10 @@ export function App() {
   }
   function destinationTarget(point:GeoPoint,width:number,height:number) {
     if(!draftExtension||draftFinished||!draftPoints.length)return null;
-    return alignments.filter(a=>a.id!==draftExtension.alignmentId).flatMap(alignment=>[
+    return alignments.flatMap(alignment=>[
       {alignment,endpoint:"start" as const,point:alignment.points[0]},
       {alignment,endpoint:"end" as const,point:alignment.points.at(-1)!},
-    ]).filter(e=>e.point).map(e=>({...e,distance:endpointDistance(point,e.point,width,height)}))
+    ]).filter(e=>e.point&&!(e.alignment.id===draftExtension.alignmentId&&e.endpoint===draftExtension.endpoint)).map(e=>({...e,distance:endpointDistance(point,e.point,width,height)}))
       .filter(e=>e.distance<=8).sort((a,b)=>a.distance-b.distance)[0]??null;
   }
   function joinError(line:GeoPoint[],source:Extension|null,destination:Extension|undefined){

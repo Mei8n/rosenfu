@@ -241,3 +241,19 @@ test('restored undone destination is retained when redo finishes the path',async
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({destination:{alignmentId:'4',endpoint:'start'}})])})));
 });
+
+test('opposite endpoint of the same built alignment snaps and submits a real ring closure',async()=>{
+ const ring={...line,points:[point(350,130),point(420,130),point(420,210),point(180,210),point(180,130),point(250,130)]};
+ const map=await start({alignments:[ring]});
+ fireEvent.click(map,{clientX:250,clientY:130});
+ fireEvent.pointerMove(map,{clientX:352,clientY:131});
+ expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('true');
+ fireEvent.click(map,{clientX:352,clientY:131});
+ vi.mocked(invoke).mockRejectedValueOnce(Error('retain test plan'));
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await screen.findByText(/retain test plan/);
+ const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as any;
+ expect(request.alignments[0].extension).toEqual({alignmentId:'3',endpoint:'end'});
+ expect(request.alignments[0].destination).toEqual({alignmentId:'3',endpoint:'start'});
+ expect(request.alignments[0].points.at(-1)).toEqual(ring.points[0]);
+});

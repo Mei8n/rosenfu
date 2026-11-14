@@ -145,3 +145,25 @@ fn destination_and_redo_destination_survive_plan_save() {
     .unwrap();
     assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
 }
+
+#[test]
+fn opposite_endpoint_ring_drafts_and_parked_paths_roundtrip() {
+    let mut payload = serde_json::to_value(plans()).unwrap();
+    let points = json!([{"latitude":35.0,"longitude":139.0},{"latitude":35.0,"longitude":139.01}]);
+    payload["draftPoints"] = points.clone();
+    payload["draftExtension"] = json!({"alignmentId":"3","endpoint":"end"});
+    payload["draftDestination"] = json!({"alignmentId":"3","endpoint":"start"});
+    payload["parkedPaths"][0]["points"] = points;
+    payload["parkedPaths"][0]["extension"] = payload["draftExtension"].clone();
+    payload["parkedPaths"][0]["destination"] = payload["draftDestination"].clone();
+    let make = |v| {
+        World::new(WorldDraft {
+            construction_plans: Some(serde_json::from_value(v).unwrap()),
+            ..WorldDraft::default()
+        })
+    };
+    let world = make(payload.clone()).unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+    payload["draftDestination"]["endpoint"] = json!("end");
+    assert!(make(payload).is_err());
+}

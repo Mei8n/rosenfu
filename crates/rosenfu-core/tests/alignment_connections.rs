@@ -352,3 +352,65 @@ fn overlong_endpoint_chain_reports_incomplete_not_no_path() {
     assert_eq!(result.status, RouteSearchStatus::Incomplete);
     assert!(result.truncated);
 }
+
+#[test]
+fn opposite_free_ends_of_one_alignment_can_close_a_ring() {
+    let mut w = World::default();
+    let p = w.add_player("P".into()).unwrap();
+    let c = w.add_company(p, "C".into()).unwrap();
+    // First/last chords are tangent across the seam; geometry and IDs stay intact.
+    let points: Vec<_> = (0..=72)
+        .map(|i| {
+            let angle = i as f64 * std::f64::consts::TAU / 72.;
+            if i == 72 {
+                GeoPoint {
+                    latitude: 35.,
+                    longitude: 139.01,
+                }
+            } else {
+                GeoPoint {
+                    latitude: 35. + angle.sin() * 0.01,
+                    longitude: 139. + angle.cos() * 0.01,
+                }
+            }
+        })
+        .collect();
+    let a = w.build_alignment(c, "Ring".into(), points).unwrap();
+    let s = w
+        .place_station_on_alignment(c, "S".into(), a, 0.25, 100., 10.)
+        .unwrap();
+    let t = w
+        .place_station_on_alignment(c, "T".into(), a, 0.75, 100., 10.)
+        .unwrap();
+    let before = w.snapshot().clone();
+    assert!(w
+        .connect_alignment_endpoints(
+            c,
+            end(a, AlignmentEndpoint::Start),
+            end(a, AlignmentEndpoint::Start)
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+    w.connect_alignment_endpoints(
+        c,
+        end(a, AlignmentEndpoint::Start),
+        end(a, AlignmentEndpoint::End),
+    )
+    .unwrap();
+    let after = w.snapshot().clone();
+    assert_eq!(before.alignments, after.alignments);
+    assert_eq!(before.station_placements, after.station_placements);
+    assert_eq!(after.alignment_connections.len(), 1);
+    assert_eq!(
+        w.route_candidates(s, t).unwrap().status,
+        RouteSearchStatus::Ambiguous
+    );
+    assert!(w
+        .connect_alignment_endpoints(
+            c,
+            end(a, AlignmentEndpoint::End),
+            end(a, AlignmentEndpoint::Start)
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &after);
+}

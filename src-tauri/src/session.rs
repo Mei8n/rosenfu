@@ -3531,4 +3531,53 @@ mod endpoint_join_tests {
             assert_eq!(editor.snapshot(), before);
         }
     }
+    #[test]
+    fn close_same_alignment_gap_atomically_and_restore_saved_ring() {
+        let mut editor = WorldEditor::new();
+        let point = |degrees: f64| GeoPoint {
+            latitude: 35. + degrees.to_radians().sin() * 0.01,
+            longitude: 139. + degrees.to_radians().cos() * 0.01,
+        };
+        let original: Vec<_> = (5..=175).map(|i| point(i as f64 * 2.)).collect();
+        let a = editor
+            .world
+            .build_alignment(editor.company, "Ring".into(), original.clone())
+            .unwrap();
+        let station = editor
+            .world
+            .place_station_on_alignment(editor.company, "S".into(), a, 0.5, 100., 10.)
+            .unwrap();
+        let before = editor.snapshot();
+        let mut bridge: Vec<_> = (175..=185).map(|i| point(i as f64 * 2.)).collect();
+        *bridge.last_mut().unwrap() = original[0];
+        let request = || PlannedAlignment {
+            name: "Close ring".into(),
+            points: bridge.clone(),
+            track_type: TrackType::Normal,
+            design_speed_kmh: Some(120.),
+            stations: vec![],
+            reference: None,
+            extension: Some(PlannedAlignmentExtension {
+                alignment_id: a,
+                endpoint: AlignmentEndpoint::End,
+            }),
+            destination: Some(PlannedAlignmentExtension {
+                alignment_id: a,
+                endpoint: AlignmentEndpoint::Start,
+            }),
+        };
+        let mut wrong = request();
+        wrong.destination.as_mut().unwrap().endpoint = AlignmentEndpoint::End;
+        assert!(editor.build_plan(vec![wrong]).is_err());
+        assert_eq!(editor.snapshot(), before);
+        let after = editor.build_plan(vec![request()]).unwrap();
+        assert_eq!(after.alignments.len(), 1);
+        assert_eq!(after.alignments[0].id, a);
+        assert_eq!(after.stations[0].id, station);
+        assert_eq!(after.alignment_connections.len(), 1);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ring.rosenfu");
+        editor.save(&file).unwrap();
+        assert_eq!(WorldEditor::new().load(&file).unwrap(), after);
+    }
 }
