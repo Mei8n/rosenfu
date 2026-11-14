@@ -440,7 +440,10 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .draft-anchor,.workbench .parked-anchor { pointer-events:all; cursor:grab; }
 .workbench .anchor-drag-preview { stroke:#3dd6ce; stroke-width:4; }
 .workbench .anchor-drag-preview.invalid-candidate { stroke:#d9534f; }
-.anchor-snap-ring { fill:none;stroke:#eee;stroke-width:2;vector-effect:non-scaling-stroke; }
-.anchor-snap-ring.snapped { stroke:#30dbb4;stroke-width:3; }
+.track-focus-marker { fill:#b83945; stroke:#fff; stroke-width:2; pointer-events:none; }
+.track-focus-marker[data-kind="anchor"] { fill:#d9950b; }
+.track-focus-marker[data-allowed="false"] { fill:#9e2630; stroke-dasharray:2 2; }
+.track-focus-marker.anchor-snap-ring:not(.snapped):not([data-allowed="false"]) { fill:#68727b; }
+.focus-anchor-center { fill:none; stroke:#fff; stroke-width:1.5; pointer-events:none; }
 .workbench .draft-anchor,.workbench .parked-anchor { pointer-events:none; }
 .anchor-drag-hit { fill:transparent;stroke:none;pointer-events:all;cursor:grab; }

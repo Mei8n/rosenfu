@@ -334,6 +334,13 @@ export function App() {
     if(rect){const point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);if(point)setPlanHover({id,x:event.clientX-rect.left,y:event.clientY-rect.top,point});}
   }
   const viewport = mapViewport(mapSize.width,mapSize.height);
+  // Both focus markers use the same size: the widest hovered rail plus a small
+  // screen-space margin. Appearance never changes the snap/hit thresholds.
+  const focusRadius=Math.max(lineWidth,7)/2+3/viewport.scale;
+  const focusMarker=(point:GeoPoint,kind:"line"|"anchor",className:string,allowed=true)=>{
+    const p=project(point.latitude,point.longitude,camera),square=4/viewport.scale;
+    return <g pointerEvents="none" aria-hidden="true"><circle className={"track-focus-marker "+className} data-kind={kind} data-allowed={allowed} cx={p.x} cy={p.y} r={focusRadius} vectorEffect="non-scaling-stroke"/>{kind==="anchor"&&<rect className="focus-anchor-center" x={p.x-square/2} y={p.y-square/2} width={square} height={square} vectorEffect="non-scaling-stroke"/>}</g>;
+  };
   const drawPath = (points: GeoPoint[]) => points.map((point, index) => { const p = project(point.latitude, point.longitude, camera); return (index ? "L" : "M") + p.x + "," + p.y; }).join(" ");
   const drawAnchors=(points:GeoPoint[],parked=false,id=activePathId)=>points.map((point,index) => {
     const p=project(point.latitude,point.longitude,camera),size=5/viewport.scale,hit=22/viewport.scale,endpoint=index===0||index===points.length-1;
@@ -1109,10 +1116,10 @@ export function App() {
               {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className={"draft-path confirmed-draft"+(showPlanHover&&planHover?.id===activePathId?" plan-hovered":"")} pointerEvents="none" />}
               {!referenceCopy.active&&candidateLine.length > 1 && <path d={drawPath(candidateLine)} className={"draft-path candidate-draft"+(previewError?" invalid-candidate":"")} pointerEvents="none" />}
               {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
-              {endpointCandidate&&(()=>{const p=project(endpointCandidate.point.latitude,endpointCandidate.point.longitude,camera);return <circle className="endpoint-snap-ring" data-allowed={endpointCandidateAllowed} cx={p.x} cy={p.y} r={10/mapViewport(cursorPosition!.width,cursorPosition!.height).scale} fill="none" stroke={endpointCandidateAllowed?"#14b8a6":"#ef4444"} strokeWidth="3" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;})()}
-              {showPlanHover&&!endpointCandidate&&planHover&&hoveredPlan&&(()=>{const nearest=nearestOnAlignment(hoveredPlan.line,planHover.point).point,p=project(nearest.latitude,nearest.longitude,camera);return <circle className="plan-hover-point" cx={p.x} cy={p.y} r={5/viewport.scale} fill="none" stroke="#d95187" strokeWidth="1.5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;})()}
+              {endpointCandidate&&focusMarker(endpointCandidate.point,"anchor","endpoint-snap-ring",endpointCandidateAllowed)}
+              {showPlanHover&&!endpointCandidate&&planHover&&hoveredPlan&&focusMarker(nearestOnAlignment(hoveredPlan.line,planHover.point).point,"line","plan-hover-point")}
               {drawAnchors(draftPoints)}
-              {anchorPreview?.preview&&<g pointerEvents="none"><path d={drawPath(anchorPreview.preview.line)} className={"draft-path anchor-drag-preview"+(anchorPreview.error?" invalid-candidate":"")} /><circle cx={project(anchorPreview.preview.anchors[anchorPreview.index].latitude,anchorPreview.preview.anchors[anchorPreview.index].longitude,camera).x} cy={project(anchorPreview.preview.anchors[anchorPreview.index].latitude,anchorPreview.preview.anchors[anchorPreview.index].longitude,camera).y} r={9/viewport.scale} className={anchorPreview.snapped?"anchor-snap-ring snapped":"anchor-snap-ring"}/></g>}
+              {anchorPreview?.preview&&<g pointerEvents="none"><path d={drawPath(anchorPreview.preview.line)} className={"draft-path anchor-drag-preview"+(anchorPreview.error?" invalid-candidate":"")} />{focusMarker(anchorPreview.preview.anchors[anchorPreview.index],"anchor",anchorPreview.snapped?"anchor-snap-ring snapped":"anchor-snap-ring",!anchorPreview.error)}</g>}
               {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className="planned-station" pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform"/>:<circle cx={p.x} cy={p.y} r="5" fill={valid?"#777":"#b34c4c"}/>}{stationNamesVisible&&<text x={p.x+10} y={p.y-8}>{station.name}（計画）</text>}</g>;})}
               {stationPreview.length >= 4 && <path d={drawPath(stationPreview) + "Z"} className="station-platform station-placement-preview" opacity=".65" pointerEvents="none" />}
               {world?.tracks.map((track) => {

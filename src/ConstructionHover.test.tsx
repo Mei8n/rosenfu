@@ -79,3 +79,26 @@ test('hover only speed and highlight clear on leaving; small endpoints are visua
  expect(document.querySelector('.plan-hover-tooltip')).toBeNull();
  expect(map.querySelector('.plan-hovered')).toBeNull();
 });
+
+test('line and anchor focus markers share a compact radius without changing endpoint selection',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);
+ const map=await start();
+ fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:320,clientY:130});
+ const line=map.querySelector('.plan-hover-hit')!;
+ fireEvent.pointerEnter(line,{clientX:240,clientY:130});
+ const point=map.querySelector('.plan-hover-point')!;
+ const radius=point.getAttribute('r');
+ expect(point.getAttribute('data-kind')).toBe('line');
+ expect(point.parentElement?.getAttribute('pointer-events')).toBe('none');
+ fireEvent.pointerLeave(line);
+ fireEvent.click(map,{clientX:320,clientY:130});
+ fireEvent.pointerMove(map,{clientX:320,clientY:130});
+ const endpoint=map.querySelector('.endpoint-snap-ring')!;
+ expect(endpoint.getAttribute('r')).toBe(radius);
+ expect(endpoint.getAttribute('data-kind')).toBe('anchor');
+ expect(endpoint.getAttribute('data-allowed')).toBe('true');
+ expect(endpoint.parentElement?.querySelector('.focus-anchor-center')).not.toBeNull();
+ // The visual change must not expand the actual endpoint snapping radius.
+ fireEvent.pointerMove(map,{clientX:331,clientY:130});
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+});
