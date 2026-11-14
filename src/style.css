@@ -391,3 +391,16 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .construction-help { position:relative; font-size:11px; }
 .construction-help p { position:absolute; top:20px; right:0; width:220px; padding:8px; background:var(--surface); border:1px solid var(--edge); }
 .construction-toolbar select { background:var(--surface-alt); color:var(--ink); }
+
+.extension-status {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 5;
+  padding: 6px 10px;
+  border: 1px solid #14b8a6;
+  border-radius: 6px;
+  background: var(--panel-bg, #172b32);
+  color: var(--text-color, #fff);
+  pointer-events: none;
+}

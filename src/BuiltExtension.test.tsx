@@ -77,3 +77,52 @@ test('extension inherits non-default design speed and prevents changing its sett
  vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({designSpeedKmh:95})])})));
 });
+
+test('endpoint hover previews the exact clicked extension and clears on leave',async()=>{
+ const map=await start();
+ fireEvent.pointerMove(map,{clientX:253,clientY:132});
+ expect(screen.getByText(/既存の終点にスナップ/)).toBeTruthy();
+ expect(map.querySelector('.endpoint-snap-ring')?.getAttribute('data-allowed')).toBe('true');
+ fireEvent.pointerLeave(map);
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+ fireEvent.pointerMove(map,{clientX:253,clientY:132});
+ fireEvent.click(map,{clientX:253,clientY:132});
+ expect(screen.getByText(/延伸元を選択済み：既存の終点（着工前）/)).toBeTruthy();
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+ fireEvent.click(map,{clientX:310,clientY:130});
+ vi.mocked(invoke).mockResolvedValueOnce(world);
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({extension:{alignmentId:'3',endpoint:'end'}})])})));
+});
+
+test('non-owned endpoints show refusal, not a usable connection',async()=>{
+ const map=await start({alignments:[{...line,owner:'other'}]});
+ fireEvent.pointerMove(map,{clientX:250,clientY:130});
+ expect(screen.getByText('他社の線路は延伸できません')).toBeTruthy();
+ expect(map.querySelector('.endpoint-snap-ring')?.getAttribute('data-allowed')).toBe('false');
+ fireEvent.click(map,{clientX:250,clientY:130});
+ expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+});
+
+test('endpoint outside snap radius has no connection feedback',async()=>{
+ const map=await start();
+ fireEvent.pointerMove(map,{clientX:260,clientY:130});
+ expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
+ fireEvent.click(map,{clientX:260,clientY:130});
+ expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
+});
+
+test('planned endpoint feedback takes precedence over built endpoints as clicking does',async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:340,clientY:220});
+ fireEvent.click(map,{clientX:400,clientY:220});
+ fireEvent.click(map,{clientX:400,clientY:220});
+ fireEvent.pointerMove(map,{clientX:402,clientY:221});
+ expect(screen.getByText(/計画の終点にスナップ/)).toBeTruthy();
+ fireEvent.click(map,{clientX:402,clientY:221});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
+ fireEvent.click(map,{clientX:440,clientY:220});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
+});

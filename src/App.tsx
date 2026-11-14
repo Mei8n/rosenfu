@@ -253,7 +253,7 @@ export function App() {
   const previewError = previewGeometry.error;
   // Invalid geometry is diagnostic only. Never commit this fallback chord.
   const candidateLine = hoverPoint && !draftFinished && draftPoints.length ? (previewLine.length > draftLine.length ? previewLine.slice(Math.max(0,draftLine.length-1)) : [draftPoints[draftPoints.length-1],hoverPoint]) : [];
-  const [cursorPosition,setCursorPosition]=useState<{x:number;y:number}|null>(null);
+  const [cursorPosition,setCursorPosition]=useState<{x:number;y:number;width:number;height:number}|null>(null);
   useEffect(()=>{setHoverPoint(null);setCursorPosition(null);},[camera]);
   function endpointDistance(point:GeoPoint, end:GeoPoint, width:number,height:number) {
     const a=project(end.latitude,end.longitude,camera),b=project(point.latitude,point.longitude,camera);
@@ -565,7 +565,7 @@ export function App() {
     if(enabled&&activeTool==="stations"&&mapMode==="place"&&!gestureRef.current)setStationCursor(coordinatesFromClient(event.clientX,event.clientY,event.currentTarget.getBoundingClientRect(),camera));
     if (enabled && !referenceCopy.active && mapMode === "draw" && activeTool === "tracks" && !gestureRef.current) {
       const rect=event.currentTarget.getBoundingClientRect(),point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
-      setCursorPosition(point?{x:event.clientX-rect.left,y:event.clientY-rect.top}:null);
+      setCursorPosition(point?{x:event.clientX-rect.left,y:event.clientY-rect.top,width:rect.width,height:rect.height}:null);
       setHoverPoint(point && !snappedEndpoint(point,rect.width,rect.height)?drawingPoint(point,rect.width,rect.height):null);
     }
     const gesture = gestureRef.current;
@@ -598,6 +598,25 @@ export function App() {
     setStationUndo(moveHistory);setStationRedo(moveHistory);
     setNotice("実在形状に沿う経路を選択中の計画へ追加しました。『計画を着工』で他の経路・駅とまとめて建設します。");
   }
+  function startTarget(coordinates:GeoPoint,width:number,height:number) {
+        const candidates=[...(draftFinished?[{id:activePathId,points:draftPoints}]:[]),...parkedPaths.filter(path=>path.planId===activePlanId&&!path.reference)]
+          .filter(plan=>plan.points.length>=2)
+          .map(plan=>({id:plan.id,distance:endpointDistance(coordinates,plan.points[plan.points.length-1],width,height)}))
+          .filter(plan=>plan.distance<=8).sort((a,b)=>a.distance-b.distance);
+
+    if(candidates.length)return {kind:"plan" as const,id:candidates[0].id,
+      point:candidates[0].id===activePathId?draftPoints.at(-1)!:parkedPaths.find(path=>path.id===candidates[0].id)!.points.at(-1)!};
+        const builtEnds=alignments.flatMap(alignment=>[
+          {alignment,endpoint:"start" as const,point:alignment.points[0]},
+          {alignment,endpoint:"end" as const,point:alignment.points.at(-1)!},
+        ]).filter(item=>item.point).map(item=>({...item,distance:endpointDistance(coordinates,item.point,width,height)}))
+          .filter(item=>item.distance<=8).sort((a,b)=>a.distance-b.distance);
+
+    return builtEnds.length?{kind:"built" as const,...builtEnds[0]}:null;
+  }
+  const endpointCandidate=enabled&&activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!roadFollowingBlocked&&!dragging&&(draftFinished||!draftPoints.length)&&hoverPoint&&cursorPosition
+    ?startTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
+  const endpointCandidateAllowed=endpointCandidate?.kind!=="built"||endpointCandidate.alignment.owner===world?.companies[0]?.id;
   function mapClick(event: MouseEvent<SVGSVGElement>) {
     smoothZoom.cancel();
     if (!enabled || suppressMapClick.current || mapMode === "move") return;
@@ -612,22 +631,13 @@ export function App() {
       // double-click timing. Ignore trailing clicks of that same gesture.
       if(draftFinished || !draftPoints.length){
         if(event.detail>=2)return;
-        const candidates=[...(draftFinished?[{id:activePathId,points:draftPoints}]:[]),...parkedPaths.filter(path=>path.planId===activePlanId&&!path.reference)]
-          .filter(plan=>plan.points.length>=2)
-          .map(plan=>({id:plan.id,distance:endpointDistance(coordinates,plan.points[plan.points.length-1],rect.width,rect.height)}))
-          .filter(plan=>plan.distance<=8).sort((a,b)=>a.distance-b.distance);
-        if(candidates.length){
-          if(candidates[0].id===activePathId){setDraftFinished(false);setHoverPoint(null);}
-          else selectPath(candidates[0].id);
+        const target=startTarget(coordinates,rect.width,rect.height);
+        if(target?.kind==="plan"){
+          if(target.id===activePathId){setDraftFinished(false);setHoverPoint(null);}
+          else selectPath(target.id);
           return;
         }
-        const builtEnds=alignments.flatMap(alignment=>[
-          {alignment,endpoint:"start" as const,point:alignment.points[0]},
-          {alignment,endpoint:"end" as const,point:alignment.points.at(-1)!},
-        ]).filter(item=>item.point).map(item=>({...item,distance:endpointDistance(coordinates,item.point,rect.width,rect.height)}))
-          .filter(item=>item.distance<=8).sort((a,b)=>a.distance-b.distance);
-        if(builtEnds.length){
-          const target=builtEnds[0];
+        if(target?.kind==="built"){
           if(target.alignment.owner!==world?.companies[0]?.id){setError("他社の線路は延伸できません。");return;}
           if(draftFinished)newPath();
           setDraftExtension({alignmentId:target.alignment.id,endpoint:target.endpoint});
@@ -941,17 +951,21 @@ export function App() {
             {tileStatus.failed > 0 && <p role="alert">{tileStatus.failed}枚の読み込みに失敗しました。自動再試行やサンプルへの自動切替は行いません。</p>}
             <button className="secondary" onClick={() => setBackground("sample")}>サンプル背景に戻す</button>
           </div>}
-          {(activeTool === "tracks" || activeTool === "inactive") && !referenceCopy.active && !dragging && !(mapMode==="draw" && cursorPosition && draftPoints.length>0 && !draftFinished) && planHover && hoveredPlan && hoveredPlan.line.length > 1 && <div className="construction-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-145,planHover.y+18))}}><strong>{hoveredPlan.name.trim() || "線路計画"} · {Math.round(alignmentLength(hoveredPlan.line))} m</strong><div>{hoveredGeometry?.error ? "敷設不可："+hoveredGeometry.error : "基本条件OK（地形等は未判定）"}</div><small>最小半径（近似）：{Number.isFinite(hoveredGeometry?.minimumRadiusM ?? Infinity) ? Math.round(hoveredGeometry!.minimumRadiusM)+" m" : "直線"}<br/>制限速度：未算定<br/>費用倍率・建設費・維持費：未計算</small></div>}
+          {(activeTool === "tracks" || activeTool === "inactive") && !referenceCopy.active && !endpointCandidate && !dragging && !(mapMode==="draw" && cursorPosition && draftPoints.length>0 && !draftFinished) && planHover && hoveredPlan && hoveredPlan.line.length > 1 && <div className="construction-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-145,planHover.y+18))}}><strong>{hoveredPlan.name.trim() || "線路計画"} · {Math.round(alignmentLength(hoveredPlan.line))} m</strong><div>{hoveredGeometry?.error ? "敷設不可："+hoveredGeometry.error : "基本条件OK（地形等は未判定）"}</div><small>最小半径（近似）：{Number.isFinite(hoveredGeometry?.minimumRadiusM ?? Infinity) ? Math.round(hoveredGeometry!.minimumRadiusM)+" m" : "直線"}<br/>制限速度：未算定<br/>費用倍率・建設費・維持費：未計算</small></div>}
             <div className="map-surface">
             {activeTool === "tracks" && <div className="construction-toolbar" role="group" aria-label="線路敷設設定">            <TrackTypeControls value={trackType} roadFollowing={roadFollowing} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType} onRoadFollowing={value=>{setRoadFollowing(value);setHoverPoint(null);}}/>
             <label>設計最高速度 (km/h)<input aria-label="線路の設計最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/></label>
             <small>接線に近づけると直線、離すと曲線になります</small>
 <details className="construction-help"><summary>説明</summary><p>設計最高速度は線路の上限で、車両性能とは別です。初期値は通常120・高速300・トラム50 km/h、入力範囲1〜600 km/hの暫定ゲーム設定です。延伸は元の線路の値を引き継ぎます。速度に連動する費用や種類別の曲線・勾配規格差は未実装です。道路追従は左側の「限定道路追従」から開始できます。</p></details></div>}
-            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && cursorPosition && !draftFinished && (draftPoints.length>0 || !planHover) && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
+            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && cursorPosition && !endpointCandidate && !draftFinished && (draftPoints.length>0 || !planHover) && <div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-150,cursorPosition.y+18))}}>
               <strong>{roadFollowingBlocked?"道路追従を開始するか、道路に合わせるをOFFにしてください":previewError?`敷設不可：${previewError}`:hoverPoint&&draftPoints.length?"基本条件OK（地形等は未判定）":draftPoints.length?"最後の点をもう一度クリックで終了":"始点をクリック"}</strong>
               {draftPoints.length>0&&<><div>計画 {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div><div>半径（近似）：{circleGuide?`${Math.round(circleGuide.radiusM)} m`:"直線 / 終端"}</div>{!previewError&&<div>線路の最高速度 {Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh)} km/h{circleGuide?"（曲線制限は暫定）":"（設計上限）"}</div>}</>}
               <small>建設費・維持費：未計算</small>
             </div>}
+            {endpointCandidate&&cursorPosition&&<div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-100,cursorPosition.y+18))}}>
+              <strong>{!endpointCandidateAllowed?"他社の線路は延伸できません":endpointCandidate.kind==="plan"?"計画の終点にスナップ · クリックで続けて描く":(endpointCandidate.alignment.name||"既存線路")+"の"+(endpointCandidate.endpoint==="start"?"始点":"終点")+"にスナップ · クリックで延伸"}</strong>
+            </div>}
+            {activeTool==="tracks"&&mapMode==="draw"&&draftExtension&&draftPoints.length>0&&!referenceCopy.active&&<div className="extension-status" role="status">延伸元を選択済み：{alignments.find(a=>a.id===draftExtension.alignmentId)?.name||"既存線路"}の{draftExtension.endpoint==="start"?"始点":"終点"}（着工前）</div>}
             {!referenceCopy.active&&activeTool==="tracks"&&curveLabels.map(label=><span key={label.key} className="curve-speed-label" style={{left:label.x,top:label.y}}>{label.speed} km/h（暫定）</span>)}
             <svg ref={svgRef} tabIndex={0} onKeyDown={event=>{
               if(activeTool!=="stations"||mapMode!=="place"||!enabled||event.ctrlKey||event.metaKey||event.altKey)return;
@@ -992,6 +1006,7 @@ export function App() {
               {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className="draft-path confirmed-draft" pointerEvents="none" />}
               {!referenceCopy.active&&candidateLine.length > 1 && <path d={drawPath(candidateLine)} className={"draft-path candidate-draft"+(previewError?" invalid-candidate":"")} pointerEvents="none" />}
               {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
+              {endpointCandidate&&(()=>{const p=project(endpointCandidate.point.latitude,endpointCandidate.point.longitude,camera);return <circle className="endpoint-snap-ring" data-allowed={endpointCandidateAllowed} cx={p.x} cy={p.y} r={10/mapViewport(cursorPosition!.width,cursorPosition!.height).scale} fill="none" stroke={endpointCandidateAllowed?"#14b8a6":"#ef4444"} strokeWidth="3" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;})()}
               {draftPoints.map((point,index) => { const p = project(point.latitude,point.longitude,camera); return <rect key={index} x={p.x-4} y={p.y-4} width="8" height="8" className="draft-anchor" />; })}
               {activeTool==="stations"&&mapMode==="place"&&!dragging&&stationCursor&&stationSelection?.error&&<text className="station-placement-error" x={Math.min(680,Math.max(12,project(stationCursor.latitude,stationCursor.longitude,camera).x+16))} y={Math.max(24,project(stationCursor.latitude,stationCursor.longitude,camera).y-16)} fill="#b34c4c" pointerEvents="none">{stationSelection.target?stationSelection.error:"駅は線路上に置いてください"}</text>}
               {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className="planned-station" pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform"/>:<circle cx={p.x} cy={p.y} r="5" fill={valid?"#777":"#b34c4c"}/>}<text x={p.x+10} y={p.y-8}>{station.name}（計画）</text></g>;})}
