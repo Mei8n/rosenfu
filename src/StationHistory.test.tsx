@@ -70,7 +70,7 @@ test("failed world load retains the station history",async()=>{
 test.each(["name","size"])("successful station %s edit ends placement history",async kind=>{
  await start();await place();fireEvent.click(region(".station-directory").getByRole("button",{name:/^新駅 /}));
  if(kind==="name"){fireEvent.change(screen.getByLabelText("選択駅の名前"),{target:{value:"改名駅"}});fireEvent.click(screen.getByRole("button",{name:"駅名を適用"}));await screen.findByText(/駅名を変更しました/);await ready();}
- else{fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12"}});fireEvent.click(screen.getByRole("button",{name:"ホーム寸法を適用"}));await screen.findByText("ホーム寸法を変更しました。保存でファイルに反映します。");await ready();}
+ else{fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"12"}});await screen.findByText("ホーム寸法を変更しました。保存でファイルに反映します。");await ready();}
  undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });
 test("RoutePath membership reference blocks station undo even without Track connections",async()=>{

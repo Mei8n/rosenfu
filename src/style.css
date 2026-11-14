@@ -412,7 +412,7 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .station-length-control label { margin:0; font-size:12px; }
 .station-length-control input { width:54px; padding:3px; margin:0; text-align:center; font-size:12px; }
 .station-length-control button { padding:2px 8px; min-width:26px; font-size:14px; }
-.workbench .station-placement-error { width:max-content; max-width:min(230px,calc(100% - 16px)); font-size:11px; color:var(--ink); }
+.workbench .station-placement-error { width:max-content; max-width:min(230px,calc(100% - 16px)); font-size:11px; color:#a32626; }
 /* Optional instructions stay available without competing with editing controls. */
 .user-guide { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border, #c9c9c9); border-radius: 8px; }
 .user-guide summary, .reference-tools > summary, .reference-controls summary { cursor: pointer; }
@@ -444,3 +444,5 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .anchor-snap-ring.snapped { stroke:#30dbb4;stroke-width:3; }
 .workbench .draft-anchor,.workbench .parked-anchor { pointer-events:none; }
 .anchor-drag-hit { fill:transparent;stroke:none;pointer-events:all;cursor:grab; }
+
+.workbench[data-theme="dark"] .station-placement-error { color:#ffaaa5; }
