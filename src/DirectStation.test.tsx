@@ -39,7 +39,7 @@ test("direct hover and click places planned stations without committing tracks; 
  // Redo is a subsequent user action, so wait for controls to become usable.
  await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
  expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
- fireEvent.click(screen.getByRole("button",{name:"読込"}));fireEvent.click(screen.getByRole("button",{name:"読込を続ける"}));await screen.findByText("保存したワールドを読み込みました。");
+ fireEvent.click(screen.getByRole("button",{name:"読込"}));expect(screen.queryByRole("button",{name:"読込を続ける"})).toBeNull();await screen.findByText("保存したワールドを読み込みました。");
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
 });
 test("atomic plan construction submits stations together; failure preserves draft and success clears it",async()=>{
