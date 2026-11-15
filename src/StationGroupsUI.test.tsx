@@ -19,3 +19,26 @@ test("saved station group has one directory entry and independent home selection
  expect(homes.options).toHaveLength(2);
  fireEvent.change(homes,{target:{value:"6"}});expect(homes.value).toBe("6");
 });
+
+test("old standalone stations remain visible as dots without a platform or group",async()=>{
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"legacy-group-test"}:{...world,view_state:{...center,zoom:12},station_placements:[],station_groups:[]});
+ render(<App/>);await screen.findByText(/legacy-group-test/);
+ const dots=[...document.querySelectorAll(".station-dot")];expect(dots).toHaveLength(2);expect(dots.every(dot=>dot.getAttribute("visibility")!=="hidden")).toBe(true);
+});
+
+test("crossing preview reports actual distance without inventing passenger data",async()=>{
+ window.PointerEvent=MouseEvent as typeof PointerEvent;
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"join-preview-test"}:{...world,stations:world.stations.slice(0,1),station_placements:world.station_placements.slice(0,1),station_groups:[]});
+ render(<App/>);await screen.findByText(/join-preview-test/);
+ const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
+ fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
+ fireEvent.pointerMove(map,{clientX:250,clientY:150});
+ expect(screen.getByText("交差駅から 0.00 km")).toBeTruthy();
+ expect(screen.queryByText(/乗客/)).toBeNull();
+ fireEvent.click(map,{clientX:250,clientY:150});
+ expect(document.querySelectorAll(".planned-station")).toHaveLength(1);
+ expect(document.querySelectorAll(".station-group-footprint")).toHaveLength(1);
+ expect((screen.getByLabelText("計画駅名") as HTMLInputElement).value).toBe("交差駅");
+ expect((screen.getByLabelText("計画駅名") as HTMLInputElement).readOnly).toBe(true);
+});

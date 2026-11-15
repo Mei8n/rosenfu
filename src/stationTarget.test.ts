@@ -28,3 +28,11 @@ test("same-line station intervals reject duplicates while other lines remain ava
  expect(stationContainsPoint(polygon,point)).toBe(true);
  expect(stationContainsPoint(polygon,{...point,latitude:point.latitude+.01})).toBe(false);
 });
+
+test("at exact crossing the unoccupied alignment is offered, but nearby lines are not silently selected",()=>{
+ const crossing={id:"cross",points:[{...point,latitude:point.latitude-.02},{...point,latitude:point.latitude+.02}]};
+ const occupied=[{lineId:line.id,position:.5,lengthM:200}];
+ expect(stationTarget([line,crossing],point,200,DEFAULT_CAMERA,1,occupied).target?.line.id).toBe("cross");
+ const parallel={...line,id:"parallel",points:line.points.map(p=>({...p,latitude:p.latitude+.001}))};
+ expect(stationTarget([line,parallel],point,200,DEFAULT_CAMERA,1,occupied).error).toContain("重な");
+});

@@ -125,6 +125,10 @@ test("planned station hover names it, blocks duplicate placement and edits persi
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
  fireEvent.change(screen.getByLabelText("計画駅名"),{target:{value:"中央"}});
  expect(screen.getByText("中央 · 10両")).toBeTruthy();
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
+ expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
+ expect((screen.getByLabelText("計画駅名") as HTMLInputElement).value).toBe("中央");
  fireEvent.click(screen.getByRole("button",{name:"保存"}));
  await screen.findByText(/ワールドと未着工計画を保存しました/);
  expect(invoke).toHaveBeenCalledWith("save_world",expect.objectContaining({constructionPlans:expect.objectContaining({plannedStations:[expect.objectContaining({name:"中央"})]})}));
