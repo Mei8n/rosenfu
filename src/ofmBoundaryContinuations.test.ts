@@ -12,6 +12,7 @@ describe('tile boundary geometric candidates',()=>{
  it('rejects revision, class and direction mismatch',()=>{for(const change of [{revision:'other'},{class:'service'},{oneway:1}])expect(find([line('a'),{...line('b',14553),...change}]).pairs).toHaveLength(0);});
  it('supports opposite feature digitization',()=>{const b=line('b',14553);b.coordinates=[...b.coordinates].reverse();expect(find([line('a'),b]).pairs).toHaveLength(1);});
  it('rejects reversed one-way geometry',()=>{const a={...line('a'),oneway:1},b={...line('b',14553),oneway:1};b.coordinates=[...b.coordinates].reverse();expect(find([a,b]).pairs).toHaveLength(0);});
+ it('does not infer continuity across different access tags',()=>{expect(find([{...line('a'),access:'private'},{...line('b',14553),access:'yes'}]).pairs).toHaveLength(0);expect(find([{...line('a'),access:'no'},line('b',14553)]).pairs).toHaveLength(0);});
  it('rejects tile corners',()=>{const y=35.6929946320988;const a=line('a'),b=line('b',14553);a.coordinates=a.coordinates.map(([x])=>[x,y]);b.coordinates=b.coordinates.map(([x])=>[x,y]);expect(find([a,b]).pairs).toHaveLength(0);});
  it('rejects repeated passage and zero length',()=>{const a=line('a');a.coordinates=[...a.coordinates,...a.coordinates];expect(find([a,line('b',14553)]).pairs).toHaveLength(0);});
  it('rejects duplicate ids and invalid input',()=>{expect(find([line('a'),line('a',14553)]).pairs).toHaveLength(0);expect(find([{...line('a'),x:NaN}]).pairs).toHaveLength(0);});
