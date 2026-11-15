@@ -59,11 +59,34 @@ impl WorldEditor {
             }
         }
         for selection in selections {
-            // Removing from the end keeps the original prefix ID and lower indices stable.
+            // Collapse adjacent selected intervals before removing them: temporary
+            // sub-20m fragments must not reject a valid final contiguous removal.
             let mut indices = selection.section_indices;
-            indices.sort_unstable_by(|a, b| b.cmp(a));
+            indices.sort_unstable();
+            let mut ranges = Vec::new();
             for index in indices {
-                candidate.delete_alignment_section(selection.alignment_id, index, plans.clone())?;
+                match ranges.last_mut() {
+                    Some((_, end)) if index == *end + 1 => *end = index,
+                    _ => ranges.push((index, index)),
+                }
+            }
+            // Removing from the end keeps the original prefix ID and lower indices stable.
+            for (start, end) in ranges.into_iter().rev() {
+                if start != end {
+                    let current = candidate.snapshot();
+                    let alignment = current
+                        .alignments
+                        .iter()
+                        .find(|a| a.id == selection.alignment_id)
+                        .ok_or("選択した線路がありません。")?;
+                    let mut anchors = alignment
+                        .anchor_indices
+                        .clone()
+                        .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
+                    anchors.drain(start + 1..=end);
+                    candidate.set_anchor_indices(selection.alignment_id, anchors)?;
+                }
+                candidate.delete_alignment_section(selection.alignment_id, start, plans.clone())?;
             }
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
@@ -370,6 +393,27 @@ mod tests {
         let id = snapshot.alignments[0].id;
         (editor, id)
     }
+    #[test]
+    fn batch_adjacent_short_sections_can_be_removed_as_one_range() {
+        let (mut editor, id) = setup();
+        let mut before = editor.snapshot();
+        for (i, point) in before.alignments[0].points.iter_mut().enumerate() {
+            point.longitude = 139.0 + i as f64 * 0.00005;
+        }
+        editor.world.replace(before.clone()).unwrap();
+        let after = editor
+            .delete_alignment_sections(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![0, 1, 2],
+                }],
+                before.alignments,
+                plans(),
+            )
+            .unwrap();
+        assert!(after.alignments.is_empty());
+    }
+
     #[test]
     fn batch_sections_are_one_atomic_undo_and_save_roundtrip() {
         let (mut editor, id) = setup();
