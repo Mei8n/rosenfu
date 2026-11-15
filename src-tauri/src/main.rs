@@ -145,12 +145,28 @@ fn place_station_on_alignment(
         .place_station_on_alignment(name, alignment_id, position, length_m, width_m)
 }
 #[tauri::command]
-fn set_service_color(editor: State<'_, Mutex<WorldEditor>>, service_id:ServiceId,color:String,expected_color:Option<String>) -> Result<WorldDraft,String> {
-    editor.lock().map_err(|_|"world state unavailable")?.set_service_color(service_id,color,expected_color)
+fn set_service_color(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    color: String,
+    expected_color: Option<String>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .set_service_color(service_id, color, expected_color)
 }
 #[tauri::command]
-fn duplicate_service(editor: State<'_, Mutex<WorldEditor>>,service_id:ServiceId,expected_path:rosenfu_core::world::ServicePath,expected_name:String) -> Result<WorldDraft,String> {
-    editor.lock().map_err(|_|"world state unavailable")?.duplicate_service(service_id,expected_path,expected_name)
+fn duplicate_service(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    expected_path: rosenfu_core::world::ServicePath,
+    expected_name: String,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .duplicate_service(service_id, expected_path, expected_name)
 }
 #[tauri::command]
 fn rename_station(

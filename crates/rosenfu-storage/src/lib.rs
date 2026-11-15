@@ -31,11 +31,9 @@ impl std::fmt::Display for StorageError {
             Self::Json(e) => write!(f, "invalid save JSON: {e}"),
             Self::InvalidHeader => write!(f, "missing or invalid save header"),
             Self::InvalidFormat => write!(f, "not a Rosenfu world file"),
-            Self::UnsupportedVersion(v) => write!(
-                f,
-                "このセーブ形式（schema {v}）は非対応です。読込対応は schema 18〜{SCHEMA_VERSION} です。旧データは移行せず、元ファイルは変更していません。"
-            ),
-            Self::LegacyFormat => write!(f, "旧式の駅間線路・路線・系統データは非対応です。元ファイルは変更していません。新しいワールドを作成してください。"),
+            Self::UnsupportedVersion(_) | Self::LegacyFormat => {
+                write!(f, "このセーブ形式は非対応です")
+            }
             Self::FileChanged => write!(
                 f,
                 "save file changed since it was observed; reload before saving"
