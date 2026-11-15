@@ -46,7 +46,7 @@ test("disconnected plans remain visible and build separately without losing the 
   fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
   expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
   expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false);
-  expect(trackPanel().queryByRole("group",{name:"計画を選択"})).toBeNull();
+  expect(trackPanel().getByRole("button",{name:"計画 2",pressed:true})).toBeTruthy();
   expect(map.querySelector(".draft-path:not(.parked-plan)")!.getAttribute("d")).toBe(second);
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
   fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
@@ -217,14 +217,14 @@ test('deleting a plan asks first and preserves other plans and built infrastruct
  fireEvent.click(trackPanel().getByRole('button',{name:'計画を削除'}));
  let dialog=screen.getByRole('dialog',{name:'計画を削除'});fireEvent.click(within(dialog).getByRole('button',{name:'戻る'}));expect(map.querySelectorAll('.draft-path')).toHaveLength(2);
  fireEvent.click(trackPanel().getByRole('button',{name:'計画を削除'}));dialog=screen.getByRole('dialog',{name:'計画を削除'});fireEvent.click(within(dialog).getByRole('button',{name:'削除する'}));
- expect(map.querySelectorAll('.draft-path')).toHaveLength(1);expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='delete_alignment')).toBe(false);
+ expect(map.querySelectorAll('.draft-path')).toHaveLength(1);expect(trackPanel().getByRole('button',{name:'計画 1',pressed:true})).toBeTruthy();expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='delete_alignment')).toBe(false);
 });
 
 test('empty saved headers are removed on reopen while nonempty plans retain neutral selection styling',async()=>{
  const plans=await import('./constructionPlans');
  const saved={...plans.emptyConstructionPlans(),plans:[{id:1,name:'空案'},{id:2,name:'残す案'}],activePlanId:2,draftPoints:[{latitude:35.67504,longitude:139.75}]};
  const map=await start({...empty,construction_plans:saved});
- expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();
+ expect(trackPanel().getByRole('button',{name:'残す案',pressed:true})).toBeTruthy();
  expect((screen.getByLabelText('計画名（任意）') as HTMLInputElement).value).toBe('残す案');
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
  fireEvent.click(map,{clientX:400,clientY:200});
@@ -232,4 +232,39 @@ test('empty saved headers are removed on reopen while nonempty plans retain neut
  expect(map.querySelector('.parked-plan')?.closest('.inactive-plan')).not.toBeNull();
  fireEvent.click(trackPanel().getByRole('button',{name:'残す案 を編集'}));
  expect(map.querySelectorAll('.confirmed-draft')).toHaveLength(1);
+});
+
+test('single plan selector appears with its first anchor and follows name, undo and redo',async()=>{
+ const map=await start();
+ const selector=()=>trackPanel().queryByRole('group',{name:'計画を選択'});
+ expect(selector()).toBeNull();
+ fireEvent.change(screen.getByLabelText('計画名（任意）'),{target:{value:'海沿い'}});
+ expect(selector()).toBeNull();
+ fireEvent.click(map,{clientX:180,clientY:130});
+ expect(within(selector()!).getByRole('button',{name:'海沿い',pressed:true})).toBeTruthy();
+ fireEvent.change(screen.getByLabelText('計画名（任意）'),{target:{value:'山側'}});
+ expect(within(selector()!).getByRole('button',{name:'山側',pressed:true})).toBeTruthy();
+ fireEvent.click(within(selector()!).getByRole('button',{name:'山側'}));
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(selector()).toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(within(selector()!).getByRole('button',{name:'山側',pressed:true})).toBeTruthy();
+ fireEvent.change(screen.getByLabelText('計画名（任意）'),{target:{value:'   '}});
+ expect(within(selector()!).getByRole('button',{name:'計画 1',pressed:true})).toBeTruthy();
+});
+
+test('station-only plan exposes the same single plan selector and clears it with undo',async()=>{
+ const map=await start(built);
+ fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
+ expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();
+ const midpoint=pointOnAlignment(alignment.points,.5);
+ const position=project(midpoint.latitude,midpoint.longitude,DEFAULT_CAMERA);
+ fireEvent.click(map,{clientX:position.x/2,clientY:position.y/2});
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ expect(trackPanel().getByRole('button',{name:'計画 1',pressed:true})).toBeTruthy();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(trackPanel().getByRole('button',{name:'計画 1',pressed:true})).toBeTruthy();
 });
