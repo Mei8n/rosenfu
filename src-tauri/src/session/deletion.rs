@@ -551,6 +551,97 @@ mod tests {
         assert_eq!(after.alignment_connections, before.alignment_connections);
     }
     #[test]
+    fn curved_split_preserves_both_stations_and_both_endpoint_links() {
+        use rosenfu_core::world::{AlignmentEndpoint, AlignmentEndpointRef};
+        let (mut editor, id) = setup();
+        let mut draft = editor.snapshot();
+        for (index, point) in draft.alignments[0].points.iter_mut().enumerate() {
+            point.latitude += (index as f64 * 0.4).sin() * 0.0005;
+        }
+        editor.world.replace(draft).unwrap();
+        let original = editor.snapshot().alignments[0].clone();
+        for (end, outer, inner) in [
+            (AlignmentEndpoint::Start, 0, 1),
+            (AlignmentEndpoint::End, 6, 5),
+        ] {
+            let point = original.points[outer];
+            let inside = original.points[inner];
+            let away = GeoPoint {
+                latitude: 2. * point.latitude - inside.latitude,
+                longitude: 2. * point.longitude - inside.longitude,
+            };
+            let adjacent = editor
+                .world
+                .build_alignment_typed(
+                    editor.company,
+                    "接続先".into(),
+                    vec![point, away],
+                    TrackType::Normal,
+                )
+                .unwrap();
+            editor
+                .world
+                .connect_alignment_endpoints(
+                    editor.company,
+                    AlignmentEndpointRef {
+                        alignment_id: id,
+                        endpoint: end,
+                    },
+                    AlignmentEndpointRef {
+                        alignment_id: adjacent,
+                        endpoint: AlignmentEndpoint::Start,
+                    },
+                )
+                .unwrap();
+        }
+        for position in [0.15, 0.85] {
+            editor
+                .place_station_on_alignment("駅".into(), id, position, 40., 12.)
+                .unwrap();
+        }
+        let mut before = editor.snapshot();
+        before.construction_plans = Some(plans());
+        let after = editor.delete_alignment_section(id, 1, plans()).unwrap();
+        assert_eq!(after.stations, before.stations);
+        assert_eq!(
+            after.alignment_connections[0],
+            before.alignment_connections[0]
+        );
+        assert_eq!(
+            after.alignment_connections[1].b,
+            before.alignment_connections[1].b
+        );
+        assert_eq!(
+            after.alignment_connections[1].a.alignment_id,
+            after.station_placements[1].alignment_id
+        );
+        for p in &after.station_placements {
+            let a = after
+                .alignments
+                .iter()
+                .find(|a| a.id == p.alignment_id)
+                .unwrap();
+            let old = before
+                .station_placements
+                .iter()
+                .find(|old| old.station_id == p.station_id)
+                .unwrap();
+            let actual = a.point_at(p.position);
+            let expected = original.point_at(old.position);
+            assert!((actual.latitude - expected.latitude).abs() < 1e-10);
+            assert!((actual.longitude - expected.longitude).abs() < 1e-10);
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("curve.json");
+        editor.save(&path).unwrap();
+        let mut loaded = WorldEditor::new();
+        let restored = loaded.load(&path).unwrap();
+        assert_eq!(restored.alignment_connections, after.alignment_connections);
+        assert_eq!(restored.alignments, after.alignments);
+        assert_eq!(restored.stations, after.stations);
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+    }
+    #[test]
     fn station_removal_preserves_plans_and_is_reversible() {
         let (mut editor, id) = setup();
         let snapshot = editor
