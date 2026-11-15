@@ -14,7 +14,7 @@ async function setup(){let world=structuredClone(base);vi.mocked(isTauri).mockRe
  if(c==='list_save_slots')return {active_slot_id:'slot',slots:[]};if(c==='autosave_status')return {available:false};
  if(c==='duplicate_service'){world={...world,services:[...world.services,{...world.services[0],id:'10',name:'普通 のコピー'}],service_paths:[...world.service_paths,{...structuredClone(path),service_id:'10'}],service_route_bindings:[...world.service_route_bindings,{service_id:'10',binding:{kind:'independent'}}],service_appearances:[...world.service_appearances,{service_id:'10',color:'#123456'}]};return world;}
  if(c==='update_service_path'){const a=args as {serviceId:string;name:string;stops:typeof path.stops};world={...world,services:world.services.map(s=>s.id===a.serviceId?{...s,name:a.name}:s),service_paths:world.service_paths.map(p=>p.service_id===a.serviceId?{...p,stops:a.stops}:p)};return world;}
- if(c==='set_service_color'){const a=args as {serviceId:string;color:string};world={...world,service_appearances:world.service_appearances.map(p=>p.service_id===a.serviceId?{...p,color:a.color}:p)};return world;}
+ if(c==='set_service_color'){const a=args as {serviceId:string;color:string};world={...world,service_appearances:world.service_appearances.map(p=>p.service_id===a.serviceId?{...p,color:a.color.toUpperCase()}:p)};return world;}
  throw Error(String(c));});
  render(<App/>);await screen.findByText(/appearance-ui-test/);await waitFor(()=>expect(invoke).toHaveBeenCalledWith('autosave_status',{slotId:'slot'}));await act(async()=>{});fireEvent.click(screen.getByRole('tab',{name:'系統'}));fireEvent.click(screen.getByRole('button',{name:'系統編集: 普通'}));return ()=>world;
 }
@@ -35,4 +35,6 @@ test('colour draft blocks switching, save and other editor until applied; matchi
  expect(invoke).toHaveBeenCalledWith('set_service_color',{serviceId:'6',color:'#aabbcc',expectedColor:'#123456'});
  await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
  expect((screen.getByLabelText('系統色') as HTMLInputElement).value).toBe('#aabbcc');
+ expect(screen.queryByText(/保存済みの色が変更/)).toBeNull();
+ expect((screen.getByRole('button',{name:'系統を複製'}) as HTMLButtonElement).disabled).toBe(false);
 });

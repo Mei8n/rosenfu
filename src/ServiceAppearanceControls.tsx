@@ -1,13 +1,15 @@
 import {useEffect,useRef,useState} from 'react';
 const DEFAULT_COLOR='#3b82f6';
+// Normalize presentation/comparison only; retain raw persisted colour for CAS.
+const displayColor=(color:string|null)=>(color??DEFAULT_COLOR).toLowerCase();
 export function ServiceAppearanceControls({color,enabled,onDirty,onSave,onDuplicate}:{color:string|null;enabled:boolean;onDirty:(dirty:boolean)=>void;onSave:(color:string,expectedColor:string|null)=>Promise<void>;onDuplicate:()=>Promise<void>}){
- const [draft,setDraft]=useState(color??DEFAULT_COLOR),[pending,setPending]=useState(false),[error,setError]=useState(''),[conflict,setConflict]=useState(false);
+ const [draft,setDraft]=useState(displayColor(color)),[pending,setPending]=useState(false),[error,setError]=useState(''),[conflict,setConflict]=useState(false);
  const observed=useRef(color),busy=useRef(false);
- const changed=draft!==(color??DEFAULT_COLOR);
- function reset(){setDraft(color??DEFAULT_COLOR);observed.current=color;setConflict(false);setError('');onDirty(false);}
+ const changed=draft!==displayColor(color);
+ function reset(){setDraft(displayColor(color));observed.current=color;setConflict(false);setError('');onDirty(false);}
  useEffect(()=>{if(observed.current===color)return;const previous=observed.current;observed.current=color;
-  if(draft!==(previous??DEFAULT_COLOR)&&draft!==(color??DEFAULT_COLOR)){setConflict(true);setError('保存済みの色が変更されています。入力を取り消して最新の色を確認してください。');}
-  else {setDraft(color??DEFAULT_COLOR);setConflict(false);setError('');}
+  if(draft!==displayColor(previous)&&draft!==displayColor(color)){setConflict(true);setError('保存済みの色が変更されています。入力を取り消して最新の色を確認してください。');}
+  else {setDraft(displayColor(color));setConflict(false);setError('');}
  },[color]);
  useEffect(()=>{onDirty(changed||conflict);},[changed,conflict,onDirty]);
  async function apply(){if(!enabled||busy.current||conflict||(!changed&&color!==null)||!/^#[0-9a-f]{6}$/i.test(draft))return;
