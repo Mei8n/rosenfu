@@ -562,7 +562,9 @@ export function App() {
   }
   function deletionBlocked(target:DeleteTarget):string{
     if(unapplied)return "編集中の変更を適用または取り消してください";
-    if(target.kind==="built-section")return alignmentReferences(target.alignmentId)?`${alignmentReferences(target.alignmentId)}が使用中です`:"";
+    // Section safety depends on the removed span, not references to the whole line.
+    // The transactional backend validates station overlap and surviving endpoints.
+    if(target.kind==="built-section")return world?.alignments?.find(a=>a.id===target.alignmentId)?.owner!==world?.companies[0]?.id?"他社の線路は削除できません":"";
     if(target.kind==="station"){
       if(world?.stations.find(station=>station.id===target.stationId)?.owner!==world?.companies[0]?.id)return "他社の駅は削除できません";
       const refs=stationReferences(target.stationId);return refs?`${refs}が使用中です`:"";
@@ -575,22 +577,30 @@ export function App() {
   }
   function requestDeletion(event:MouseEvent<SVGElement>,target:DeleteTarget){
     event.stopPropagation();if(!enabled||busyRef.current||suppressSelectionClick.current)return;
-    setError("");setDeleteTarget(target);setDeleteHover(null);
+    setError("");setDeleteHover(null);
+    if(target.kind==="plan-anchor"){
+      const blocked=deletionBlocked(target);
+      if(blocked){setError(blocked);return;}
+      deletePlannedTarget(target);return;
+    }
+    setDeleteTarget(target);
   }
   function deleteHitProps(target:DeleteTarget,filled=false){
     const hovered=JSON.stringify(deleteHover?.target)===JSON.stringify(target);
     return {className:"deletion-hit"+(hovered?" deletion-hover":"")+(filled?" deletion-filled":""),fill:filled?(hovered?"#db667080":"transparent"):"none",stroke:hovered?"#d45260":"transparent",strokeWidth:(filled?2:14)/viewport.scale,pointerEvents:filled?"all" as const:"stroke" as const,onPointerEnter:(event:ReactPointerEvent<SVGElement>)=>hoverDeletion(event,target),onPointerMove:(event:ReactPointerEvent<SVGElement>)=>hoverDeletion(event,target),onPointerLeave:()=>setDeleteHover(null),onClick:(event:MouseEvent<SVGElement>)=>requestDeletion(event,target)};
   }
+  function deletePlannedTarget(target:PlannedDeleteTarget){
+    try{
+      const before=constructionPlans,after=removePlannedTarget(before,target,extensionPrevious),saved=savedPlanFingerprint;
+      restoreConstructionPlans(after);setSavedPlanFingerprint(saved);setStationUndo([]);setStationRedo([]);
+      setTrackDeleteUndo({kind:"plan",before,after:JSON.stringify(after),world});setDeleteTarget(null);setSelectedPlanPath(null);
+    }catch(error){setError(detail(error));}
+  }
   function confirmDeletion(){
     if(!enabled||!deleteTarget||deletionBlocked(deleteTarget))return;
     const target=deleteTarget;
     if(target.kind!=="built-section"&&target.kind!=="station"){
-      try{
-        const before=constructionPlans,after=removePlannedTarget(before,target,extensionPrevious),saved=savedPlanFingerprint;
-        restoreConstructionPlans(after);setSavedPlanFingerprint(saved);setStationUndo([]);setStationRedo([]);
-        setTrackDeleteUndo({kind:"plan",before,after:JSON.stringify(after),world});setDeleteTarget(null);setSelectedPlanPath(null);
-      }catch(error){setError(detail(error));}
-      return;
+      deletePlannedTarget(target);return;
     }
     void perform(async()=>{
       const snapshot=await invoke<World>(target.kind==="station"?"delete_station":"delete_alignment_section",target.kind==="station"?{stationId:target.stationId,constructionPlans}:{alignmentId:target.alignmentId,sectionIndex:target.sectionIndex,constructionPlans});
