@@ -264,8 +264,14 @@ export function App() {
   const setContrast=(value:number)=>displaySettings.update({contrast:value});
   const setPanelWidth=(value:number)=>displaySettings.update({panelWidth:value});
   const setTextSize=(value:number)=>displaySettings.update({textSize:value});
-  function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} if (!draftPoints.length) return; setDraftRedoDestination(draftDestination??draftRedoDestination);setDraftDestination(undefined);setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
-  function redoPoint() { if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) return; if(redoPoints.length===1){setDraftDestination(draftRedoDestination);setDraftRedoDestination(undefined);} setDraftPoints(points => [...points, redoPoints[redoPoints.length-1]]); setRedoPoints(points => points.slice(0,-1)); setHoverPoint(null); }
+  function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} if (!draftPoints.length) return; if(draftFinished&&draftPoints.length===2){undoLastSegment();return;} setDraftRedoDestination(draftDestination??draftRedoDestination);setDraftDestination(undefined);setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
+  function redoPoint() {
+    if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) return;
+    const count=draftFinished&&!draftPoints.length&&redoPoints.length>=2?2:1;
+    const after={points:[...draftPoints,...redoPoints.slice(-count).reverse()],geometry:draftEditedGeometry,redo:redoPoints.slice(0,-count),destination:redoPoints.length===count?draftRedoDestination:draftDestination,redoDestination:redoPoints.length===count?undefined:draftRedoDestination};
+    setAnchorUndo(items=>[...items,{kind:"point" as const,id:activePathId,before:{points:draftPoints,geometry:draftEditedGeometry,redo:redoPoints,destination:draftDestination,redoDestination:draftRedoDestination},after}].slice(-50));
+    applyAnchorEdit(activePathId,after);
+  }
   const [alignmentId, setAlignmentId] = useState("");
   const [selectedPlanPath,setSelectedPlanPath]=useState<number|null>(null);
   const [trackDeleteConfirm,setTrackDeleteConfirm]=useState(false);
@@ -759,8 +765,20 @@ export function App() {
     if(id===activePathId){setDraftDestination(value.destination);setDraftRedoDestination(value.redoDestination);setDraftPoints(value.points);setDraftEditedGeometry(value.geometry);setRedoPoints(value.redo);setHoverPoint(null);}
     else {parkedAnchorHistory.current.delete(id);setParkedPaths(paths=>paths.map(path=>path.id===id?{...path,destination:value.destination,redoDestination:value.redoDestination,points:value.points,editedGeometry:value.geometry,line:plannedGeometry(value.points,value.geometry,extensionPrevious(path.extension)).points,redo:value.redo}:path));}
   }
+  function undoLastSegment(historyEntries=0){
+    const entry:AnchorEdit={kind:"point",id:activePathId,
+      before:{points:[],geometry:draftEditedGeometry,redo:[...redoPoints,draftPoints[1],draftPoints[0]],redoDestination:draftDestination??draftRedoDestination},
+      after:{points:draftPoints,geometry:draftEditedGeometry,redo:redoPoints,destination:draftDestination,redoDestination:draftRedoDestination}};
+    applyAnchorEdit(activePathId,entry.before);
+    if(historyEntries)setAnchorUndo(items=>items.slice(0,-historyEntries));
+    setAnchorRedo(items=>[...items,entry]);
+  }
   function undoAnchor(redo:boolean){
     const history=redo?anchorRedo:anchorUndo,entry=history.at(-1);if(!entry)return;
+    if(!redo&&entry.kind==="point"&&entry.id===activePathId&&draftFinished&&draftPoints.length===2&&entry.before.points.length===1){
+      const start=history.at(-2);
+      undoLastSegment(start?.kind==="point"&&start.id===activePathId&&start.before.points.length===0&&start.after.points.length===1?2:1);return;
+    }
     applyAnchorEdit(entry.id,redo?entry.after:entry.before);
     if(redo){setAnchorRedo(items=>items.slice(0,-1));setAnchorUndo(items=>[...items,entry]);}else{setAnchorUndo(items=>items.slice(0,-1));setAnchorRedo(items=>[...items,entry]);}
   }

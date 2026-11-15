@@ -20,7 +20,7 @@ async function start(extra={}){
 }
 
 
-test.each([false,true])('full Undo then plan switch preserves both Redo steps (extension=%s)',async extension=>{
+test.each([false,true])('full Undo then plan switch preserves the completed-segment Redo step (extension=%s)',async extension=>{
  const map=await start();
  const click=(x:number,y=200)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
  if(extension){click(250,130);click(350,130);click(350,130);}else{click(120);click(240);click(240);}
@@ -65,7 +65,7 @@ test('histories remain separate across repeated switches between plans',async()=
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));undo();undo();
  fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));redo();
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));redo();
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));redo();

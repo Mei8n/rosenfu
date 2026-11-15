@@ -49,7 +49,7 @@ test("disconnected plans remain visible and build separately without losing the 
   expect(trackPanel().getByRole("button",{name:"計画 2",pressed:true})).toBeTruthy();
   expect(map.querySelector(".draft-path:not(.parked-plan)")!.getAttribute("d")).toBe(second);
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
-  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
   fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
 });
 test("clearing active plan does not erase parked plans and loading asks before discarding",async()=>{

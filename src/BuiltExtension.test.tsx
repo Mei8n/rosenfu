@@ -208,7 +208,7 @@ for(const sourceEnd of ['start','end'] as const)for(const targetEnd of ['start',
  fireEvent.click(hit,{clientX:x+2,clientY:131,ctrlKey:true,detail:1});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  vi.mocked(invoke).mockRejectedValueOnce(Error('late target changed'));
