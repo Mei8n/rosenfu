@@ -33,3 +33,24 @@ test('middle drag pans instead of selecting or building and pointer cancel does 
  fireEvent.pointerDown(map,{clientX:100,clientY:140,button:0});fireEvent.pointerMove(map,{clientX:150,clientY:160});fireEvent.pointerCancel(map);expect(map.querySelector('[data-selected-section]')).toBeNull();
  expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','list_save_slots']);
 });
+test('infrastructure change keeps unspecified field, snapshots selected alignment, and retains rejected edits',async()=>{
+ const map=await start();drag(map);
+ expect(screen.getByLabelText('選択区間の線路数').textContent).toBe('単線');
+ const count=screen.getByLabelText('選択区間の線路数変更');fireEvent.change(count,{target:{value:'4'}});
+ vi.mocked(invoke).mockImplementation(async command=>{if(command==='update_alignment_section_infrastructure')throw Error('更新競合');throw Error(command);});
+ fireEvent.click(screen.getByRole('button',{name:'選択区間へ適用'}));
+ await screen.findByText(/更新競合/);expect((count as HTMLSelectElement).value).toBe('4');expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(1);
+ expect(invoke).toHaveBeenCalledWith('update_alignment_section_infrastructure',expect.objectContaining({trackCount:4,level:null,selections:[{alignmentId:'3',sectionIndices:[0]}],expectedAlignments:[alignment]}));
+ const changed={...built,alignments:[{...alignment,infrastructure:[{track_count:4,level:'underground_3'},{track_count:1,level:'ground'}]}]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='update_alignment_section_infrastructure'?changed:built);
+ fireEvent.change(screen.getByLabelText('選択区間の高さ変更'),{target:{value:'underground_3'}});
+ await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'選択区間へ適用'}));});
+ expect(map.querySelector('[data-selected-section]')).toBeNull();
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');
+});
+test.each(['線路','駅設置','削除'])('middle pan does not place or delete in %s mode',async mode=>{
+ const map=await start();fireEvent.click(screen.getByRole('tab',{name:mode}));const before=map.querySelector('.alignment-hit')?.getAttribute('d');drag(map,1);
+ expect(map.querySelector('.alignment-hit')?.getAttribute('d')).not.toBe(before);expect(screen.queryByRole('dialog')).toBeNull();
+ expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','list_save_slots']);
+ if(mode==='削除')expect(map.classList.contains('map-delete-mode')).toBe(true);
+});
