@@ -290,11 +290,19 @@ fn create_service_path(
     segments: Vec<rosenfu_core::world::RouteSegment>,
     stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
     source_route_id: Option<RouteId>,
+    source_route_ids: Option<Vec<RouteId>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .create_service_path_with_source_route(name, start, segments, stops, source_route_id)
+        .create_service_path_with_source_routes(
+            name,
+            start,
+            segments,
+            stops,
+            source_route_id,
+            source_route_ids,
+        )
 }
 #[tauri::command]
 fn update_service_path(
@@ -331,11 +339,12 @@ fn replace_service_path(
     segments: Vec<rosenfu_core::world::RouteSegment>,
     stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
     source_route_id: Option<RouteId>,
+    source_route_ids: Option<Vec<RouteId>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .replace_service_path_with_source_route(
+        .replace_service_path_with_source_routes(
             service_id,
             expected_path,
             name,
@@ -343,6 +352,7 @@ fn replace_service_path(
             segments,
             stops,
             source_route_id,
+            source_route_ids,
         )
 }
 

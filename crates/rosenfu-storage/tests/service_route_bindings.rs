@@ -69,3 +69,30 @@ fn current_schema_requires_explicit_bindings_array() {
         .remove("service_route_bindings");
     assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
 }
+
+#[test]
+fn through_binding_roundtrip_and_invalid_duplicate_rejected() {
+    let mut w = world();
+    let c = w.snapshot().companies[0].id;
+    let s = w.snapshot().services[0].id;
+    let r = w.snapshot().routes[0].id;
+    let start = w.snapshot().routes[0].start;
+    let path = w.snapshot().route_paths[0].clone();
+    let r2 = w
+        .add_planned_route(c, "R2".into(), start, path.segments, path.member_stations)
+        .unwrap();
+    w.set_service_route_binding(
+        c,
+        s,
+        ServiceRouteBindingKind::Routes {
+            route_ids: vec![r, r2],
+        },
+    )
+    .unwrap();
+    let bytes = encode(&w).unwrap();
+    assert_eq!(decode(&bytes).unwrap(), w);
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    value["world"]["service_route_bindings"][0]["binding"]["route_ids"][1] =
+        serde_json::to_value(r).unwrap();
+    assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
+}

@@ -248,3 +248,69 @@ fn crossing_station_groups_do_not_make_routes_physically_interchangeable() {
         .is_err());
     assert_eq!(w.snapshot(), &before);
 }
+
+#[test]
+fn through_routes_cover_physical_path_and_protect_each_dependency() {
+    let (mut w, c, s, t) = setup();
+    let r1 = route(&mut w, c, s[0], vec![t[0].clone()]);
+    let r2 = route(&mut w, c, s[1], t[1..].to_vec());
+    let svc = service(&mut w, c, s[0], t.clone());
+    let original = w.snapshot().service_paths.clone();
+    w.set_service_route_binding(
+        c,
+        svc,
+        ServiceRouteBindingKind::Routes {
+            route_ids: vec![r1, r2],
+        },
+    )
+    .unwrap();
+    assert_eq!(w.snapshot().service_paths, original);
+    let before = w.snapshot().clone();
+    let mut changed = before.clone();
+    let path = changed
+        .route_paths
+        .iter_mut()
+        .find(|p| p.route_id == r2)
+        .unwrap();
+    path.segments = vec![t[1].clone()];
+    path.member_stations = s[1..3].to_vec();
+    assert!(w.replace(changed).is_err());
+    assert_eq!(w.snapshot(), &before);
+    let a = w.snapshot().alignments[0].id;
+    let reverse = service(&mut w, c, s[3], vec![segment(a, s[3], s[0])]);
+    w.set_service_route_binding(
+        c,
+        reverse,
+        ServiceRouteBindingKind::Routes {
+            route_ids: vec![r2, r1],
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn through_routes_reject_gaps_duplicate_or_unused_routes_atomically() {
+    let (mut w, c, s, t) = setup();
+    let r1 = route(&mut w, c, s[0], vec![t[0].clone()]);
+    let r2 = route(&mut w, c, s[2], vec![t[2].clone()]);
+    let svc = service(&mut w, c, s[0], t.clone());
+    for ids in [vec![r1, r2], vec![r1, r1], vec![r1]] {
+        let before = w.snapshot().clone();
+        assert!(w
+            .set_service_route_binding(c, svc, ServiceRouteBindingKind::Routes { route_ids: ids })
+            .is_err());
+        assert_eq!(w.snapshot(), &before);
+    }
+    let short = service(&mut w, c, s[0], vec![t[0].clone()]);
+    let before = w.snapshot().clone();
+    assert!(w
+        .set_service_route_binding(
+            c,
+            short,
+            ServiceRouteBindingKind::Routes {
+                route_ids: vec![r1, r2]
+            }
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+}

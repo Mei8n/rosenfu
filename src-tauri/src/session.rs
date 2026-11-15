@@ -215,9 +215,28 @@ impl WorldEditor {
         stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
         source_route_id: Option<RouteId>,
     ) -> Result<WorldDraft, String> {
+        self.create_service_path_with_source_routes(
+            name,
+            start,
+            segments,
+            stops,
+            source_route_id,
+            None,
+        )
+    }
+    pub fn create_service_path_with_source_routes(
+        &mut self,
+        name: String,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+        stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+        source_route_id: Option<RouteId>,
+        source_route_ids: Option<Vec<RouteId>>,
+    ) -> Result<WorldDraft, String> {
+        let binding = source_route_binding(source_route_id, source_route_ids)?;
         let mut candidate = self.clone();
         candidate.create_service_path_unchecked(name, start, segments, stops)?;
-        if let Some(route_id) = source_route_id {
+        if let Some(binding) = binding {
             let id = candidate
                 .world
                 .snapshot()
@@ -227,11 +246,7 @@ impl WorldEditor {
                 .id;
             candidate
                 .world
-                .set_service_route_binding(
-                    candidate.company,
-                    id,
-                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
-                )
+                .set_service_route_binding(candidate.company, id, binding)
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
@@ -292,10 +307,34 @@ impl WorldEditor {
         stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
         source_route_id: Option<RouteId>,
     ) -> Result<WorldDraft, String> {
+        self.replace_service_path_with_source_routes(
+            service_id,
+            expected_path,
+            name,
+            start,
+            segments,
+            stops,
+            source_route_id,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_service_path_with_source_routes(
+        &mut self,
+        service_id: ServiceId,
+        expected_path: rosenfu_core::world::ServicePath,
+        name: String,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+        stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+        source_route_id: Option<RouteId>,
+        source_route_ids: Option<Vec<RouteId>>,
+    ) -> Result<WorldDraft, String> {
+        let binding = source_route_binding(source_route_id, source_route_ids)?;
         let mut candidate = self.clone();
         // Rebinding and path replacement are one outer transaction. The temporary
         // independent row exists only in this discarded-on-failure clone.
-        if source_route_id.is_some() {
+        if binding.is_some() {
             if let Some(id) = Some(service_id) {
                 candidate
                     .world
@@ -319,15 +358,11 @@ impl WorldEditor {
                 stops,
             )
             .map_err(|e| e.to_string())?;
-        if let Some(route_id) = source_route_id {
+        if let Some(binding) = binding {
             let id = service_id;
             candidate
                 .world
-                .set_service_route_binding(
-                    candidate.company,
-                    id,
-                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
-                )
+                .set_service_route_binding(candidate.company, id, binding)
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
@@ -3945,3 +3980,27 @@ mod endpoint_join_tests {
 #[cfg(test)]
 #[path = "session_binding_review_tests.rs"]
 mod binding_review_tests;
+
+fn source_route_binding(
+    route_id: Option<RouteId>,
+    route_ids: Option<Vec<RouteId>>,
+) -> Result<Option<rosenfu_core::world::ServiceRouteBindingKind>, String> {
+    use rosenfu_core::world::ServiceRouteBindingKind;
+    match (route_id, route_ids) {
+        (Some(_), Some(_)) => Err("単一路線と直通路線を同時には指定できません。".into()),
+        (Some(route_id), None) => Ok(Some(ServiceRouteBindingKind::Route { route_id })),
+        (None, Some(route_ids)) => {
+            if !(2..=64).contains(&route_ids.len())
+                || route_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != route_ids.len()
+            {
+                return Err("直通系統には重複しない2〜64路線を指定してください。".into());
+            }
+            Ok(Some(ServiceRouteBindingKind::Routes { route_ids }))
+        }
+        (None, None) => Ok(None),
+    }
+}
