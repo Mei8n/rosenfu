@@ -1027,6 +1027,36 @@ impl WorldEditor {
             .map_err(|e| e.to_string())?;
         if let Some(id) = route_id {
             let mut candidate = self.snapshot();
+            let previous = candidate
+                .routes
+                .iter()
+                .find(|r| r.id == id && r.owner == self.company)
+                .ok_or("編集する路線が見つかりません。")?;
+            let previous_segments = candidate
+                .route_paths
+                .iter()
+                .find(|p| p.route_id == id)
+                .map(|p| p.segments.clone())
+                .unwrap_or_else(|| {
+                    previous
+                        .tracks
+                        .iter()
+                        .map(|track_id| rosenfu_core::world::RouteSegment::Track {
+                            track_id: *track_id,
+                        })
+                        .collect()
+                });
+            // Services currently own independent physical paths, not route IDs.
+            // Do not guess which service depends on a route: until explicit
+            // associations exist, reject path changes conservatively.
+            if (previous.start != start || previous_segments != preview.path.segments)
+                && candidate
+                    .services
+                    .iter()
+                    .any(|service| service.owner == self.company)
+            {
+                return Err("既存系統との路線関連付けをまだ判定できないため、系統がある会社の路線経路は変更できません。系統は変更していません。".into());
+            }
             let route = candidate
                 .routes
                 .iter_mut()
@@ -1087,6 +1117,19 @@ impl WorldEditor {
                 return Err(
                     "この路線は所属駅付き経路です。旧式の線路編集では上書きできません。".into(),
                 );
+            }
+            let previous = candidate
+                .routes
+                .iter()
+                .find(|r| r.id == id && r.owner == self.company)
+                .ok_or("編集する路線が見つかりません。")?;
+            if (previous.start != start || previous.tracks != tracks)
+                && candidate
+                    .services
+                    .iter()
+                    .any(|service| service.owner == self.company)
+            {
+                return Err("既存系統との路線関連付けをまだ判定できないため、系統がある会社の路線経路は変更できません。系統は変更していません。".into());
             }
             let route = candidate
                 .routes
@@ -2327,8 +2370,13 @@ mod tests {
         let mut editor = WorldEditor::new();
         editor.load(&path).unwrap();
         editor.rename_company("新会社名".into()).unwrap();
-        editor
+        let before = editor.snapshot();
+        assert!(editor
             .save_route(Some(route), "逆方向の路線".into(), b, vec![track])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        editor
+            .save_route(Some(route), "新しい路線名".into(), a, vec![track])
             .unwrap();
         editor
             .add_station("新駅".into(), 34.7025, 135.4959)
@@ -2596,6 +2644,70 @@ mod tests {
         editor.save(&path).unwrap();
         let mut restored = WorldEditor::new();
         assert_eq!(restored.load(&path).unwrap(), before);
+    }
+    #[test]
+    fn route_path_edits_conservatively_protect_existing_services_atomically() {
+        use rosenfu_core::world::RouteSegment;
+        let mut editor = WorldEditor::new();
+        let a = editor
+            .add_station("A".into(), 35.0, 139.0)
+            .unwrap()
+            .stations[0]
+            .id;
+        let b = editor
+            .add_station("B".into(), 35.0, 139.1)
+            .unwrap()
+            .stations[1]
+            .id;
+        let c = editor
+            .add_station("C".into(), 35.0, 139.2)
+            .unwrap()
+            .stations[2]
+            .id;
+        let ab = editor.add_track(a, b).unwrap().tracks[0].id;
+        let bc = editor.add_track(b, c).unwrap().tracks[1].id;
+        let initial = editor.save_route(None, "R".into(), a, vec![ab]).unwrap();
+        let route = initial.routes[0].id;
+        // No services: editing the route remains supported.
+        editor
+            .save_route(Some(route), "R".into(), a, vec![ab, bc])
+            .unwrap();
+        editor
+            .save_service(None, "S".into(), a, vec![ab], vec![0, 1])
+            .unwrap();
+        let before = editor.snapshot();
+        assert!(editor
+            .save_route(Some(route), "Changed".into(), a, vec![ab])
+            .unwrap_err()
+            .contains("既存系統"));
+        assert_eq!(editor.snapshot(), before);
+        assert!(editor
+            .save_planned_route(
+                Some(route),
+                "Changed".into(),
+                a,
+                vec![RouteSegment::Track { track_id: ab }],
+                vec![]
+            )
+            .unwrap_err()
+            .contains("既存系統"));
+        assert_eq!(editor.snapshot(), before);
+        // Equivalent legacy -> explicit representation and rename are safe.
+        let renamed = editor
+            .save_planned_route(
+                Some(route),
+                "Renamed".into(),
+                a,
+                vec![
+                    RouteSegment::Track { track_id: ab },
+                    RouteSegment::Track { track_id: bc },
+                ],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(renamed.services, before.services);
+        assert_eq!(renamed.service_paths, before.service_paths);
+        assert_eq!(renamed.routes[0].name, "Renamed");
     }
     #[test]
     fn planned_track_routes_guard_references_without_changing_services() {
