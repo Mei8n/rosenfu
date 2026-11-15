@@ -90,6 +90,7 @@ impl WorldEditor {
         let mut candidate = self.clone();
         candidate.world.replace(after).map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        candidate.check_environment_changes(&before)?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
         *self = candidate;

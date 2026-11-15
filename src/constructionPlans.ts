@@ -40,3 +40,15 @@ export function compactEmptyPlans(value:ConstructionPlans):ConstructionPlans{
  for(const plan of value.plans)if(!occupied.has(plan.id))result=removeConstructionPlan(result,plan.id);
  return result;
 }
+
+/** Stable comparison across Rust struct ordering and the compact default encoding. */
+export function constructionPlanFingerprint(value:ConstructionPlans):string{
+ function canonical(item:unknown):unknown{
+  if(Array.isArray(item))return item.map(canonical);
+  if(item&&typeof item==='object'){
+   return Object.fromEntries(Object.entries(item).filter(([key,value])=>value!==undefined&&!(key==='infrastructure'&&value&&typeof value==='object'&&'track_count' in value&&value.track_count===1&&'level' in value&&value.level==='ground')).sort(([a],[b])=>a.localeCompare(b)).map(([key,value])=>[key,canonical(value)]));
+  }
+  return item;
+ }
+ return JSON.stringify(canonical(value));
+}
