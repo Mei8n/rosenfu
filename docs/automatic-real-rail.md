@@ -56,3 +56,10 @@ CSPは確認済みrail-only公開版ディレクトリだけconnect-srcへ追加
 
 実データgraph SHA256: `4e14f074d34f21f7c649247ff8749e0aafcacfc253074cbd518b3a104be33cfc`。
 本クラウドでは本番ローダーの実通信・東京の経路探索が成功した。ChromiumはUnix socket制限で起動できないためブラウザGUI受入は未検証。ローカルnative workspaceはglib/WebKit開発依存不足のため、core/storage/CLIと実sessionモジュールの独立harnessを検証し、native全体は3OS CIで確認する。OS実機でのWebView/CSP・操作確認と、道路／水域の横断統合試験は別途必要。
+
+
+## 派生形状を表示する間の帰属
+
+参考線・参考駅を非表示にしても、地図に由来付き建設済み線路、参照形状の未着工計画、選択中の参照経路previewがあれば、© OpenStreetMap contributorsを折り畳み外に表示し続ける。背景が模式図／地理院の場合も同じ。OSM背景では重複させず、線路が削除され孤立したsource recordだけが残る場合は、その記録だけを理由に帰属を表示しない。
+
+[OSMF Attribution Guidelines](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines)（2026-11-15確認）に従い、帰属からcopyright／ODbL情報へ到達できるようにする。これはOSM由来の派生形状に対する修正であり、別提供者・混在packの個別利用条件を代替するものではない。本取得経路は引き続き確認済みrail-only index／jp.rgrのみを取得し、追加条件がある境界・統計packは取得しない。

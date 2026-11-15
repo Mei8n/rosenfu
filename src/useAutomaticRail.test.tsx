@@ -40,6 +40,17 @@ test('App ordinary save preserves selected rail route; adding and building uses 
  fireEvent.click(screen.getByText('保存',{selector:'button'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='save_world')).toBe(true));await screen.findByText(/選択中の参照候補は計画に追加するまで保存されません/);
  expect(worker.terminated).toBe(false);expect(FakeWorker.instances).toHaveLength(1);expect(view.container.querySelector('.reference-copy-preview')?.getAttribute('d')).toBe(preview);
  fireEvent.click(screen.getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));fireEvent.click(screen.getByRole('button',{name:'選択中の計画に追加'}));await waitFor(()=>expect(screen.queryByRole('button',{name:'選択中の計画に追加'})).toBeNull());
+ fireEvent.click(screen.getByRole('button',{name:'実在の路線網に合わせる'}));expect(view.container.querySelectorAll('.automatic-rail-reference')).toHaveLength(0);expect(screen.getByRole('link',{name:'© OpenStreetMap contributors'}).closest('details')).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='build_plan')).toBe(true));
  const payload=vi.mocked(invoke).mock.calls.find(([command])=>command==='build_plan')![1] as {alignments:{points:unknown;reference:{provenance:{network_path:unknown}}}[]};expect(payload.alignments[0].points).toEqual(route.points);expect(payload.alignments[0].reference.provenance.network_path).toEqual(route.spans);
+});
+
+test.each([true,false])('App credits rendered source-derived built geometry, not orphan source records (%s)',async linked=>{
+ vi.useRealTimers();
+ const points=[{latitude:35.67504,longitude:139.75},{latitude:35.676,longitude:139.751}];
+ const world={next_id:'4',players:[{id:'1',name:'Player'}],companies:[{id:'2',owner:'1',name:'Railway'}],stations:[],tracks:[],routes:[],services:[],station_placements:[],source_records:[source],alignments:linked?[{id:'3',owner:'2',name:'Source rail',points,track_type:'normal',design_speed_kmh:120}]:[],alignment_provenance:linked?[{alignment_id:'3',start_point_index:0,end_point_index:1,source:{source_key:source.key,method:'rail_graph_route_v1',osm_way_id:'',mode:'rail',start_segment_index:0,end_segment_index:0,start_fraction:0,end_fraction:0,network_path:route.spans}}]:[]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'built-credit-test'}:command==='list_save_slots'?{active_slot_id:'test',slots:[]}:world);
+ render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/built-credit-test/);
+ const credits=screen.queryAllByRole('link',{name:'© OpenStreetMap contributors'});expect(credits).toHaveLength(linked?1:0);if(linked)expect(credits[0].closest('details')).toBeNull();
+ expect(FakeWorker.instances).toHaveLength(0);
 });

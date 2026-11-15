@@ -22,3 +22,11 @@ test("sample has no third-party background credit and no false OpenFreeMap credi
  expect(container.querySelectorAll("a")).toHaveLength(0);
  expect(container.textContent).not.toContain("OpenFreeMap");
 });
+
+test.each(["sample","gsi","osm"] as const)("derived geometry keeps visible OSM attribution with reference layers off on %s",background=>{
+ const {container,rerender}=render(<MapCredits background={background} reference={null} graphVisible={false} derivedOsmVisible/>);
+ const links=screen.getAllByRole("link",{name:"© OpenStreetMap contributors"});expect(links).toHaveLength(1);expect(links[0].closest("details")).toBeNull();
+ expect(container.textContent).toContain("計画・建設済み線路");expect(container.querySelector('a[href="https://www.openstreetmap.org/copyright"]')).toBeTruthy();
+ rerender(<MapCredits background={background} reference={null} graphVisible={false} derivedOsmVisible={false}/>);
+ expect(screen.queryAllByRole("link",{name:"© OpenStreetMap contributors"})).toHaveLength(background==="osm"?1:0);
+});
