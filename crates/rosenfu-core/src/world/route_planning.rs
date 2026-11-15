@@ -46,6 +46,8 @@ pub struct RouteCandidates {
     pub status: RouteSearchStatus,
     pub candidates: Vec<RouteCandidate>,
     pub truncated: bool,
+    /// Only populated after exhaustive search. Never infer shortest from a prefix.
+    pub shortest_candidate_index: Option<usize>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RouteMembershipPreview {
@@ -162,6 +164,68 @@ fn candidate(stations: Vec<StationId>, segments: Vec<RouteSegment>) -> RouteCand
         track_only,
     }
 }
+// Physical infrastructure distance, not number of stations or route membership.
+fn segment_distance(data: &WorldDraft, segment: &RouteSegment) -> Option<f64> {
+    let placement = |id| data.station_placements.iter().find(|p| p.station_id == id);
+    let length = |id| {
+        data.alignments
+            .iter()
+            .find(|a| a.id == id)
+            .map(|a| a.length_m())
+    };
+    match segment {
+        RouteSegment::Track { track_id } => {
+            let track = data.tracks.iter().find(|t| t.id == *track_id)?;
+            let a = data.stations.iter().find(|s| s.id == track.from)?;
+            let b = data.stations.iter().find(|s| s.id == track.to)?;
+            // Legacy tracks have no sampled geometry: their stored geometry is
+            // the straight station-to-station span, using Alignment's metric.
+            let x = (b.longitude - a.longitude).to_radians()
+                * ((a.latitude + b.latitude) / 2.0).to_radians().cos();
+            let y = (b.latitude - a.latitude).to_radians();
+            Some(6_371_000.0 * x.hypot(y))
+        }
+        RouteSegment::Alignment {
+            alignment_id,
+            from,
+            to,
+        } => Some(
+            length(*alignment_id)? * (placement(*from)?.position - placement(*to)?.position).abs(),
+        ),
+        RouteSegment::ConnectedAlignments {
+            from,
+            to,
+            connections,
+        } => {
+            let first = placement(*from)?;
+            let last = placement(*to)?;
+            let mut position = first.position;
+            let mut current = first.alignment_id;
+            let mut total = 0.0;
+            for link in connections {
+                if current != link.a.alignment_id {
+                    return None;
+                }
+                let exit = if link.a.endpoint == AlignmentEndpoint::Start {
+                    0.0
+                } else {
+                    1.0
+                };
+                total += length(current)? * (position - exit).abs();
+                current = link.b.alignment_id;
+                position = if link.b.endpoint == AlignmentEndpoint::Start {
+                    0.0
+                } else {
+                    1.0
+                };
+            }
+            if current != last.alignment_id {
+                return None;
+            }
+            Some(total + length(current)? * (position - last.position).abs())
+        }
+    }
+}
 impl World {
     /// Enumerate station-simple paths, not a shortest-path recommendation.
     /// Cycles/repeated stations require explicit future editing support.
@@ -267,10 +331,31 @@ impl World {
                 _ => RouteSearchStatus::Ambiguous,
             }
         };
+        let shortest_candidate_index = if truncated {
+            None
+        } else {
+            let distances: Option<Vec<f64>> = candidates
+                .iter()
+                .map(|candidate| {
+                    candidate.segments.iter().try_fold(0.0, |sum, segment| {
+                        let distance = segment_distance(self.snapshot(), segment)?;
+                        (distance.is_finite() && distance >= 0.0).then_some(sum + distance)
+                    })
+                })
+                .collect();
+            distances.and_then(|distances| {
+                distances
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| a.1.total_cmp(b.1))
+                    .map(|(index, _)| index)
+            })
+        };
         Ok(RouteCandidates {
             status,
             candidates,
             truncated,
+            shortest_candidate_index,
         })
     }
     /// Validate a selected path against the CURRENT world and preview membership.

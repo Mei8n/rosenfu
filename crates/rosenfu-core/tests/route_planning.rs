@@ -349,3 +349,23 @@ fn waypoint_search_does_not_filter_an_already_truncated_candidate_list() {
     assert_eq!(r.status, RouteSearchStatus::Unique);
     assert_eq!(r.candidates[0].stations, s);
 }
+
+#[test]
+fn shortest_selection_uses_physical_distance_and_refuses_truncated_search() {
+    let (mut w, c, s) = setup(3);
+    // First discovered path detours beyond the destination and doubles back.
+    w.add_track(c, s[0], s[2]).unwrap();
+    w.add_track(c, s[2], s[1]).unwrap();
+    w.add_track(c, s[0], s[1]).unwrap();
+    let r = w.route_candidates(s[0], s[1]).unwrap();
+    assert_eq!(
+        r.candidates[r.shortest_candidate_index.unwrap()].stations,
+        vec![s[0], s[1]]
+    );
+    for _ in 0..40 {
+        w.add_track(c, s[0], s[1]).unwrap();
+    }
+    let r = w.route_candidates(s[0], s[1]).unwrap();
+    assert_eq!(r.status, RouteSearchStatus::Incomplete);
+    assert_eq!(r.shortest_candidate_index, None);
+}
