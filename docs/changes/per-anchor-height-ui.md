@@ -12,8 +12,10 @@ which may be between nominal levels. Changing a height uses anchor Undo/Redo.
 Explicit malformed height array lengths are rejected rather than silently fitted.
 
 Native `preview_construction_plan` now receives the same complete requests used by
-build, for confirmed anchors. A response only applies to its exact world and request;
-stale results are ignored. Unconfirmed cursor points are not yet included. The
+build. The active cursor proposal includes its sampled geometry, anchor indices,
+heights, destination and recalculated planned-station positions. A response only
+applies to its exact world and request;
+stale results are ignored. The
 preview never mutates the world; build performs authoritative validation again.
 
 This checkpoint awaits multi-profile backend integration and independent review.

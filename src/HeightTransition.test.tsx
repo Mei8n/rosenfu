@@ -85,3 +85,12 @@ test('parked anchor height edits keep their own Undo history and save levels',as
  fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText('ワールドと未着工計画を保存しました。');
  expect(invoke).toHaveBeenCalledWith('save_world',expect.objectContaining({constructionPlans:expect.objectContaining({parkedPaths:expect.arrayContaining([expect.objectContaining({id:2,anchorLevels:['ground','elevated_2','ground']})])})}));
 });
+test('native cursor preview carries per-anchor heights without building',async()=>{
+ if(!window.PointerEvent)window.PointerEvent=MouseEvent as typeof PointerEvent;
+ const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?Promise.resolve(empty):original(command,args));
+ fireEvent.click(map,{clientX:100,clientY:100});fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
+ fireEvent.pointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({anchorLevels:['ground','elevated']})])})));
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='build_plan'||command==='build_alignment')).toBe(false);
+});
