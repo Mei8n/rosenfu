@@ -290,13 +290,6 @@ impl WorldEditor {
         Ok(self.snapshot())
     }
 
-    pub fn preview_route_candidates(
-        &self,
-        start: StationId,
-        end: StationId,
-    ) -> Result<rosenfu_core::world::RouteCandidates, String> {
-        self.preview_route_candidates_via(start, end, &[])
-    }
     pub fn preview_route_candidates_via(
         &self,
         start: StationId,
