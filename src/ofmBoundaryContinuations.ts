@@ -33,18 +33,20 @@ export function findTileBoundaryContinuations(lines:readonly TileRoadLine[]):{pa
  const ids=new Set<string>();
  for(const l of lines){if(ids.has(l.id)||!l.id||!l.revision||l.z!==14||![l.x,l.y].every(v=>Number.isInteger(v)&&v>=0&&v<16384)||l.coordinates.length<2||l.coordinates.length>512||l.coordinates.some(p=>!p.every(Number.isFinite)||Math.abs(p[0])>180||Math.abs(p[1])>85))return {pairs:[],truncated:false};ids.add(l.id);}
  const candidates:BoundaryContinuation[]=[];let checked=0;
+ const cache=new Map<string,{points:P[];clipped:P[]|undefined}>();
  for(let i=0;i<lines.length;i++)for(let j=i+1;j<lines.length;j++){
   const a=lines[i],b=lines[j];if(a.revision!==b.revision||Math.abs(a.x-b.x)+Math.abs(a.y-b.y)!==1||!eligible(a)||!eligible(b)||!same(a,b))continue;
-  if(++checked>MAX_PAIRS)return {pairs:[],truncated:true};
   const vertical=a.x!==b.x;const axis=vertical?0:1;
   const south=lat(Math.max(a.y,b.y)+1),north=lat(Math.min(a.y,b.y));const sy=111320,sx=sy*Math.cos((south+north)/2*Math.PI/180);
   const seam=vertical?(Math.max(a.x,b.x)/16384*360-180)*sx:lat(Math.max(a.y,b.y))*sy;
   const project=(l:TileRoadLine)=>l.coordinates.map(([x,y])=>[x*sx,y*sy] as P);
-  const pa=project(a),pb=project(b);const aa=strip(pa,axis,seam),bb=strip(pb,axis,seam);if(!aa||!bb||length(aa)>100||length(bb)>100)continue;
+  const geometry=(l:TileRoadLine)=>{const key=`${l.id}/${axis}/${seam}`;let value=cache.get(key);if(!value){const points=project(l);value={points,clipped:strip(points,axis,seam)};cache.set(key,value);}return value;};
+  const ga=geometry(a),gb=geometry(b),pa=ga.points,pb=gb.points,aa=ga.clipped,bb=gb.clipped;if(!aa||!bb||length(aa)>100||length(bb)>100)continue;
   if(a.oneway!==undefined&&a.oneway!==0&&Math.sign(pa[pa.length-1][axis]-pa[0][axis])!==Math.sign(pb[pb.length-1][axis]-pb[0][axis]))continue;
   const low=vertical?south*sy:(Math.max(a.x,b.x)/16384*360-180)*sx;
   const high=vertical?north*sy:((Math.min(a.x,b.x)+1)/16384*360-180)*sx;
   if([...aa,...bb].some(p=>p[1-axis]<low+BAND||p[1-axis]>high-BAND))continue;
+  if(++checked>MAX_PAIRS)return {pairs:[],truncated:true};
   const tangent=(p:P[])=>{const x=p[p.length-1][0]-p[0][0],y=p[p.length-1][1]-p[0][1],n=Math.hypot(x,y);return [x/n,y/n];};
   const ta=tangent(aa),tb=tangent(bb);if(ta[0]*tb[0]+ta[1]*tb[1]<.995)continue;
   const error=Math.max(separation(aa,bb),separation(bb,aa));if(error>TOLERANCE)continue;
