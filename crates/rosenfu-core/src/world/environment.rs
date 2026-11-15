@@ -12,6 +12,9 @@ pub struct CoverageBounds {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoadWay {
+    /// Spatial validity of this version; None is legacy whole-snapshot coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Vec<CoverageBounds>>,
     pub id: String,
     pub points: Vec<GeoPoint>,
     /// Source tags, not metres. Unknown/unsupported structures must not become surface roads.
@@ -23,6 +26,8 @@ pub struct RoadWay {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WaterPolygon {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<Vec<CoverageBounds>>,
     pub rings: Vec<Vec<GeoPoint>>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -74,7 +79,20 @@ impl EnvironmentSnapshot {
         {
             return Err(WorldError::InvalidEnvironment);
         }
-        for b in self.road_coverage.iter().chain(&self.water_coverage) {
+        let scopes = self
+            .roads
+            .iter()
+            .filter_map(|r| r.coverage.as_ref())
+            .chain(self.water.iter().filter_map(|p| p.coverage.as_ref()));
+        if scopes.clone().map(Vec::len).sum::<usize>() > 10000 {
+            return Err(WorldError::InvalidEnvironment);
+        }
+        for b in self
+            .road_coverage
+            .iter()
+            .chain(&self.water_coverage)
+            .chain(scopes.flatten())
+        {
             if ![b.west, b.south, b.east, b.north]
                 .iter()
                 .all(|n| n.is_finite())
@@ -89,12 +107,11 @@ impl EnvironmentSnapshot {
             }
         }
         let mut count = 0;
-        let mut ids = BTreeSet::new();
+
         for r in &self.roads {
             count += r.points.len();
             if r.id.is_empty()
                 || r.id.len() > 100
-                || !ids.insert(&r.id)
                 || r.points.len() < 2
                 || r.points.iter().any(|p| !valid_point(*p))
                 || [&r.layer, &r.level, &r.bridge, &r.tunnel]
@@ -221,11 +238,23 @@ fn ring_contains(p: GeoPoint, ring: &[GeoPoint]) -> bool {
     }
     inside
 }
+fn in_scope(p: GeoPoint, scope: Option<&[CoverageBounds]>) -> bool {
+    scope.is_none_or(|bounds| {
+        bounds.iter().any(|b| {
+            p.longitude >= b.west
+                && p.longitude < b.east
+                && p.latitude >= b.south
+                && p.latitude < b.north
+        })
+    })
+}
 fn water_contains(p: GeoPoint, polygons: &[WaterPolygon]) -> bool {
     polygons.iter().any(|poly| {
-        poly.rings
-            .iter()
-            .fold(false, |inside, ring| inside ^ ring_contains(p, ring))
+        in_scope(p, poly.coverage.as_deref())
+            && poly
+                .rings
+                .iter()
+                .fold(false, |inside, ring| inside ^ ring_contains(p, ring))
     })
 }
 fn surface(road: &RoadWay) -> bool {
@@ -272,7 +301,8 @@ fn crosses_road_at(
     let mut positive = false;
     let mut negative = false;
     for other in &data.roads {
-        if other.layer != road.layer
+        if !in_scope(point, other.coverage.as_deref())
+            || other.layer != road.layer
             || other.level != road.level
             || other.bridge != road.bridge
             || other.tunnel != road.tunnel
@@ -330,6 +360,36 @@ fn assess_environment_sections(
         result.water_ready &= coverage(a, b, &data.water_coverage);
         let mut cuts = vec![0.0, 1.0];
         for polygon in &data.water {
+            // Validity boundaries can divide water even when geometry spans the refresh.
+            for bnd in polygon.coverage.iter().flatten() {
+                let corners = [
+                    GeoPoint {
+                        longitude: bnd.west,
+                        latitude: bnd.south,
+                    },
+                    GeoPoint {
+                        longitude: bnd.east,
+                        latitude: bnd.south,
+                    },
+                    GeoPoint {
+                        longitude: bnd.east,
+                        latitude: bnd.north,
+                    },
+                    GeoPoint {
+                        longitude: bnd.west,
+                        latitude: bnd.north,
+                    },
+                    GeoPoint {
+                        longitude: bnd.west,
+                        latitude: bnd.south,
+                    },
+                ];
+                for edge in corners.windows(2) {
+                    if let Some((t, _)) = intersection(a, b, edge[0], edge[1]) {
+                        cuts.push(t);
+                    }
+                }
+            }
             for ring in &polygon.rings {
                 for edge in ring.windows(2) {
                     if let Some((t, _)) = intersection(a, b, edge[0], edge[1]) {
@@ -370,7 +430,8 @@ fn assess_environment_sections(
         for road in &data.roads {
             for (j, edge) in road.points.windows(2).enumerate() {
                 if let Some((t, u)) = intersection(a, b, edge[0], edge[1]) {
-                    if !crosses_at(points, i, t, edge[0], edge[1])
+                    if !in_scope(mix(a, b, t), road.coverage.as_deref())
+                        || !crosses_at(points, i, t, edge[0], edge[1])
                         || !crosses_road_at(road, j, u, a, b, data)
                     {
                         continue;
@@ -570,6 +631,7 @@ mod tests {
                 north: 1.0,
             }],
             roads: vec![RoadWay {
+                coverage: None,
                 id: "1".into(),
                 points: vec![p(0.0, -0.1), p(0.0, 0.1)],
                 layer: None,
@@ -585,6 +647,7 @@ mod tests {
     }
     fn water(left: f64, right: f64) -> WaterPolygon {
         WaterPolygon {
+            coverage: None,
             rings: vec![vec![
                 p(left, -0.5),
                 p(right, -0.5),

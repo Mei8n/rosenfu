@@ -22,30 +22,102 @@ fn merge(
     new.validate().map_err(|e| e.to_string())?;
     let mut result = old.cloned().unwrap_or_default();
     result.revision = new.revision;
-    for b in new.road_coverage {
-        if !result.road_coverage.contains(&b) {
-            result.road_coverage.push(b);
+    for b in &new.road_coverage {
+        if !result.road_coverage.contains(b) {
+            result.road_coverage.push(*b);
         }
     }
-    for b in new.water_coverage {
-        if !result.water_coverage.contains(&b) {
-            result.water_coverage.push(b);
+    for b in &new.water_coverage {
+        if !result.water_coverage.contains(b) {
+            result.water_coverage.push(*b);
         }
     }
-    for road in new.roads {
-        if let Some(old) = result.roads.iter_mut().find(|r| r.id == road.id) {
-            *old = road;
-        } else {
-            result.roads.push(road);
-        }
+    // Scope versions spatially: an empty successful refresh removes features only
+    // inside that provider's refreshed area. Geometry outside it remains usable.
+    for road in &mut result.roads {
+        road.coverage = Some(subtract_coverage(
+            road.coverage
+                .as_deref()
+                .unwrap_or(old.map_or(&[], |d| &d.road_coverage)),
+            &new.road_coverage,
+        )?);
     }
-    for polygon in new.water {
-        if !result.water.contains(&polygon) {
-            result.water.push(polygon);
+    result
+        .roads
+        .retain(|r| r.coverage.as_ref().is_some_and(|b| !b.is_empty()));
+    for polygon in &mut result.water {
+        polygon.coverage = Some(subtract_coverage(
+            polygon
+                .coverage
+                .as_deref()
+                .unwrap_or(old.map_or(&[], |d| &d.water_coverage)),
+            &new.water_coverage,
+        )?);
+    }
+    result
+        .water
+        .retain(|p| p.coverage.as_ref().is_some_and(|b| !b.is_empty()));
+    for mut road in new.roads {
+        if road.coverage.is_none() {
+            road.coverage = Some(new.road_coverage.clone());
         }
+        result.roads.push(road);
+    }
+    for mut polygon in new.water {
+        if polygon.coverage.is_none() {
+            polygon.coverage = Some(new.water_coverage.clone());
+        }
+        result.water.push(polygon);
     }
     result.validate().map_err(|e| e.to_string())?;
     Ok(result)
+}
+// Rectangular subtraction preserves all outside coverage without geometric clipping.
+fn subtract_coverage(
+    old: &[rosenfu_core::world::CoverageBounds],
+    fresh: &[rosenfu_core::world::CoverageBounds],
+) -> Result<Vec<rosenfu_core::world::CoverageBounds>, String> {
+    use rosenfu_core::world::CoverageBounds as B;
+    let mut remaining = old.to_vec();
+    for n in fresh {
+        remaining = remaining
+            .into_iter()
+            .flat_map(|b| {
+                let (w, e, s, north) = (
+                    b.west.max(n.west),
+                    b.east.min(n.east),
+                    b.south.max(n.south),
+                    b.north.min(n.north),
+                );
+                if w >= e || s >= north {
+                    return vec![b];
+                }
+                [
+                    B { east: w, ..b },
+                    B { west: e, ..b },
+                    B {
+                        west: w,
+                        east: e,
+                        north: s,
+                        ..b
+                    },
+                    B {
+                        west: w,
+                        east: e,
+                        south: north,
+                        ..b
+                    },
+                ]
+                .into_iter()
+                .filter(|r| r.west < r.east && r.south < r.north)
+                .collect()
+            })
+            .collect();
+        if remaining.len() > 128 {
+            return Err("環境更新の分割上限を超えています。".into());
+        }
+    }
+    Ok(remaining)
 }
 impl WorldEditor {
     pub(super) fn check_environment_changes(&self, before: &WorldDraft) -> Result<(), String> {
@@ -217,6 +289,7 @@ mod tests {
                 north: 35.1,
             }],
             roads: vec![RoadWay {
+                coverage: None,
                 id: "1".into(),
                 points: vec![p(0.0, -0.01), p(0.0, 0.01)],
                 layer: None,
@@ -226,6 +299,107 @@ mod tests {
             }],
             water: vec![],
         }
+    }
+    #[test]
+    fn empty_refresh_removes_only_its_provider_and_region() {
+        let mut old = data();
+        old.roads[0].points = vec![p(0.0, -0.08), p(0.0, 0.08)];
+        old.water.push(WaterPolygon {
+            coverage: None,
+            rings: vec![vec![
+                p(-0.08, -0.08),
+                p(0.08, -0.08),
+                p(0.08, 0.08),
+                p(-0.08, 0.08),
+                p(-0.08, -0.08),
+            ]],
+        });
+        let bounds = CoverageBounds {
+            west: 138.98,
+            east: 139.02,
+            south: 34.98,
+            north: 35.02,
+        };
+        let refreshed = merge(
+            Some(&old),
+            EnvironmentSnapshot {
+                revision: "empty".into(),
+                road_coverage: vec![bounds],
+                water_coverage: vec![bounds],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let inspect = |d: &EnvironmentSnapshot, y| {
+            rosenfu_core::world::assess_environment(
+                &[p(-0.01, y), p(0.01, y)],
+                InfrastructureLevel::Ground,
+                true,
+                d,
+            )
+        };
+        let inside = inspect(&refreshed, 0.0);
+        assert!(inside.buildable());
+        assert!(inside.crossings.is_empty());
+        let outside = inspect(&refreshed, 0.05);
+        assert!(outside.ground_water);
+        assert_eq!(outside.crossings.len(), 1);
+        assert!(outside.roads_ready && outside.water_ready);
+        let road_only = merge(
+            Some(&old),
+            EnvironmentSnapshot {
+                road_coverage: vec![bounds],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(inspect(&road_only, 0.0).ground_water);
+        assert!(inspect(&road_only, 0.0).crossings.is_empty());
+        let serialized = serde_json::to_string(&refreshed).unwrap();
+        let restored = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(inspect(&restored, 0.05), outside);
+        // Refreshing the identical region again must not accumulate stale versions.
+        let again = merge(
+            Some(&refreshed),
+            EnvironmentSnapshot {
+                road_coverage: vec![bounds],
+                water_coverage: vec![bounds],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(again.roads, refreshed.roads);
+        assert_eq!(again.water, refreshed.water);
+    }
+    #[test]
+    fn changed_way_retains_old_geometry_only_outside_refresh() {
+        let old = data();
+        let mut new = data();
+        new.road_coverage[0] = CoverageBounds {
+            west: 138.995,
+            east: 139.005,
+            south: 34.995,
+            north: 35.005,
+        };
+        new.water_coverage.clear();
+        new.roads[0].points = vec![p(0.003, -0.01), p(0.003, 0.01)];
+        let merged = merge(Some(&old), new).unwrap();
+        let inside = rosenfu_core::world::assess_environment(
+            &[p(-0.004, 0.0), p(0.004, 0.0)],
+            InfrastructureLevel::Ground,
+            true,
+            &merged,
+        );
+        assert_eq!(inside.crossings.len(), 1);
+        assert_eq!(inside.crossings[0].point.longitude, 139.003);
+        let outside = rosenfu_core::world::assess_environment(
+            &[p(-0.004, 0.008), p(0.004, 0.008)],
+            InfrastructureLevel::Ground,
+            true,
+            &merged,
+        );
+        assert_eq!(outside.crossings.len(), 1);
+        assert_eq!(outside.crossings[0].point.longitude, 139.0);
     }
     #[test]
     fn preview_commit_save_restore_delete_undo_are_consistent() {
@@ -262,6 +436,7 @@ mod tests {
         assert_eq!(e.snapshot(), before);
         let mut d = data();
         d.water.push(WaterPolygon {
+            coverage: None,
             rings: vec![vec![
                 p(-0.005, -0.005),
                 p(0.005, -0.005),

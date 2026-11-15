@@ -1,6 +1,6 @@
 import type {GraphBounds,GraphPoint} from './referenceGraph';
-export type RoadWay={id:string;points:GraphPoint[];layer:string|null;level:string|null;bridge:string|null;tunnel:string|null};
-export type WaterPolygon={rings:GraphPoint[][]};
+export type RoadWay={coverage?:GraphBounds[];id:string;points:GraphPoint[];layer:string|null;level:string|null;bridge:string|null;tunnel:string|null};
+export type WaterPolygon={coverage?:GraphBounds[];rings:GraphPoint[][]};
 export type EnvironmentSnapshot={revision:string;road_coverage:GraphBounds[];roads:RoadWay[];water_coverage:GraphBounds[];water:WaterPolygon[]};
 export type AutomaticCrossing={road_id:string;point:GraphPoint};
 export type EnvironmentAssessment={crossings:AutomaticCrossing[];roads_ready:boolean;water_ready:boolean;unknown_road_height:boolean;ground_water:boolean;longest_water_m:number;water_limit_exceeded:boolean};
