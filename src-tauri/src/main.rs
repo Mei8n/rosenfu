@@ -51,12 +51,15 @@ fn build_alignment_from_reference(
     design_speed_kmh: Option<f64>,
     anchor_indices: Option<Vec<usize>>,
     infrastructure: Option<rosenfu_core::world::SectionInfrastructure>,
+    start_level: Option<rosenfu_core::world::InfrastructureLevel>,
+    junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
-            start_level: None,
+            junction_source,
+            start_level,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,
@@ -81,12 +84,15 @@ fn build_alignment(
     design_speed_kmh: Option<f64>,
     anchor_indices: Option<Vec<usize>>,
     infrastructure: Option<rosenfu_core::world::SectionInfrastructure>,
+    start_level: Option<rosenfu_core::world::InfrastructureLevel>,
+    junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
-            start_level: None,
+            junction_source,
+            start_level,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,
@@ -110,12 +116,15 @@ fn build_alignment_with_stations(
     design_speed_kmh: Option<f64>,
     anchor_indices: Option<Vec<usize>>,
     infrastructure: Option<rosenfu_core::world::SectionInfrastructure>,
+    start_level: Option<rosenfu_core::world::InfrastructureLevel>,
+    junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
-            start_level: None,
+            junction_source,
+            start_level,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,

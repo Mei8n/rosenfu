@@ -52,7 +52,7 @@ impl World {
             .collect();
         links.sort_by_key(|(a, b)| (endpoint_key(*a), endpoint_key(*b)));
         let mut result = Vec::new();
-        for (a, b) in links {
+        for (a, b) in links.iter().copied() {
             let count = |end: AlignmentEndpointRef| {
                 let alignment = self
                     .data
@@ -70,7 +70,22 @@ impl World {
             };
             let (na, nb) = (count(a), count(b));
             let width = na.max(nb);
-            let point = (na != nb).then_some(TrackPointResource { a, b });
+            let mut ports = vec![a, b];
+            for (x, y) in &links {
+                if ports.contains(x) || ports.contains(y) {
+                    if !ports.contains(x) {
+                        ports.push(*x);
+                    }
+                    if !ports.contains(y) {
+                        ports.push(*y);
+                    }
+                }
+            }
+            ports.sort_by_key(|port| endpoint_key(*port));
+            let point = (na != nb || ports.len() > 2).then_some(TrackPointResource {
+                a: ports[0],
+                b: ports[1],
+            });
             for lane in 0..width {
                 let ai = lane * na / width;
                 let bi = lane * nb / width;

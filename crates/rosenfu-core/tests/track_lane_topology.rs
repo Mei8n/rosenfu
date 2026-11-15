@@ -248,3 +248,194 @@ fn ramp_links_use_both_endpoint_actual_heights_not_the_section_category() {
     )
     .unwrap();
 }
+
+#[test]
+fn explicit_three_port_turnout_reaches_both_branches_without_fake_u_turn() {
+    let (mut w, c, a, b) = pair(1, 1, AlignmentEndpoint::End, AlignmentEndpoint::Start);
+    let branch = w
+        .build_alignment(
+            c,
+            "branch".into(),
+            vec![
+                point(139.1),
+                point(139.101),
+                GeoPoint {
+                    latitude: 35.01,
+                    longitude: 139.2,
+                },
+            ],
+        )
+        .unwrap();
+    let branch = end(branch, AlignmentEndpoint::Start);
+    let s = w
+        .place_station_on_alignment(c, "stem".into(), a.alignment_id, 0.5, 100., 10.)
+        .unwrap();
+    let t = w
+        .place_station_on_alignment(c, "through".into(), b.alignment_id, 0.5, 100., 10.)
+        .unwrap();
+    let u = w
+        .place_station_on_alignment(c, "branch".into(), branch.alignment_id, 0.5, 100., 10.)
+        .unwrap();
+    w.connect_alignment_endpoints(c, a, b).unwrap();
+    w.connect_alignment_endpoints(c, a, branch).unwrap();
+    for (from, to) in [(s, t), (t, s), (s, u), (u, s)] {
+        let search = w.route_candidates(from, to).unwrap();
+        assert_eq!(search.status, RouteSearchStatus::Unique);
+        assert!(w
+            .preview_service_path(from, search.candidates[0].segments.clone())
+            .is_ok());
+    }
+    assert!(w
+        .route_candidates(t, u)
+        .unwrap()
+        .candidates
+        .iter()
+        .all(|candidate| candidate.stations.contains(&s)));
+    let movements = w.alignment_lane_movements();
+    assert_eq!(movements.len(), 4);
+    assert!(movements
+        .iter()
+        .all(|m| m.point == movements[0].point && m.point.is_some()));
+    let raw = serde_json::to_string(w.snapshot()).unwrap();
+    assert_eq!(
+        World::new(serde_json::from_str(&raw).unwrap())
+            .unwrap()
+            .snapshot(),
+        w.snapshot()
+    );
+    let before = w.snapshot().clone();
+    assert!(w.connect_alignment_endpoints(c, b, branch).is_err());
+    assert_eq!(w.snapshot(), &before);
+}
+
+#[test]
+fn splitting_existing_anchor_preserves_crossing_route_service_and_station_ids() {
+    let mut w = World::default();
+    let p = w.add_player("p".into()).unwrap();
+    let c = w.add_company(p, "c".into()).unwrap();
+    let a = w
+        .build_alignment(
+            c,
+            "A".into(),
+            vec![point(139.), point(139.01), point(139.02)],
+        )
+        .unwrap();
+    let mut draft = w.snapshot().clone();
+    draft.alignments[0].anchor_indices = Some(vec![0, 1, 2]);
+    w.replace(draft).unwrap();
+    let s = w
+        .place_station_on_alignment(c, "S".into(), a, 0.2, 20., 10.)
+        .unwrap();
+    let t = w
+        .place_station_on_alignment(c, "T".into(), a, 0.8, 20., 10.)
+        .unwrap();
+    let segments = w
+        .route_candidates(s, t)
+        .unwrap()
+        .candidates
+        .remove(0)
+        .segments;
+    let r = w
+        .add_planned_route(c, "R".into(), s, segments.clone(), vec![s, t])
+        .unwrap();
+    let preview = w.preview_service_path(s, segments.clone()).unwrap();
+    let service = w
+        .add_service_path(
+            c,
+            "service".into(),
+            s,
+            segments,
+            preview
+                .occurrences
+                .iter()
+                .map(|o| o.reference.clone())
+                .collect(),
+        )
+        .unwrap();
+    w.set_service_route_binding(c, service, ServiceRouteBindingKind::Route { route_id: r })
+        .unwrap();
+    let before = w.snapshot().clone();
+    let suffix = w.split_alignment_at_anchor(c, a, 1).unwrap();
+    assert_ne!(a, suffix);
+    assert_eq!(w.snapshot().stations, before.stations);
+    assert_eq!(w.snapshot().services, before.services);
+    assert_eq!(
+        w.snapshot().service_paths[0].stops,
+        before.service_paths[0].stops
+    );
+    assert_eq!(
+        w.snapshot().service_paths[0].legs[0].key,
+        before.service_paths[0].legs[0].key
+    );
+    assert_eq!(w.snapshot().route_paths[0].member_stations, vec![s, t]);
+    let branch = w
+        .build_alignment(
+            c,
+            "branch".into(),
+            vec![
+                point(139.01),
+                point(139.011),
+                GeoPoint {
+                    latitude: 35.01,
+                    longitude: 139.02,
+                },
+            ],
+        )
+        .unwrap();
+    w.connect_alignment_endpoints(
+        c,
+        end(a, AlignmentEndpoint::End),
+        end(branch, AlignmentEndpoint::Start),
+    )
+    .unwrap();
+    let u = w
+        .place_station_on_alignment(c, "U".into(), branch, 0.8, 20., 10.)
+        .unwrap();
+    assert!(!w.route_candidates(s, u).unwrap().candidates.is_empty());
+    assert_eq!(
+        w.route_candidates(s, t).unwrap().candidates[0].stations,
+        vec![s, t]
+    );
+    assert!(World::new(w.snapshot().clone()).is_ok());
+}
+
+#[test]
+fn exact_non_anchor_split_preserves_shape_and_rejects_platform_cut_atomically() {
+    let (mut w, c, a, _) = pair(2, 2, AlignmentEndpoint::End, AlignmentEndpoint::Start);
+    let station = w
+        .place_station_on_alignment(c, "centre".into(), a.alignment_id, 0.5, 100., 10.)
+        .unwrap();
+    let before = w.snapshot().clone();
+    assert!(w
+        .split_alignment_at_position(c, a.alignment_id, 0, 0.5)
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+    let suffix = w
+        .split_alignment_at_position(c, a.alignment_id, 0, 0.3)
+        .unwrap();
+    let prefix = w
+        .snapshot()
+        .alignments
+        .iter()
+        .find(|v| v.id == a.alignment_id)
+        .unwrap();
+    assert_eq!(prefix.points.last().unwrap(), &point(139.03));
+    assert_eq!(w.snapshot().stations, before.stations);
+    assert_eq!(
+        w.snapshot()
+            .station_placements
+            .iter()
+            .find(|p| p.station_id == station)
+            .unwrap()
+            .alignment_id,
+        suffix
+    );
+    assert_eq!(prefix.infrastructure[0].track_count, 2);
+    let saved = serde_json::to_string(w.snapshot()).unwrap();
+    assert_eq!(
+        World::new(serde_json::from_str(&saved).unwrap())
+            .unwrap()
+            .snapshot(),
+        w.snapshot()
+    );
+}

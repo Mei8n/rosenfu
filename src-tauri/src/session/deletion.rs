@@ -468,6 +468,7 @@ mod tests {
             .collect();
         let snapshot = editor
             .build_plan(vec![PlannedAlignment {
+                junction_source: None,
                 start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 2, 4, 6]),
@@ -1146,6 +1147,7 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
         editor
             .build_plan(vec![PlannedAlignment {
+                junction_source: None,
                 start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1, 2]),
@@ -1192,6 +1194,7 @@ mod tests {
             .collect();
         let built = editor
             .build_plan(vec![PlannedAlignment {
+                junction_source: None,
                 start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1, 2, 3, 4]),
@@ -1214,6 +1217,7 @@ mod tests {
         assert_eq!(gap.alignments[1].points, points[3..]);
         let joined = editor
             .build_plan(vec![PlannedAlignment {
+                junction_source: None,
                 start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1]),

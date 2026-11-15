@@ -101,7 +101,7 @@ impl ViewState {
 pub struct WorldDraft {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub station_groups: Vec<StationGroup>,
-    /// Explicit, non-branching infrastructure endpoint links.
+    /// Explicit infrastructure endpoint links, including supported three-port turnouts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alignment_connections: Vec<AlignmentConnection>,
     /// Optional local presentation metadata, independent of physical world geometry.
@@ -411,7 +411,6 @@ pub use alignment::{
     StationPlacement, TrackType,
 };
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,7 +568,7 @@ pub use provenance::{
 };
 
 mod construction_plans;
-pub use construction_plans::ConstructionPlans;
+pub use construction_plans::{ConstructionJunctionSource, ConstructionPlans};
 
 mod station_groups;
 pub use station_groups::StationGroup;
@@ -582,3 +581,5 @@ pub use track_topology::{TrackLanePort, TrackMovement, TrackPointResource};
 
 mod vertical_profile;
 pub use vertical_profile::{VerticalProfile, LEVEL_SPACING_M};
+
+mod junctions;
