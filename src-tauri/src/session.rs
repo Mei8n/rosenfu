@@ -211,8 +211,16 @@ impl WorldEditor {
         start: StationId,
         end: StationId,
     ) -> Result<rosenfu_core::world::RouteCandidates, String> {
+        self.preview_route_candidates_via(start, end, &[])
+    }
+    pub fn preview_route_candidates_via(
+        &self,
+        start: StationId,
+        end: StationId,
+        via_station_ids: &[StationId],
+    ) -> Result<rosenfu_core::world::RouteCandidates, String> {
         self.world
-            .route_candidates(start, end)
+            .route_candidates_via(start, end, via_station_ids)
             .map_err(|e| e.to_string())
     }
     pub fn preview_route_membership(

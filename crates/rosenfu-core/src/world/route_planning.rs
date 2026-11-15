@@ -171,6 +171,17 @@ impl World {
         start: StationId,
         end: StationId,
     ) -> Result<RouteCandidates, RoutePlanningError> {
+        self.route_candidates_via(start, end, &[])
+    }
+
+    /// Enumerate paths visiting the selected intermediate stations in order.
+    /// Constraints are applied during exploration, before candidate limits.
+    pub fn route_candidates_via(
+        &self,
+        start: StationId,
+        end: StationId,
+        via: &[StationId],
+    ) -> Result<RouteCandidates, RoutePlanningError> {
         let (graph, graph_truncated) = graph(self.snapshot());
         if !graph.contains_key(&start) || !graph.contains_key(&end) {
             return Err(RoutePlanningError::MissingStation);
@@ -178,6 +189,24 @@ impl World {
         if start == end {
             return Err(RoutePlanningError::SameEndpoints);
         }
+        if via.iter().any(|station| !graph.contains_key(station)) {
+            return Err(RoutePlanningError::MissingStation);
+        }
+        let mut selected = BTreeSet::from([start, end]);
+        if via.iter().any(|station| !selected.insert(*station)) {
+            return Err(RoutePlanningError::RepeatedStation);
+        }
+        if via.len() >= MAX_HOPS {
+            return Err(RoutePlanningError::PathTooLong);
+        }
+        let required: BTreeMap<_, _> = via
+            .iter()
+            .copied()
+            .chain([end])
+            .enumerate()
+            .map(|(index, station)| (station, index))
+            .collect();
+        let mut progress = vec![0usize];
         let mut stations = vec![start];
         let mut segments = vec![];
         let mut cursors = vec![0usize];
@@ -196,12 +225,17 @@ impl World {
             if *cursor == edges.len() {
                 visited.remove(&stations.pop().unwrap());
                 cursors.pop();
+                progress.pop();
                 segments.pop();
                 continue;
             }
             let edge = &edges[*cursor];
             *cursor += 1;
             if visited.contains(&edge.to) {
+                continue;
+            }
+            let next = *progress.last().unwrap();
+            if required.get(&edge.to).is_some_and(|index| *index != next) {
                 continue;
             }
             if segments.len() >= MAX_HOPS {
@@ -221,6 +255,7 @@ impl World {
             } else {
                 visited.insert(edge.to);
                 cursors.push(0);
+                progress.push(next + usize::from(required.contains_key(&edge.to)));
             }
         }
         let status = if truncated {

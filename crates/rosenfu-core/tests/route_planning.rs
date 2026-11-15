@@ -296,3 +296,56 @@ fn coincident_groups_disconnect_both_boundaries_without_affecting_unique_runs() 
         assert_eq!(world.snapshot(), &before);
     }
 }
+
+#[test]
+fn ordered_waypoints_constrain_exploration_and_preserve_world() {
+    let (mut w, c, s) = setup(5);
+    for (a, b) in [(0, 1), (1, 4), (0, 2), (2, 3), (3, 4)] {
+        w.add_track(c, s[a], s[b]).unwrap();
+    }
+    let before = w.snapshot().clone();
+    let r = w.route_candidates_via(s[0], s[4], &[s[2], s[3]]).unwrap();
+    assert_eq!(r.status, RouteSearchStatus::Unique);
+    assert_eq!(r.candidates[0].stations, vec![s[0], s[2], s[3], s[4]]);
+    assert_eq!(
+        w.route_candidates_via(s[0], s[4], &[s[3], s[2]])
+            .unwrap()
+            .status,
+        RouteSearchStatus::NoPath
+    );
+    assert_eq!(
+        w.route_candidates_via(s[0], s[4], &[]).unwrap(),
+        w.route_candidates(s[0], s[4]).unwrap()
+    );
+    assert_eq!(w.snapshot(), &before);
+}
+
+#[test]
+fn waypoint_validation_rejects_missing_or_repeated_selected_stations() {
+    let (w, _, s) = setup(3);
+    for via in [vec![s[0]], vec![s[2]], vec![s[1], s[1]]] {
+        assert_eq!(
+            w.route_candidates_via(s[0], s[2], &via).unwrap_err(),
+            RoutePlanningError::RepeatedStation
+        );
+    }
+    assert_eq!(
+        w.route_candidates_via(s[0], s[2], &[StationId(999)])
+            .unwrap_err(),
+        RoutePlanningError::MissingStation
+    );
+}
+
+#[test]
+fn waypoint_search_does_not_filter_an_already_truncated_candidate_list() {
+    let (mut w, c, s) = setup(3);
+    for _ in 0..40 {
+        w.add_track(c, s[0], s[2]).unwrap();
+    }
+    w.add_track(c, s[0], s[1]).unwrap();
+    w.add_track(c, s[1], s[2]).unwrap();
+    assert!(w.route_candidates(s[0], s[2]).unwrap().truncated);
+    let r = w.route_candidates_via(s[0], s[2], &[s[1]]).unwrap();
+    assert_eq!(r.status, RouteSearchStatus::Unique);
+    assert_eq!(r.candidates[0].stations, s);
+}

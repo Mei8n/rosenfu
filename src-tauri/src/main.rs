@@ -364,11 +364,12 @@ fn preview_route_candidates(
     editor: State<'_, Mutex<WorldEditor>>,
     start: StationId,
     end: StationId,
+    via_station_ids: Option<Vec<StationId>>,
 ) -> Result<rosenfu_core::world::RouteCandidates, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .preview_route_candidates(start, end)
+        .preview_route_candidates_via(start, end, &via_station_ids.unwrap_or_default())
 }
 #[tauri::command]
 fn preview_route_membership(
