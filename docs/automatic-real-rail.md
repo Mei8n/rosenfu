@@ -49,5 +49,10 @@ CSPは確認済みrail-only公開版ディレクトリだけconnect-srcへ追加
 
 - `npm test -- src/realRailGraph.test.ts src/useAutomaticRail.test.tsx src/ReferenceCopy.test.tsx`
 - `ROSENFU_REAL_RAIL_FIXTURE=<downloaded jp.rgr> npm test -- scripts/real-rail-live.test.ts`（データ本体をgitへ入れない）
+- `NODE_USE_ENV_PROXY=1 ROSENFU_REAL_RAIL_NETWORK=1 npm test -- scripts/real-rail-live.test.ts`（本番ローダーによる実通信。browser WebViewの動作確認とは別）
 - `npm test`, `npm run build`, `cargo fmt --all --check`, `cargo test --locked --workspace`
 - draft PRのUbuntu／Windows／macOS CI。CIは外部配信の実通信を模倣しないので実データ検証は別途行う。
+
+
+実データgraph SHA256: `4e14f074d34f21f7c649247ff8749e0aafcacfc253074cbd518b3a104be33cfc`。
+本クラウドでは本番ローダーの実通信・東京の経路探索が成功した。ChromiumはUnix socket制限で起動できないためブラウザGUI受入は未検証。ローカルnative workspaceはglib/WebKit開発依存不足のため、core/storage/CLIと実sessionモジュールの独立harnessを検証し、native全体は3OS CIで確認する。OS実機でのWebView/CSP・操作確認と、道路／水域の横断統合試験は別途必要。

@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
-import {act,cleanup,renderHook} from '@testing-library/react';
+import React from 'react';
+import {act,cleanup,renderHook,render,screen,fireEvent,waitFor} from '@testing-library/react';
 import {afterEach,beforeEach,expect,test,vi} from 'vitest';
 import {useAutomaticRail} from './useAutomaticRail';
+import {App} from './App';
+import {invoke} from '@tauri-apps/api/core';
+vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
 import type {RailRequest,RailResponse} from './realRailProvider';
 const source={key:'a'.repeat(64)+':'+ 'b'.repeat(64),dataset_id:'trainsworld-realgraph-jp',revision:'2026-11-13',graph_sha256:'a'.repeat(64),source_sha256:'b'.repeat(64),source:'https://data.anita.garden/trainworld/2026-11-13/realgraph/jp.rgr',source_date:null,license:'ODbL-1.0',attribution:'© OpenStreetMap contributors',conversion_format_version:2};
 const a={chain:7,position:.2,point:{longitude:139,latitude:35}},b={chain:8,position:.8,point:{longitude:139.002,latitude:35}};
@@ -11,7 +15,7 @@ class FakeWorker{
  constructor(){FakeWorker.instances.push(this);}postMessage(message:RailRequest){this.messages.push(message);}terminate(){this.terminated=true;}reply(message:RailResponse){this.onmessage?.({data:message} as MessageEvent<RailResponse>);}
 }
 beforeEach(()=>{vi.useFakeTimers();FakeWorker.instances=[];vi.stubGlobal('Worker',FakeWorker);});
-afterEach(()=>{cleanup();vi.useRealTimers();vi.unstubAllGlobals();});
+afterEach(()=>{cleanup();vi.useRealTimers();vi.unstubAllGlobals();vi.resetAllMocks();localStorage.clear();});
 function setup(){const props={selected:true,enabled:true,canStart:true,worldEpoch:0,name:'reference route',bounds:{west:138.99,east:139.01,south:34.99,north:35.01},zoom:16,radius:12,onBuild:vi.fn(async()=>{})};const h=renderHook(p=>useAutomaticRail(p),{initialProps:props});const worker=FakeWorker.instances[0];return {...h,props,worker};}
 function ready(h:ReturnType<typeof setup>){act(()=>h.worker.reply({id:0,kind:'loaded',source}));act(()=>vi.advanceTimersByTime(130));const request=h.worker.messages.at(-1)!;expect(request.kind).toBe('view');act(()=>h.worker.reply({id:request.id,kind:'view',view:{chains:[{id:7,points:[a.point,b.point]},{id:8,points:[a.point,b.point]}],truncated:false}}));act(()=>h.result.current.copy.begin());}
 function pick(h:ReturnType<typeof setup>,end=false){act(()=>{void h.result.current.copy.click((end?b:a).point);});const request=h.worker.messages.at(-1)!;expect(request.kind).toBe('pick');act(()=>h.worker.reply({id:request.id,kind:'pick',pick:end?b:a,route:end?route:null}));}
@@ -19,3 +23,23 @@ test('automatically loads once; confirmation commits exactly the preview and sou
 test('cancellation and actual world switch reject delayed results and terminate fetch/worker',()=>{const h=setup();ready(h);act(()=>{void h.result.current.copy.click(a.point);});const pending=h.worker.messages.at(-1)!;act(()=>h.result.current.copy.clear());act(()=>h.worker.reply({id:pending.id,kind:'pick',pick:a,route:null}));expect(h.result.current.copy.picks).toEqual([]);h.rerender({...h.props,worldEpoch:1});expect(h.worker.terminated).toBe(true);act(()=>h.worker.reply({id:0,kind:'loaded',source}));expect(h.result.current.status).toBe('loading');expect(h.result.current.copy.active).toBe(false);});
 test('undo/redo restores exact graph identity after panning, never re-snaps',()=>{const h=setup();ready(h);pick(h);pick(h,true);const preview=h.result.current.copy.plan.build;act(()=>h.result.current.copy.setConfirmed(true));act(()=>h.result.current.copy.undo());expect(h.result.current.copy.confirmed).toBe(false);h.rerender({...h.props,bounds:{west:140,east:141,south:34,north:35}});act(()=>h.result.current.copy.redoPick());const request=h.worker.messages.at(-1)!;expect(request).toMatchObject({kind:'route',start:a,end:b});act(()=>h.worker.reply({id:request.id,kind:'pick',pick:b,route}));expect(h.result.current.copy.plan.build).toEqual(preview);});
 test('failure differs from no nearby rail; retry and out-of-order view responses are guarded',()=>{const h=setup();act(()=>h.worker.reply({id:0,kind:'error',message:'HTTP 503'}));expect(h.result.current.status).toBe('failed');act(()=>h.result.current.retry());expect(h.worker.terminated).toBe(true);const current=FakeWorker.instances[1];act(()=>current.reply({id:0,kind:'loaded',source}));act(()=>vi.advanceTimersByTime(130));const old=current.messages.at(-1)!;h.rerender({...h.props,bounds:{...h.props.bounds,east:139.02}});act(()=>current.reply({id:old.id,kind:'view',view:{chains:[{id:99,points:[]}],truncated:false}}));expect(h.result.current.view.chains).toEqual([]);act(()=>vi.advanceTimersByTime(130));const request=current.messages.at(-1)!;act(()=>current.reply({id:request.id,kind:'view',view:{chains:[],truncated:false}}));act(()=>h.result.current.copy.begin());act(()=>{void h.result.current.copy.click(a.point);});const query=current.messages.at(-1)!;act(()=>current.reply({id:query.id,kind:'pick',pick:null,route:null}));expect(h.result.current.status).toBe('ready');expect(h.result.current.message).toContain('不存在は意味しません');});
+
+test('App ordinary save preserves selected rail route; adding and building uses exact preview points',async()=>{
+ vi.useRealTimers();vi.stubGlobal('PointerEvent',MouseEvent);
+ const world={next_id:'3',players:[{id:'1',name:'Player'}],companies:[{id:'2',owner:'1',name:'Railway'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'auto-rail-save-test'}:command==='list_save_slots'?{active_slot_id:'test',slots:[]}:command==='save_world'?{saved:true}:world);
+ const view=render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/auto-rail-save-test/);
+ fireEvent.click(screen.getByRole('button',{name:'実在の路線網に合わせる'}));const worker=FakeWorker.instances[0];expect(worker).toBeDefined();
+ act(()=>worker.reply({id:0,kind:'loaded',source}));fireEvent.click(screen.getByRole('button',{name:'拡大'}));fireEvent.click(screen.getByRole('button',{name:'拡大'}));
+ await waitFor(()=>expect(worker.messages.some(m=>m.kind==='view')).toBe(true));const request=worker.messages.filter(m=>m.kind==='view').at(-1)!;
+ act(()=>worker.reply({id:request.id,kind:'view',view:{chains:[{id:7,points:route.points},{id:8,points:route.points}],truncated:false}}));
+ fireEvent.click(screen.getByRole('button',{name:'実在線路の追従を開始'}));const map=view.container.querySelector('svg[role=img]')!;
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ for(const [end,x] of [[false,500],[true,510]] as const){fireEvent.pointerDown(map,{clientX:x,clientY:300,button:0});fireEvent.pointerUp(map,{clientX:x,clientY:300});fireEvent.click(map,{clientX:x,clientY:300});const query=worker.messages.at(-1)!;expect(query.kind).toBe('pick');act(()=>worker.reply({id:query.id,kind:'pick',pick:end?b:a,route:end?route:null}));}
+ const preview=view.container.querySelector('.reference-copy-preview')?.getAttribute('d');expect(preview).toBeTruthy();
+ fireEvent.click(screen.getByText('保存',{selector:'button'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='save_world')).toBe(true));await screen.findByText(/選択中の参照候補は計画に追加するまで保存されません/);
+ expect(worker.terminated).toBe(false);expect(FakeWorker.instances).toHaveLength(1);expect(view.container.querySelector('.reference-copy-preview')?.getAttribute('d')).toBe(preview);
+ fireEvent.click(screen.getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));fireEvent.click(screen.getByRole('button',{name:'選択中の計画に追加'}));await waitFor(()=>expect(screen.queryByRole('button',{name:'選択中の計画に追加'})).toBeNull());
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='build_plan')).toBe(true));
+ const payload=vi.mocked(invoke).mock.calls.find(([command])=>command==='build_plan')![1] as {alignments:{points:unknown;reference:{provenance:{network_path:unknown}}}[]};expect(payload.alignments[0].points).toEqual(route.points);expect(payload.alignments[0].reference.provenance.network_path).toEqual(route.spans);
+});

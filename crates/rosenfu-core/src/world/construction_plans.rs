@@ -275,6 +275,9 @@ impl ConstructionPlans {
             if let Some(reference) = &path.reference {
                 if reference.name.len() > 4096
                     || !valid_points(&reference.points)
+                    || reference.points.len() < 2
+                    || reference.points != path.points
+                    || reference.points != path.line
                     || !reference.source_record.valid()
                     || !reference.provenance.valid()
                     || !reference

@@ -127,3 +127,58 @@ fn versioned_network_chain_provenance_roundtrips_without_fabricated_way() {
         .replace("\"schema_version\": 22", "\"schema_version\": 21");
     assert!(decode(old.as_bytes()).is_err());
 }
+
+#[test]
+fn unbuilt_network_plan_roundtrips_then_builds_exact_geometry_and_source() {
+    let built = provenance_world();
+    let mut record = built.snapshot().source_records[0].clone();
+    record.conversion_format_version = 2;
+    let mut source = built.snapshot().alignment_provenance[0].source.clone();
+    source.method = ProvenanceMethod::RailGraphRouteV1;
+    source.osm_way_id.clear();
+    source.mode = ReferenceMode::Rail;
+    source.start_segment_index = 0;
+    source.end_segment_index = 0;
+    source.start_fraction = 0.0;
+    source.end_fraction = 0.0;
+    source.network_path = vec![RailGraphSpan {
+        region: "jp".into(),
+        chain_id: 7,
+        from_fraction: 0.1,
+        to_fraction: 0.9,
+    }];
+    let points = built.snapshot().alignments[0].points.clone();
+    let mut world = World::default();
+    let player = world.add_player("P".into()).unwrap();
+    let owner = world.add_company(player, "C".into()).unwrap();
+    let plans = json!({"version":1,"plans":[{"id":1,"name":"rail"}],"parkedPaths":[{"id":2,"planId":1,"name":"rail","points":points,"redo":[],"line":points,"extension":null,"trackType":"normal","designSpeedKmh":120,"roadFollowing":false,"reference":{"name":"rail","points":points,"sourceRecord":record,"provenance":source}}],"activePathId":1,"activePlanId":1,"draftPoints":[],"redoPoints":[],"draftExtension":null,"trackType":"normal","designSpeedKmh":120,"roadFollowing":false,"plannedStations":[],"draftFinished":false});
+    let mut draft = world.snapshot().clone();
+    draft.construction_plans = Some(serde_json::from_value(plans).unwrap());
+    let saved = World::new(draft).unwrap();
+    let mut restored = decode(&encode(&saved).unwrap()).unwrap();
+    let reference = restored
+        .snapshot()
+        .construction_plans
+        .as_ref()
+        .unwrap()
+        .parked_paths[0]
+        .reference
+        .clone()
+        .unwrap();
+    assert_eq!(reference.points, points);
+    restored
+        .build_alignment_from_reference(
+            owner,
+            reference.name,
+            reference.points,
+            reference.source_record,
+            reference.provenance,
+        )
+        .unwrap();
+    assert_eq!(restored.snapshot().alignments[0].points, points);
+    assert_eq!(restored.snapshot().alignment_provenance[0].source, source);
+    assert_eq!(decode(&encode(&restored).unwrap()).unwrap(), restored);
+    let mut invalid = saved.snapshot().clone();
+    invalid.construction_plans.as_mut().unwrap().parked_paths[0].line[0].latitude += 0.001;
+    assert!(World::new(invalid).is_err());
+}

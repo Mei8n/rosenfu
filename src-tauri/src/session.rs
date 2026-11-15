@@ -3567,6 +3567,13 @@ mod tests {
     }
     #[test]
     fn reference_geometry_and_provenance_are_atomic_and_roundtrip() {
+        reference_roundtrip(false);
+    }
+    #[test]
+    fn real_rail_network_geometry_and_provenance_are_atomic_and_roundtrip() {
+        reference_roundtrip(true);
+    }
+    fn reference_roundtrip(network: bool) {
         use rosenfu_core::world::{
             AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
         };
@@ -3584,18 +3591,35 @@ mod tests {
             source_date: None,
             license: "ODbL-1.0".into(),
             attribution: "© OpenStreetMap contributors".into(),
-            conversion_format_version: 1,
+            conversion_format_version: if network { 2 } else { 1 },
         };
         let provenance = AlignmentProvenanceInput {
-            network_path: vec![],
+            network_path: if network {
+                vec![rosenfu_core::world::RailGraphSpan {
+                    region: "jp".into(),
+                    chain_id: 7,
+                    from_fraction: 0.0,
+                    to_fraction: 1.0,
+                }]
+            } else {
+                vec![]
+            },
             source_key: key,
-            method: ProvenanceMethod::OsmSegmentCopyV1,
-            osm_way_id: "1".into(),
-            mode: ReferenceMode::Road,
+            method: if network {
+                ProvenanceMethod::RailGraphRouteV1
+            } else {
+                ProvenanceMethod::OsmSegmentCopyV1
+            },
+            osm_way_id: if network { String::new() } else { "1".into() },
+            mode: if network {
+                ReferenceMode::Rail
+            } else {
+                ReferenceMode::Road
+            },
             start_segment_index: 0,
             start_fraction: 0.0,
             end_segment_index: 0,
-            end_fraction: 1.0,
+            end_fraction: if network { 0.0 } else { 1.0 },
         };
         let points = vec![
             GeoPoint {

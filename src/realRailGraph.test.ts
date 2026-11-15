@@ -11,3 +11,16 @@ describe('independent rail network geometry',()=>{
  it('supports same chain slices without detouring, rejects zero length and invalid picks',()=>{const net=createRailNetwork(graph()),a={chain:0,position:.1,point:{longitude:139,latitude:35}},b={...a,position:.9};const route=net.route(a,b);expect(route.spans).toHaveLength(1);expect(route.points[1]).toEqual(graph().chains[0].points[1]);expect(()=>net.route(a,a)).toThrow('20m');expect(()=>net.route({...a,position:NaN},b)).toThrow('不正');});
  it('rejects truncated, unsupported and unbounded binary files before allocation',()=>{expect(()=>decodeRailGraph(new ArrayBuffer(2))).toThrow();const data=new ArrayBuffer(24),v=new DataView(data);v.setUint32(0,0x47525754,true);v.setUint32(4,1,true);v.setUint32(8,0xffffffff,true);expect(()=>decodeRailGraph(data)).toThrow('上限');});
 });
+
+it('retains the chosen arrival end for a loop chain',()=>{
+ const g=graph(),loop=g.chains[1];loop.to=loop.from;loop.points=[{longitude:139.002,latitude:35},{longitude:139.003,latitude:35.001},{longitude:139.002,latitude:35}];loop.positions=[0,.5,1];loop.length=300;
+ const result=createRailNetwork(g).route({chain:0,position:0,point:g.chains[0].points[0]},{chain:1,position:.9,point:loop.points[0]});
+ expect(result.spans.at(-1)?.from_fraction).toBe(1);expect(result.spans.at(-1)?.to_fraction).toBe(.9);
+});
+it('decodes a minimal documented TWRG chain and rejects malformed offsets and trailing bytes',()=>{
+ const bytes:number[]=[];const u32=(n:number)=>{for(let i=0;i<4;i++)bytes.push((n>>>(8*i))&255);};const zigzag=(n:number)=>{let v=n<0?-n*2-1:n*2;while(v>=128){bytes.push((v%128)|128);v=Math.floor(v/128);}bytes.push(v);};
+ [0x47525754,1,2,1,2,0,139000000,139001000,35000000,35000000,0,1].forEach(u32);bytes.push(0,0,0);[0,2].forEach(u32);[139000000,35000000,1000,0].forEach(zigzag);
+ const raw=Uint8Array.from(bytes);expect(decodeRailGraph(raw.buffer).chains[0].points).toEqual([{longitude:139,latitude:35},{longitude:139.001,latitude:35}]);
+ expect(()=>decodeRailGraph(Uint8Array.from([...bytes,0]).buffer)).toThrow('末尾');
+ const bad=raw.slice();new DataView(bad.buffer).setUint32(55,3,true);expect(()=>decodeRailGraph(bad.buffer)).toThrow();
+});
