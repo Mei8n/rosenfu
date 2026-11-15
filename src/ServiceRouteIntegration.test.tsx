@@ -18,5 +18,22 @@ test("route section import is a new named draft only and never overwrites an exi
  expect((wizard.getByRole('button',{name:'新規系統の下書きへ取り込む'}) as HTMLButtonElement).disabled).toBe(true);expect((pane.getByLabelText('系統名') as HTMLInputElement).value).toBe('既存系統');
  fireEvent.click(pane.getByRole('button',{name:'新規系統'}));fireEvent.click(wizard.getByRole('button',{name:'新規系統の下書きへ取り込む'}));expect((pane.getByLabelText('系統名') as HTMLInputElement).value).toBe('');expect((pane.getByLabelText('停車 2: 途中') as HTMLInputElement).checked).toBe(false);expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='save_service')).toBe(false);
  fireEvent.change(pane.getByLabelText('系統名'),{target:{value:'独立した系統名'}});fireEvent.click(pane.getByRole('button',{name:'系統を適用'}));await screen.findByText(/service save rejected/);expect((pane.getByLabelText('系統名') as HTMLInputElement).value).toBe('独立した系統名');expect((pane.getByLabelText('停車 2: 途中') as HTMLInputElement).checked).toBe(false);
- fireEvent.click(pane.getByRole('button',{name:'系統を適用'}));await within(document.querySelector('.app-footer')!).findByText(/運行系統をワールドに適用しました/);expect(invoke).toHaveBeenCalledWith('save_service',{serviceId:null,name:'独立した系統名',start:'1',tracks:['4','5'],stops:[0,2]});expect(pane.getByRole('button',{name:'系統編集: 既存系統'})).toBeTruthy();expect(pane.getByRole('button',{name:'系統編集: 独立した系統名'})).toBeTruthy();
+ fireEvent.click(pane.getByRole('button',{name:'系統を適用'}));await within(document.querySelector('.app-footer')!).findByText(/運行系統をワールドに適用しました/);expect(invoke).toHaveBeenCalledWith('save_service',{sourceRouteId:'6',serviceId:null,name:'独立した系統名',start:'1',tracks:['4','5'],stops:[0,2]});expect(pane.getByRole('button',{name:'系統編集: 既存系統'})).toBeTruthy();expect(pane.getByRole('button',{name:'系統編集: 独立した系統名'})).toBeTruthy();
+});
+test('binding edits are explicit, protect unsaved selection and preserve route-independent state on rejection',async()=>{
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'binding-integration'};
+  if(command==='set_service_route_binding')throw Error('経路が路線に含まれません');
+  return world;
+ });
+ render(<App/>);await screen.findByText(/binding-integration/);fireEvent.click(screen.getByRole('tab',{name:'系統'}));fireEvent.click(screen.getByRole('button',{name:'系統編集: 既存系統'}));
+ expect((screen.getByLabelText('関連する路線') as HTMLSelectElement).value).toBe('');
+ fireEvent.change(screen.getByLabelText('関連する路線'),{target:{value:'route:6'}});
+ fireEvent.click(screen.getByRole('button',{name:'新規系統'}));expect(screen.getByLabelText('関連する路線')).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'関連付けを適用'}));await screen.findByText('Error: 経路が路線に含まれません');
+ expect(invoke).toHaveBeenCalledWith('set_service_route_binding',{serviceId:'7',binding:{kind:'route',route_id:'6'}});
+ expect((screen.getByLabelText('関連する路線') as HTMLSelectElement).value).toBe('route:6');
+ fireEvent.click(screen.getByRole('button',{name:'関連付けの変更を破棄'}));expect((screen.getByLabelText('関連する路線') as HTMLSelectElement).value).toBe('');
+ fireEvent.click(screen.getByRole('button',{name:'新規系統'}));expect(screen.queryByLabelText('関連する路線')).toBeNull();
 });

@@ -325,7 +325,7 @@ fn compact_world_that_exceeds_pretty_limit_is_rejected_before_load() {
         Err(StorageError::TooLarge)
     ));
     let compact = serde_json::to_vec(&serde_json::json!({
-        "format": "rosenfu-world", "schema_version": 7, "world": large.snapshot()
+        "format": "rosenfu-world", "schema_version": rosenfu_storage::SCHEMA_VERSION, "world": large.snapshot()
     }))
     .unwrap();
     assert!(compact.len() < MAX_SAVE_BYTES);

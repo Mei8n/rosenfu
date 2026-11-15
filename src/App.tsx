@@ -1,3 +1,4 @@
+import {ServiceRouteBindingEditor,type ServiceRouteBindingRecord} from "./ServiceRouteBinding";
 import {RouteDirectory} from "./RouteDirectory";
 import {ServiceStopDiagram} from './ServiceStopDiagram';
 import {PARALLEL_RANGE_M,parallelProjection,offsetTrack,parallelSection} from "./parallelTrack";
@@ -78,6 +79,7 @@ type Route = { id: string; owner: string; name: string; start: string; tracks: s
 type OperatingService = { id: string; owner: string; name: string; start: string; tracks: string[]; stops: number[] };
 type RoutePath = { route_id: string; segments: Segment[]; member_stations: string[] };
 type World = {
+  service_route_bindings?:ServiceRouteBindingRecord[];
   alignment_connections?: EndpointConnection[];
   construction_plans?: ConstructionPlans | null;
   view_state?: Camera | null;
@@ -497,6 +499,8 @@ export function App() {
   const [serviceStops, setServiceStops] = useState<number[]>([]);
   const [serviceNextTrack, setServiceNextTrack] = useState("");
   const [serviceDirty, setServiceDirty] = useState(false);
+  const [bindingDirty,setBindingDirty]=useState(false);
+  const [serviceSourceRouteId,setServiceSourceRouteId]=useState<string|undefined>(undefined);
   const [pathServiceDirty,setPathServiceDirty]=useState(false);
   const [pathDraftEpoch,setPathDraftEpoch]=useState(0);
   const [serviceHint, setServiceHint] = useState("");
@@ -573,7 +577,7 @@ export function App() {
   useEffect(()=>{if(!referenceCopy.active)discardPlanStations(-1);},[referenceCopy.active]);
   const graphNodesById=useMemo(()=>new Map(graphBundle?.graph.nodes.map(node=>[node.osmId,node])??[]),[graphBundle]);
   useEffect(()=>{referenceCopy.clearHover();},[camera]);
-  const saveBlocked = !!anchorPreview || candidateDirty || routeDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
+  const saveBlocked = bindingDirty || !!anchorPreview || candidateDirty || routeDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
   const hasPlans = plannedStations.length>0 || draftPoints.length > 0 || redoPoints.length > 0 || parkedPaths.length > 0 || referenceCopy.active;
   const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,roadFollowing,plannedStations,draftFinished]);
   const persistedPlans=useMemo(()=>compactEmptyPlans(constructionPlans),[constructionPlans]);
@@ -1320,6 +1324,7 @@ export function App() {
     setRouteTracks((tracks) => [...tracks, nextTrack]); setNextTrack(""); setRouteDirty(true); setRouteHint("");
   }
   function resetService(service?: OperatingService) {
+    setBindingDirty(false);setServiceSourceRouteId(undefined);
     setServiceId(service?.id ?? null); setServiceName(service?.name ?? "新系統");
     setServiceStart(service?.start ?? ""); setServiceTracks(service ? [...service.tracks] : []);
     setServiceStops(service ? [...service.stops] : []); setServiceNextTrack("");
@@ -1327,6 +1332,7 @@ export function App() {
   }
   function chooseService(id: string | null) {
     if (!enabled) return;
+    if(bindingDirty){setServiceHint("先に関連付けの変更を適用または破棄してください。");return;}
     if(pathServiceDirty){setServiceHint("先に新形式下書きを破棄または適用してください。");return;}
     if (serviceDirty) { setPendingServiceChoice({ id }); return; }
     resetService(world?.services.find((service) => service.id === id));
@@ -1348,9 +1354,9 @@ export function App() {
   }
   function submitService(event: FormEvent) {
     event.preventDefault();
-    if (!enabled || selectedServicePath || pathServiceDirty || !serviceName.trim() || !serviceValid || !serviceTracks.length) return;
+    if (!enabled || selectedServicePath || pathServiceDirty || bindingDirty || !serviceName.trim() || !serviceValid || !serviceTracks.length) return;
     void perform(async () => {
-      const snapshot = await invoke<World>("save_service", { serviceId, name: serviceName.trim(), start: serviceStart, tracks: serviceTracks, stops: serviceStops });
+      const snapshot = await invoke<World>("save_service", { ...(serviceSourceRouteId?{sourceRouteId:serviceSourceRouteId}:{}),serviceId, name: serviceName.trim(), start: serviceStart, tracks: serviceTracks, stops: serviceStops });
       const applied = serviceId ? snapshot.services.find((service) => service.id === serviceId)
         : snapshot.services.find((service) => !world?.services.some((existing) => existing.id === service.id));
       setWorld(snapshot); setDirty(true); setConfirmLoad(false); resetService(applied);
@@ -1681,13 +1687,14 @@ export function App() {
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
             <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => chooseService(null)}>新規系統</button>{world?.services.map((service) => <button key={service.id} className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id)} aria-label={`系統編集: ${service.name}`} aria-pressed={service.id===serviceId}>{service.name}</button>)}</div>
             <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null} onDirty={setPathServiceDirty} onSave={createPathService}/>
-            <ServiceFromRoutePreview routes={world?.routes??[]} tracks={world?.tracks??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} worldVersion={world} enabled={enabled} canApply={!serviceDirty && !pathServiceDirty && serviceId===null} onApply={draft=>{if(!enabled || busyRef.current || serviceDirty || pathServiceDirty || serviceId!==null)return;resetService();setServiceName("");setServiceStart(draft.start);setServiceTracks(draft.tracks);setServiceStops(draft.stops);setServiceDirty(true);setServiceHint("路線区間を新規下書きへ取り込みました。系統名を入力して停車設定を再確認してください。");}}/>
+            <ServiceFromRoutePreview routes={world?.routes??[]} tracks={world?.tracks??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} worldVersion={world} enabled={enabled} canApply={!serviceDirty && !pathServiceDirty && serviceId===null} onApply={draft=>{if(!enabled || busyRef.current || serviceDirty || pathServiceDirty || serviceId!==null)return;resetService();setServiceSourceRouteId(draft.sourceRouteId);setServiceName("");setServiceStart(draft.start);setServiceTracks(draft.tracks);setServiceStops(draft.stops);setServiceDirty(true);setServiceHint("路線区間を新規下書きへ取り込みました。系統名を入力して停車設定を再確認してください。");}}/>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
-            {selectedServicePath&&world&&<ServicePathCreator key={`replace-${serviceId}-${pathDraftEpoch}`} routes={world.routes} routePaths={world.route_paths??[]} stations={world.stations} world={world} enabled={enabled} canStart={!serviceDirty} onDirty={setPathServiceDirty} replaceService={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,path:selectedServicePath}} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("同じ系統IDで経路と停車設定を更新しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/>}
-            {selectedServicePath&&world&&<ServicePathEditor key={serviceId!} service={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,start:serviceStart}} path={selectedServicePath} world={world} stations={world.stations} enabled={enabled&&!pathServiceDirty} onDirty={setServiceDirty} onSave={async(name,stops)=>{if(!enabled||busyRef.current)throw Error("処理中です");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("update_service_path",{serviceId,name,stops});setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("系統名と停車設定を適用しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/> }
-            <form onSubmit={submitService}><fieldset disabled={!enabled||!!selectedServicePath||pathServiceDirty}>
+            {serviceId&&world&&<ServiceRouteBindingEditor key={`binding-${serviceId}-${worldEpoch}`} binding={world.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding} routes={world.routes.filter(r=>r.owner===world.services.find(s=>s.id===serviceId)?.owner)} enabled={enabled&&!serviceDirty&&!pathServiceDirty} onDirty={setBindingDirty} onSave={async binding=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty)throw Error("別の系統編集を適用または破棄してください。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("set_service_route_binding",{serviceId,binding});const saved=snapshot.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding;if(!saved||saved.kind!==binding.kind||(saved.kind==="route"&&binding.kind==="route"&&saved.route_id!==binding.route_id))throw Error("関連付けの保存結果を確認できません。");setWorld(snapshot);setDirty(true);setConfirmLoad(false);setBindingDirty(false);}finally{busyRef.current=false;setBusy(false);}}}/>}
+            {selectedServicePath&&world&&<ServicePathCreator key={`replace-${serviceId}-${pathDraftEpoch}`} routes={world.routes} routePaths={world.route_paths??[]} stations={world.stations} world={world} enabled={enabled} canStart={!serviceDirty&&!bindingDirty} onDirty={setPathServiceDirty} replaceService={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,path:selectedServicePath}} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("同じ系統IDで経路と停車設定を更新しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/>}
+            {selectedServicePath&&world&&<ServicePathEditor key={serviceId!} service={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,start:serviceStart}} path={selectedServicePath} world={world} stations={world.stations} enabled={enabled&&!pathServiceDirty&&!bindingDirty} onDirty={setServiceDirty} onSave={async(name,stops)=>{if(!enabled||busyRef.current)throw Error("処理中です");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("update_service_path",{serviceId,name,stops});setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("系統名と停車設定を適用しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/> }
+            <form onSubmit={submitService}><fieldset disabled={!enabled||!!selectedServicePath||pathServiceDirty||bindingDirty}>
               <label htmlFor="service-name">系統名</label><input id="service-name" value={serviceName} maxLength={80} onChange={(event) => { setServiceName(event.target.value); setServiceDirty(true); }} />
               <label htmlFor="service-start" className="track-to-label">系統の起点</label><select id="service-start" value={serviceStart} onChange={(event) => updateServicePath(event.target.value, [])}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
               <label htmlFor="service-next" className="track-to-label">系統で次にたどる線路</label><select id="service-next" value={serviceNextTrack} onChange={(event) => setServiceNextTrack(event.target.value)}><option value="">接続する線路を選択</option>{serviceNextTracks.map((track) => { const next = track.from === serviceEnd ? track.to : track.from; return <option key={track.id} value={track.id}>{stationsById.get(next)?.name ?? next} (線路 {track.id})</option>; })}</select>

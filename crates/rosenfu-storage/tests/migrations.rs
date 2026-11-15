@@ -35,8 +35,8 @@ fn current_schema_roundtrip_retains_services_and_stop_occurrences() {
         .unwrap();
     let bytes = encode(&source).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(SCHEMA_VERSION, 16);
-    assert_eq!(json["schema_version"], 16);
+    assert_eq!(SCHEMA_VERSION, 17);
+    assert_eq!(json["schema_version"], 17);
     assert_eq!(json["world"]["services"][0]["id"], "10");
     assert_eq!(
         json["world"]["services"][0]["stops"],
@@ -58,7 +58,7 @@ fn loading_old_save_is_read_only_and_explicit_save_preserves_original_bytes() {
     save_world(&path, &world).unwrap();
     assert_eq!(fs::read(&backup).unwrap(), LEGACY);
     let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(current["schema_version"], 16);
+    assert_eq!(current["schema_version"], 17);
     assert_eq!(current["world"]["services"], serde_json::json!([]));
     assert_eq!(load_world(&path).unwrap(), world);
 }
@@ -102,11 +102,19 @@ fn schema_one_rejects_services_and_unknown_fields_at_every_legacy_boundary() {
 fn schema_two_requires_services_and_schema_one_requires_all_legacy_fields() {
     let mut legacy: serde_json::Value = serde_json::from_slice(LEGACY).unwrap();
     legacy["schema_version"] = serde_json::json!(2);
+    legacy["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     assert!(matches!(
         decode(&serde_json::to_vec(&legacy).unwrap()),
         Err(StorageError::Json(_))
     ));
     legacy["schema_version"] = serde_json::json!(1);
+    legacy["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     legacy["world"].as_object_mut().unwrap().remove("routes");
     assert!(matches!(
         decode(&serde_json::to_vec(&legacy).unwrap()),

@@ -16,7 +16,7 @@ mod legacy_v6;
 mod legacy_v7;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 16;
+pub const SCHEMA_VERSION: u64 = 17;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -115,6 +115,22 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or(StorageError::InvalidHeader)?;
+    if version < 17
+        && value
+            .get("world")
+            .and_then(|w| w.get("service_route_bindings"))
+            .is_some()
+    {
+        return Err(StorageError::InvalidHeader);
+    }
+    if version == 17
+        && !value
+            .get("world")
+            .and_then(|w| w.get("service_route_bindings"))
+            .is_some_and(|v| v.is_array())
+    {
+        return Err(StorageError::InvalidHeader);
+    }
     let current = match version {
         1 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(
             legacy_v3::migrate(legacy_v1::migrate(value)?)?,
@@ -125,7 +141,7 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         4 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(value)?)?)?,
         5 => legacy_v6::migrate(legacy_v5::migrate(value)?)?,
         6 => legacy_v6::migrate(value)?,
-        7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | SCHEMA_VERSION => {
+        7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | SCHEMA_VERSION => {
             if [
                 "route_paths",
                 "service_paths",

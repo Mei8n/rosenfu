@@ -33,6 +33,10 @@ fn schema_nine_without_plans_remains_readable() {
     value["world"]
         .as_object_mut()
         .unwrap()
+        .remove("service_route_bindings");
+    value["world"]
+        .as_object_mut()
+        .unwrap()
         .remove("construction_plans");
     assert!(decode(&serde_json::to_vec(&value).unwrap())
         .unwrap()
@@ -66,6 +70,10 @@ fn schema_ten_path_station_and_schema_eleven_built_station_roundtrip() {
     .unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&encode(&legacy).unwrap()).unwrap();
     value["schema_version"] = json!(10);
+    value["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     assert_eq!(
         decode(&serde_json::to_vec(&value).unwrap()).unwrap(),
         legacy
@@ -75,6 +83,10 @@ fn schema_ten_path_station_and_schema_eleven_built_station_roundtrip() {
     station["alignmentId"] = json!("999");
     station["planId"] = json!(2);
     value["schema_version"] = json!(11);
+    value["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     // Stale infrastructure references remain editable drafts, validated at build time.
     let restored = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
     assert_eq!(decode(&encode(&restored).unwrap()).unwrap(), restored);
@@ -107,6 +119,10 @@ fn schema_eleven_plan_without_geometry_remains_unchanged() {
     let world = World::new(draft).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
     value["schema_version"] = json!(11);
+    value["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     let restored = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
     assert_eq!(restored, world);
     assert_eq!(

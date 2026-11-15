@@ -15,6 +15,10 @@ fn view_roundtrips_and_legacy_save_has_no_view() {
     let mut value: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
     value["world"].as_object_mut().unwrap().remove("view_state");
     value["schema_version"] = 12.into();
+    value["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     assert!(decode(&serde_json::to_vec(&value).unwrap())
         .unwrap()
         .snapshot()

@@ -53,6 +53,10 @@ fn legacy(version: u64) -> Value {
     }
     let mut value: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
     value["schema_version"] = json!(version);
+    value["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     let obj = value["world"].as_object_mut().unwrap();
     obj.remove("source_records");
     obj.remove("alignment_provenance");
@@ -76,7 +80,7 @@ fn schemas_one_through_five_preserve_all_fields_and_backup_bytes() {
         let world = load_world(&path).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
         let current: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
-        assert_eq!(current["schema_version"], 16);
+        assert_eq!(current["schema_version"], 17);
         for (key, value) in old["world"].as_object().unwrap() {
             assert_eq!(&current["world"][key], value, "v{version}: {key}");
         }
@@ -254,6 +258,10 @@ fn schema_seven_source_ranges_migrate_and_extended_ranges_roundtrip() {
     let mut world = provenance_world();
     let mut old: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
     old["schema_version"] = json!(7);
+    old["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     for p in old["world"]["alignment_provenance"].as_array_mut().unwrap() {
         p.as_object_mut().unwrap().remove("start_point_index");
         p.as_object_mut().unwrap().remove("end_point_index");
@@ -261,6 +269,10 @@ fn schema_seven_source_ranges_migrate_and_extended_ranges_roundtrip() {
     assert_eq!(decode(&serde_json::to_vec(&old).unwrap()).unwrap(), world);
     let mut v6 = old.clone();
     v6["schema_version"] = json!(6);
+    v6["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     for a in v6["world"]["alignments"].as_array_mut().unwrap() {
         a.as_object_mut().unwrap().remove("track_type");
     }
@@ -292,6 +304,10 @@ fn schema_seven_keeps_optional_alignment_arrays_but_rejects_wrong_types() {
     let world = World::default();
     let mut old: Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
     old["schema_version"] = json!(7);
+    old["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     old["world"].as_object_mut().unwrap().remove("alignments");
     old["world"]
         .as_object_mut()

@@ -128,6 +128,8 @@ pub struct WorldDraft {
     #[serde(default)]
     pub service_paths: Vec<ServicePath>,
     #[serde(default)]
+    pub service_route_bindings: Vec<ServiceRouteBinding>,
+    #[serde(default)]
     pub route_paths: Vec<RoutePath>,
     #[serde(default)]
     pub alignments: Vec<Alignment>,
@@ -166,6 +168,7 @@ impl Default for WorldDraft {
             construction_plans: None,
             route_paths: vec![],
             service_paths: vec![],
+            service_route_bindings: vec![],
             source_records: vec![],
             alignment_provenance: vec![],
             next_id: 1,
@@ -193,6 +196,7 @@ pub enum WorldError {
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
+    InvalidServiceRouteBinding,
     InvalidProvenance,
     ProvenanceEditUnsupported,
     ServicePathEditUnsupported,
@@ -211,6 +215,9 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::InvalidServiceRouteBinding) {
+            return write!(f, "既存系統の経路が割り当てた路線に含まれなくなるため変更できません。路線と系統は変更していません。");
+        }
         write!(f, "{self:?}")
     }
 }
@@ -475,6 +482,7 @@ impl WorldDraft {
             }
         }
         self.validate_service_paths()?;
+        self.validate_service_route_bindings()?;
         for service in &self.services {
             name(&service.name, "service")?;
             if !owner_exists(service.owner) {
@@ -538,6 +546,7 @@ mod tests {
             construction_plans: None,
             route_paths: vec![],
             service_paths: vec![],
+            service_route_bindings: vec![],
             source_records: vec![],
             alignment_provenance: vec![],
             next_id: 4,
@@ -685,3 +694,6 @@ pub use construction_plans::ConstructionPlans;
 
 mod station_groups;
 pub use station_groups::StationGroup;
+
+mod service_route_bindings;
+pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
