@@ -16,7 +16,6 @@ pub struct ServiceRouteBinding {
 }
 #[derive(Clone, Copy, PartialEq)]
 enum Infrastructure {
-    Track(TrackId),
     Alignment(AlignmentId),
 }
 #[derive(Clone, Copy)]
@@ -64,26 +63,6 @@ fn spans(
     let mut current = start;
     for segment in segments {
         match segment {
-            RouteSegment::Track { track_id } => {
-                let track = data
-                    .tracks
-                    .iter()
-                    .find(|t| t.id == *track_id)
-                    .ok_or(invalid.clone())?;
-                let (begin, end, next) = if track.from == current {
-                    (0.0, 1.0, track.to)
-                } else if track.to == current {
-                    (1.0, 0.0, track.from)
-                } else {
-                    return Err(invalid);
-                };
-                append(Span {
-                    infrastructure: Infrastructure::Track(*track_id),
-                    begin,
-                    end,
-                });
-                current = next;
-            }
             RouteSegment::Alignment {
                 alignment_id,
                 from,
@@ -196,30 +175,21 @@ impl WorldDraft {
                     .iter()
                     .find(|r| r.id == route_id && r.owner == service.owner)
                     .ok_or(WorldError::InvalidServiceRouteBinding)?;
-                let route_segments = self
+                let route_segments = &self
                     .route_paths
                     .iter()
                     .find(|p| p.route_id == route_id)
-                    .map(|p| p.segments.clone())
-                    .unwrap_or_else(|| {
-                        route
-                            .tracks
-                            .iter()
-                            .map(|id| RouteSegment::Track { track_id: *id })
-                            .collect()
-                    });
-                let service_segments = self
+                    .ok_or(WorldError::InvalidServiceRouteBinding)?
+                    .segments;
+                let service_segments: Vec<_> = self
                     .service_paths
                     .iter()
                     .find(|p| p.service_id == service.id)
-                    .map(|p| p.legs.iter().map(|l| l.segment.clone()).collect())
-                    .unwrap_or_else(|| {
-                        service
-                            .tracks
-                            .iter()
-                            .map(|id| RouteSegment::Track { track_id: *id })
-                            .collect::<Vec<_>>()
-                    });
+                    .ok_or(WorldError::InvalidServiceRouteBinding)?
+                    .legs
+                    .iter()
+                    .map(|l| l.segment.clone())
+                    .collect();
                 let mut route_spans = spans(self, route.start, &route_segments)?;
                 let service_spans = spans(self, service.start, &service_segments)?;
                 if !contains_path(&route_spans, &service_spans) {

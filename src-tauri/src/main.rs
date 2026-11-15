@@ -1,8 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod session;
-use rosenfu_core::world::{
-    AlignmentId, GeoPoint, RouteId, ServiceId, StationId, TrackId, WorldDraft,
-};
+use rosenfu_core::world::{AlignmentId, GeoPoint, RouteId, ServiceId, StationId, WorldDraft};
 use session::WorldEditor;
 use std::{path::PathBuf, sync::Mutex};
 use tauri::{Manager, State};
@@ -199,27 +197,7 @@ fn undo_alignment_deletion(editor: State<'_, Mutex<WorldEditor>>) -> Result<Worl
         .map_err(|_| "world state unavailable")?
         .undo_alignment_deletion()
 }
-#[tauri::command]
-fn delete_track(
-    editor: State<'_, Mutex<WorldEditor>>,
-    track_id: TrackId,
-) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .delete_track(track_id)
-}
-#[tauri::command]
-fn add_track(
-    editor: State<'_, Mutex<WorldEditor>>,
-    from: StationId,
-    to: StationId,
-) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .add_track(from, to)
-}
+
 #[tauri::command]
 fn rename_company(
     editor: State<'_, Mutex<WorldEditor>>,
@@ -244,19 +222,7 @@ fn save_planned_route(
         .map_err(|_| "world state unavailable")?
         .save_planned_route(route_id, name, start, segments, excluded_stations)
 }
-#[tauri::command]
-fn save_route(
-    editor: State<'_, Mutex<WorldEditor>>,
-    route_id: Option<RouteId>,
-    name: String,
-    start: StationId,
-    tracks: Vec<TrackId>,
-) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .save_route(route_id, name, start, tracks)
-}
+
 #[tauri::command]
 fn set_service_route_binding(
     editor: State<'_, Mutex<WorldEditor>>,
@@ -268,21 +234,7 @@ fn set_service_route_binding(
         .map_err(|_| "world state unavailable")?
         .set_service_route_binding(service_id, binding)
 }
-#[tauri::command]
-fn save_service(
-    editor: State<'_, Mutex<WorldEditor>>,
-    service_id: Option<ServiceId>,
-    name: String,
-    start: StationId,
-    tracks: Vec<TrackId>,
-    stops: Vec<u32>,
-    source_route_id: Option<RouteId>,
-) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .save_service_with_source_route(service_id, name, start, tracks, stops, source_route_id)
-}
+
 #[tauri::command]
 fn update_station_placement(
     editor: State<'_, Mutex<WorldEditor>>,
@@ -369,18 +321,7 @@ fn replace_service_path(
             source_route_id,
         )
 }
-#[tauri::command]
-fn preview_service_from_route(
-    editor: State<'_, Mutex<WorldEditor>>,
-    route_id: RouteId,
-    from_occurrence: u32,
-    to_occurrence: u32,
-) -> Result<rosenfu_core::world::ServiceRoutePreview, String> {
-    editor
-        .lock()
-        .map_err(|_| "編集状態を取得できません。".to_string())?
-        .preview_service_from_route(route_id, from_occurrence, to_occurrence)
-}
+
 #[tauri::command]
 fn preview_route_candidates(
     editor: State<'_, Mutex<WorldEditor>>,
@@ -527,7 +468,6 @@ fn main() {
             update_service_path,
             preview_service_path_replacement,
             replace_service_path,
-            preview_service_from_route,
             preview_route_candidates,
             preview_route_membership,
             world_snapshot,
@@ -538,17 +478,13 @@ fn main() {
             build_plan,
             update_station_placement,
             place_station_on_alignment,
-            add_track,
             rename_station,
             delete_station,
-            delete_track,
             delete_alignment,
             delete_alignment_section,
             undo_alignment_deletion,
             rename_company,
-            save_route,
             save_planned_route,
-            save_service,
             set_service_route_binding,
             save_world,
             confirm_manual_save,

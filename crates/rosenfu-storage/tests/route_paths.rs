@@ -1,5 +1,5 @@
 use rosenfu_core::world::*;
-use rosenfu_storage::{backup_path, decode, encode, load_world, save_world};
+use rosenfu_storage::{backup_path, decode, encode, save_world};
 use serde_json::{json, Value};
 use std::fs;
 fn sample() -> (World, AlignmentId, CompanyId, Vec<StationId>) {
@@ -49,51 +49,12 @@ fn current_schema_roundtrip_preserves_alignment_membership_and_future_insertions
         .unwrap();
     let bytes = encode(&w).unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["schema_version"], 17);
+    assert_eq!(value["schema_version"], 18);
     assert_eq!(
         value["world"]["route_paths"][0]["member_stations"],
         json!([s[0], s[2]])
     );
     assert_eq!(decode(&bytes).unwrap(), w);
-}
-#[test]
-fn old_schemas_migrate_without_mutation_and_preserve_bytes_on_save() {
-    let (w, _, _, _) = sample();
-    for version in [2, 3] {
-        let mut old: Value = serde_json::from_slice(&encode(&w).unwrap()).unwrap();
-        old["schema_version"] = json!(version);
-        old["world"]
-            .as_object_mut()
-            .unwrap()
-            .remove("service_route_bindings");
-        for alignment in old["world"]["alignments"].as_array_mut().unwrap() {
-            alignment.as_object_mut().unwrap().remove("track_type");
-        }
-        old["world"]
-            .as_object_mut()
-            .unwrap()
-            .remove("source_records");
-        old["world"]
-            .as_object_mut()
-            .unwrap()
-            .remove("alignment_provenance");
-        old["world"].as_object_mut().unwrap().remove("route_paths");
-        old["world"]
-            .as_object_mut()
-            .unwrap()
-            .remove("service_paths");
-        let bytes = serde_json::to_vec_pretty(&old).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("old.json");
-        fs::write(&file, &bytes).unwrap();
-        let restored = load_world(&file).unwrap();
-        assert_eq!(restored, w);
-        assert_eq!(fs::read(&file).unwrap(), bytes);
-        save_world(&file, &restored).unwrap();
-        assert_eq!(fs::read(backup_path(&file)).unwrap(), bytes);
-        let new: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
-        assert_eq!(new["schema_version"], 17);
-    }
 }
 #[test]
 fn legacy_files_cannot_smuggle_new_fields_and_current_requires_paths() {

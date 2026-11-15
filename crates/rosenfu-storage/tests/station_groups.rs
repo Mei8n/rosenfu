@@ -1,7 +1,7 @@
 use rosenfu_core::world::*;
 use rosenfu_storage::{decode, encode, SCHEMA_VERSION};
 #[test]
-fn station_groups_roundtrip_and_schema15_without_groups_remains_valid() {
+fn station_groups_roundtrip() {
     let mut world = World::default();
     let p = world.add_player("P".into()).unwrap();
     let c = world.add_company(p, "C".into()).unwrap();
@@ -27,27 +27,11 @@ fn station_groups_roundtrip_and_schema15_without_groups_remains_valid() {
             .unwrap();
     }
     assert_eq!(world.snapshot().station_groups.len(), 1);
-    assert_eq!(SCHEMA_VERSION, 17);
+    assert_eq!(SCHEMA_VERSION, 18);
     let encoded = encode(&world).unwrap();
     let restored = decode(&encoded).unwrap();
     assert_eq!(
         restored.snapshot().station_groups,
         world.snapshot().station_groups
-    );
-    let mut value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    value["schema_version"] = 15.into();
-    value["world"]
-        .as_object_mut()
-        .unwrap()
-        .remove("service_route_bindings");
-    value["world"]
-        .as_object_mut()
-        .unwrap()
-        .remove("station_groups");
-    let old = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
-    assert!(old.snapshot().station_groups.is_empty());
-    assert_eq!(
-        old.snapshot().station_placements,
-        world.snapshot().station_placements
     );
 }

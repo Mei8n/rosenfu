@@ -8,15 +8,40 @@ fn sample() -> World {
     let mut world = World::default();
     let player = world.add_player("Player".into()).unwrap();
     let company = world.add_company(player, "Railway".into()).unwrap();
+    let line = world
+        .build_alignment(
+            company,
+            "Line".into(),
+            vec![
+                rosenfu_core::world::GeoPoint {
+                    latitude: 35.125,
+                    longitude: 139.25,
+                },
+                rosenfu_core::world::GeoPoint {
+                    latitude: 35.5,
+                    longitude: 139.75,
+                },
+            ],
+        )
+        .unwrap();
     let a = world
-        .add_station(company, "A".into(), 35.125, 139.25)
+        .place_station_on_alignment(company, "A".into(), line, 0.1, 20., 12.)
         .unwrap();
     let b = world
-        .add_station(company, "B".into(), 35.5, 139.75)
+        .place_station_on_alignment(company, "B".into(), line, 0.9, 20., 12.)
         .unwrap();
-    let track = world.add_track(company, a, b).unwrap();
     world
-        .add_route(company, "Main".into(), a, vec![track])
+        .add_planned_route(
+            company,
+            "Main".into(),
+            a,
+            vec![rosenfu_core::world::RouteSegment::Alignment {
+                alignment_id: line,
+                from: a,
+                to: b,
+            }],
+            vec![a, b],
+        )
         .unwrap();
     world
 }

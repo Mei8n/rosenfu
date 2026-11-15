@@ -1,14 +1,6 @@
 use rosenfu_core::world::{GeoPoint, World};
 use rosenfu_storage::{decode, encode};
 #[test]
-fn old_schema_two_loads_without_losing_graph() {
-    let bytes=br#"{"format":"rosenfu-world","schema_version":2,"world":{"next_id":"1","players":[],"companies":[],"stations":[],"tracks":[],"routes":[],"services":[]}}"#;
-    let world = decode(bytes).unwrap();
-    assert!(world.snapshot().alignments.is_empty());
-    let saved: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
-    assert_eq!(saved["schema_version"], 17);
-}
-#[test]
 fn curved_geometry_and_platform_resize_roundtrip() {
     let mut world = World::default();
     let p = world.add_player("P".into()).unwrap();
