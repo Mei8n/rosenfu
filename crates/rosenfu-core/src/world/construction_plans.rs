@@ -4,6 +4,8 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPlans {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_level: Option<InfrastructureLevel>,
     #[serde(default)]
     pub infrastructure: SectionInfrastructure,
     pub version: u32,
@@ -49,6 +51,8 @@ pub struct ConstructionReference {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPath {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_level: Option<InfrastructureLevel>,
     #[serde(default)]
     pub infrastructure: SectionInfrastructure,
     #[serde(default, skip_serializing_if = "Option::is_none")]

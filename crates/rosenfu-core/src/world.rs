@@ -581,4 +581,4 @@ mod track_topology;
 pub use track_topology::{TrackLanePort, TrackMovement, TrackPointResource};
 
 mod vertical_profile;
-pub use vertical_profile::{VerticalProfile, PROVISIONAL_LEVEL_SPACING_M};
+pub use vertical_profile::{VerticalProfile, LEVEL_SPACING_M};

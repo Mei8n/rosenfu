@@ -56,6 +56,7 @@ fn build_alignment_from_reference(
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            start_level: None,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,
@@ -85,6 +86,7 @@ fn build_alignment(
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            start_level: None,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,
@@ -113,6 +115,7 @@ fn build_alignment_with_stations(
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            start_level: None,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,

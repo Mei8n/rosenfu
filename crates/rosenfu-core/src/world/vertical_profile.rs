@@ -1,12 +1,12 @@
 //! Construction-only vertical geometry. It never alters vehicle speed.
 use super::*;
 
-/// Flat-reference sandbox assumption, not a user-approved physical standard.
+/// Owner-selected spacing on the sandbox flat reference plane.
 /// Persisted profiles store metres, independently of future layer spacing.
-pub const PROVISIONAL_LEVEL_SPACING_M: f64 = 6.0;
+pub const LEVEL_SPACING_M: f64 = 6.0;
 
 impl InfrastructureLevel {
-    pub fn provisional_height_m(self) -> f64 {
+    pub fn height_m(self) -> f64 {
         let index = match self {
             Self::Ground => 0,
             Self::Elevated => 1,
@@ -16,7 +16,7 @@ impl InfrastructureLevel {
             Self::Underground2 => -2,
             Self::Underground3 => -3,
         };
-        f64::from(index) * PROVISIONAL_LEVEL_SPACING_M
+        f64::from(index) * LEVEL_SPACING_M
     }
 }
 impl TrackType {
@@ -66,7 +66,7 @@ impl Alignment {
         }
         Some(match self.vertical_profile {
             Some(profile) => profile.height_at(position),
-            None => self.section_infrastructure(0)?.level.provisional_height_m(),
+            None => self.section_infrastructure(0)?.level.height_m(),
         })
     }
     /// Actual vertical height at an endpoint, used for physical link validation.
@@ -86,7 +86,7 @@ impl Alignment {
                 })
                 .expect("validated section")
                 .level
-                .provisional_height_m(),
+                .height_m(),
         }
     }
 }
@@ -110,8 +110,8 @@ impl World {
             .find(|a| a.id == id)
             .expect("new alignment");
         alignment.vertical_profile = Some(VerticalProfile {
-            start_height_m: start.provisional_height_m(),
-            end_height_m: finish.provisional_height_m(),
+            start_height_m: start.height_m(),
+            end_height_m: finish.height_m(),
         });
         alignment.infrastructure = vec![SectionInfrastructure {
             track_count: 1,

@@ -468,6 +468,7 @@ mod tests {
             .collect();
         let snapshot = editor
             .build_plan(vec![PlannedAlignment {
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 2, 4, 6]),
                 name: "線路".into(),
@@ -563,12 +564,12 @@ mod tests {
             let attrs = vec![
                 SectionInfrastructure {
                     track_count: 2,
-                    level: InfrastructureLevel::Elevated,
+                    level: InfrastructureLevel::Ground,
                 },
                 SectionInfrastructure::default(),
                 SectionInfrastructure {
                     track_count: 4,
-                    level: InfrastructureLevel::Underground,
+                    level: InfrastructureLevel::Ground,
                 },
             ];
             draft.alignments[0].infrastructure = attrs.clone();
@@ -1145,6 +1146,7 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
         editor
             .build_plan(vec![PlannedAlignment {
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1, 2]),
                 name: "延伸".into(),
@@ -1190,6 +1192,7 @@ mod tests {
             .collect();
         let built = editor
             .build_plan(vec![PlannedAlignment {
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1, 2, 3, 4]),
                 name: "ABCDE".into(),
@@ -1211,6 +1214,7 @@ mod tests {
         assert_eq!(gap.alignments[1].points, points[3..]);
         let joined = editor
             .build_plan(vec![PlannedAlignment {
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1]),
                 name: "BD".into(),

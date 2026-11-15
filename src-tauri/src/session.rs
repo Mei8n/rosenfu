@@ -57,6 +57,8 @@ pub struct PlannedAlignmentExtension {
 #[serde(rename_all = "camelCase")]
 pub struct PlannedAlignment {
     #[serde(default)]
+    pub start_level: Option<rosenfu_core::world::InfrastructureLevel>,
+    #[serde(default)]
     pub infrastructure: rosenfu_core::world::SectionInfrastructure,
     #[serde(default)]
     pub anchor_indices: Option<Vec<usize>>,
@@ -508,6 +510,7 @@ impl WorldEditor {
         reference: Option<PlannedAlignmentReference>,
     ) -> Result<WorldDraft, String> {
         self.build_plan(vec![PlannedAlignment {
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name,
@@ -558,6 +561,24 @@ impl WorldEditor {
                     || indices.windows(2).any(|p| p[0] >= p[1])
             }) {
                 return Err("線路の区間境界が不正です。".into());
+            }
+            let start_height = if let Some(extension) = &alignment.extension {
+                let old = candidate
+                    .world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == extension.alignment_id)
+                    .ok_or("延伸対象の線路がありません。")?;
+                Some(old.endpoint_height_m(extension.endpoint))
+            } else {
+                alignment.start_level.map(|level| level.height_m())
+            };
+            if let Some(start_height) = start_height {
+                if (start_height - alignment.infrastructure.level.height_m()).abs() > 1e-6 {
+                    candidate.build_sloped_plan(alignment, start_height)?;
+                    continue;
+                }
             }
             if alignment.destination.is_some() && alignment.extension.is_none() {
                 return Err("接続先を指定するには既存線路から延伸してください。".into());
@@ -730,6 +751,88 @@ impl WorldEditor {
         *self = candidate;
         Ok(self.snapshot())
     }
+    /// A rising/falling extension is a new explicit span, never a rewrite of old track.
+    fn build_sloped_plan(
+        &mut self,
+        alignment: PlannedAlignment,
+        start_height: f64,
+    ) -> Result<(), String> {
+        if alignment.reference.is_some() {
+            return Err("参照データを使った勾配敷設は未対応です。".into());
+        }
+        let id = self.build_alignment_typed_unchecked(
+            alignment.name,
+            alignment.points,
+            alignment.track_type,
+        )?;
+        let mut draft = self.world.snapshot().clone();
+        let built = draft
+            .alignments
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or("線路がありません。")?;
+        built.anchor_indices = alignment.anchor_indices;
+        built.infrastructure = vec![alignment.infrastructure; built.section_count()];
+        built.vertical_profile = Some(rosenfu_core::world::VerticalProfile {
+            start_height_m: start_height,
+            end_height_m: alignment.infrastructure.level.height_m(),
+        });
+        if let Some(speed) = alignment.design_speed_kmh {
+            built.design_speed_kmh = Some(speed);
+        }
+        if !built
+            .vertical_profile
+            .unwrap()
+            .is_valid(built.length_m(), built.track_type)
+        {
+            return Err(format!(
+                "勾配が上限 {}‰ を超えます。線路を長くしてください。",
+                built.track_type.maximum_construction_gradient_per_mille()
+            ));
+        }
+        self.world.replace(draft).map_err(|e| e.to_string())?;
+        if let Some(extension) = alignment.extension {
+            self.world
+                .connect_alignment_endpoints(
+                    self.company,
+                    rosenfu_core::world::AlignmentEndpointRef {
+                        alignment_id: extension.alignment_id,
+                        endpoint: extension.endpoint,
+                    },
+                    rosenfu_core::world::AlignmentEndpointRef {
+                        alignment_id: id,
+                        endpoint: rosenfu_core::world::AlignmentEndpoint::Start,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(destination) = alignment.destination {
+            self.world
+                .connect_alignment_endpoints(
+                    self.company,
+                    rosenfu_core::world::AlignmentEndpointRef {
+                        alignment_id: id,
+                        endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+                    },
+                    rosenfu_core::world::AlignmentEndpointRef {
+                        alignment_id: destination.alignment_id,
+                        endpoint: destination.endpoint,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        for station in alignment.stations {
+            self.place_station_on_alignment_unchecked(
+                station.name,
+                id,
+                station.position,
+                station.length_m,
+                station.width_m,
+            )?;
+        }
+        Ok(())
+    }
+
     fn build_alignment_typed_unchecked(
         &mut self,
         name: String,
@@ -2788,6 +2891,7 @@ mod tests {
         ];
         // Attribution on an earlier path must roll back if any later path fails.
         let attributed_path = || PlannedAlignment {
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             extension: None,
@@ -2875,6 +2979,7 @@ mod tests {
         let id = editor.snapshot().alignments[0].id;
         let before = editor.snapshot();
         let reference_extension = || PlannedAlignment {
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name: "Reference extension".into(),
@@ -3121,6 +3226,7 @@ mod tests {
         for (lat, lon) in [(0.0, 0.01), (0.01, 0.0), (0.01, 0.01)] {
             editor
                 .build_plan(vec![PlannedAlignment {
+                    start_level: None,
                     infrastructure: Default::default(),
                     anchor_indices: Some(vec![0, 1]),
                     name: "線路".into(),
@@ -3252,6 +3358,7 @@ mod tests {
         let expected = a.point_at(0.4);
         let start = a.points[0];
         let extension = PlannedAlignment {
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name: "延伸".into(),
@@ -3316,8 +3423,62 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
     }
 
+    #[test]
+    fn sloped_plan_and_rising_extension_are_atomic_and_preserve_old_track() {
+        use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel};
+        let mut editor = WorldEditor::new();
+        let mut flat = planned_path(0.);
+        flat.stations.clear();
+        let built = editor.build_plan(vec![flat]).unwrap();
+        let original = built.alignments[0].clone();
+        let mut ramp = planned_path(0.);
+        ramp.stations.clear();
+        ramp.points = vec![
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.01,
+            },
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.02,
+            },
+        ];
+        ramp.extension = Some(PlannedAlignmentExtension {
+            alignment_id: original.id,
+            endpoint: AlignmentEndpoint::End,
+        });
+        ramp.infrastructure.level = InfrastructureLevel::Elevated;
+        let after = editor.build_plan(vec![ramp]).unwrap();
+        assert_eq!(after.alignments[0], original);
+        assert_eq!(after.alignments.len(), 2);
+        assert_eq!(after.alignment_connections.len(), 1);
+        assert_eq!(
+            after.alignments[1].endpoint_height_m(AlignmentEndpoint::End),
+            6.
+        );
+        assert!(after.alignments[1].vertical_profile.is_some());
+        let mut short = planned_path(1.);
+        short.stations.clear();
+        short.start_level = Some(InfrastructureLevel::Ground);
+        short.infrastructure.level = InfrastructureLevel::Elevated3;
+        short.points = vec![
+            GeoPoint {
+                latitude: 36.,
+                longitude: 139.,
+            },
+            GeoPoint {
+                latitude: 36.,
+                longitude: 139.0001,
+            },
+        ];
+        let before = editor.snapshot();
+        assert!(editor.build_plan(vec![short]).is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+
     fn planned_path(offset: f64) -> PlannedAlignment {
         PlannedAlignment {
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name: format!("計画線{offset}"),
@@ -3409,6 +3570,7 @@ mod tests {
                 *old.points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "延伸".into(),
@@ -3504,6 +3666,7 @@ mod tests {
                 *before.alignments[0].points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "Extension".into(),
@@ -3587,6 +3750,7 @@ mod tests {
         let endpoint = *old.points.last().unwrap();
         let previous = old.points[old.points.len() - 2];
         let extension = || PlannedAlignment {
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name: "Extension".into(),
@@ -3691,6 +3855,7 @@ mod endpoint_join_tests {
                     .unwrap();
                 let before = editor.snapshot();
                 let request = || PlannedAlignment {
+                    start_level: None,
                     infrastructure: Default::default(),
                     anchor_indices: None,
                     name: "延伸".into(),
@@ -3750,6 +3915,7 @@ mod endpoint_join_tests {
         let before = editor.snapshot();
         for target in [b, AlignmentId(999), a] {
             let request = PlannedAlignment {
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "延伸".into(),
@@ -3791,6 +3957,7 @@ mod endpoint_join_tests {
         let mut bridge: Vec<_> = (175..=185).map(|i| point(i as f64 * 2.)).collect();
         *bridge.last_mut().unwrap() = original[0];
         let request = || PlannedAlignment {
+            start_level: None,
             infrastructure: Default::default(),
             name: "Close ring".into(),
             points: bridge.clone(),
