@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 from build import encoded
-from compose import compose
+from compose import compose_many
 
 
 def build_delivery(entries,output):
@@ -25,18 +25,21 @@ def build_delivery(entries,output):
         index=json.loads(raw)
         if index.get('format')!='rosenfu-water-composite' or index.get('version')!=1 or index.get('geographic_completeness')!='unknown' or index.get('coverage')!=[] or index.get('source_time_policy')!='retain-per-part-revisions':raise ValueError('Unsupported composite')
         parts=index.get('parts')
-        if not isinstance(parts,list) or len(parts)!=2:raise ValueError('Inland and marine parts required')
-        for part,key in zip(parts,('inland','marine')):
-            if part.get('key')!=key or part.get('manifest')!=key+'/manifest.json' or part.get('payload')!=key+'/evidence.json':raise ValueError('Invalid part path')
+        if not isinstance(parts,list) or not 2<=len(parts)<=16:raise ValueError('Require 2..16 parts')
+        keys=set()
+        for part in parts:
+            key=part.get('key')
+            if not isinstance(key,str) or not re.fullmatch('[a-z][a-z0-9_-]{0,31}',key) or key in keys or part.get('manifest')!=key+'/manifest.json' or part.get('payload')!=key+'/evidence.json':raise ValueError('Invalid part path')
+            keys.add(key)
         prepared.append((name,pin,directory,parts))
     output.mkdir(parents=True,exist_ok=False)
     cells=[];total=0
     for name,pin,directory,parts in prepared:
         target=output/pin
-        result=compose(directory/'inland',parts[0]['manifest_sha256'],directory/'marine',parts[1]['manifest_sha256'],target)
+        result=compose_many([(part['key'],directory/part['key'],part['manifest_sha256']) for part in parts],target)
         # Canonical reconstruction must retain the caller's exact composite pin.
         if result['composite_sha256']!=pin:raise ValueError('Composite reconstruction mismatch')
-        m=json.loads((target/'inland/manifest.json').read_text())
+        m=json.loads((target/parts[0]['manifest']).read_text())
         total+=sum(f.stat().st_size for f in target.rglob('*') if f.is_file())
         if total>512*1024*1024:raise ValueError('Trial delivery size limit')
         cells.append(dict(key=name,directory=pin+'/',composite_sha256=pin,bounds=m['bounds'],revisions=result['revisions'],geographic_completeness='unknown',coverage=[]))

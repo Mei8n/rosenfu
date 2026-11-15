@@ -3,8 +3,9 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
-from build import MAX_BYTES,check_bounds,encoded
+from build import MAX_BYTES,check_bounds,encoded,geometry_points
 from validate_evidence import validate_leaf
 
 
@@ -26,11 +27,20 @@ def read_part(directory,pin):
     return m,manifest,payload
 
 
-def compose(inland,inland_pin,marine,marine_pin,output):
+def compose_many(inputs,output):
     output=Path(output)
     if output.exists():raise ValueError('Output exists')
-    parts=[('inland',inland_pin,read_part(inland,inland_pin)),('marine',marine_pin,read_part(marine,marine_pin))]
-    if parts[0][2][0]['bounds']!=parts[1][2][0]['bounds']:raise ValueError('Requested part bounds differ')
+    if not isinstance(inputs,list) or not 2<=len(inputs)<=16:raise ValueError('Require 2..16 independently pinned parts')
+    seen=set();parts=[];total=0
+    for key,directory,pin in inputs:
+        if not isinstance(key,str) or not re.fullmatch('[a-z][a-z0-9_-]{0,31}',key) or key in seen:raise ValueError('Invalid or duplicate part key')
+        seen.add(key);part=read_part(directory,pin);total+=len(part[1])+len(part[2])
+        if total>20*1024*1024:raise ValueError('Composite byte limit')
+        parts.append((key,pin,part))
+    if any(p[2][0]['bounds']!=parts[0][2][0]['bounds'] for p in parts):raise ValueError('Requested part bounds differ')
+    observations=sum(len(json.loads(p[2][2])['observations']) for p in parts)
+    coordinates=sum(len(geometry_points(o['geometry'])) for p in parts for o in json.loads(p[2][2])['observations'])
+    if observations>20000 or coordinates>200000:raise ValueError('Composite geometry limit')
     entries=[dict(key=key,manifest=f'{key}/manifest.json',payload=f'{key}/evidence.json',manifest_sha256=pin) for key,pin,_ in parts]
     raw=encoded(dict(format='rosenfu-water-composite',version=1,geographic_completeness='unknown',coverage=[],source_time_policy='retain-per-part-revisions',parts=entries))
     output.mkdir(parents=True,exist_ok=False)
@@ -38,6 +48,10 @@ def compose(inland,inland_pin,marine,marine_pin,output):
         (output/key).mkdir();(output/key/'manifest.json').write_bytes(manifest);(output/key/'evidence.json').write_bytes(payload)
     (output/'composite.json').write_bytes(raw)
     return dict(composite_sha256=hashlib.sha256(raw).hexdigest(),revisions={key:m['revision'] for key,_,(m,_,_) in parts},geographic_completeness='unknown')
+
+
+def compose(inland,inland_pin,marine,marine_pin,output):
+    return compose_many([('inland',inland,inland_pin),('marine',marine,marine_pin)],output)
 
 
 if __name__=='__main__':
