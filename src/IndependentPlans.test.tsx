@@ -303,11 +303,16 @@ test("delayed slot discovery does not turn the early load picker into a world mu
 });
 
 test("section infrastructure survives plan switching Undo Redo save reload and build",async()=>{
+ window.PointerEvent=MouseEvent as typeof PointerEvent;
  let map=await start();
  const count=()=>screen.getByLabelText('敷設する線路数') as HTMLSelectElement;
  const level=()=>screen.getByLabelText('敷設する線路の構造') as HTMLSelectElement;
  fireEvent.change(count(),{target:{value:'2'}});fireEvent.change(level(),{target:{value:'elevated'}});
- fireEvent.click(map,{clientX:120,clientY:100});fireEvent.click(map,{clientX:200,clientY:100});fireEvent.click(map,{clientX:200,clientY:100});
+ fireEvent.click(map,{clientX:120,clientY:100});
+ fireEvent.pointerMove(map,{clientX:200,clientY:100});
+ expect(map.querySelector('.candidate-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
+ fireEvent.click(map,{clientX:200,clientY:100});fireEvent.click(map,{clientX:200,clientY:100});
+ expect(map.querySelector('.confirmed-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
  fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));
  fireEvent.change(count(),{target:{value:'4'}});fireEvent.change(level(),{target:{value:'underground_2'}});
  fireEvent.click(map,{clientX:300,clientY:200});fireEvent.click(map,{clientX:380,clientY:200});fireEvent.click(map,{clientX:380,clientY:200});
@@ -332,4 +337,6 @@ test("section infrastructure survives plan switching Undo Redo save reload and b
  expect(args.infrastructure).toEqual({track_count:2,level:'elevated'});
  fireEvent.click(trackPanel().getByRole('button',{name:/計画 2 を編集/}));
  expect(count().value).toBe('4');expect(level().value).toBe('underground_2');
+ expect(map.querySelector('.confirmed-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(4);
+ expect(map.querySelector('.parked-plan')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
 });
