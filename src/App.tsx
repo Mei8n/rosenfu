@@ -232,11 +232,12 @@ export function App() {
   const [mainTab,setMainTab]=useState<WorkspaceTab>("construction");
   const [routeMapEdit,setRouteMapEdit]=useState<{id:string;name:string}|null>(null);
   const [routeSequenceKey,setRouteSequenceKey]=useState(0);
+  const [routeCreating,setRouteCreating]=useState(false);
   const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|"sequence"|null>(null);
   const routeMapSelect=useRef<((id:string)=>void)|null>(null);
   function cancelRouteMapPick(){routeMapSelect.current=null;setRouteMapPick(null);}
   useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch]);
-  useEffect(()=>{setRouteMapEdit(null);setRouteSequenceKey(0);},[worldEpoch]);
+  useEffect(()=>{setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);},[worldEpoch]);
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
   const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "inactive">("tracks");
   function chooseMainTab(tab:WorkspaceTab){setError("");setMainTab(tab);setPanelCollapsed(false);setActiveTool(tab==="construction"?"tracks":tab==="stations"?"station-management":tab==="settings"?"company":tab==="routes"?"routes":tab==="services"?"services":"inactive");changeMapMode(tab==="construction"?"draw":"move");}
@@ -505,6 +506,7 @@ export function App() {
   const [serviceHint, setServiceHint] = useState("");
   const [pendingServiceChoice, setPendingServiceChoice] = useState<{ id: string | null } | null>(null);
   const enabled = status === "ready" && !busy && !companySetupRequired;
+
   const stationsById = useMemo(()=>new Map(world?.stations.map((station) => [station.id, station])),[world]);
 
   useEffect(() => {
@@ -726,7 +728,7 @@ export function App() {
     if (busyRef.current) return;
     if (mainTab === "routes" && routeMapSelect.current) {
       if (!enabled || !stationsById.has(id)) return;
-      const select=routeMapSelect.current;cancelRouteMapPick();select(id);return;
+      const select=routeMapSelect.current;if(routeMapPick!=="sequence")cancelRouteMapPick();select(id);return;
     }
     if (stationSettingsDirty && id !== selected) { setPendingStation({ id }); return; }
     if (id === selected) { setMainTab("stations"); setActiveTool("station-management"); setPanelCollapsed(false); return; }
@@ -1265,7 +1267,7 @@ export function App() {
     try {
       const snapshot=await invoke<World>("save_planned_route",{routeId:routeMapEdit?.id??null,name,start:membership.path.stations[0],segments:membership.path.segments,excludedStations:membership.excluded_stations});
       const created=routeMapEdit?snapshot.routes.find(route=>route.id===routeMapEdit.id):snapshot.routes.find(route=>!world?.routes.some(old=>old.id===route.id));
-      setRouteMapEdit(null);setRouteSequenceKey(0);
+      setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetRoute(created);setNotice("路線と所属駅を適用しました。ファイルへの保存は「保存」で行います。");
     } finally {busyRef.current=false;setBusy(false);}
   }
@@ -1341,7 +1343,7 @@ export function App() {
   }
   function acceptLoadedWorld(snapshot:World,source:"manual"|"auto"){
       cancelMapGesture();cancelAnchorGesture();cancelParallel();cancelRouteMapPick();
-      setRouteMapEdit(null);setRouteSequenceKey(0);setDeleteTarget(null);setTrackDeleteRedo(null);
+      setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);setDeleteTarget(null);setTrackDeleteRedo(null);
       setPlanHover(null);setBuiltHover(null);
       restoreView(snapshot.view_state);
       setRestoredAutosaveEpoch(source==="auto"?worldEpoch+1:-1);
@@ -1458,7 +1460,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
+            }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={enabled && mainTab==="routes" && routeMapPick ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
@@ -1587,8 +1589,9 @@ export function App() {
           </section>
           <section className="route-editor" role="tabpanel" id="workspace-panel-routes" aria-labelledby="workspace-tab-routes" hidden={activeTool !== "routes"}>
             <h3>路線</h3>
-            <RouteDirectory world={world??previewWorld} enabled={enabled} selected={routeId} onChoose={id=>{chooseRoute(id);if(id===null&&!candidateDirty&&!routeMapEdit)setRouteSequenceKey(key=>key+1);else cancelRouteMapPick();}}/>
-            <RouteCandidatePreview key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} onCancelEdit={routeMapEdit?()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setCandidateDirty(false);}:undefined} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={true} onSave={applyPlannedRoute} />
+            <RouteDirectory world={world??previewWorld} enabled={enabled} selected={routeId} onChoose={id=>{if(candidateDirty||routeMapEdit){chooseRoute(id);return;}chooseRoute(id);cancelRouteMapPick();setRouteCreating(id===null);if(id===null)setRouteSequenceKey(key=>key+1);}}/>
+            {(routeCreating||routeMapEdit)&&<RouteCandidatePreview key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} defaultName={(()=>{let n=1;while(world?.routes.some(r=>r.name===`路線${n}`))n++;return `路線${n}`;})()} onCancelEdit={()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);setCandidateDirty(false);}} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={true} onSave={applyPlannedRoute} />}
+
             {routeId && <button type="button" className="secondary" disabled={!enabled||candidateDirty||!!routeMapEdit} onClick={()=>{const route=world?.routes.find(r=>r.id===routeId);if(!route)return;cancelRouteMapPick();setRouteMapEdit({id:route.id,name:route.name});setRouteSequenceKey(key=>key+1);}}>地図で路線の経路を選び直す</button>}
             {selectedRoutePath && <section aria-label="保存済み路線の経路"><h4>{routeName}</h4><p>所属駅: {selectedRoutePath.member_stations.map(id=>stationsById.get(id)?.name ?? id).join(" → ")}</p><ol>{selectedRoutePath.segments.map((segment,index)=><li key={index}>{(segment.kind==="alignment"?"建設線形 " + (alignments.find(a=>a.id===segment.alignment_id)?.name ?? segment.alignment_id):"接続経路") + ": " + (stationsById.get(segment.from)?.name ?? segment.from) + " → " + (stationsById.get(segment.to)?.name ?? segment.to)}</li>)}</ol></section>}
           </section>

@@ -520,3 +520,5 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .route-directory th, .route-directory td { padding: .3rem .2rem; text-align: left; }
 .route-directory td { white-space: nowrap; }
 .route-directory tbody th { font-weight: normal; }
+
+.workbench .route-station-select, .workbench .route-station-select * { cursor:crosshair; }
