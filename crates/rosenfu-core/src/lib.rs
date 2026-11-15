@@ -15,3 +15,5 @@ pub fn engine_info() -> EngineInfo {
 }
 
 pub mod world;
+
+pub mod water_observations;

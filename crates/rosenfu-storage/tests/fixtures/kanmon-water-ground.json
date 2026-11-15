@@ -1,0 +1,56 @@
+{
+  "descriptor": {
+    "directoryUrl": "https://raw.githubusercontent.com/Mei8n/rosenfu/5b647a06d15605eceb2f9235bec6bc7e59ec0bb1/data/water-inspection-trial-20261114/8057fde2778c8af3208c82f7306218382665aebbc8f2b672186de77b660a322e/",
+    "compositeSha256": "8057fde2778c8af3208c82f7306218382665aebbc8f2b672186de77b660a322e"
+  },
+  "license": "ODbL-1.0",
+  "attribution": "© OpenStreetMap contributors",
+  "coverage": [],
+  "evidence": {
+    "source_key": "marine",
+    "observation_id": "marine-record/4084",
+    "polygon_part": 1,
+    "source_url": "https://osmdata.openstreetmap.de/download/water-polygons-split-4326.zip",
+    "source_revision": "2026-11-13T15:00:00Z",
+    "source_sha256": "7d537cf580f1788e0c60500b5a3f639c28d756a19b66fa0282ad04970b094064",
+    "tags": {
+      "geometry_processing": "WGS84 planar intersection with requested bounds; no simplification",
+      "source_dataset": "marine-water-polygons"
+    },
+    "rings": [
+      [
+        {
+          "longitude": 130.9203054,
+          "latitude": 33.9514976
+        },
+        {
+          "longitude": 130.9205189,
+          "latitude": 33.9509609
+        },
+        {
+          "longitude": 130.92,
+          "latitude": 33.950138490870884
+        },
+        {
+          "longitude": 130.92,
+          "latitude": 33.95228265881589
+        },
+        {
+          "longitude": 130.9203054,
+          "latitude": 33.9514976
+        }
+      ]
+    ]
+  },
+  "points": [
+    {
+      "longitude": 130.92010303749998,
+      "latitude": 33.95067920164629
+    },
+    {
+      "longitude": 130.92010303749998,
+      "latitude": 33.95175128561879
+    }
+  ],
+  "route_note": "Test line interpolated halfway from a source boundary segment toward the polygon vertex centroid; the source polygon is unchanged."
+}
