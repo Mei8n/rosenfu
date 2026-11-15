@@ -26,3 +26,6 @@ test('does not accept late geometry from the previous world and clears old geome
 test('reports invalid or failed results instead of inventing lane geometry',async()=>{
  vi.mocked(invoke).mockResolvedValue({});render(<Harness world={{}}/>);await waitFor(()=>expect(screen.getByText('failed')).toBeTruthy());
 });
+test('explicit internal movements are rendered once rather than invented from crossing pixels',()=>{
+ const {container}=render(<svg><TrackGeometryLayer geometry={{...geometry,movements:[],internal_movements:[{points:[b,c]},{points:[c,b]}]}} camera={DEFAULT_CAMERA} lines={[]} selectedId=""/></svg>);expect(container.querySelectorAll('[data-internal-track-movement]')).toHaveLength(1);expect(container.querySelectorAll('[data-track-movement]')).toHaveLength(0);
+});

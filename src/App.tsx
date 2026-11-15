@@ -348,7 +348,7 @@ export function App() {
   const [editLength, setEditLength] = useState("200");
   const [editWidth, setEditWidth] = useState("12");
   const alignments = world?.alignments ?? [];
-  const trackRender=useTrackRenderGeometry(world,status==="ready"&&!!world?.alignment_connections?.length);
+  const trackRender=useTrackRenderGeometry(world,status==="ready"&&(!!world?.alignment_connections?.length||alignments.some(line=>line.infrastructure?.some((section,index)=>index>0&&section.track_count!==line.infrastructure![index-1].track_count))));
   const detailedStations = camera.zoom >= 13;
   const [stationResizePending,setStationResizePending]=useState(false);
   const [stationResizeFailure,setStationResizeFailure]=useState<string|null>(null);
