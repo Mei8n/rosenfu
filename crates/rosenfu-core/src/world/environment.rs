@@ -525,6 +525,24 @@ pub fn validate_connected_water(
         if !changed.iter().any(|id| component.contains(id)) {
             continue;
         }
+        // This model supports endpoint chains/rings. Ambiguous branches must not
+        // silently select one outgoing edge and omit another water run.
+        for id in &component {
+            for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+                if world
+                    .alignment_connections
+                    .iter()
+                    .filter(|c| {
+                        (c.a.alignment_id == *id && c.a.endpoint == endpoint)
+                            || (c.b.alignment_id == *id && c.b.endpoint == endpoint)
+                    })
+                    .count()
+                    > 1
+                {
+                    return Err(WorldError::InvalidEnvironment);
+                }
+            }
+        }
         let link = |id, endpoint| {
             world.alignment_connections.iter().find_map(|c| {
                 if c.a.alignment_id == id && c.a.endpoint == endpoint {
@@ -549,8 +567,10 @@ pub fn validate_connected_water(
         let mut seen = BTreeSet::new();
         let mut points = vec![];
         let mut levels = vec![];
+        let mut closed = false;
         loop {
             if !seen.insert(id) {
+                closed = (id, entry) == start;
                 break;
             }
             let a = world
@@ -593,6 +613,13 @@ pub fn validate_connected_water(
         }
         if seen != component {
             return Err(WorldError::InvalidEnvironment);
+        }
+        // Traverse a ring's join as well. Only rings longer than the limit need
+        // doubling: a short fully-wet ring must not be counted twice.
+        let length: f64 = points.windows(2).map(|p| metres(p[0], p[1])).sum();
+        if closed && length > 30000.0 + 1e-6 {
+            points.extend(points.clone().into_iter().skip(1));
+            levels.extend(levels.clone());
         }
         let assessment = assess_environment_sections(&points, &levels, false, data);
         if !assessment.water_ready || assessment.ground_water || assessment.water_limit_exceeded {
@@ -818,6 +845,76 @@ mod tests {
         let mut d = data();
         d.water = vec![water(-0.5, 0.5)];
         assert!(validate_connected_water(w.snapshot(), &[b], &d).is_err());
+    }
+    fn ring_world(size: f64) -> (World, Vec<AlignmentId>) {
+        let mut w = World::default();
+        let player = w.add_player("p".into()).unwrap();
+        let owner = w.add_company(player, "c".into()).unwrap();
+        let lines = [
+            vec![p(0.0, size / 2.0), p(0.0, size), p(size / 2.0, size)],
+            vec![p(size / 2.0, size), p(size, size), p(size, size / 2.0)],
+            vec![p(size, size / 2.0), p(size, 0.0), p(size / 2.0, 0.0)],
+            vec![p(size / 2.0, 0.0), p(0.0, 0.0), p(0.0, size / 2.0)],
+        ];
+        let mut ids = vec![];
+        for line in lines {
+            ids.push(w.build_alignment(owner, "ring".into(), line).unwrap());
+        }
+        let mut d = w.snapshot().clone();
+        for a in &mut d.alignments {
+            a.infrastructure = vec![SectionInfrastructure {
+                track_count: 1,
+                level: InfrastructureLevel::Elevated,
+            }];
+        }
+        w.replace(d).unwrap();
+        for i in 0..ids.len() {
+            w.connect_alignment_endpoints(
+                owner,
+                AlignmentEndpointRef {
+                    alignment_id: ids[i],
+                    endpoint: AlignmentEndpoint::End,
+                },
+                AlignmentEndpointRef {
+                    alignment_id: ids[(i + 1) % ids.len()],
+                    endpoint: AlignmentEndpoint::Start,
+                },
+            )
+            .unwrap();
+        }
+        (w, ids)
+    }
+    #[test]
+    fn circular_water_run_across_seed_exceeds_thirty_km() {
+        let (w, ids) = ring_world(0.2);
+        let mut d = data();
+        d.water = vec![water(-0.1, 0.04)];
+        // 22.2 km west edge + two 4.4 km partial edges: each linearized
+        // prefix/suffix is below 30 km but the continuous circular run is not.
+        assert!(validate_connected_water(w.snapshot(), &ids, &d).is_err());
+        d.water = vec![water(-0.1, 0.03)];
+        assert!(validate_connected_water(w.snapshot(), &ids, &d).is_ok());
+        d.water = vec![water(-0.1, 0.04)];
+        d.water[0].rings.push(vec![
+            p(-0.01, 0.09),
+            p(0.05, 0.09),
+            p(0.05, 0.11),
+            p(-0.01, 0.11),
+            p(-0.01, 0.09),
+        ]);
+        assert!(validate_connected_water(w.snapshot(), &ids, &d).is_ok());
+    }
+    #[test]
+    fn short_fully_wet_ring_is_counted_once_and_ambiguous_branch_is_rejected() {
+        let (w, ids) = ring_world(0.05);
+        let mut d = data();
+        d.water = vec![water(-0.1, 0.1)];
+        assert!(validate_connected_water(w.snapshot(), &ids, &d).is_ok());
+        let mut malformed = w.snapshot().clone();
+        malformed
+            .alignment_connections
+            .push(malformed.alignment_connections[0].clone());
+        assert!(validate_connected_water(&malformed, &ids, &d).is_err());
     }
     #[test]
     fn saved_snapshot_reproduces_assets_and_geometry_edit_removes_them() {
