@@ -9,7 +9,8 @@ const DEFAULT_COLOR='#3b82f6';
 // Normalize presentation/comparison only; retain raw persisted colour for CAS.
 const displayColor=(color:string|null)=>(color??DEFAULT_COLOR).toLowerCase();
 export type ServiceSymbolShape='circle'|'square'|'diamond';
-export const initialServiceSymbol=(name:string)=>new Intl.Segmenter('ja',{granularity:'grapheme'}).segment(name.trim())[Symbol.iterator]().next().value?.segment??'';
+const validSymbol=(symbol:string)=>Array.from(symbol).length<=8&&!/[\u0000-\u001f\u007f-\u009f]/.test(symbol);
+export const initialServiceSymbol=(name:string)=>{const first=new Intl.Segmenter('ja',{granularity:'grapheme'}).segment(name.trim())[Symbol.iterator]().next().value?.segment??'';return validSymbol(first)?first:'';};
 export function ServiceBadge({color,shape='circle',symbol}:{color:string;shape?:ServiceSymbolShape;symbol:string}){
  return <span aria-hidden="true" className={'service-badge '+shape} style={{backgroundColor:color}}><span>{symbol}</span></span>;
 }
@@ -20,7 +21,7 @@ export function ServiceAppearanceControls({color,serviceName='',appearance,enabl
  const observed=useRef({signature,color:displayColor(color),shape:savedShape,symbol:savedSymbol,hasSymbol:appearance?.symbol!=null}),busy=useRef(false);
  const [symbolTouched,setSymbolTouched]=useState(false);
  const changed=draft!==displayColor(color)||shape!==savedShape||symbol!==savedSymbol||(symbolTouched&&appearance?.symbol==null);
- const valid=/^#[0-9a-f]{6}$/i.test(draft)&&Array.from(symbol).length<=8&&!/[\u0000-\u001f\u007f]/.test(symbol);
+ const valid=/^#[0-9a-f]{6}$/i.test(draft)&&validSymbol(symbol);
  function reset(){setDraft(displayColor(color));setShape(savedShape);setSymbol(savedSymbol);setSymbolTouched(false);observed.current={signature,color:displayColor(color),shape:savedShape,symbol:savedSymbol,hasSymbol:appearance?.symbol!=null};setConflict(false);setError('');onDirty(false);}
  useEffect(()=>{if(observed.current.signature===signature)return;const previous=observed.current;
   const wasDirty=draft!==previous.color||shape!==previous.shape||symbol!==previous.symbol||(symbolTouched&&!previous.hasSymbol);

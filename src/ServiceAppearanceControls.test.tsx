@@ -120,3 +120,17 @@ test('editing an automatic symbol to the same character can make it explicit',as
  fireEvent.click(screen.getByRole('button',{name:'色を適用'}));
  await waitFor(()=>expect(save).toHaveBeenCalledWith('#112233','circle','八'));
 });
+
+test('initial symbol never blocks color changes with an oversized grapheme or C1 control',()=>{
+ expect(initialServiceSymbol('a'+ '\u0301'.repeat(8)+'線')).toBe('');
+ expect(initialServiceSymbol('\u0085線')).toBe('');
+});
+
+test('C1 input is disabled before submission and a complex initial still allows color edits',()=>{
+ const save=vi.fn();render(<ServiceAppearanceControls {...props()} color="#112233" serviceName={'a'+'\u0301'.repeat(8)+'線'} onSaveAppearance={save}/>);
+ fireEvent.change(screen.getByLabelText('系統色 HEX'),{target:{value:'#abcdef'}});
+ expect((screen.getByRole('button',{name:'色を適用'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.change(screen.getByLabelText('系統記号'),{target:{value:'\u0085'}});
+ expect((screen.getByRole('button',{name:'色を適用'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Enter'});expect(save).not.toHaveBeenCalled();
+});
