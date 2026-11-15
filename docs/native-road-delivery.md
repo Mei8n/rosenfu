@@ -26,7 +26,13 @@ Catalog and index are SHA-pinned, then shard archives are checked by exact size 
 SHA. ZIP entry paths, type, counts, advertised/actual lengths, CRC and content hashes
 are checked; duplicates/extra files and symlinks are rejected. ZIP entries are never
 extracted to disk. Read output is at most 5 MiB, archives at most 64 MiB compressed /
-256 MiB expanded. All work is serialized per service. Cancellation/failure never
+256 MiB expanded. All work is serialized per service. After a complete shard validation, a bounded
+96 MiB / four-shard memory LRU retains immutable compressed bytes and the validated entry index.
+Subsequent reads decompress/CRC/SHA-check only the requested entry, not every cell.
+Memory eviction or a new release/service requires compressed SHA and full archive
+revalidation. Changing the disk cache cannot alter the verified memory copy; a disk
+corruption is rejected on the next reload. Errors invalidate the memory entry except
+cancellation. Peak transfer memory can additionally include one 64 MiB archive. Cancellation/failure never
 publishes a partial file. Only verified hash-named blobs are atomically cached.
 
 The app-owned cache is bounded to 512 MiB. Eviction removes only regular files
@@ -40,3 +46,15 @@ Local tests use a standalone Rust harness because this cloud environment lacks
 GTK/WebKit desktop libraries; normal three-OS CI also includes the module through
 `src-tauri/tests/road_delivery.rs`. Main command registration, native GUI interaction,
 a published release download, and actual user cancel wiring are separate checks.
+
+Performance regression: a 18,393,789-byte Shikoku ZIP (80,254,341 expanded bytes)
+previously took approximately 38.4 seconds for 12 cached cell reads in a debug build,
+because every read fully revalidated the archive. The new repeat-read test asserts
+one full verification across 12 calls, plus revalidation after memory eviction and
+rejection of a disk corruption on reload. Real-data timings are recorded in the PR.
+
+After the fix, the identical debug harness and shard measured 3,285 ms for the
+first full manifest validation and less than 1 ms total for the same twelve cells.
+A separate worst-cell sample (twelve largest cells by uncompressed bytes) took
+146,574 microseconds total after a 3,034 ms initial validation. These are local
+network-free measurements, not release-network latency or user-PC promises.

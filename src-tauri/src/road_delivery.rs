@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     io::{Cursor, Read, Write},
     path::PathBuf,
@@ -16,6 +16,7 @@ use std::{
 const FILE_MAX: usize = 5 * 1024 * 1024;
 const ZIP_MAX: usize = 64 * 1024 * 1024;
 const EXPANDED_MAX: usize = 256 * 1024 * 1024;
+const MEMORY_MAX: usize = 96 * 1024 * 1024;
 const CACHE_MAX: u64 = 512 * 1024 * 1024;
 const PREFIX: &str = "https://github.com/Mei8n/rosenfu/releases/download/";
 
@@ -23,7 +24,7 @@ pub struct Release {
     pub tag: String,
     pub catalog_sha256: String,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 struct Asset {
     name: String,
     manifest: String,
@@ -45,6 +46,34 @@ struct Catalog {
 struct State {
     catalog: Option<Catalog>,
     index: Option<Vec<u8>>,
+    archives: VecDeque<VerifiedArchive>,
+    #[cfg(test)]
+    validation_count: usize,
+}
+struct VerifiedArchive {
+    asset: Asset,
+    archive: zip::ZipArchive<Cursor<Vec<u8>>>,
+    entries: HashMap<String, (usize, String)>,
+}
+impl VerifiedArchive {
+    fn read(&mut self, path: &str, check: &impl Fn() -> Result<()>) -> Result<Vec<u8>> {
+        check()?;
+        let (size, sha) = self
+            .entries
+            .get(path)
+            .ok_or("道路cell未提供（道路なしを意味しません）")?;
+        let mut file = self
+            .archive
+            .by_name(path)
+            .map_err(|_| "道路ZIP entry欠落")?;
+        let content = read_bounded(&mut file, *size, check)?;
+        ensure(
+            content.len() == *size && hash(&content) == *sha,
+            "道路ZIP entry hash不一致",
+        )?;
+        check()?;
+        Ok(content)
+    }
 }
 pub struct RoadDelivery {
     root: PathBuf,
@@ -225,9 +254,29 @@ impl RoadDelivery {
             .assets
             .iter()
             .find(|a| a.manifest == format!("{prefix}/manifest.json"))
-            .ok_or("道路未提供範囲です")?;
+            .ok_or("道路未提供範囲です")?
+            .clone();
+        if let Some(position) = state.archives.iter().position(|a| a.asset == asset) {
+            let mut cached = state
+                .archives
+                .remove(position)
+                .ok_or("道路memory cache不正")?;
+            let result = cached.read(path, &check);
+            // Cancellation is not corruption; immutable bytes remain valid.
+            if result.is_ok() || check().is_err() {
+                state.archives.push_back(cached);
+            }
+            return result;
+        }
         let bytes = self.blob(&asset.name, &asset.sha256, asset.bytes, &check, fetch)?;
-        validate_zip(&bytes, asset, path, &check)
+        let mut verified = verify_archive(bytes, &asset, &check)?;
+        #[cfg(test)]
+        {
+            state.validation_count += 1;
+        }
+        let result = verified.read(path, &check)?;
+        keep_archive(&mut state, verified, MEMORY_MAX)?;
+        Ok(result)
     }
     fn prepare_root(&self) -> Result<()> {
         // App-owned cache directory, never a path supplied by the webview.
@@ -327,6 +376,17 @@ impl RoadDelivery {
         )
     }
 }
+fn keep_archive(state: &mut State, archive: VerifiedArchive, limit: usize) -> Result<()> {
+    ensure(archive.asset.bytes <= limit, "道路memory容量超過")?;
+    while state.archives.len() >= 4
+        || state.archives.iter().map(|a| a.asset.bytes).sum::<usize>() + archive.asset.bytes > limit
+    {
+        state.archives.pop_front().ok_or("道路memory容量超過")?;
+    }
+    state.archives.push_back(archive);
+    Ok(())
+}
+
 fn validate_catalog(c: &Catalog) -> Result<()> {
     ensure(
         c.format == "rosenfu-road-release"
@@ -383,14 +443,13 @@ fn validate_index(bytes: &[u8], c: &Catalog) -> Result<()> {
     }
     ensure(seen.len() == c.assets.len(), "道路asset数不一致")
 }
-fn validate_zip(
-    bytes: &[u8],
+fn verify_archive(
+    bytes: Vec<u8>,
     asset: &Asset,
-    wanted: &str,
     check: &impl Fn() -> Result<()>,
-) -> Result<Vec<u8>> {
+) -> Result<VerifiedArchive> {
     ensure(
-        bytes.len() == asset.bytes && hash(bytes) == asset.sha256,
+        bytes.len() == asset.bytes && hash(&bytes) == asset.sha256,
         "道路ZIP hash不一致",
     )?;
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| "道路ZIP形式不正")?;
@@ -436,7 +495,7 @@ fn validate_zip(
             (size as usize, sha.to_owned()),
         );
     }
-    let mut result = None;
+    let entries = expected.clone();
     let mut total = 0usize;
     for i in 0..archive.len() {
         check()?;
@@ -462,16 +521,27 @@ fn validate_zip(
             content.len() == size && hash(&content) == sha,
             "道路ZIP entry hash不一致",
         )?;
-        if name == wanted {
-            result = Some(content);
-        }
     }
     check()?;
     ensure(
         expected.is_empty() && total == asset.expanded_bytes,
         "道路ZIP内容不足",
     )?;
-    result.ok_or("道路cell未提供（道路なしを意味しません）".to_owned())
+    Ok(VerifiedArchive {
+        asset: asset.clone(),
+        archive,
+        entries,
+    })
+}
+
+#[cfg(test)]
+fn validate_zip(
+    bytes: &[u8],
+    asset: &Asset,
+    wanted: &str,
+    check: &impl Fn() -> Result<()>,
+) -> Result<Vec<u8>> {
+    verify_archive(bytes.to_vec(), asset, check)?.read(wanted, check)
 }
 
 #[cfg(test)]
@@ -660,6 +730,73 @@ mod tests {
                 "offline".into()
             ))
             .is_ok());
+    }
+    #[test]
+    fn memory_archive_budget_evicts_oldest() {
+        let (a, b, _, _) = fixture(None);
+        let mut state = State::default();
+        keep_archive(
+            &mut state,
+            verify_archive(b.clone(), &a, &|| Ok(())).unwrap(),
+            a.bytes,
+        )
+        .unwrap();
+        keep_archive(
+            &mut state,
+            verify_archive(b.clone(), &a, &|| Ok(())).unwrap(),
+            a.bytes,
+        )
+        .unwrap();
+        assert_eq!(state.archives.len(), 1);
+        assert!(keep_archive(&mut state, verify_archive(b, &a, &|| Ok(())).unwrap(), 1).is_err());
+        assert_eq!(state.archives.len(), 1);
+        let (_, b, _, _) = fixture(None);
+        for _ in 0..8 {
+            keep_archive(
+                &mut state,
+                verify_archive(b.clone(), &a, &|| Ok(())).unwrap(),
+                MEMORY_MAX,
+            )
+            .unwrap();
+        }
+        assert_eq!(state.archives.len(), 4);
+    }
+    #[test]
+    fn repeated_cells_validate_whole_archive_only_once() {
+        let t = tempfile::tempdir().unwrap();
+        let (r, data) = server_fixture();
+        let d = RoadDelivery::new(t.path().join("cache"), Some(r)).unwrap();
+        let fetch = |url: &str, _: usize, _: &dyn Fn() -> Result<()>| {
+            Ok(data[url.rsplit('/').next().unwrap()].clone())
+        };
+        let path = "packs/test/130_30/6500_1500.json";
+        for _ in 0..12 {
+            assert_eq!(d.read_with(path, &fetch).unwrap(), b"{\"ways\":[]}");
+        }
+        {
+            let state = d.state.lock().unwrap();
+            assert_eq!(state.validation_count, 1);
+            assert_eq!(state.archives.len(), 1);
+        }
+        d.state.lock().unwrap().archives.clear();
+        assert!(d.read_with(path, &fetch).is_ok());
+        assert_eq!(d.state.lock().unwrap().validation_count, 2);
+    }
+    #[test]
+    fn disk_corruption_cannot_change_verified_memory_and_is_rejected_on_reload() {
+        let t = tempfile::tempdir().unwrap();
+        let (r, data) = server_fixture();
+        let d = RoadDelivery::new(t.path().join("cache"), Some(r)).unwrap();
+        let fetch = |url: &str, _: usize, _: &dyn Fn() -> Result<()>| {
+            Ok(data[url.rsplit('/').next().unwrap()].clone())
+        };
+        let path = "packs/test/130_30/6500_1500.json";
+        let good = d.read_with(path, &fetch).unwrap();
+        let sha = d.state.lock().unwrap().archives[0].asset.sha256.clone();
+        fs::write(d.root.join(format!("{sha}.data")), b"corrupt").unwrap();
+        assert_eq!(d.read_with(path, &fetch).unwrap(), good);
+        d.state.lock().unwrap().archives.clear();
+        assert!(d.read_with(path, &fetch).is_err());
     }
     #[test]
     fn failure_does_not_publish_cache() {
