@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 import national
 import build
 
@@ -47,6 +48,38 @@ class NationalTests(unittest.TestCase):
                 self.assertEqual(way['node_ids'],['1','2']);self.assertEqual(way['tags']['bridge'],'no')
             else:empty+=1
         self.assertEqual((populated,empty),(2,2))
+    def test_node_index_released_before_cell_emission(self):
+        self.write();original=national.emit_source
+        def inspect(*args,**kwargs):
+            self.assertFalse(list(self.root.glob('road-index-*/nodes.idx')))
+            return original(*args,**kwargs)
+        with patch.object(national,'emit_source',side_effect=inspect):self.run_pack()
+    def test_allocated_budget_counts_only_own_files_and_mutable_indexes(self):
+        stage=self.root/'stage';stage.mkdir();work=self.root/'work';work.mkdir()
+        budget=national.DiskBudget(stage,{**national.LIMITS,'min_free_bytes':1})
+        budget.work=work
+        before=budget.used();(self.root/'unrelated-cache').write_bytes(b'x'*65536)
+        self.assertEqual(budget.used(),before)
+        # A tiny output still occupies a filesystem block, not one logical byte.
+        budget.write(stage/'cell.json',b'x')
+        expected=sum(national.DiskBudget.allocated(p) for p in [stage,stage/'cell.json',work])
+        self.assertEqual(budget.used(),expected)
+        (work/'nodes.idx').write_bytes(b'x'*8192)
+        self.assertEqual(budget.used(),expected+national.DiskBudget.allocated(work/'nodes.idx'))
+        budget.limits={**budget.limits,'work_bytes':budget.used()-1}
+        with self.assertRaisesRegex(ValueError,'allocated work'):budget.check()
+    def test_global_free_floor_still_applies_independently(self):
+        from collections import namedtuple
+        stage=self.root/'stage';stage.mkdir()
+        budget=national.DiskBudget(stage,{**national.LIMITS,'min_free_bytes':3000})
+        usage=namedtuple('Usage','total used free')
+        with patch.object(national.shutil,'disk_usage',return_value=usage(10000,7001,2999)):
+            with self.assertRaisesRegex(ValueError,'insufficient free'):budget.check()
+    def test_work_budget_failure_does_not_publish(self):
+        self.write()
+        with self.assertRaisesRegex(ValueError,'allocated work'):self.run_pack(limits={'work_bytes':1})
+        self.assertFalse(self.out.exists());self.assertFalse(list(self.root.glob('.national-roads-*')))
+        self.assertFalse(list(self.root.glob('road-index-*')))
     def test_region_boundary_cells_unknown_and_holes_never_certified(self):
         from shapely.geometry import Polygon
         geometry=Polygon([(139.70,35.60),(139.745,35.60),(139.745,35.645),(139.70,35.645)])

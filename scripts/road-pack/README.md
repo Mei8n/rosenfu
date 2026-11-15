@@ -202,3 +202,20 @@ pair together, then explicitly marks **only that synthetic fixture** verified.
 `src/nationalRoadRepository.test.ts` loads its real generator output through the
 production index/shard/cell reader and checks source identity, revision and hashes.
 It must not be used as a certification tool for real Geofabrik data.
+
+### Independent disk budgets
+
+The generator reserves at least 3 GiB globally (`min_free_bytes`) and caps its own
+allocated filesystem blocks at 4 GiB (`work_bytes`) by default. Do not implement
+the latter by subtracting current free space from startup free space: unrelated
+builds would be charged to this generator. Accounting includes output files,
+output directories and the active SQLite/node-index working directory, but not
+input PBFs or other jobs. Immutable output files are statted once; only their
+small directory chain and the few mutable index files are refreshed. Thus emitting
+400,000 cells does not repeatedly scan 400,000 prior files. Sparse-file accounting
+uses Linux `st_blocks * 512`, not logical size. Platforms without `st_blocks` use
+logical bytes as a fallback; exact allocated-block accounting is supported only
+where `st_blocks` is available. The guard runs at bounded extraction
+checkpoints and before/after output writes; it detects an overage and aborts
+without publication rather than providing an OS-enforced instantaneous quota.
+Node indexes are released after extraction and before cell emission.
