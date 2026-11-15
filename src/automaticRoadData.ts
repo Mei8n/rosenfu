@@ -5,7 +5,7 @@ import type {ReferenceGraphBundle, RoadWayMetadata} from './referenceGraphBundle
 
 export const ROAD_ENDPOINT='https://overpass-api.de/api/interpreter';
 export const ROAD_LIMITS={spanDegrees:0.04,bytes:5*1024*1024,ways:10000,cacheEntries:128,pendingEntries:12,minIntervalMs:1000,ttlMs:86400000,retryMs:60000,timeoutMs:25000} as const;
-export type RoadSnapshot={bounds:GraphBounds;fetchedAt:number;bundle:ReferenceGraphBundle;roads:RoadWay[]};
+export type RoadSnapshot={coverageVerified?:boolean;bounds:GraphBounds;fetchedAt:number;bundle:ReferenceGraphBundle;roads:RoadWay[]};
 export type RoadDataState={status:'unavailable'|'loading'|'ready'|'error';snapshot?:RoadSnapshot;message:string};
 const classes='motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service';
 export function roadBoundsKey(b:GraphBounds):string{

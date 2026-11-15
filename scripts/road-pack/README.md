@@ -175,3 +175,30 @@ not permission to certify absence of roads or permit construction. Current `.pol
 downloads do not establish that a historical PBF used the same clipping geometry.
 The data may serve reference display/following, but construction coverage must
 remain UNKNOWN until that separate provenance gap is resolved and reviewed.
+
+### Boundary revision evidence (2026-11-16 investigation)
+
+The official [Geofabrik polygon history](https://github.com/geofabrik/polygons_download.geofabrik.de)
+permits inspecting changes, but its README explains that download-server polygons
+are intersections of regional and parent polygons, not the raw regional files.
+At inspected tree `c26b05e77065591be18f83cbb38622468afd8af5`, the most recent
+Kanto polygon author date was 2017-11-09, Japan 2022-03-16, Asia 2022-09-14.
+The repository imported that history in 2025. These dates are evidence of stability,
+not proof of the exact extraction configuration used for a particular PBF.
+
+`kanto-261114.poly` returned HTTP 404. The official Kanto listing associated
+`kanto-261114.osm.pbf` and the undated `kanto.poly` with the same displayed
+2026-11-15 01:49 time, but does not publish a PBF-to-polygon hash binding.
+Intersecting the pinned repository region/Japan/Asia polygons did **not** produce
+geometrically identical boundaries to the downloaded polygons: Kanto symmetric
+difference 0.0005398823 square degrees, Shikoku 0.0001223265. Rounding is a
+possible explanation, not an established fact. No tolerance is used to turn this
+into a coverage guarantee. Actual generated packs remain `coverage_verified:false`.
+Even an exact clipping match would only certify extraction of selected OSM road
+classes from that snapshot, not completeness of roads in the real world.
+
+`generate_contract_fixture.py` creates an invented four-cell PBF and polygon
+pair together, then explicitly marks **only that synthetic fixture** verified.
+`src/nationalRoadRepository.test.ts` loads its real generator output through the
+production index/shard/cell reader and checks source identity, revision and hashes.
+It must not be used as a certification tool for real Geofabrik data.

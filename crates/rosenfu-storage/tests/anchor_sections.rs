@@ -35,7 +35,7 @@ fn anchor_boundaries_roundtrip_and_invalid_boundaries_reject() {
         .anchor_indices = Some(vec![0, 1, 2]);
     world.replace(draft).unwrap();
     let bytes = encode(&world).unwrap();
-    assert_eq!(SCHEMA_VERSION, 22);
+    assert_eq!(SCHEMA_VERSION, 23);
     assert_eq!(decode(&bytes).unwrap().snapshot(), world.snapshot());
     for indices in [
         vec![],

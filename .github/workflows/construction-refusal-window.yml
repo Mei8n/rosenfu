@@ -1,0 +1,26 @@
+name: Construction refusal window
+on:
+  pull_request:
+    paths:
+      - 'src/App.tsx'
+      - 'src/ConstructionRefusalWindow.test.tsx'
+      - 'src/useConstructionPreview*'
+      - '.github/workflows/construction-refusal-window.yml'
+permissions:
+  contents: read
+jobs:
+  refusal-window:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test -- src/ConstructionRefusalWindow.test.tsx src/ConstructionHover.test.tsx src/useConstructionPreview.test.tsx src/RoadWaterSeparationAcceptance.test.tsx
