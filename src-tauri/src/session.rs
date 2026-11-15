@@ -3693,6 +3693,93 @@ mod tests {
     }
 
     #[test]
+    fn imported_junction_transaction_preserves_provenance_through_undo() {
+        use rosenfu_core::world::{
+            AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
+        };
+        let mut editor = WorldEditor::new();
+        let gh = "a".repeat(64);
+        let sh = "b".repeat(64);
+        let key = format!("{gh}:{sh}");
+        let source = SourceRecord {
+            key: key.clone(),
+            dataset_id: "D".into(),
+            revision: "R".into(),
+            graph_sha256: gh,
+            source_sha256: sh,
+            source: "Local extract".into(),
+            source_date: None,
+            license: "ODbL-1.0".into(),
+            attribution: "© OpenStreetMap contributors".into(),
+            conversion_format_version: 1,
+        };
+        let provenance = AlignmentProvenanceInput {
+            source_key: key,
+            method: ProvenanceMethod::OsmSegmentCopyV1,
+            osm_way_id: "1".into(),
+            mode: ReferenceMode::Road,
+            start_segment_index: 0,
+            start_fraction: 0.0,
+            end_segment_index: 0,
+            end_fraction: 1.0,
+        };
+        let points = vec![
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 139.0,
+            },
+            GeoPoint {
+                latitude: 35.0,
+                longitude: 139.1,
+            },
+        ];
+        let before = editor
+            .build_alignment_from_reference(
+                "source".into(),
+                points,
+                source.clone(),
+                provenance.clone(),
+            )
+            .unwrap();
+        let original = before.alignments[0].clone();
+        let mut branch = planned_path(0.);
+        branch.stations.clear();
+        branch.points = vec![
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.05,
+            },
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.051,
+            },
+            GeoPoint {
+                latitude: 35.01,
+                longitude: 139.06,
+            },
+        ];
+        branch.junction_source = Some(rosenfu_core::world::ConstructionJunctionSource {
+            alignment_id: original.id,
+            expected_alignment: original,
+            segment_index: 0,
+            fraction: 0.5,
+            reverse: false,
+        });
+        let after = editor.build_plan(vec![branch]).unwrap();
+        assert_eq!(after.source_records, vec![source]);
+        assert_eq!(after.alignment_provenance.len(), 2);
+        assert!(after
+            .alignment_provenance
+            .iter()
+            .all(|p| p.source == provenance && p.derived_slice.is_some()));
+        let restored =
+            World::new(serde_json::from_str(&serde_json::to_string(&after).unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(restored.snapshot(), &after);
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+    }
+
+    #[test]
     fn ambiguous_repeated_geometry_split_batch_is_atomic() {
         use rosenfu_core::world::ConstructionJunctionSource;
         let mut editor = WorldEditor::new();
