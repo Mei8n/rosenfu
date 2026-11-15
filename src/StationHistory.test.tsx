@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
+import {act,cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
 import {DISPLAY_SETTINGS_KEY} from "./displaySettings";
@@ -15,7 +15,7 @@ function region(selector:string){
  return within(element);
 }
 async function start(){let world=structuredClone(initial);let id=20;const failures={remove:false,place:false,save:false,load:false};vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async(command,args)=>{
- if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};if(command==="engine_info")return {name:"Rosenfu",version:"history-test"};if(command==="world_snapshot")return world;
+ if(command==="autosave_status")return {available:false};if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};if(command==="engine_info")return {name:"Rosenfu",version:"history-test"};if(command==="world_snapshot")return world;
  if(command==="place_station_on_alignment"||command==="build_plan") {if(failures.place)throw Error("place failure");const p=command==="build_plan"?(args as any).stations[0]:args as any;const station={id:String(id++),owner:"2",name:p.name,latitude:35.67504,longitude:139.75};world={...world,stations:[...world.stations,station],station_placements:[...world.station_placements,{station_id:station.id,alignment_id:p.alignmentId,position:p.position,length_m:p.lengthM,width_m:p.widthM}]};return world;}
  if(command==="delete_station"){if(failures.remove)throw Error("delete failure");const stationId=(args as any).stationId;world={...world,stations:world.stations.filter(s=>s.id!==stationId),station_placements:world.station_placements.filter(p=>p.station_id!==stationId)};return world;}
  if(command==="save_world"){if(failures.save)throw Error("save failure");return {saved:true};}
@@ -26,7 +26,7 @@ async function start(){let world=structuredClone(initial);let id=20;const failur
  if(command==="save_planned_route"){const p=args as any;world={...world,routes:[{id:"30",owner:"2",name:p.name,start:p.start}],route_paths:[{route_id:"30",segments:p.segments,member_stations:["10","20"]}]};return world;}
  if(command==="load_save_slot"){if(failures.load)throw Error("load failure");world=structuredClone(initial);return world;}
  throw Error(command);
- });render(<App/>);await screen.findByText(/history-test/);await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));return failures;}
+ });render(<App/>);await screen.findByText(/history-test/);await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));await act(async()=>{});await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));return failures;}
 async function place(x=250){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:x,clientY:150});await screen.findByText(/を計画に追加しました/);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/計画駅を建設しました/);await ready();}
 async function ready(){await waitFor(()=>expect((document.querySelector(".save-controls button:last-child") as HTMLButtonElement).disabled).toBe(false));}
 const undo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});const redo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
@@ -70,6 +70,6 @@ test.each(["name","size"])("successful station %s edit ends placement history",a
  undo();await screen.findByText(/取り消せる駅設置履歴はありません/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });
 test("RoutePath membership reference blocks station undo even without Track connections",async()=>{
- await start();await place();fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.change(screen.getByLabelText("候補の起点"),{target:{value:"10"}});fireEvent.change(screen.getByLabelText("候補の終点"),{target:{value:"20"}});fireEvent.click(screen.getByRole("button",{name:"経路候補を検索"}));await screen.findByLabelText("候補から作る路線名");fireEvent.change(screen.getByLabelText("候補から作る路線名"),{target:{value:"参照路線"}});fireEvent.click(screen.getByRole("button",{name:"候補を新規路線へ適用"}));await screen.findByText(/路線と所属駅を適用しました/);await ready();
+ await start();await place();fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.click(screen.getByRole("button",{name:"新規路線"}));const markers=document.querySelectorAll(".station-marker");fireEvent.click(markers[0]);fireEvent.click(markers[1]);await waitFor(()=>expect((screen.getByRole("button",{name:"編集終了"}) as HTMLButtonElement).disabled).toBe(false));fireEvent.change(screen.getByLabelText("路線名"),{target:{value:"参照路線"}});fireEvent.click(screen.getByRole("button",{name:"編集終了"}));await screen.findByText(/路線と所属駅を適用しました/);await ready();
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));undo();await screen.findByText(/駅設置Undo不可: 路線: 参照路線/);await ready();expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="delete_station")).toBe(false);
 });

@@ -146,6 +146,7 @@ export function App() {
   const [graphVisible,setGraphVisible]=useState(true);
   const [pendingGraphChange,setPendingGraphChange]=useState<{bundle:ReferenceGraphBundle|null}|null>(null);
   const [candidateDirty,setCandidateDirty]=useState(false);
+  const [routeRenameDirty,setRouteRenameDirty]=useState(false);
   const graphIndex=useMemo(()=>graphBundle?indexGraphDisplay(graphBundle.graph):[],[graphBundle]);
   const graphDisplay=useMemo(()=>queryGraphDisplay(graphIndex,viewBounds(camera,mapSize),camera.zoom,graphVisible),[graphIndex,camera,mapSize,graphVisible]);
   const [referencePack,setReferencePack]=useState<ReferencePack|null>(null);
@@ -577,7 +578,7 @@ export function App() {
   useEffect(()=>{if(!referenceCopy.active)discardPlanStations(-1);},[referenceCopy.active]);
   const graphNodesById=useMemo(()=>new Map(graphBundle?.graph.nodes.map(node=>[node.osmId,node])??[]),[graphBundle]);
   useEffect(()=>{referenceCopy.clearHover();},[camera]);
-  const saveBlocked = bindingDirty || !!anchorPreview || candidateDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
+  const saveBlocked = routeRenameDirty || bindingDirty || !!anchorPreview || candidateDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
   const hasPlans = plannedStations.length>0 || draftPoints.length > 0 || redoPoints.length > 0 || parkedPaths.length > 0 || referenceCopy.active;
   const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,roadFollowing,plannedStations,draftFinished]);
   const persistedPlans=useMemo(()=>compactEmptyPlans(constructionPlans),[constructionPlans]);
@@ -1260,6 +1261,15 @@ export function App() {
       setNotice("会社名を変更しました。");
     });
   }
+  async function renameSavedRoute(id:string,name:string,expectedName:string) {
+    if(!enabled||busyRef.current||candidateDirty||routeCreating||routeMapEdit)throw new Error("先に編集中の路線を確定または取り消してください。");
+    busyRef.current=true;setBusy(true);
+    try {
+      const snapshot=await invoke<World>("rename_route",{routeId:id,name,expectedName});
+      setWorld(snapshot);setDirty(true);setConfirmLoad(false);
+      if(routeId===id)resetRoute(snapshot.routes.find(route=>route.id===id));
+    } finally {busyRef.current=false;setBusy(false);}
+  }
   async function applyPlannedRoute(name: string, membership: Membership) {
     if (!enabled) throw new Error("先に路線下書きを適用または破棄してください。");
     if (busyRef.current) throw new Error("処理中です。");
@@ -1589,16 +1599,16 @@ export function App() {
           </section>
           <section className="route-editor" role="tabpanel" id="workspace-panel-routes" aria-labelledby="workspace-tab-routes" hidden={activeTool !== "routes"}>
             <h3>路線</h3>
-            <RouteDirectory world={world??previewWorld} enabled={enabled} selected={routeId} onChoose={id=>{if(candidateDirty||routeMapEdit){chooseRoute(id);return;}chooseRoute(id);cancelRouteMapPick();setRouteCreating(id===null);if(id===null)setRouteSequenceKey(key=>key+1);}}/>
+            <RouteDirectory key={`routes-${worldEpoch}`} onRename={renameSavedRoute} onDirty={setRouteRenameDirty} world={world??previewWorld} enabled={enabled&&!candidateDirty&&!routeCreating&&!routeMapEdit} selected={routeId} onChoose={id=>{if(candidateDirty||routeMapEdit){chooseRoute(id);return;}chooseRoute(id);cancelRouteMapPick();setRouteCreating(id===null);if(id===null)setRouteSequenceKey(key=>key+1);}}/>
             {(routeCreating||routeMapEdit)&&<RouteCandidatePreview key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} defaultName={(()=>{let n=1;while(world?.routes.some(r=>r.name===`路線${n}`))n++;return `路線${n}`;})()} onCancelEdit={()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);setCandidateDirty(false);}} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={true} onSave={applyPlannedRoute} />}
 
-            {routeId && <button type="button" className="secondary" disabled={!enabled||candidateDirty||!!routeMapEdit} onClick={()=>{const route=world?.routes.find(r=>r.id===routeId);if(!route)return;cancelRouteMapPick();setRouteMapEdit({id:route.id,name:route.name});setRouteSequenceKey(key=>key+1);}}>地図で路線の経路を選び直す</button>}
+            {routeId && <button type="button" className="secondary" disabled={!enabled||candidateDirty||routeRenameDirty||!!routeMapEdit} onClick={()=>{const route=world?.routes.find(r=>r.id===routeId);if(!route)return;cancelRouteMapPick();setRouteMapEdit({id:route.id,name:route.name});setRouteSequenceKey(key=>key+1);}}>地図で路線の経路を選び直す</button>}
             {selectedRoutePath && <section aria-label="保存済み路線の経路"><h4>{routeName}</h4><p>所属駅: {selectedRoutePath.member_stations.map(id=>stationsById.get(id)?.name ?? id).join(" → ")}</p><ol>{selectedRoutePath.segments.map((segment,index)=><li key={index}>{(segment.kind==="alignment"?"建設線形 " + (alignments.find(a=>a.id===segment.alignment_id)?.name ?? segment.alignment_id):"接続経路") + ": " + (stationsById.get(segment.from)?.name ?? segment.from) + " → " + (stationsById.get(segment.to)?.name ?? segment.to)}</li>)}</ol></section>}
           </section>
           <section className="service-editor" role="tabpanel" id="workspace-panel-services" aria-labelledby="workspace-tab-services" hidden={activeTool !== "services"}>
             <h3>系統</h3>
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
-            <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => chooseService(null)}>新規系統</button>{world?.services.map((service) => <button key={service.id} className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id)} aria-label={`系統編集: ${service.name}`} aria-pressed={service.id===serviceId}>{service.name}</button>)}</div>
+            <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => chooseService(null)}>新規系統</button><table aria-label="系統一覧"><thead><tr><th>名前</th><th>乗客</th><th>収支</th><th>車両数</th></tr></thead><tbody>{world?.services.map((service) => <tr key={service.id}><th><button className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id)} aria-label={`系統編集: ${service.name}`} aria-pressed={service.id===serviceId}>{service.name}</button></th>{["乗客","収支","車両数"].map(label=><td key={label} title="未実装" aria-label={`${label}: 未実装`}>—</td>)}</tr>)}</tbody></table></div>
             <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null} onDirty={setPathServiceDirty} onSave={createPathService}/>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
