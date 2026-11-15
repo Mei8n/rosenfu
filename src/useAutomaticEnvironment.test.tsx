@@ -20,3 +20,26 @@ it('rejects late pan and world responses, while retaining explicitly saved offli
  await act(async()=>{pending[1](snapshot(second,'new'));});expect(result.current.data?.revision).toBe('new');
  rerender({bounds:second,epoch:1});expect(result.current.road.snapshot).toBeUndefined();expect(result.current.data?.revision).toBe('saved');
 });
+it('fetches a long corridor sequentially and never publishes partial success',async()=>{
+ vi.useFakeTimers();mock.roads.mockReset();mock.water.mockReset();
+ mock.roads.mockImplementation(async(bounds)=>({bounds,fetchedAt:1,roads:[],bundle:{graphSha256:'corridor'}}));
+ mock.water.mockImplementation(async(bounds)=>({coverage:[bounds],water:[]}));
+ const bounds={west:139,south:35,east:139.01,north:35.01};
+ const lines=[[{longitude:139,latitude:35.001},{longitude:139.3,latitude:35.001}]];
+ const {result}=renderHook(()=>useAutomaticEnvironment(bounds,true,0,undefined,lines));
+ expect(result.current.data).toBeNull();
+ await act(async()=>{await vi.advanceTimersByTimeAsync(500);});
+ expect(result.current.data!.road_coverage.length).toBeGreaterThan(10);
+ expect(result.current.data!.water_coverage.length).toBe(result.current.data!.road_coverage.length);
+ mock.roads.mockClear();
+});
+it('stops the corridor on water failure and leaves coverage unknown',async()=>{
+ vi.useFakeTimers();mock.roads.mockReset();mock.water.mockReset();
+ mock.roads.mockImplementation(async(bounds)=>({bounds,fetchedAt:1,roads:[],bundle:{graphSha256:'corridor'}}));
+ mock.water.mockRejectedValue(Error('offline'));
+ const bounds={west:139,south:35,east:139.01,north:35.01};
+ const lines=[[{longitude:139,latitude:35.001},{longitude:139.3,latitude:35.001}]];
+ const {result}=renderHook(()=>useAutomaticEnvironment(bounds,true,0,undefined,lines));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(500);});
+ expect(mock.roads).toHaveBeenCalledTimes(1);expect(result.current.data).toBeNull();expect(result.current.water.status).toBe('error');
+});

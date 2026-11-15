@@ -3,7 +3,7 @@ import {validateReferenceGraph, type GraphBounds, type GraphNode, type GraphEdge
 import type {ReferenceGraphBundle, RoadWayMetadata} from './referenceGraphBundle';
 
 export const ROAD_ENDPOINT='https://overpass-api.de/api/interpreter';
-export const ROAD_LIMITS={spanDegrees:0.04,bytes:5*1024*1024,ways:10000,cacheEntries:12,ttlMs:86400000,retryMs:60000,timeoutMs:25000} as const;
+export const ROAD_LIMITS={spanDegrees:0.04,bytes:5*1024*1024,ways:10000,cacheEntries:128,pendingEntries:12,minIntervalMs:1000,ttlMs:86400000,retryMs:60000,timeoutMs:25000} as const;
 export type RoadSnapshot={bounds:GraphBounds;fetchedAt:number;bundle:ReferenceGraphBundle;roads:RoadWay[]};
 export type RoadDataState={status:'unavailable'|'loading'|'ready'|'error';snapshot?:RoadSnapshot;message:string};
 const classes='motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service';
@@ -49,8 +49,10 @@ export async function parseRoadResponse(value:unknown,bounds:GraphBounds,fetched
 /** One queue per repository: coalesce identical requests and never hammer the public service.
  * Failure and valid empty results are distinct; failed entries have a retry cooldown. */
 export function createRoadRepository(fetcher:typeof fetch=fetch,now:()=>number=Date.now){
- const cache=new Map<string,RoadSnapshot>(),pending=new Map<string,Promise<RoadSnapshot>>(),failures=new Map<string,{time:number;error:Error}>();let queue:Promise<unknown>=Promise.resolve();
+ const cache=new Map<string,RoadSnapshot>(),pending=new Map<string,Promise<RoadSnapshot>>(),failures=new Map<string,{time:number;error:Error}>();let queue:Promise<unknown>=Promise.resolve();let nextRequestAt=0,blockedUntil=0;
  async function download(bounds:GraphBounds){
+  if(now()<blockedUntil)throw Error('道路提供元の再試行待機中です。');
+  const wait=Math.max(0,nextRequestAt-now());if(wait)await new Promise(resolve=>setTimeout(resolve,wait));nextRequestAt=now()+ROAD_LIMITS.minIntervalMs;
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),ROAD_LIMITS.timeoutMs);
   try{
    const query=`[out:json][timeout:20];way["highway"~"^(${classes})$"]["area"!="yes"](${roadBoundsKey(bounds)});out body geom;`;
@@ -66,9 +68,9 @@ export function createRoadRepository(fetcher:typeof fetch=fetch,now:()=>number=D
  return {async load(bounds:GraphBounds):Promise<RoadSnapshot>{
   const key=roadBoundsKey(bounds),hit=cache.get(key);if(hit&&now()-hit.fetchedAt<ROAD_LIMITS.ttlMs)return hit;
   const existing=pending.get(key);if(existing)return existing;
-  if(pending.size>=ROAD_LIMITS.cacheEntries)throw Error('道路取得の待機上限です。取得完了後に再試行します。');
+  if(pending.size>=ROAD_LIMITS.pendingEntries)throw Error('道路取得の待機上限です。取得完了後に再試行します。');
   const failure=failures.get(key);if(failure&&now()-failure.time<ROAD_LIMITS.retryMs)throw failure.error;
-  const task=queue.then(()=>download(bounds)).then(snapshot=>{cache.delete(key);cache.set(key,snapshot);while(cache.size>ROAD_LIMITS.cacheEntries)cache.delete(cache.keys().next().value!);failures.delete(key);return snapshot;}).catch((reason:unknown)=>{const error=reason instanceof Error?reason:Error('道路取得に失敗しました。');failures.set(key,{time:now(),error});while(failures.size>ROAD_LIMITS.cacheEntries)failures.delete(failures.keys().next().value!);throw error;}).finally(()=>pending.delete(key));
+  const task=queue.then(()=>download(bounds)).then(snapshot=>{cache.delete(key);cache.set(key,snapshot);while(cache.size>ROAD_LIMITS.cacheEntries)cache.delete(cache.keys().next().value!);failures.delete(key);return snapshot;}).catch((reason:unknown)=>{const error=reason instanceof Error?reason:Error('道路取得に失敗しました。');blockedUntil=now()+ROAD_LIMITS.retryMs;failures.set(key,{time:now(),error});while(failures.size>ROAD_LIMITS.cacheEntries)failures.delete(failures.keys().next().value!);throw error;}).finally(()=>pending.delete(key));
   pending.set(key,task);queue=task.catch(()=>undefined);return task;
  }};
 }

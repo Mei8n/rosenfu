@@ -511,7 +511,8 @@ export function App() {
   const [serviceHint, setServiceHint] = useState("");
   const [pendingServiceChoice, setPendingServiceChoice] = useState<{ id: string | null } | null>(null);
   const enabled = status === "ready" && !busy && !companySetupRequired;
-  const automaticEnvironment=useAutomaticEnvironment(bounds,status==="ready",worldEpoch,world?.environment);
+  const environmentLines=[...parkedPaths.filter(path=>path.planId===activePlanId).map(path=>path.line),draftLine];
+  const automaticEnvironment=useAutomaticEnvironment(bounds,status==="ready",worldEpoch,world?.environment,environmentLines);
   const [frozenRoadBundle,setFrozenRoadBundle]=useState<ReferenceGraphBundle|null>(null);
   const graphBundle=(roadFollowing?frozenRoadBundle??automaticEnvironment.road.snapshot?.bundle:manualGraphBundle)??manualGraphBundle;
   const graphIndex=useMemo(()=>graphBundle?indexGraphDisplay(graphBundle.graph):[],[graphBundle]);

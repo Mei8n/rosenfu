@@ -22,8 +22,8 @@ export function waterTileBounds(x:number,y:number,z:number):GraphBounds{const n=
 export function decodeWaterTile(data:ArrayBuffer,x:number,y:number,z:number):WaterPolygon[]{
  if(data.byteLength>MAX_BYTES)throw Error('水域タイルが上限を超えています。');
  const tile=new VectorTile(new PbfReader(new Uint8Array(data))),layer=tile.layers.WA;
- // Empty/missing archive tiles are not evidence of land. AdmArea identifies a populated land tile.
- if(!layer&&!tile.layers.AdmArea)throw Error('このタイルの水域カバレッジを確認できません。');
+ // Administrative coverage is not evidence that water is absent. Missing WA fails closed.
+ if(!layer)throw Error('このタイルの水域カバレッジを確認できません。');
  const water:WaterPolygon[]=[];let count=0;
  for(let i=0;i<(layer?.length??0);i++){const f=layer.feature(i);if(f.type!==3)throw Error('水域面の形式が不正です。');const geometry=f.toGeoJSON(x,y,z).geometry;
   const polygons=geometry.type==='Polygon'?[geometry.coordinates]:geometry.type==='MultiPolygon'?geometry.coordinates:null;if(!polygons)throw Error('水域形状が不正です。');
@@ -32,10 +32,10 @@ export function decodeWaterTile(data:ArrayBuffer,x:number,y:number,z:number):Wat
 }
 export function createWaterRepository(fetcher:typeof fetch=fetch){
  const cache=new SharedPromiseCache(32,true,decompress),archive=new PMTiles(createWaterSource(fetcher),cache,decompress);
- const tiles=new Map<string,{at:number;water:WaterPolygon[]}>(),pending=new Map<string,Promise<WaterPolygon[]>>();let queue:Promise<unknown>=Promise.resolve();
+ const tiles=new Map<string,{at:number;water:WaterPolygon[]}>(),pending=new Map<string,Promise<WaterPolygon[]>>();let queue:Promise<unknown>=Promise.resolve();let blockedUntil=0,nextRequestAt=0;
  async function tile(x:number,y:number,z:number){const key=`${z}/${x}/${y}`,hit=tiles.get(key);if(hit&&Date.now()-hit.at<86400000)return hit.water;const old=pending.get(key);if(old)return old;
   if(pending.size>=32)throw Error('水域取得の待機上限です。');
-  const task=queue.then(async()=>{const result=await archive.getZxy(z,x,y);if(!result)throw Error('水域タイル未提供です。陸地とは判定しません。');const water=decodeWaterTile(result.data,x,y,z);tiles.set(key,{at:Date.now(),water});while(tiles.size>32)tiles.delete(tiles.keys().next().value!);return water;}).finally(()=>pending.delete(key));pending.set(key,task);queue=task.catch(()=>undefined);return task;
+  const task=queue.then(async()=>{if(Date.now()<blockedUntil)throw Error('水域提供元の再試行待機中です。');const wait=Math.max(0,nextRequestAt-Date.now());if(wait)await new Promise(resolve=>setTimeout(resolve,wait));nextRequestAt=Date.now()+250;const result=await archive.getZxy(z,x,y);if(!result)throw Error('水域タイル未提供です。陸地とは判定しません。');const water=decodeWaterTile(result.data,x,y,z);tiles.set(key,{at:Date.now(),water});while(tiles.size>128)tiles.delete(tiles.keys().next().value!);return water;}).catch(error=>{blockedUntil=Date.now()+60000;throw error;}).finally(()=>pending.delete(key));pending.set(key,task);queue=task.catch(()=>undefined);return task;
  }
  return {async load(b:GraphBounds){const z=14,n=2**z,tx=(v:number)=>Math.floor((v+180)/360*n),ty=(v:number)=>Math.floor((1-Math.asinh(Math.tan(v*Math.PI/180))/Math.PI)/2*n);
   const minX=tx(b.west),maxX=tx(b.east),minY=ty(b.north),maxY=ty(b.south);if(!Object.values(b).every(Number.isFinite)||b.west>=b.east||b.south>=b.north||b.south<20||b.north>46||b.west<122||b.east>154||(maxX-minX+1)*(maxY-minY+1)>16)throw Error('水域取得範囲外または上限超過です。');

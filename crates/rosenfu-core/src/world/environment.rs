@@ -84,7 +84,9 @@ impl EnvironmentSnapshot {
             .iter()
             .filter_map(|r| r.coverage.as_ref())
             .chain(self.water.iter().filter_map(|p| p.coverage.as_ref()));
-        if scopes.clone().map(Vec::len).sum::<usize>() > 10000 {
+        if scopes.clone().any(|s| s.len() > 128)
+            || scopes.clone().map(Vec::len).sum::<usize>() > 10000
+        {
             return Err(WorldError::InvalidEnvironment);
         }
         for b in self
