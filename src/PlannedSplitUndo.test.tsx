@@ -7,7 +7,7 @@ vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:vi.fn()}));
 const empty={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
 HTMLDialogElement.prototype.showModal=function(){this.setAttribute('open','');};
 HTMLDialogElement.prototype.close=function(){this.removeAttribute('open');};
-afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
+afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 async function start(){
  vi.mocked(isTauri).mockReturnValue(true);
  vi.mocked(invoke).mockImplementation(async command=>{if(command==='engine_info')return {name:'Rosenfu',version:'mode-test'};if(command==='world_snapshot')return empty;if(command==='delete_alignment_section'||command==='delete_station')return empty;if(command==='undo_alignment_deletion')return empty;throw Error(command);});
@@ -43,4 +43,33 @@ test.each(['delete','tracks','stations'].flatMap(mode=>[130,330].map(stationX=>(
  expect(Array.from(map.querySelectorAll('.draft-path')).map(p=>p.getAttribute('d'))).toEqual(split);
  expect(map.querySelector('.planned-station')!.outerHTML).toBe(stationShape);
  }
+});
+
+test('later anchor edit is undone before the split deletion, without losing its station',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);
+ const map=await start();
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));
+ for(const x of [80,180,280,380,380])fireEvent.click(map,{clientX:x,clientY:200,detail:1});
+ fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
+ fireEvent.click(map,{clientX:130,clientY:200,detail:1});
+ const original=Array.from(map.querySelectorAll('.draft-path')).map(p=>p.getAttribute('d'));
+ fireEvent.click(screen.getByRole('tab',{name:'削除'}));
+ fireEvent.click(map.querySelector('[data-delete-plan-section="1"]')!);
+ fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));
+ const shape=()=>Array.from(map.querySelectorAll('.draft-path')).map(p=>p.getAttribute('d'));
+ const split=shape();
+ const anchor=map.querySelector('[data-anchor-index="1"]')!;
+ fireEvent.pointerDown(anchor,{clientX:180,clientY:200,button:0});
+ fireEvent.pointerMove(map,{clientX:180,clientY:220});
+ fireEvent.pointerUp(map,{clientX:180,clientY:220});
+ expect(shape()).not.toEqual(split);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(shape()).toEqual(split);
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(shape()).toEqual(original);
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(4);
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
 });
