@@ -12,6 +12,11 @@ test("saved station group has one directory entry and independent home selection
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"group-test"}:world);
  render(<App/>);await screen.findByText(/group-test/);
  expect(document.querySelectorAll(".station-group-footprint")).toHaveLength(1);
+ for(const platform of document.querySelectorAll("[data-group-platform]")){
+  expect(platform.getAttribute("fill")).toBe("white");
+  expect(platform.getAttribute("stroke-dasharray")).toBeNull();
+ }
+
  fireEvent.click(screen.getByRole("tab",{name:"駅"}));
  expect(document.querySelectorAll(".station-entry")).toHaveLength(1);
  expect(document.querySelector(".station-directory .count")?.textContent).toBe("1");
@@ -40,6 +45,18 @@ test("crossing preview reports actual distance without inventing passenger data"
  fireEvent.click(map,{clientX:250,clientY:150});
  expect(document.querySelectorAll(".planned-station")).toHaveLength(1);
  expect(document.querySelectorAll(".station-group-footprint")).toHaveLength(1);
+
+ const platforms=[...document.querySelectorAll("[data-group-platform]")];
+ expect(platforms).toHaveLength(2);
+ const built=platforms.find(p=>p.getAttribute("data-group-platform")==="5")!;
+ const planned=platforms.find(p=>p!==built)!;
+ expect(built.getAttribute("fill")).toBe("white");
+ expect(built.getAttribute("stroke-dasharray")).toBeNull();
+ expect(planned.getAttribute("fill")).toBe("#c4e6f3");
+ expect(planned.getAttribute("stroke-dasharray")).toBe("4 3");
+ expect(planned.getAttribute("vector-effect")).toBe("non-scaling-stroke");
+ expect(planned.textContent).toContain("未着工");
  expect((screen.getByLabelText("計画駅名") as HTMLInputElement).value).toBe("交差駅");
  expect((screen.getByLabelText("計画駅名") as HTMLInputElement).readOnly).toBe(true);
 });
+
