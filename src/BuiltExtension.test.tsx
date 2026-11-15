@@ -261,3 +261,16 @@ test('opposite endpoint of the same built alignment snaps and submits a real rin
  expect(request.alignments[0].destination).toEqual({alignmentId:'3',endpoint:'start'});
  expect(request.alignments[0].points.at(-1)).toEqual(ring.points[0]);
 });
+
+for (const endpoint of ['start','end'] as const) test(`owned connected ${endpoint} reports an existing connection, not foreign ownership`,async()=>{
+ const x=endpoint==='start'?180:250;
+ const adjacent={...line,id:'4',points:[point(x,130),point(endpoint==='start'?120:310,130)]};
+ const map=await start({alignments:[line,adjacent],alignment_connections:[{a:{alignment_id:'3',endpoint},b:{alignment_id:'4',endpoint:'start'}}]});
+ fireEvent.pointerMove(map,{clientX:x,clientY:130});
+ expect(screen.getByText('この端点は接続済みです')).toBeTruthy();
+ expect(screen.queryByText('他社の線路は延伸できません')).toBeNull();
+ expect(map.querySelector('.endpoint-snap-ring')?.getAttribute('data-allowed')).toBe('false');
+ fireEvent.click(map,{clientX:x,clientY:130});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
+});

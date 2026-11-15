@@ -149,3 +149,42 @@ test('stations on an undone path block construction until the path is restored',
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
  expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
 });
+
+test('Undo crosses independent paths within one plan and Redo restores each in order',async()=>{
+ const map=await start({alignments:[]});
+ const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ const shapes:string[]=[];
+ for(const y of [80,150,220]){click(100,y);click(300,y);click(300,y);shapes.push(map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d')!);}
+ const visibleShapes=()=>Array.from(map.querySelectorAll('.draft-path')).map(path=>path.getAttribute('d')).filter(Boolean).sort();
+ const anchors=()=>map.querySelectorAll('.draft-anchor, .parked-anchor').length;
+ expect(anchors()).toBe(6);
+ for(const count of [4,2,0]){
+  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+  expect(anchors()).toBe(count);
+  expect(visibleShapes()).toEqual(shapes.slice(0,count/2).sort());
+ }
+ for(const count of [2,4,6]){
+  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+  expect(anchors()).toBe(count);
+  expect(visibleShapes()).toEqual(shapes.slice(0,count/2).sort());
+  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ }
+ for(const count of [4,2,0]){
+  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+  expect(anchors()).toBe(count);
+  expect(visibleShapes()).toEqual(shapes.slice(0,count/2).sort());
+ }
+});
+
+test('Undo does not cross into another construction plan when active plan is exhausted',async()=>{
+ const map=await start({alignments:[]});
+ const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(100,100);click(300,100);click(300,100);
+ fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
+ click(100,220);click(300,220);click(300,220);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor, .parked-anchor')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll('.draft-anchor, .parked-anchor')).toHaveLength(4);
+});
