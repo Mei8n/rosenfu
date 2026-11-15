@@ -668,7 +668,7 @@ export function App() {
       setWorld(snapshot);setDirty(true);setTrackDeleteUndo({...entry,world:snapshot});setTrackDeleteRedo(null);
     });
   }
-  useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);cancelMapGesture();},[world,activeTool]);
+  useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);const selection=boxGesture.current;boxGesture.current=null;setSelectionBox(null);const svg=svgRef.current;if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);},[world,activeTool]);
   const rangeCount=rangeSelection.reduce((sum,row)=>sum+row.sectionIndices.length,0);
   const selectedInfrastructure=rangeSelection.flatMap(row=>row.sectionIndices.map(index=>alignments.find(line=>line.id===row.alignmentId)?.infrastructure?.[index]??DEFAULT_INFRASTRUCTURE));
   const selectedCountValues=new Set(selectedInfrastructure.map(value=>value.track_count));
