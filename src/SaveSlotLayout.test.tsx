@@ -25,10 +25,11 @@ test('all save actions share a wrapping spaced row, cards show only available sa
 
 test('planned station name shrinks within its column while delete remains on the same row',()=>{
  const style=document.createElement('style');style.dataset.saveLayout='true';style.textContent=readFileSync('src/PlanBreakdown.css','utf8');document.head.append(style);
- const {container}=render(<div className="plan-breakdown" style={{width:240}}><ul><li className="planned-station-row"><input aria-label="計画駅名" defaultValue="長い駅名"/><span role="status">線路に収まらないため着工不可</span><button aria-label="計画駅を削除">×</button></li></ul></div>);
+ const {container}=render(<main className="workbench"><div className="plan-breakdown" style={{width:240}}><ul><li className="planned-station-row"><input aria-label="計画駅名" defaultValue="長い駅名"/><span role="status">線路に収まらないため着工不可</span><button aria-label="計画駅を削除">×</button></li></ul></div></main>);
  const row=container.querySelector('.planned-station-row')!;
  expect(getComputedStyle(row).display).toBe('grid');expect(getComputedStyle(row).gridTemplateColumns).toBe('minmax(0, 1fr) auto');
  const input=screen.getByRole('textbox',{name:'計画駅名'}),button=screen.getByRole('button',{name:'計画駅を削除'});
  expect(getComputedStyle(input).minWidth).toBe('0');expect(getComputedStyle(input).gridRow).toBe('1');expect(getComputedStyle(button).gridRow).toBe('1');
  expect(getComputedStyle(screen.getByRole('status')).gridRow).toBe('2');
+ expect(getComputedStyle(button).color).toBe('rgb(181, 49, 49)');expect(getComputedStyle(button).backgroundColor).toBe('rgba(0, 0, 0, 0)');expect(getComputedStyle(button).minWidth).toBe('32px');
 });

@@ -21,3 +21,14 @@
   grid-column: 1 / -1;
   grid-row: 2;
 }
+.workbench .plan-breakdown .planned-station-row > button,
+.workbench .plan-breakdown .planned-station-row > button:hover:not(:disabled) {
+  color: #b53131;
+  background: transparent;
+  border: 0;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 6px;
+  font-size: 18px;
+  line-height: 1;
+}
