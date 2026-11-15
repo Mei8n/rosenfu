@@ -29,8 +29,9 @@ impl TrackType {
     }
 }
 
-/// Cubic smoothstep over horizontal arc length: flat tangent at both ends,
-/// continuous grade throughout. Maximum grade occurs at the midpoint.
+/// Cubic Hermite height over normalized horizontal arc length.
+/// Zero endpoint tangents give smoothstep; clipped profiles retain nonzero
+/// tangents. Maximum grade is checked at endpoints and derivative extrema.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerticalProfile {
