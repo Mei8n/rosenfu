@@ -44,7 +44,20 @@ impl WorldDraft {
             }
             let (a, point, ai) = ends[0];
             let (b, other, bi) = ends[1];
-            if a.owner != b.owner || a.track_type != b.track_type || point != other {
+            // An endpoint link is flat infrastructure, never an implicit ramp.
+            // Co-located tracks on different levels must remain disconnected.
+            let infrastructure = |alignment: &Alignment, endpoint| {
+                alignment.section_infrastructure(match endpoint {
+                    AlignmentEndpoint::Start => 0,
+                    AlignmentEndpoint::End => alignment.section_count() - 1,
+                })
+            };
+            if a.owner != b.owner
+                || a.track_type != b.track_type
+                || point != other
+                || infrastructure(a, connection.a.endpoint).map(|i| i.level)
+                    != infrastructure(b, connection.b.endpoint).map(|i| i.level)
+            {
                 return Err(invalid);
             }
             // Speed caps need not match: each original alignment keeps its own cap.
