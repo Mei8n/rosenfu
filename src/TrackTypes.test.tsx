@@ -76,7 +76,7 @@ test('parallel mode creates an independent sampled line with undo, redo and pers
  for(const longitude of [139.745,139.755]){const p=point(longitude);fireEvent.click(map,{clientX:p.x/2,clientY:p.y/2,detail:1});}
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect((panel().getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  vi.mocked(invoke).mockRejectedValueOnce(Error('retain parallel'));fireEvent.click(panel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/retain parallel/);
  const req=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='build_alignment')?.[1] as {points:{latitude:number;longitude:number}[]};

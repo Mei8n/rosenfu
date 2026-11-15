@@ -87,3 +87,114 @@ test('idle construction hides line name and internal identifier without changing
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
  expect(map.querySelector('[data-alignment-id="3"] title')?.textContent).toBe('線路');
 });
+test('planned intervals highlight and remove independently, preserving both sides and undo/save payload',async()=>{
+ const d={latitude:a.latitude,longitude:139.81};
+ const original={...emptyConstructionPlans(),draftPoints:[a,b,c,d],draftFinished:true};
+ const map=await start({...empty,construction_plans:original});
+ const sections=map.querySelectorAll('[data-delete-plan-section]');expect(sections).toHaveLength(3);
+ fireEvent.pointerEnter(sections[1],{clientX:200,clientY:150});expect(sections[1].classList.contains('deletion-hover')).toBe(true);expect(sections[0].classList.contains('deletion-hover')).toBe(false);
+ fireEvent.click(sections[1]);expect(screen.getByRole('dialog').textContent).toContain('計画線路の区間');
+ fireEvent.click(screen.getByRole('button',{name:'キャンセル'}));expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(3);
+ fireEvent.click(sections[1]);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(2);
+ expect(map.querySelectorAll('[data-delete-plan-path="1"]')).toHaveLength(1);expect(map.querySelectorAll('[data-delete-plan-path="2"]')).toHaveLength(1);
+ expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(4);expect(map.querySelector('.candidate-draft')).toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(3);expect(map.querySelector('[data-delete-plan-path="2"]')).toBeNull();
+});
+test('split connection saves, reloads and builds two correctly oriented extensions',async()=>{
+ const d={latitude:a.latitude,longitude:139.81},west={latitude:a.latitude,longitude:139.69},east={latitude:a.latitude,longitude:139.84};
+ const world={...empty,alignments:[{id:'3',owner:'2',name:'source',points:[west,a]},{id:'4',owner:'2',name:'destination',points:[d,east]}]};
+ const plans={...emptyConstructionPlans(),draftPoints:[a,b,c,d],draftExtension:{alignmentId:'3',endpoint:'end' as const},draftDestination:{alignmentId:'4',endpoint:'start' as const},draftFinished:true,plannedStations:[{id:'planned:1',pathId:1,planId:1,name:'tail station',point:{latitude:a.latitude,longitude:139.7875},lengthM:100}]};
+ const map=await start({...world,construction_plans:plans});
+ fireEvent.click(map.querySelector('[data-delete-plan-section="1"]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(3);
+ expect(map.querySelector('[data-delete-plan-path="2"]')).toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(2);
+ expect(map.querySelector('[data-delete-plan-path="2"]')).not.toBeNull();
+ vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ await screen.findByText('ワールドと未着工計画を保存しました。');
+ const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:typeof plans}).constructionPlans;
+ expect(saved.plannedStations[0].pathId).toBe(2);
+ expect(saved.plannedStations[0].point).toEqual(plans.plannedStations[0].point);
+ cleanup();vi.mocked(invoke).mockClear();
+ const restored=await start({...world,construction_plans:JSON.parse(JSON.stringify(saved))});
+ expect(restored.querySelectorAll('[data-delete-plan-section]')).toHaveLength(2);
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));
+ const build=screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement;expect(build.disabled).toBe(false);
+ vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(build);
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_plan')).toBe(true));
+ const request=(vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as {alignments:{points:unknown[];extension:unknown;destination?:unknown;stations:{position:number;lengthM:number;name:string}[]}[]}).alignments;
+ expect(request).toHaveLength(2);expect(request.find(p=>(p.extension as any).alignmentId==='3')?.points).toEqual([a,b]);expect(request.find(p=>(p.extension as any).alignmentId==='4')?.points).toEqual([d,c]);expect(request.every(p=>!p.destination)).toBe(true);
+ const station=request.find(p=>(p.extension as any).alignmentId==='4')!.stations[0];expect(station.name).toBe('tail station');expect(station.lengthM).toBe(100);expect(station.position).toBeCloseTo(.75,5);
+});
+
+test('planned path deletion supports repeated undo and redo',async()=>{
+ const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b],draftFinished:true}});
+ fireEvent.click(map.querySelector('[data-delete-plan-path]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ for(let i=0;i<2;i++){
+  expect(map.querySelector('[data-delete-plan-path]')).toBeNull();
+  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelector('[data-delete-plan-path]')).not.toBeNull();
+  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ }
+ expect(map.querySelector('[data-delete-plan-path]')).toBeNull();
+});
+test('built station deletion supports repeated undo and redo through backend validation',async()=>{
+ const map=await start({...empty,stations:[{id:'4',owner:'2',name:'駅',...b}]});
+ fireEvent.click(map.querySelector('[data-delete-station="4"]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ await waitFor(()=>expect(map.querySelector('[data-delete-station]')).toBeNull());
+ for(let i=0;i<2;i++){
+  await waitFor(()=>expect((screen.getByRole('button',{name:'削除を元に戻す'}) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});await waitFor(()=>expect(map.querySelector('[data-delete-station]')).not.toBeNull());
+  await waitFor(()=>expect((screen.getByRole('tab',{name:'削除'}) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});await waitFor(()=>expect(map.querySelector('[data-delete-station]')).toBeNull());
+ }
+ expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='delete_station')).toHaveLength(3);
+});
+
+test('planned anchor deletion redo is discarded by a different deletion',async()=>{
+ const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b,c],draftFinished:true}});
+ fireEvent.click(map.querySelector('[data-delete-anchor="1"]')!);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(3);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ fireEvent.click(map.querySelector('[data-delete-anchor="0"]')!);
+ const points=map.querySelector('[data-delete-plan-path]')?.getAttribute('d');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelector('[data-delete-plan-path]')?.getAttribute('d')).toBe(points);
+});
+test('redo section removal revalidates backend and leaves restored world intact on rejection',async()=>{
+ const map=await start();
+ fireEvent.click(map.querySelector('[data-delete-section="0"]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ await waitFor(()=>expect((screen.getByRole('button',{name:'削除を元に戻す'}) as HTMLButtonElement).disabled).toBe(false));
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ await waitFor(()=>expect(map.querySelectorAll('[data-delete-section]')).toHaveLength(2));
+ await waitFor(()=>expect((screen.getByRole('tab',{name:'削除'}) as HTMLButtonElement).disabled).toBe(false));
+ vi.mocked(invoke).mockRejectedValueOnce('駅のホームに重なる区間は削除できません。');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ await screen.findByText(/駅のホームに重なる区間は削除できません。/);
+ expect(map.querySelectorAll('[data-delete-section]')).toHaveLength(2);
+});
+
+test('planned station deletion can be undone and redone without changing its track',async()=>{
+ const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b,c],draftFinished:true,plannedStations:[{id:'planned:1',pathId:1,planId:1,name:'planned station',point:b,lengthM:100}]}});
+ fireEvent.click(map.querySelector('[data-delete-planned-station]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ expect(map.querySelector('[data-delete-planned-station]')).toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelector('[data-delete-planned-station]')).not.toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});expect(map.querySelector('[data-delete-planned-station]')).toBeNull();
+ expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(3);
+});
+test('changing a restored plan invalidates deletion redo even if the setting is changed back',async()=>{
+ const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b],draftFinished:true}});
+ fireEvent.click(map.querySelector('[data-delete-plan-path]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));
+ const speed=screen.getByRole('spinbutton',{name:'線路の目標最高速度'});
+ fireEvent.change(speed,{target:{value:'160'}});fireEvent.change(speed,{target:{value:'120'}});
+ fireEvent.click(screen.getByRole('tab',{name:'削除'}));
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelector('[data-delete-plan-path]')).not.toBeNull();
+});

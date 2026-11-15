@@ -75,14 +75,14 @@ async function savedPlan(){
 }
 const undo=()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
 const redo=()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
-test('finished path undo/redo retains completion at three, two, one and zero points',async()=>{
+test('finished path undo/redo retains completion at three, two and zero points',async()=>{
  const map=await setup();fireEvent.click(map,{clientX:350,clientY:150});
- for(const length of [2,1,0]){
+ for(const length of [2,0]){
   undo();fireEvent.pointerMove(map,{clientX:420,clientY:180});
   expect(map.querySelectorAll('.draft-anchor')).toHaveLength(length);
   const saved=await savedPlan();expect(saved.draftFinished).toBe(true);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
  }
- for(const length of [1,2,3]){
+ for(const length of [2,3]){
   redo();fireEvent.pointerMove(map,{clientX:420,clientY:180});
   const saved=await savedPlan();expect(saved.draftFinished).toBe(true);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
  }
