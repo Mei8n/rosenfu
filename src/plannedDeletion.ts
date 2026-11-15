@@ -1,7 +1,8 @@
 import {plannedGeometry,type EditedGeometry} from './editedGeometry';
 import {anchorIndices} from './deletionSections';
-import type {ConstructionPlans,Extension,GeoPoint} from './constructionPlans';
-export type PlannedDeleteTarget={kind:'plan-path';pathId:number}|{kind:'plan-anchor';pathId:number;index:number}|{kind:'plan-station';stationId:string};
+import {nextConstructionIds,type ConstructionPlans,type PlannedPath,type Extension,type GeoPoint} from './constructionPlans';
+import {alignmentLength,nearestOnAlignment} from './alignment';
+export type PlannedDeleteTarget={kind:'plan-path';pathId:number}|{kind:'plan-section';pathId:number;sectionIndex:number}|{kind:'plan-anchor';pathId:number;index:number}|{kind:'plan-station';stationId:string};
 /** Explicit individual deletion never silently drops a dependent planned station. */
 export function removePlannedTarget(value:ConstructionPlans,target:PlannedDeleteTarget,previous:(extension:Extension|null)=>GeoPoint|undefined=()=>undefined):ConstructionPlans{
  if(target.kind==='plan-station'){
@@ -11,6 +12,7 @@ export function removePlannedTarget(value:ConstructionPlans,target:PlannedDelete
  const active=target.pathId===value.activePathId;
  const path=active?{points:value.draftPoints,editedGeometry:value.draftEditedGeometry,extension:value.draftExtension,destination:value.draftDestination,reference:undefined,roadFollowing:value.roadFollowing}:value.parkedPaths.find(path=>path.id===target.pathId);
  if(!path||!path.points.length)throw Error('削除する計画線路が見つかりません');
+ if(target.kind==='plan-section')return removePlannedSection(value,target,previous);
  if(value.plannedStations.some(station=>station.pathId===target.pathId))throw Error('計画駅が使用中です。先に駅計画を削除してください');
  let points:GeoPoint[]=[],extension=path.extension,destination=path.destination,editedGeometry:EditedGeometry|undefined;
  if(target.kind==='plan-anchor'){
@@ -30,8 +32,49 @@ export function removePlannedTarget(value:ConstructionPlans,target:PlannedDelete
    editedGeometry={version:1,anchors:points,line:original.points.slice(start,end+1)};
   }
  }
+ if(points.length>1&&!extension&&destination){
+  const line=plannedGeometry(points,editedGeometry).points.reverse();
+  points.reverse();extension=destination;destination=undefined;editedGeometry={version:1,anchors:points,line};
+ }
  const geometry=plannedGeometry(points,editedGeometry,previous(extension));
  if(geometry.error)throw Error(geometry.error);
  if(active)return {...value,draftPoints:points,draftEditedGeometry:editedGeometry,redoPoints:[],draftExtension:points.length?extension:null,draftDestination:points.length>1?destination:undefined,draftRedoDestination:undefined,draftFinished:points.length>0};
  return {...value,parkedPaths:points.length?value.parkedPaths.map(item=>item.id===target.pathId?{...item,points,line:geometry.points,editedGeometry,redo:[],extension,destination:points.length>1?destination:undefined,redoDestination:undefined}:item):value.parkedPaths.filter(item=>item.id!==target.pathId)};
+}
+
+/** Cut an anchor interval without re-fitting surviving curves or moving station centers. */
+function removePlannedSection(value:ConstructionPlans,target:Extract<PlannedDeleteTarget,{kind:'plan-section'}>,previous:(extension:Extension|null)=>GeoPoint|undefined):ConstructionPlans{
+ const active=target.pathId===value.activePathId;
+ const path:PlannedPath|undefined=active?{id:value.activePathId,planId:value.activePlanId,name:'',points:value.draftPoints,line:[],redo:[],extension:value.draftExtension,destination:value.draftDestination,editedGeometry:value.draftEditedGeometry,designSpeedKmh:value.designSpeedKmh,trackType:value.trackType,roadFollowing:value.roadFollowing}:value.parkedPaths.find(p=>p.id===target.pathId);
+ if(!path)throw Error('削除する計画線路が見つかりません');
+ // Reference paths lack editable anchor semantics. Never guess their segmentation.
+ if(path.reference||path.roadFollowing)throw Error('参照線路は区間ごとに削除できません');
+ const original=plannedGeometry(path.points,path.editedGeometry,previous(path.extension));
+ const indices=anchorIndices(path.points,original.points),i=target.sectionIndex;
+ if(!indices||!Number.isInteger(i)||i<0||i>=indices.length-1)throw Error('削除する区間が見つかりません');
+ const ranges:[number,number][]=[];
+ if(i>0)ranges.push([0,i]);
+ if(i+1<path.points.length-1)ranges.push([i+1,path.points.length-1]);
+ const pieces=ranges.map(([start,end],index):PlannedPath=>{
+  const points=path.points.slice(start,end+1),line=original.points.slice(indices[start],indices[end]+1);
+  let extension=start===0?path.extension:null,destination=end===path.points.length-1?path.destination:undefined;
+  // Construction supports extension-at-start, not destination-only paths. Reorient
+  // a surviving tail from its existing endpoint without altering its physical shape.
+  if(!extension&&destination){points.reverse();line.reverse();extension=destination;destination=undefined;}
+  return {...path,id:index===0?path.id:nextConstructionIds(value).path,points,line,editedGeometry:{version:1,anchors:points,line},redo:[],extension,destination,redoDestination:undefined};
+ });
+ const length=alignmentLength(original.points),cutStart=alignmentLength(original.points.slice(0,indices[i]+1)),cutEnd=alignmentLength(original.points.slice(0,indices[i+1]+1));
+ const plannedStations=value.plannedStations.map(station=>{
+  if(station.pathId!==path.id)return station;
+  const nearest=nearestOnAlignment(original.points,station.point),position=nearest.position*length,half=station.lengthM/2;
+  // A whole platform must survive on one side; center-only checks permit severed stations.
+  if(!Number.isFinite(position)||nearest.distanceM>1||position-half< -1e-6||position+half>length+1e-6||!(position+half<=cutStart+1e-6||position-half>=cutEnd-1e-6))throw Error('削除する区間に計画駅があります。先に駅計画を削除してください');
+  const piece=pieces[ranges.findIndex(([start,end])=>position<cutStart?start===0:end===path.points.length-1)];
+  if(!piece)throw Error('計画駅が使用中です');
+  return {...station,pathId:piece.id};
+ });
+ const parkedPaths=value.parkedPaths.filter(p=>p.id!==path.id);
+ if(!active)return {...value,parkedPaths:[...parkedPaths,...pieces],plannedStations};
+ const first=pieces[0];
+ return {...value,parkedPaths:[...parkedPaths,...pieces.slice(1)],plannedStations,draftPoints:first?.points??[],draftEditedGeometry:first?.editedGeometry,redoPoints:[],draftExtension:first?.extension??null,draftDestination:first?.destination,draftRedoDestination:undefined,draftFinished:!!first};
 }

@@ -87,3 +87,37 @@ test('idle construction hides line name and internal identifier without changing
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
  expect(map.querySelector('[data-alignment-id="3"] title')?.textContent).toBe('線路');
 });
+test('planned intervals highlight and remove independently, preserving both sides and undo/save payload',async()=>{
+ const d={latitude:a.latitude,longitude:139.81};
+ const original={...emptyConstructionPlans(),draftPoints:[a,b,c,d],draftFinished:true};
+ const map=await start({...empty,construction_plans:original});
+ const sections=map.querySelectorAll('[data-delete-plan-section]');expect(sections).toHaveLength(3);
+ fireEvent.pointerEnter(sections[1],{clientX:200,clientY:150});expect(sections[1].classList.contains('deletion-hover')).toBe(true);expect(sections[0].classList.contains('deletion-hover')).toBe(false);
+ fireEvent.click(sections[1]);expect(screen.getByRole('dialog').textContent).toContain('計画線路の区間');
+ fireEvent.click(screen.getByRole('button',{name:'キャンセル'}));expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(3);
+ fireEvent.click(sections[1]);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(2);
+ expect(map.querySelectorAll('[data-delete-plan-path="1"]')).toHaveLength(1);expect(map.querySelectorAll('[data-delete-plan-path="2"]')).toHaveLength(1);
+ expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(4);expect(map.querySelector('.candidate-draft')).toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(3);expect(map.querySelector('[data-delete-plan-path="2"]')).toBeNull();
+});
+test('split connection saves, reloads and builds two correctly oriented extensions',async()=>{
+ const d={latitude:a.latitude,longitude:139.81},west={latitude:a.latitude,longitude:139.69},east={latitude:a.latitude,longitude:139.84};
+ const world={...empty,alignments:[{id:'3',owner:'2',name:'source',points:[west,a]},{id:'4',owner:'2',name:'destination',points:[d,east]}]};
+ const plans={...emptyConstructionPlans(),draftPoints:[a,b,c,d],draftExtension:{alignmentId:'3',endpoint:'end' as const},draftDestination:{alignmentId:'4',endpoint:'start' as const},draftFinished:true,plannedStations:[{id:'planned:1',pathId:1,planId:1,name:'tail station',point:{latitude:a.latitude,longitude:139.7875},lengthM:100}]};
+ const map=await start({...world,construction_plans:plans});
+ fireEvent.click(map.querySelector('[data-delete-plan-section="1"]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ vi.mocked(invoke).mockResolvedValueOnce(undefined);fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world')).toBe(true));
+ const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:typeof plans}).constructionPlans;
+ cleanup();vi.mocked(invoke).mockClear();
+ const restored=await start({...world,construction_plans:JSON.parse(JSON.stringify(saved))});
+ expect(restored.querySelectorAll('[data-delete-plan-section]')).toHaveLength(2);
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));
+ const build=screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement;expect(build.disabled).toBe(false);
+ vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(build);
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_plan')).toBe(true));
+ const request=(vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as {alignments:{points:unknown[];extension:unknown;destination?:unknown;stations:{position:number;lengthM:number;name:string}[]}[]}).alignments;
+ expect(request).toHaveLength(2);expect(request.find(p=>(p.extension as any).alignmentId==='3')?.points).toEqual([a,b]);expect(request.find(p=>(p.extension as any).alignmentId==='4')?.points).toEqual([d,c]);expect(request.every(p=>!p.destination)).toBe(true);
+ const station=request.find(p=>(p.extension as any).alignmentId==='4')!.stations[0];expect(station.name).toBe('tail station');expect(station.lengthM).toBe(100);expect(station.position).toBeCloseTo(.75,5);
+});

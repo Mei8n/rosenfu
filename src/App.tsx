@@ -570,6 +570,7 @@ export function App() {
     if(target.kind==="plan-station")return "駅計画";
     if(target.kind==="plan-anchor")return "アンカー";
     if(target.kind==="plan-path")return "計画線路";
+    if(target.kind==="plan-section")return "計画線路の区間";
     const line=alignments.find(line=>line.id===target.alignmentId),section=line&&deletionSections(line)[target.sectionIndex];
     return section?`建設済みの線路 ${(alignmentLength(section.points)/1000).toFixed(2)} km`:"建設済みの線路";
   }
@@ -1413,8 +1414,8 @@ export function App() {
               })}
               {activeTool==="delete"&&enabled&&<g className="deletion-layer">
                 {alignments.flatMap(line=>deletionSections(line).map(section=>{const target:DeleteTarget={kind:"built-section",alignmentId:line.id,sectionIndex:section.index};return <path key={line.id+":"+section.index} data-delete-alignment={line.id} data-delete-section={section.index} d={drawPath(section.points)} {...deleteHitProps(target)}/>;}))}
-                {[...parkedPaths.map(path=>({id:path.id,points:path.points,line:path.line})),{id:activePathId,points:draftPoints,line:draftLine}].map(path=><g key={path.id}>
-                  {path.line.length>1&&<path data-delete-plan-path={path.id} d={drawPath(path.line)} {...deleteHitProps({kind:"plan-path",pathId:path.id})}/>}
+                {[...parkedPaths.map(path=>({id:path.id,points:path.points,line:path.line,whole:!!path.reference||path.roadFollowing})),{id:activePathId,points:draftPoints,line:draftLine,whole:roadFollowing}].map(path=><g key={path.id}>
+                  {deletionSections({points:path.line,anchor_indices:path.whole?undefined:anchorIndices(path.points,path.line)}).map(section=><path key={section.index} data-delete-plan-path={path.id} data-delete-plan-section={section.index} d={drawPath(section.points)} {...deleteHitProps(path.whole||!anchorIndices(path.points,path.line)?{kind:"plan-path",pathId:path.id}:{kind:"plan-section",pathId:path.id,sectionIndex:section.index})}/>)}
                   {path.points.map((point,index)=>{const p=project(point.latitude,point.longitude,camera);return <rect key={index} data-delete-anchor={index} data-delete-path={path.id} x={p.x-8/viewport.scale} y={p.y-8/viewport.scale} width={16/viewport.scale} height={16/viewport.scale} {...deleteHitProps({kind:"plan-anchor",pathId:path.id,index},true)}/>;})}
                 </g>)}
                 {plannedPlatforms.map(({station,polygon})=>{const p=project(station.point.latitude,station.point.longitude,camera),target:DeleteTarget={kind:"plan-station",stationId:station.id};return polygon.length?<path key={station.id} data-delete-planned-station={station.id} d={drawPath(polygon)+"Z"} {...deleteHitProps(target,true)}/>:<circle key={station.id} data-delete-planned-station={station.id} cx={p.x} cy={p.y} r={8/viewport.scale} {...deleteHitProps(target,true)}/>;})}
