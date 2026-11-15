@@ -1,3 +1,4 @@
+import {constructionPlanFingerprint} from './constructionPlans';
 import {DEFAULT_INFRASTRUCTURE,COUNT_LABELS,LEVEL_LABELS,endpointInfrastructure,infrastructureSections,schematicTrackPaths,type SectionInfrastructure} from './sectionInfrastructure';
 import {SaveSlots,type SaveSlot} from "./SaveSlots";
 import {ServiceRouteBindingEditor,type ServiceRouteBindingRecord} from "./ServiceRouteBinding";
@@ -579,10 +580,10 @@ export function App() {
   useEffect(()=>{referenceCopy.clearHover();},[camera]);
   const saveBlocked = bindingDirty || !!anchorPreview || candidateDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
   const hasPlans = plannedStations.length>0 || draftPoints.length > 0 || redoPoints.length > 0 || parkedPaths.length > 0 || referenceCopy.active;
-  const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,infrastructure,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,infrastructure,roadFollowing,plannedStations,draftFinished]);
+  const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,infrastructure:infrastructure.track_count===1&&infrastructure.level==="ground"?undefined:infrastructure,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,infrastructure,roadFollowing,plannedStations,draftFinished]);
   const persistedPlans=useMemo(()=>compactEmptyPlans(constructionPlans),[constructionPlans]);
-  const planFingerprint=JSON.stringify(constructionPlans);
-  const [savedPlanFingerprint,setSavedPlanFingerprint]=useState(()=>JSON.stringify(emptyConstructionPlans()));
+  const planFingerprint=constructionPlanFingerprint(constructionPlans);
+  const [savedPlanFingerprint,setSavedPlanFingerprint]=useState(()=>constructionPlanFingerprint(emptyConstructionPlans()));
   const plansDirty=planFingerprint!==savedPlanFingerprint;
   const unapplied = saveBlocked || referenceCopy.active;
   const viewDirty=JSON.stringify(camera)!==savedViewFingerprint;
@@ -591,12 +592,12 @@ export function App() {
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined,compact=false){
     parkedAnchorHistory.current.clear();
-    const original=value??emptyConstructionPlans(),restored=compact?compactEmptyPlans(original):original,ids=nextConstructionIds(restored);
+    const raw=value??emptyConstructionPlans(),original={...raw,infrastructure:raw.infrastructure?.track_count===1&&raw.infrastructure.level==="ground"?undefined:raw.infrastructure},restored=compact?compactEmptyPlans(original):original,ids=nextConstructionIds(restored);
     setPlans(restored.plans);setParkedPaths(restored.parkedPaths);setActivePathId(restored.activePathId);setActivePlanId(restored.activePlanId);
     setDraftPoints(restored.draftPoints);setDraftEditedGeometry(restored.draftEditedGeometry);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints(restored.redoPoints);setDraftExtension(restored.draftExtension);setDraftDestination(restored.draftDestination);setDraftRedoDestination(restored.draftRedoDestination);setDraftFinished(restored.draftFinished);
     setInfrastructure(restored.infrastructure??DEFAULT_INFRASTRUCTURE);setTrackType(restored.trackType);setDesignSpeedKmh(restored.designSpeedKmh);setRoadFollowing(restored.roadFollowing);setPlannedStations(restored.plannedStations);
     nextPlanId.current=ids.plan;nextPathId.current=ids.path;nextPlannedStationId.current=ids.station;
-    setSavedPlanFingerprint(JSON.stringify(restored));
+    setSavedPlanFingerprint(constructionPlanFingerprint(restored));
   }
   function alignmentReferences(id:string){
     if(world?.alignments?.find(a=>a.id===id)?.owner!==world?.companies[0]?.id)return "他社の線路";
@@ -626,7 +627,7 @@ export function App() {
       const after:ConstructionPlans=id===activePathId?{...before,draftPoints:[],draftEditedGeometry:undefined,redoPoints:[],draftExtension:null,draftDestination:undefined,draftRedoDestination:undefined,draftFinished:false}:{...before,parkedPaths:before.parkedPaths.filter(p=>p.id!==id)};
       const saved=savedPlanFingerprint;
       restoreConstructionPlans(after);setSavedPlanFingerprint(saved);
-      setTrackDeleteUndo({kind:"plan",before,after:JSON.stringify(after),world});
+      setTrackDeleteUndo({kind:"plan",before,after:constructionPlanFingerprint(after),world});
       setSelectedPlanPath(null);setTrackDeleteConfirm(false);return;
     }
     void perform(async()=>{
@@ -704,7 +705,7 @@ export function App() {
       const before=constructionPlans,after=removePlannedTarget(before,target,extensionPrevious),saved=savedPlanFingerprint;
       setTrackDeleteRedo(null);
       restoreConstructionPlans(after);setSavedPlanFingerprint(saved);setStationUndo([]);setStationRedo([]);
-      setTrackDeleteUndo({kind:"plan",before,after:JSON.stringify(after),world});setDeleteTarget(null);setSelectedPlanPath(null);
+      setTrackDeleteUndo({kind:"plan",before,after:constructionPlanFingerprint(after),world});setDeleteTarget(null);setSelectedPlanPath(null);
     }catch(error){setError(detail(error));}
   }
   function confirmDeletion(){
