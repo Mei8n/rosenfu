@@ -143,3 +143,105 @@ impl World {
         Ok(result)
     }
 }
+
+/// Built lane polylines already trimmed to the curved movement joins.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TrackLaneGeometry {
+    pub alignment_id: AlignmentId,
+    pub section_index: usize,
+    pub lane_index: u8,
+    pub points: Vec<GeoPoint>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TrackRenderGeometry {
+    pub lanes: Vec<TrackLaneGeometry>,
+    pub movements: Vec<TrackMovementGeometry>,
+}
+impl World {
+    pub fn track_render_geometry(&self) -> Result<TrackRenderGeometry, WorldError> {
+        let movements = self.track_movement_geometries()?;
+        let mut lanes = Vec::new();
+        for a in &self.data.alignments {
+            let length = a.length_m();
+            let mut positions = vec![0.0];
+            let mut accumulated = 0.0;
+            for pair in a.points.windows(2) {
+                accumulated += super::alignment::distance(pair[0], pair[1]);
+                positions.push(accumulated / length);
+            }
+            let boundaries = a
+                .anchor_indices
+                .clone()
+                .unwrap_or_else(|| vec![0, a.points.len() - 1]);
+            for (section_index, anchors) in boundaries.windows(2).enumerate() {
+                let count = a
+                    .section_infrastructure(section_index)
+                    .expect("validated section")
+                    .track_count;
+                for lane_index in 0..count {
+                    let mut low = positions[anchors[0]];
+                    let mut high = positions[anchors[1]];
+                    let mut low_join = None;
+                    let mut high_join = None;
+                    for movement in &movements {
+                        let port = movement.movement.from;
+                        if port.endpoint.alignment_id != a.id || port.lane_index != lane_index {
+                            continue;
+                        }
+                        let t = movement.from_position;
+                        let join = movement.points[0];
+                        match port.endpoint.endpoint {
+                            AlignmentEndpoint::Start if section_index == 0 && t >= low => {
+                                low = t;
+                                low_join = Some(join);
+                            }
+                            AlignmentEndpoint::End
+                                if section_index + 1 == a.section_count() && t <= high =>
+                            {
+                                high = t;
+                                high_join = Some(join);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if low >= high {
+                        return Err(WorldError::InvalidAlignmentConnection);
+                    }
+                    let lateral = ((f64::from(count) - 1.0) / 2.0 - f64::from(lane_index))
+                        * TRACK_LANE_SPACING_M;
+                    let mut ts = vec![low];
+                    ts.extend(positions.iter().copied().filter(|t| *t > low && *t < high));
+                    ts.push(high);
+                    let mut points: Vec<_> = ts
+                        .into_iter()
+                        .map(|t| {
+                            let (x, y) = vector(
+                                a.point_at((t - 1e-5).max(0.0)),
+                                a.point_at((t + 1e-5).min(1.0)),
+                            );
+                            let norm = x.hypot(y);
+                            if norm <= 1e-9 {
+                                a.point_at(t)
+                            } else {
+                                offset(a.point_at(t), -y / norm * lateral, x / norm * lateral)
+                            }
+                        })
+                        .collect();
+                    if let Some(p) = low_join {
+                        points[0] = p;
+                    }
+                    if let Some(p) = high_join {
+                        *points.last_mut().expect("two endpoints") = p;
+                    }
+                    lanes.push(TrackLaneGeometry {
+                        alignment_id: a.id,
+                        section_index,
+                        lane_index,
+                        points,
+                    });
+                }
+            }
+        }
+        Ok(TrackRenderGeometry { lanes, movements })
+    }
+}

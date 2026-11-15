@@ -540,3 +540,29 @@ fn single_double_y_has_distinct_curved_lane_geometry_and_exact_reverse_paths() {
     let restored = World::new(serde_json::from_str(&saved).unwrap()).unwrap();
     assert_eq!(paths, restored.track_movement_geometries().unwrap());
 }
+
+#[test]
+fn rendered_lanes_join_turnouts_exactly_with_shared_four_metre_spacing() {
+    let (mut w, c, a, b) = pair(1, 2, AlignmentEndpoint::End, AlignmentEndpoint::Start);
+    w.connect_alignment_endpoints(c, a, b).unwrap();
+    let geometry = w.track_render_geometry().unwrap();
+    assert_eq!(geometry.lanes.len(), 3);
+    for path in &geometry.movements {
+        let port = path.movement.from;
+        let lane = geometry
+            .lanes
+            .iter()
+            .find(|lane| {
+                lane.alignment_id == port.endpoint.alignment_id
+                    && lane.lane_index == port.lane_index
+            })
+            .unwrap();
+        let join = if port.endpoint.endpoint == AlignmentEndpoint::Start {
+            lane.points[0]
+        } else {
+            *lane.points.last().unwrap()
+        };
+        assert_eq!(join, path.points[0]);
+    }
+    assert_ne!(geometry.lanes[1].points, geometry.lanes[2].points);
+}

@@ -31,6 +31,15 @@ fn preview_track_movement_geometry(
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
+fn preview_track_render_geometry(
+    world: WorldDraft,
+) -> Result<rosenfu_core::world::TrackRenderGeometry, String> {
+    rosenfu_core::world::World::new(world)
+        .map_err(|e| e.to_string())?
+        .track_render_geometry()
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
 fn world_snapshot(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
     Ok(editor
         .lock()
@@ -534,6 +543,7 @@ fn main() {
             preview_route_membership,
             world_snapshot,
             preview_track_movement_geometry,
+            preview_track_render_geometry,
             add_station,
             build_alignment_from_reference,
             build_alignment,

@@ -585,4 +585,6 @@ pub use vertical_profile::{VerticalProfile, LEVEL_SPACING_M};
 mod junctions;
 
 mod turnout_geometry;
-pub use turnout_geometry::{TrackMovementGeometry, TRACK_LANE_SPACING_M};
+pub use turnout_geometry::{
+    TrackLaneGeometry, TrackMovementGeometry, TrackRenderGeometry, TRACK_LANE_SPACING_M,
+};

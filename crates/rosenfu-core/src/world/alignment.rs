@@ -93,7 +93,7 @@ pub struct StationPlacement {
     pub width_m: f64,
 }
 
-fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
+pub(super) fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
     let x = (b.longitude - a.longitude).to_radians()
         * ((a.latitude + b.latitude) / 2.0).to_radians().cos();
     let y = (b.latitude - a.latitude).to_radians();
