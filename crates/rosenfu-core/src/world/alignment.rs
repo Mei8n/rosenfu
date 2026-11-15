@@ -234,8 +234,8 @@ impl WorldDraft {
             let footprint_end = p.position + p.length_m / (2.0 * a.length_m());
             if footprint_start.is_finite()
                 && footprint_end.is_finite()
-                && footprint_start >= 0.
-                && footprint_end <= 1.
+                && footprint_start >= -1e-9
+                && footprint_end <= 1. + 1e-9
                 && footprint_start <= footprint_end
                 && !a.is_flat_over_position(footprint_start, footprint_end)
             {

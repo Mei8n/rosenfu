@@ -167,9 +167,11 @@ impl Alignment {
     }
     /// Whole platform footprint, not just centre or the alignment's global label.
     pub fn is_flat_over_position(&self, from: f64, to: f64) -> bool {
-        if !from.is_finite() || !to.is_finite() || from < 0. || to > 1. || from > to {
+        if !from.is_finite() || !to.is_finite() || from < -1e-9 || to > 1. + 1e-9 || from > to {
             return false;
         }
+        let from = from.clamp(0., 1.);
+        let to = to.clamp(0., 1.);
         if self.section_profiles.is_empty() {
             return self.vertical_profile.is_none_or(|p| p.is_flat());
         }

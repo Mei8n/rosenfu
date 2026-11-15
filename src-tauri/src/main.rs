@@ -257,6 +257,26 @@ fn delete_alignment_sections(
         .delete_alignment_sections(selections, expected_alignments, construction_plans)
 }
 #[tauri::command]
+fn update_alignment_anchor_height(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignment_id: AlignmentId,
+    anchor_index: usize,
+    level: rosenfu_core::world::InfrastructureLevel,
+    expected_alignment: rosenfu_core::world::Alignment,
+    construction_plans: rosenfu_core::world::ConstructionPlans,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .update_alignment_anchor_height(
+            alignment_id,
+            anchor_index,
+            level,
+            expected_alignment,
+            construction_plans,
+        )
+}
+#[tauri::command]
 fn update_alignment_section_infrastructure(
     editor: State<'_, Mutex<WorldEditor>>,
     selections: Vec<session::AlignmentSectionSelection>,
@@ -576,6 +596,7 @@ fn main() {
             delete_alignment_section,
             delete_alignment_sections,
             update_alignment_section_infrastructure,
+            update_alignment_anchor_height,
             undo_alignment_deletion,
             rename_company,
             save_planned_route,
