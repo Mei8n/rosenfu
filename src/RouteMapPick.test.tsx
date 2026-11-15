@@ -54,3 +54,12 @@ test('ordered map waypoints are editable, reject duplicates and are sent to cons
  fireEvent.click(screen.getByRole('button',{name:'候補を閉じる'}));
  expect(screen.getByRole('list',{name:'経由駅の順序'}).children).toHaveLength(0);
 });
+test('new route accepts sequential map station clicks with the last as endpoint',async()=>{
+ const {stations}=await setup();fireEvent.click(screen.getByRole('button',{name:'新規路線'}));
+ for(const index of [0,2,3,1])fireEvent.click(stations[index]);
+ expect((screen.getByLabelText('候補の起点') as HTMLSelectElement).value).toBe('3');
+ expect((screen.getByLabelText('候補の終点') as HTMLSelectElement).value).toBe('4');
+ expect(screen.getByRole('list',{name:'経由駅の順序'}).textContent).toContain('経由一');
+ fireEvent.click(screen.getByRole('button',{name:'経路候補を検索'}));await screen.findByText(/現在の接続関係では経路が見つかりません/);
+ expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'3',end:'4',viaStationIds:['5','6']});
+});

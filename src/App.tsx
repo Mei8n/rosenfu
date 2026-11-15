@@ -1,3 +1,4 @@
+import {RouteDirectory} from "./RouteDirectory";
 import {PARALLEL_RANGE_M,parallelProjection,offsetTrack,parallelSection} from "./parallelTrack";
 import {TrackFollowIcon} from "./TrackFollowIcon";
 import {stationGroupViews,footprintsIntersect,type StationGroup} from "./stationGroups";
@@ -218,7 +219,8 @@ export function App() {
   const [worldEpoch,setWorldEpoch]=useState(0);
   const [restoredAutosaveEpoch,setRestoredAutosaveEpoch]=useState(-1);
   const [mainTab,setMainTab]=useState<WorkspaceTab>("construction");
-  const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|null>(null);
+  const [routeSequenceKey,setRouteSequenceKey]=useState(0);
+  const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|"sequence"|null>(null);
   const routeMapSelect=useRef<((id:string)=>void)|null>(null);
   function cancelRouteMapPick(){routeMapSelect.current=null;setRouteMapPick(null);}
   useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch]);
@@ -1598,15 +1600,12 @@ export function App() {
               <button className="full-width track-submit" type="submit" disabled={!enabled || !validEndpoints}>線路を接続</button>
             </fieldset></form>
             {world?.tracks.length ? <ul className="track-list">{world.tracks.map((track) => <li key={track.id}><span>{stationsById.get(track.from)?.name ?? track.from} ↔ {stationsById.get(track.to)?.name ?? track.to} (ID {track.id})</span><button className="secondary danger" disabled={!enabled || unapplied || !!trackReferences(track.id)} onClick={() => setPendingDelete({ kind: "track", id: track.id })}>線路 {track.id} を削除</button>{trackReferences(track.id) && <small>削除不可: {trackReferences(track.id)}</small>}</li>)}</ul> : <p className="field-hint">駅を2つ配置すると接続できます。</p>}</details>
-            <div className="section-number">03 / ROUTE</div>
-            <h3>路線を定義する</h3><p className="muted">線路設備とは独立した、順序付きの経路です。停車駅やダイヤは設定しません。</p>
-            <RouteCandidatePreview mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={!routeDirty} onSave={applyPlannedRoute} onApply={(start, tracks) => {
+            <h3>路線</h3>
+            <RouteDirectory world={world??previewWorld} enabled={enabled} selected={routeId} onChoose={id=>{chooseRoute(id);if(id===null&&!routeDirty)setRouteSequenceKey(key=>key+1);else cancelRouteMapPick();}}/>
+            <RouteCandidatePreview startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={!routeDirty} onSave={applyPlannedRoute} onApply={(start, tracks) => {
               resetRoute(); setRouteStart(start); setRouteTracks(tracks); setRouteDirty(true);
               setRouteHint("候補を新規路線の下書きへ取り込みました。路線名と経路を確認して適用してください。");
             }}/>
-            <div className="route-directory"><button className="secondary" disabled={!enabled} onClick={() => chooseRoute(null)}>新規路線</button>
-              {world?.routes.map((route) => <button key={route.id} className={`route-choice ${route.id === routeId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseRoute(route.id)}>編集: {route.name}</button>)}
-            </div>
             {pendingRouteChoice && <div className="inline-confirm" role="alert"><p>未適用の路線下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingRouteChoice(null)}>編集を続ける</button><button disabled={busy} onClick={() => resetRoute(world?.routes.find((route) => route.id === pendingRouteChoice.id))}>下書きを破棄して切替</button></div>}
             {selectedRoutePath && <section aria-label="保存済み路線の経路"><h4>{routeName}</h4><p>新方式の路線です。旧手動エディターでは上書きできません。既存の所属駅変更は未対応です。</p><p>所属駅: {selectedRoutePath.member_stations.map(id=>stationsById.get(id)?.name ?? id).join(" → ")}</p><ol>{selectedRoutePath.segments.map((segment,index)=><li key={index}>{segment.kind === "track" ? "駅間接続 " + segment.track_id : (segment.kind==="alignment"?"建設線形 " + (alignments.find(a=>a.id===segment.alignment_id)?.name ?? segment.alignment_id):"接続経路") + ": " + (stationsById.get(segment.from)?.name ?? segment.from) + " → " + (stationsById.get(segment.to)?.name ?? segment.to)}</li>)}</ol></section>}
             <form onSubmit={submitRoute}><fieldset disabled={!enabled || !!selectedRoutePath}>
