@@ -76,3 +76,14 @@ test('other company section remains blocked before invocation',async()=>{
  expect((screen.getByRole('button',{name:'削除する'}) as HTMLButtonElement).disabled).toBe(true);
  expect(invoke).not.toHaveBeenCalledWith('delete_alignment_section',expect.anything());
 });
+
+test('idle construction hides line name and internal identifier without changing selection',async()=>{
+ const map=await start();
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));
+ fireEvent.click(map.querySelector('.alignment-hit')!);
+ expect(map.querySelector('[data-alignment-id="3"] title')).toBeNull();
+ expect(screen.queryByText('線路 3')).toBeNull();
+ expect(screen.getByRole('button',{name:'選択線路を削除'})).toBeTruthy();
+ fireEvent.click(screen.getByRole('tab',{name:'削除'}));
+ expect(map.querySelector('[data-alignment-id="3"] title')?.textContent).toBe('線路');
+});
