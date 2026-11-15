@@ -60,6 +60,8 @@ test.each([false,true])('all anchors undone then new drawing builds without a hi
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ expect(screen.getByText('0経路 · 0駅')).toBeTruthy();
+ expect((screen.getByRole('button',{name:'別の線路計画を追加'}) as HTMLButtonElement).disabled).toBe(true);
  if(extension){click(250,130);click(350,130);}
  else {click(120,80);click(240,80);}
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
@@ -67,9 +69,27 @@ test.each([false,true])('all anchors undone then new drawing builds without a hi
 test('switching plans retains a fully undone start point for Redo',async()=>{
  const map=await start({alignments:[]});
  fireEvent.click(map,{clientX:120,clientY:200,detail:1});
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
+ fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+});
+
+test('replacing a fully undone path drops its dependent station draft rather than stranding it',async()=>{
+ const map=await start({alignments:[]});
+ const click=(x:number,y=200)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(120);click(240);click(240);
+ fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));click(180);
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ click(120,80);click(240,80);
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(0);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[]});
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_alignment',expect.anything()));
 });
