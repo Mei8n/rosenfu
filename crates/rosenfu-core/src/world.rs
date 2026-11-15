@@ -111,6 +111,8 @@ impl ViewState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub station_groups: Vec<StationGroup>,
     /// Explicit, non-branching infrastructure endpoint links.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alignment_connections: Vec<AlignmentConnection>,
@@ -158,6 +160,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            station_groups: vec![],
             alignment_connections: vec![],
             view_state: None,
             construction_plans: None,
@@ -195,6 +198,7 @@ pub enum WorldError {
     ServicePathEditUnsupported,
     InvalidStationPlacement,
     StationFootprintOverlap,
+    InvalidStationGroup,
     SelfLoop,
     EmptyRoute,
     DisconnectedRoute,
@@ -386,6 +390,7 @@ impl WorldDraft {
         ids(self.services.iter().map(|x| x.id.0), "service")?;
         ids(self.alignments.iter().map(|x| x.id.0), "alignment")?;
         self.validate_alignments()?;
+        self.validate_station_groups()?;
         self.validate_alignment_connections()?;
         let maximum_id = self
             .players
@@ -527,6 +532,7 @@ mod tests {
     use super::*;
     fn sample() -> WorldDraft {
         WorldDraft {
+            station_groups: vec![],
             alignment_connections: vec![],
             view_state: None,
             construction_plans: None,
@@ -676,3 +682,6 @@ pub use provenance::{
 
 mod construction_plans;
 pub use construction_plans::ConstructionPlans;
+
+mod station_groups;
+pub use station_groups::StationGroup;
