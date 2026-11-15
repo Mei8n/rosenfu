@@ -47,9 +47,9 @@
 互換性を壊す不具合はリリースを止める対象です。維持できない例外は事前に理由と影響を公開し、可能な限り変換ツールや旧版での復旧手段を提供します。
 例外を通常の更新手順にせず、既存ワールドを黙って初期化することは禁止します。
 
-## 現在の開発候補：schema 18（アルファの互換性破棄）
+## 前段の形式変更：schema 18（アルファの互換性破棄）
 
-2026-11-15 の本人方針「旧形式は完全に切っていい」「データ作り直す」により、旧 Track モデルと schema 1〜17 の読み込み・自動移行を廃止する。schema 18 のみ読み書きする。旧データを黙って初期化・欠落読込せず、非対応と元ファイルを変更していないことを表示する。開発更新は本人 PC のセーブ削除を含まない。
+2026-11-15 の本人方針「旧形式は完全に切っていい」「データ作り直す」により、旧 Track モデルと schema 1〜17 の読み込み・自動移行を廃止する。この段階では schema 18 のみ読み書きした。現在の18読込・19保存は次節のとおり。旧データを黙って初期化・欠落読込せず、非対応と元ファイルを変更していないことを表示する。開発更新は本人 PC のセーブ削除を含まない。
 
 現在の設備は Alignment と端点接続、路線・系統は必須の RoutePath / ServicePath を使用する。旧 Track / tracks フィールドの持込みを拒否する。駅グループの共有名称・物理ホーム所属、系統と路線の明示的な関連は現形式で維持する。
 
@@ -62,3 +62,7 @@ must not replace the old fixed-path save: it remains on disk and appears with it
 non-supported-format explanation. Display names may duplicate, but slot identities,
 autosaves and rolling backups are independent. No automatic legacy-file deletion
 is performed.
+
+## 系統色追加候補：schema 19
+
+19で保存し、18の線形形式ワールドは色未設定のまま読み込む。1〜17の旧Track形式拒否は維持する。19の保存を18専用アプリで開くことはできない。読込だけで元の18ファイルを書き換えない。GUI・統合CIは別途確認が必要。

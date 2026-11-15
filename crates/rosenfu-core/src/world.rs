@@ -117,6 +117,8 @@ pub struct WorldDraft {
     pub service_paths: Vec<ServicePath>,
     #[serde(default)]
     pub service_route_bindings: Vec<ServiceRouteBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_appearances: Vec<ServiceAppearance>,
     #[serde(default)]
     pub route_paths: Vec<RoutePath>,
     #[serde(default)]
@@ -156,6 +158,7 @@ impl Default for WorldDraft {
             route_paths: vec![],
             service_paths: vec![],
             service_route_bindings: vec![],
+            service_appearances: vec![],
             source_records: vec![],
             alignment_provenance: vec![],
             next_id: 1,
@@ -182,6 +185,7 @@ pub enum WorldError {
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
+    InvalidServiceAppearance,
     InvalidServiceRouteBinding,
     InvalidProvenance,
     ProvenanceEditUnsupported,
@@ -383,6 +387,7 @@ impl WorldDraft {
         }
         self.validate_service_paths()?;
         self.validate_service_route_bindings()?;
+        self.validate_service_appearances()?;
         for service in &self.services {
             name(&service.name, "service")?;
             if !owner_exists(service.owner) {
@@ -572,3 +577,6 @@ pub use station_groups::StationGroup;
 
 mod service_route_bindings;
 pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
+
+mod service_appearance;
+pub use service_appearance::ServiceAppearance;
