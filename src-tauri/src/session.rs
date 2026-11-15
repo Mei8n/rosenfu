@@ -1,4 +1,6 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
+#[path = "session/deletion.rs"]
+mod deletion;
 use rosenfu_core::world::{
     AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, TrackId, World, WorldDraft,
 };
@@ -50,6 +52,8 @@ pub struct PlannedAlignmentExtension {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlannedAlignment {
+    #[serde(default)]
+    pub anchor_indices: Option<Vec<usize>>,
     pub name: String,
     pub points: Vec<GeoPoint>,
     pub track_type: rosenfu_core::world::TrackType,
@@ -364,6 +368,7 @@ impl WorldEditor {
         reference: Option<PlannedAlignmentReference>,
     ) -> Result<WorldDraft, String> {
         self.build_plan(vec![PlannedAlignment {
+            anchor_indices: None,
             name,
             points,
             track_type,
@@ -401,6 +406,15 @@ impl WorldEditor {
             )?;
         }
         for alignment in alignments {
+            let anchor_indices = alignment.anchor_indices.clone();
+            if anchor_indices.as_ref().is_some_and(|indices| {
+                indices.len() < 2
+                    || indices.first() != Some(&0)
+                    || indices.last().copied() != alignment.points.len().checked_sub(1)
+                    || indices.windows(2).any(|p| p[0] >= p[1])
+            }) {
+                return Err("線路の区間境界が不正です。".into());
+            }
             if alignment.destination.is_some() && alignment.extension.is_none() {
                 return Err("接続先を指定するには既存線路から延伸してください。".into());
             }
@@ -422,6 +436,16 @@ impl WorldEditor {
                     return Err("延伸では元の線路の設計最高速度を引き継ぎます。".into());
                 }
                 let old_length = old.length_m();
+                let old_count = old.points.len();
+                let old_indices = old
+                    .anchor_indices
+                    .clone()
+                    .unwrap_or_else(|| vec![0, old_count - 1]);
+                let added_count = alignment
+                    .points
+                    .len()
+                    .checked_sub(1)
+                    .ok_or("延伸する線路がありません。")?;
                 if let Some(reference) = alignment.reference {
                     if alignment
                         .points
@@ -447,6 +471,21 @@ impl WorldEditor {
                         extension.endpoint,
                         alignment.points,
                     )?;
+                }
+                if let Some(indices) = anchor_indices {
+                    let merged = match extension.endpoint {
+                        rosenfu_core::world::AlignmentEndpoint::Start => indices
+                            .into_iter()
+                            .rev()
+                            .map(|i| added_count - i)
+                            .chain(old_indices.into_iter().skip(1).map(|i| i + added_count))
+                            .collect(),
+                        rosenfu_core::world::AlignmentEndpoint::End => old_indices
+                            .into_iter()
+                            .chain(indices.into_iter().skip(1).map(|i| i + old_count - 1))
+                            .collect(),
+                    };
+                    candidate.set_anchor_indices(extension.alignment_id, merged)?;
                 }
                 let new_length = candidate
                     .world
@@ -510,6 +549,9 @@ impl WorldEditor {
                     alignment.track_type,
                 )?,
             };
+            if let Some(indices) = anchor_indices {
+                candidate.set_anchor_indices(alignment_id, indices)?;
+            }
             if let Some(speed) = alignment.design_speed_kmh {
                 candidate
                     .world
@@ -2690,6 +2732,7 @@ mod tests {
         ];
         // Attribution on an earlier path must roll back if any later path fails.
         let attributed_path = || PlannedAlignment {
+            anchor_indices: None,
             extension: None,
             destination: None,
             name: "Attributed".into(),
@@ -2775,6 +2818,7 @@ mod tests {
         let id = editor.snapshot().alignments[0].id;
         let before = editor.snapshot();
         let reference_extension = || PlannedAlignment {
+            anchor_indices: None,
             name: "Reference extension".into(),
             points: vec![
                 points[1],
@@ -3058,6 +3102,7 @@ mod tests {
         let expected = a.point_at(0.4);
         let start = a.points[0];
         let extension = PlannedAlignment {
+            anchor_indices: None,
             name: "延伸".into(),
             points: vec![
                 start,
@@ -3090,6 +3135,7 @@ mod tests {
 
     fn planned_path(offset: f64) -> PlannedAlignment {
         PlannedAlignment {
+            anchor_indices: None,
             name: format!("計画線{offset}"),
             points: planned_alignment_points()
                 .into_iter()
@@ -3179,6 +3225,7 @@ mod tests {
                 *old.points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                anchor_indices: None,
                 name: "延伸".into(),
                 points: vec![
                     anchor,
@@ -3272,6 +3319,7 @@ mod tests {
                 *before.alignments[0].points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                anchor_indices: None,
                 name: "Extension".into(),
                 points: vec![
                     anchor,
@@ -3353,6 +3401,7 @@ mod tests {
         let endpoint = *old.points.last().unwrap();
         let previous = old.points[old.points.len() - 2];
         let extension = || PlannedAlignment {
+            anchor_indices: None,
             name: "Extension".into(),
             points: vec![
                 endpoint,
@@ -3455,6 +3504,7 @@ mod endpoint_join_tests {
                     .unwrap();
                 let before = editor.snapshot();
                 let request = || PlannedAlignment {
+                    anchor_indices: None,
                     name: "延伸".into(),
                     points: vec![p(139.01), p(139.02)],
                     track_type: TrackType::Normal,
@@ -3512,6 +3562,7 @@ mod endpoint_join_tests {
         let before = editor.snapshot();
         for target in [b, AlignmentId(999), a] {
             let request = PlannedAlignment {
+                anchor_indices: None,
                 name: "延伸".into(),
                 points: vec![p(139.01), p(139.02)],
                 track_type: TrackType::Normal,

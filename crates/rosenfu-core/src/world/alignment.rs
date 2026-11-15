@@ -31,6 +31,9 @@ pub struct Alignment {
     pub owner: CompanyId,
     pub name: String,
     pub points: Vec<GeoPoint>,
+    /// Original construction anchor boundaries in the sampled line. Legacy: one section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_indices: Option<Vec<usize>>,
     pub track_type: TrackType,
     /// None preserves legacy saves and resolves to the track-type default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,6 +83,14 @@ impl WorldDraft {
     pub(super) fn validate_alignments(&self) -> Result<(), WorldError> {
         for a in &self.alignments {
             name(&a.name, "alignment")?;
+            if a.anchor_indices.as_ref().is_some_and(|indices| {
+                indices.len() < 2
+                    || indices.first() != Some(&0)
+                    || indices.last().copied() != a.points.len().checked_sub(1)
+                    || indices.windows(2).any(|pair| pair[0] >= pair[1])
+            }) {
+                return Err(WorldError::InvalidAlignment);
+            }
             let speed = a.effective_design_speed_kmh();
             if !speed.is_finite() || !(1.0..=600.0).contains(&speed) {
                 return Err(WorldError::InvalidAlignmentDesignSpeed);
@@ -220,6 +231,12 @@ impl World {
         } else {
             0
         };
+        let old_boundaries = alignment
+            .anchor_indices
+            .clone()
+            .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
+        let old_point_count = alignment.points.len();
+        let added_point_count = points.len() - 1;
         match endpoint {
             AlignmentEndpoint::Start => {
                 let mut extended: Vec<_> = points.into_iter().skip(1).rev().collect();
@@ -228,6 +245,15 @@ impl World {
             }
             AlignmentEndpoint::End => alignment.points.extend(points.into_iter().skip(1)),
         }
+        alignment.anchor_indices = Some(match endpoint {
+            AlignmentEndpoint::Start => std::iter::once(0)
+                .chain(old_boundaries.into_iter().map(|i| i + added_point_count))
+                .collect(),
+            AlignmentEndpoint::End => old_boundaries
+                .into_iter()
+                .chain(std::iter::once(old_point_count + added_point_count - 1))
+                .collect(),
+        });
         let new_length = alignment.length_m();
         let offset = if endpoint == AlignmentEndpoint::Start {
             added_length
@@ -286,6 +312,7 @@ impl World {
                 owner,
                 name,
                 points,
+                anchor_indices: None,
                 track_type,
                 design_speed_kmh: None,
             })

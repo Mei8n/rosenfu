@@ -1,3 +1,6 @@
+import {DeletionDialog} from "./DeletionDialog";
+import {removePlannedTarget,type PlannedDeleteTarget} from "./plannedDeletion";
+import {deletionSections,anchorIndices} from "./deletionSections";
 import {destinationJoinError,occupiedEndpoint} from "./destinationJoin";
 import type {EndpointConnection} from "./destinationJoin";
 import {anchorDragFeedback} from "./anchorDragFeedback";
@@ -58,7 +61,7 @@ import type { TileStatus } from "./GsiBackground";
 import { provisionalCurveSpeed, snapStraight } from "./circularAlignment";
 import { nearestOnAlignment, stationPolygon, alignmentLength, distanceM, pointOnAlignment } from "./alignment";
 type GeoPoint = { latitude: number; longitude: number };
-type Alignment = { id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
+type Alignment = { anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
 type EngineInfo = { name: string; version: string; company_setup_required?: boolean };
@@ -85,6 +88,7 @@ type World = {
   routes: Route[];
   services: OperatingService[];
 };
+type DeleteTarget=PlannedDeleteTarget|{kind:"built-section";alignmentId:string;sectionIndex:number}|{kind:"station";stationId:string};
 type StationHistoryEntry = { station: Station; placement?: StationPlacement; planned?:PlannedStation };
 type Status = "loading" | "preview" | "ready" | "error";
 
@@ -209,7 +213,7 @@ export function App() {
   const [restoredAutosaveEpoch,setRestoredAutosaveEpoch]=useState(-1);
   const [mainTab,setMainTab]=useState<WorkspaceTab>("construction");
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
-  const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "inactive">("tracks");
+  const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "inactive">("tracks");
   function chooseMainTab(tab:WorkspaceTab){setError("");setMainTab(tab);setPanelCollapsed(false);setActiveTool(tab==="construction"?"tracks":tab==="stations"?"station-management":tab==="settings"?"company":tab==="routes"?"routes":tab==="services"?"services":"inactive");changeMapMode(tab==="construction"?"draw":"move");}
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   // Internal compatibility label only; physical tracks are not user-named routes.
@@ -259,6 +263,9 @@ export function App() {
   const [alignmentId, setAlignmentId] = useState("");
   const [selectedPlanPath,setSelectedPlanPath]=useState<number|null>(null);
   const [trackDeleteConfirm,setTrackDeleteConfirm]=useState(false);
+  const [deleteTarget,setDeleteTarget]=useState<DeleteTarget|null>(null);
+  const [deleteHover,setDeleteHover]=useState<{target:DeleteTarget;x:number;y:number}|null>(null);
+  useEffect(()=>{setDeleteHover(null);},[activeTool,camera,world,draftPoints,parkedPaths,plannedStations]);
   const [trackDeleteUndo,setTrackDeleteUndo]=useState<{kind:"built";world:World;plans:string}|{kind:"plan";before:ConstructionPlans;after:string;world:World|null}|null>(null);
 
   const stationNamesVisible=displaySettings.settings.stationNamesVisible;
@@ -538,6 +545,52 @@ export function App() {
       const saved=savedPlanFingerprint;restoreConstructionPlans(trackDeleteUndo.before);setSavedPlanFingerprint(saved);setTrackDeleteUndo(null);return;
     }
     void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteUndo(null);});
+  }
+  function deletionLabel(target:DeleteTarget){
+    if(target.kind==="station")return world?.stations.find(station=>station.id===target.stationId)?.name??"駅";
+    if(target.kind==="plan-station")return "駅計画";
+    if(target.kind==="plan-anchor")return "アンカー";
+    if(target.kind==="plan-path")return "計画線路";
+    const line=alignments.find(line=>line.id===target.alignmentId),section=line&&deletionSections(line)[target.sectionIndex];
+    return section?`建設済みの線路 ${(alignmentLength(section.points)/1000).toFixed(2)} km`:"建設済みの線路";
+  }
+  function deletionBlocked(target:DeleteTarget):string{
+    if(unapplied)return "編集中の変更を適用または取り消してください";
+    if(target.kind==="built-section")return alignmentReferences(target.alignmentId)?`${alignmentReferences(target.alignmentId)}が使用中です`:"";
+    if(target.kind==="station"){
+      if(world?.stations.find(station=>station.id===target.stationId)?.owner!==world?.companies[0]?.id)return "他社の駅は削除できません";
+      const refs=stationReferences(target.stationId);return refs?`${refs}が使用中です`:"";
+    }
+    try{removePlannedTarget(constructionPlans,target,extensionPrevious);return "";}catch(error){return detail(error);}
+  }
+  function hoverDeletion(event:ReactPointerEvent<SVGElement>,target:DeleteTarget){
+    if(gestureRef.current||event.pointerType==="touch")return;
+    const rect=svgRef.current?.getBoundingClientRect();if(rect)setDeleteHover({target,x:event.clientX-rect.left,y:event.clientY-rect.top});
+  }
+  function requestDeletion(event:MouseEvent<SVGElement>,target:DeleteTarget){
+    event.stopPropagation();if(!enabled||busyRef.current||suppressSelectionClick.current)return;
+    setError("");setDeleteTarget(target);setDeleteHover(null);
+  }
+  function deleteHitProps(target:DeleteTarget,filled=false){
+    const hovered=JSON.stringify(deleteHover?.target)===JSON.stringify(target);
+    return {className:"deletion-hit"+(hovered?" deletion-hover":"")+(filled?" deletion-filled":""),fill:filled?(hovered?"#db667080":"transparent"):"none",stroke:hovered?"#d45260":"transparent",strokeWidth:(filled?2:14)/viewport.scale,pointerEvents:filled?"all" as const:"stroke" as const,onPointerEnter:(event:ReactPointerEvent<SVGElement>)=>hoverDeletion(event,target),onPointerMove:(event:ReactPointerEvent<SVGElement>)=>hoverDeletion(event,target),onPointerLeave:()=>setDeleteHover(null),onClick:(event:MouseEvent<SVGElement>)=>requestDeletion(event,target)};
+  }
+  function confirmDeletion(){
+    if(!enabled||!deleteTarget||deletionBlocked(deleteTarget))return;
+    const target=deleteTarget;
+    if(target.kind!=="built-section"&&target.kind!=="station"){
+      try{
+        const before=constructionPlans,after=removePlannedTarget(before,target,extensionPrevious),saved=savedPlanFingerprint;
+        restoreConstructionPlans(after);setSavedPlanFingerprint(saved);setStationUndo([]);setStationRedo([]);
+        setTrackDeleteUndo({kind:"plan",before,after:JSON.stringify(after),world});setDeleteTarget(null);setSelectedPlanPath(null);
+      }catch(error){setError(detail(error));}
+      return;
+    }
+    void perform(async()=>{
+      const snapshot=await invoke<World>(target.kind==="station"?"delete_station":"delete_alignment_section",target.kind==="station"?{stationId:target.stationId,constructionPlans}:{alignmentId:target.alignmentId,sectionIndex:target.sectionIndex,constructionPlans});
+      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint});
+      setDeleteTarget(null);setAlignmentId("");setSelected(null);setStationUndo([]);setStationRedo([]);
+    });
   }
   function stationReferences(id: string) {
     const links = world?.tracks.filter((track) => track.from === id || track.to === id) ?? [];
@@ -886,11 +939,11 @@ export function App() {
     void perform(async () => {
       const ids=new Set(currentPaths.map(path=>path.id));
       if(currentStations.some(item=>!item.valid))throw Error("計画駅が線路に収まりません。線形を元に戻すか、計画駅を取り消してください。");
-      const requests=currentPaths.map(path=>({name:alignmentName,points:path.line,trackType:path.trackType,designSpeedKmh:path.designSpeedKmh,extension:path.extension??undefined,destination:path.destination,reference:path.reference?{sourceRecord:path.reference.sourceRecord,provenance:path.reference.provenance}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===path.id).map(item=>({name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}))}));
+      const requests=currentPaths.map(path=>({name:alignmentName,points:path.line,anchorIndices:anchorIndices(path.points,path.line),trackType:path.trackType,designSpeedKmh:path.designSpeedKmh,extension:path.extension??undefined,destination:path.destination,reference:path.reference?{sourceRecord:path.reference.sourceRecord,provenance:path.reference.provenance}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===path.id).map(item=>({name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}))}));
       const stations=currentStations.filter(item=>item.station.alignmentId).map(item=>({alignmentId:item.station.alignmentId!,name:item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}));
       const first=requests[0];
       const batch=stations.length>0||requests.length>1||requests.some(request=>request.extension||request.reference);
-      const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh});
+      const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,anchorIndices:first.anchorIndices,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh});
       const extendedIds=new Set(requests.flatMap(request=>request.extension?[request.extension.alignmentId]:[]));
       const keepHistory=(entry:StationHistoryEntry)=>Boolean(entry.planned)||!entry.placement||!extendedIds.has(entry.placement.alignment_id);
       setStationUndo(history=>history.filter(keepHistory));setStationRedo(history=>history.filter(keepHistory));
@@ -986,6 +1039,7 @@ export function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if(deleteTarget)return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
       if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && (event.key === "+" || event.key === "-" || event.code === "NumpadAdd" || event.code === "NumpadSubtract")) {
         event.preventDefault();
@@ -995,6 +1049,7 @@ export function App() {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==="z") {
         event.preventDefault();if(event.repeat || busyRef.current)return;
         if(anchorGesture.current){cancelAnchorGesture();return;}
+        if(activeTool==="delete"){if(!event.shiftKey)undoTrackDelete();return;}
         if(activeTool==="tracks" && (event.shiftKey?anchorRedo.length:anchorUndo.length)){undoAnchor(event.shiftKey);return;}
         if(referenceCopy.active && activeTool==="tracks"){if(event.shiftKey)referenceCopy.redoPick();else referenceCopy.undo();}
         else if(activeTool==="tracks" && (draftPoints.length || redoPoints.length)){if(event.shiftKey)redoPoint();else undoPoint();}
@@ -1215,7 +1270,7 @@ export function App() {
           <div className="track-selection-controls" role="group" aria-label="線路選択">
             <button type="button" className="secondary" disabled={!enabled} aria-pressed={mapMode==="move"&&activeTool==="inactive"} onClick={()=>{setActiveTool("inactive");changeMapMode("move");setTrackDeleteConfirm(false);}}>選択</button>
             {selectedTrackExists&&mapMode==="move"&&<><span>{selectedPlanPath!==null?"計画線路 "+selectedPlanPath:"線路 "+alignmentId}</span><button type="button" className="danger" disabled={!enabled||unapplied||!!selectedTrackReferences} onClick={()=>setTrackDeleteConfirm(true)}>選択線路を削除</button>{selectedTrackReferences&&<small>削除不可：{selectedTrackReferences}が使用中</small>}</>}
-            {trackDeleteUndo&&<button type="button" className="secondary" disabled={!enabled||!canUndoTrackDelete} onClick={undoTrackDelete}>線路削除を元に戻す</button>}
+            {trackDeleteUndo&&activeTool!=="delete"&&<button type="button" className="secondary" disabled={!enabled||!canUndoTrackDelete} onClick={undoTrackDelete}>線路削除を元に戻す</button>}
           </div>
           {trackDeleteConfirm&&selectedTrackExists&&<TrackDeleteDialog busy={busy} blocked={!enabled||unapplied||!!selectedTrackReferences} error={error} onCancel={()=>setTrackDeleteConfirm(false)} onDelete={deleteSelectedTrack}/>}
           <div className="camera-controls" aria-label="地図表示操作">
@@ -1229,6 +1284,8 @@ export function App() {
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
             <div className="map-surface">
+            {deleteTarget&&<DeletionDialog label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
+            {activeTool==="delete"&&deleteHover&&!dragging&&<div className="construction-tooltip deletion-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,deleteHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,deleteHover.y+18))}}>{deletionLabel(deleteHover.target)}を{deleteHover.target.kind==="built-section"||deleteHover.target.kind==="station"?"撤去":"削除"}</div>}
             {activeTool==="stations"&&<fieldset className="construction-toolbar station-toolbar" disabled={!enabled} aria-label="駅設置設定"><PlatformLengthInput id="platform-length" label="駅の長さ" value={platformLength} onChange={setPlatformLength} compact/></fieldset>}
             {activeTool==="stations"&&mapMode==="place"&&!dragging&&cursorPosition&&stationCursor&&stationSelection?.error&&<div className="construction-tooltip station-placement-error" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{stationSelection.error}</div>}
             {activeTool === "tracks" && <div className="construction-toolbar" role="group" aria-label="線路敷設設定">            <TrackTypeControls value={trackType} roadFollowing={roadFollowing} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType} onRoadFollowing={value=>{setRoadFollowing(value);setHoverPoint(null);}}/>
@@ -1254,7 +1311,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
+            }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode"}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
@@ -1320,6 +1377,15 @@ export function App() {
                   <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations ? <circle cx={x} cy={y} r="5" className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}{stationNamesVisible&&<text x={x + 18} y={y + 5}>{station.name}</text>}
                 </g>;
               })}
+              {activeTool==="delete"&&enabled&&<g className="deletion-layer">
+                {alignments.flatMap(line=>deletionSections(line).map(section=>{const target:DeleteTarget={kind:"built-section",alignmentId:line.id,sectionIndex:section.index};return <path key={line.id+":"+section.index} data-delete-alignment={line.id} data-delete-section={section.index} d={drawPath(section.points)} {...deleteHitProps(target)}/>;}))}
+                {[...parkedPaths.map(path=>({id:path.id,points:path.points,line:path.line})),{id:activePathId,points:draftPoints,line:draftLine}].map(path=><g key={path.id}>
+                  {path.line.length>1&&<path data-delete-plan-path={path.id} d={drawPath(path.line)} {...deleteHitProps({kind:"plan-path",pathId:path.id})}/>}
+                  {path.points.map((point,index)=>{const p=project(point.latitude,point.longitude,camera);return <rect key={index} data-delete-anchor={index} data-delete-path={path.id} x={p.x-8/viewport.scale} y={p.y-8/viewport.scale} width={16/viewport.scale} height={16/viewport.scale} {...deleteHitProps({kind:"plan-anchor",pathId:path.id,index},true)}/>;})}
+                </g>)}
+                {plannedPlatforms.map(({station,polygon})=>{const p=project(station.point.latitude,station.point.longitude,camera),target:DeleteTarget={kind:"plan-station",stationId:station.id};return polygon.length?<path key={station.id} data-delete-planned-station={station.id} d={drawPath(polygon)+"Z"} {...deleteHitProps(target,true)}/>:<circle key={station.id} data-delete-planned-station={station.id} cx={p.x} cy={p.y} r={8/viewport.scale} {...deleteHitProps(target,true)}/>;})}
+                {world?.stations.map(station=>{const p=project(station.latitude,station.longitude,camera),polygon=stationPolygons.get(station.id),target:DeleteTarget={kind:"station",stationId:station.id};return detailedStations&&polygon?<path key={station.id} data-delete-station={station.id} d={drawPath(polygon)+"Z"} {...deleteHitProps(target,true)}/>:<circle key={station.id} data-delete-station={station.id} cx={p.x} cy={p.y} r={8/viewport.scale} {...deleteHitProps(target,true)}/>;})}
+              </g>}
               </g>
             </svg>
             <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
@@ -1330,7 +1396,7 @@ export function App() {
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
           <div className="inspector-title"><span>RAILWAY WORKSPACE</span><button className="secondary" aria-label={panelCollapsed ? "操作パネルを開く" : "操作パネルを畳む"} onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? "+" : "−"}</button></div>
           <nav className="editor-tabs construction-tabs" role="tablist" aria-label="建設ツール" hidden={mainTab!=="construction"}>
-            {([["tracks","線路"],["stations","駅設置"]] as const).map(([tool,label],index)=><button key={tool} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":"place");}} onKeyDown={event=>{if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const next=event.key==="Home"?"tracks":event.key==="End"?"stations":index===0?"stations":"tracks";setActiveTool(next);changeMapMode(next==="tracks"?"draw":"place");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
+            {([["tracks","線路"],["stations","駅設置"],["delete","削除"]] as const).map(([tool,label],index)=><button key={tool} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const tools=["tracks","stations","delete"] as const;const next=tools[event.key==="Home"?0:event.key==="End"?2:(index+(event.key==="ArrowLeft"?2:1))%3];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
           </nav>
           <section id="workspace-panel-finance" role="tabpanel" aria-labelledby="workspace-tab-finance" hidden={mainTab!=="finance"}><h3>財務</h3><p>未実装です。収支・運賃・経費の画面は今後追加します。</p></section>
           <section id="workspace-panel-city" role="tabpanel" aria-labelledby="workspace-tab-city" hidden={mainTab!=="city"}><h3>都市</h3><p>未実装です。人口・需要・都市発展の画面は今後追加します。</p></section>
@@ -1344,6 +1410,7 @@ export function App() {
             {deletePlanConfirm&&<PlanDeleteDialog name={planName.trim()||`計画 ${activePlanId}`} onCancel={()=>setDeletePlanConfirm(false)} onDelete={deleteCurrentPlan}/>}
             <div className="plan-actions"><button className="secondary" disabled={!enabled||referenceCopy.active} onClick={()=>setDeletePlanConfirm(true)}>計画を削除</button><button className="secondary" disabled={!enabled||referenceCopy.active||!planHasContent} onClick={clearCurrentPlan}>下書きを消去</button><button disabled={!enabled||referenceCopy.active||!planBuildable} onClick={commitAlignment}>計画を着工</button></div>
           </section>
+          <section role="tabpanel" id="panel-delete" aria-labelledby="tab-delete" hidden={activeTool!=="delete"}>{trackDeleteUndo&&<button className="secondary" disabled={!enabled||!canUndoTrackDelete} onClick={undoTrackDelete}>削除を元に戻す</button>}</section>
           <section className="station-editor" role="tabpanel" id="panel-stations" aria-labelledby="tab-stations" hidden={activeTool !== "stations"}>
 
             <div hidden><StationNamePreview pack={referencePack} repository={referenceRepository} point={stationPreview.length>=4?previewCenter:null} existingNames={[...(world?.stations.map(s=>s.name)??[]),...plannedStations.map(s=>s.name)]}/></div>

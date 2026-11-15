@@ -496,3 +496,8 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .inactive-plan .draft-anchor,.workbench .inactive-plan .parked-anchor { stroke:#89939d;fill:#e3e7eb; }
 .workbench .planned-station.inactive-plan .station-platform { fill:#b1bac3;stroke:#78838e; }
 .workbench .planned-station.inactive-plan text { fill:#78838e; }
+
+/* The construction eraser targets an exact section; it never highlights a whole network. */
+.deletion-hit { cursor: crosshair; }
+.deletion-hover { stroke-linecap: round; stroke-linejoin: round; }
+.deletion-tooltip { pointer-events: none; }
