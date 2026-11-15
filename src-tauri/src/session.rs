@@ -619,12 +619,18 @@ impl WorldEditor {
                                 && !(index == 0 && t < 1e-9)
                                 && !(index + 2 == piece.points.len() && t > 1.0 - 1e-9)
                             {
-                                found = Some((piece.id, index, t));
-                                break;
+                                if let Some((prior_id, prior_index, prior_t)) = found {
+                                    let same_vertex = prior_id == piece.id
+                                        && prior_index + 1 == index
+                                        && prior_t > 1.0 - 1e-9
+                                        && t < 1e-9;
+                                    if !same_vertex {
+                                        return Err("分岐位置が重複する線形です。分岐を分けて計画してください。".into());
+                                    }
+                                } else {
+                                    found = Some((piece.id, index, t));
+                                }
                             }
-                        }
-                        if found.is_some() {
-                            break;
                         }
                     }
                     found
@@ -3684,6 +3690,57 @@ mod tests {
         let before = editor.snapshot();
         assert!(editor.build_plan(vec![short]).is_err());
         assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
+    fn ambiguous_repeated_geometry_split_batch_is_atomic() {
+        use rosenfu_core::world::ConstructionJunctionSource;
+        let mut editor = WorldEditor::new();
+        let mut flat = planned_path(0.);
+        flat.stations.clear();
+        flat.points = [139.0, 139.01, 139.02, 139.01, 139.03]
+            .into_iter()
+            .map(|longitude| GeoPoint {
+                latitude: 35.,
+                longitude,
+            })
+            .collect();
+        let built = editor.build_plan(vec![flat]).unwrap();
+        let original = built.alignments[0].clone();
+        let paths = [(0, 139.005), (1, 139.015)]
+            .into_iter()
+            .map(|(segment_index, x)| {
+                let mut branch = planned_path(0.);
+                branch.stations.clear();
+                branch.points = vec![
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: x,
+                    },
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: x + 0.0005,
+                    },
+                    GeoPoint {
+                        latitude: 35.01,
+                        longitude: x + 0.001,
+                    },
+                ];
+                branch.junction_source = Some(ConstructionJunctionSource {
+                    alignment_id: original.id,
+                    expected_alignment: original.clone(),
+                    segment_index,
+                    fraction: 0.5,
+                    reverse: false,
+                });
+                branch
+            })
+            .collect();
+        assert!(editor
+            .build_plan(paths)
+            .unwrap_err()
+            .contains("重複する線形"));
+        assert_eq!(editor.snapshot(), built);
     }
 
     #[test]

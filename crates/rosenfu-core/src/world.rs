@@ -388,8 +388,7 @@ impl WorldDraft {
         // All references and platform footprints are valid by this point. Check
         // derived turnout geometry before any candidate snapshot is committed.
         let geometry_world = World { data: self.clone() };
-        geometry_world.track_movement_geometries()?;
-        geometry_world.internal_track_movement_geometries()?;
+        geometry_world.validate_turnout_geometry()?;
         self.validate_service_paths()?;
         self.validate_service_route_bindings()?;
         for service in &self.services {
@@ -599,5 +598,5 @@ mod junctions;
 mod turnout_geometry;
 pub use turnout_geometry::{
     InternalTrackMovementGeometry, TrackLaneGeometry, TrackMovementGeometry, TrackRenderGeometry,
-    TRACK_LANE_SPACING_M,
+    TurnoutMovementProperties, TRACK_LANE_SPACING_M, TURNOUT_GAME_LATERAL_ACCELERATION_MPS2,
 };

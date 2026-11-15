@@ -675,3 +675,35 @@ fn insufficient_y_approach_is_rejected_before_connection_and_preserves_snapshot(
         .to_string()
         .contains("必要な空間"));
 }
+
+#[test]
+fn consecutive_internal_y_trims_leave_each_middle_section_visible() {
+    let mut w = World::default();
+    let p = w.add_player("p".into()).unwrap();
+    let c = w.add_company(p, "c".into()).unwrap();
+    w.build_alignment(
+        c,
+        "four sections".into(),
+        (0..5).map(|i| point(139. + i as f64 * 0.001)).collect(),
+    )
+    .unwrap();
+    let mut d = w.snapshot().clone();
+    d.alignments[0].anchor_indices = Some(vec![0, 1, 2, 3, 4]);
+    d.alignments[0].infrastructure = [1, 2, 4, 1]
+        .into_iter()
+        .map(|track_count| SectionInfrastructure {
+            track_count,
+            level: InfrastructureLevel::Ground,
+        })
+        .collect();
+    let w = World::new(d).unwrap();
+    let render = w.track_render_geometry().unwrap();
+    assert_eq!(render.lanes.len(), 8);
+    assert!(
+        render
+            .lanes
+            .iter()
+            .all(|lane| lane.points.first().unwrap().longitude
+                < lane.points.last().unwrap().longitude)
+    );
+}

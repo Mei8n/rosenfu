@@ -6,6 +6,7 @@ pub const TRACK_LANE_SPACING_M: f64 = 4.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TrackMovementGeometry {
+    pub properties: TurnoutMovementProperties,
     pub movement: TrackMovement,
     pub from_position: f64,
     pub to_position: f64,
@@ -33,6 +34,12 @@ impl World {
     /// Reversed movements use precisely reversed samples of the same curve.
     /// The corridor itself is unchanged; these paths connect individual lanes.
     pub fn track_movement_geometries(&self) -> Result<Vec<TrackMovementGeometry>, WorldError> {
+        self.track_movement_geometries_impl(true)
+    }
+    fn track_movement_geometries_impl(
+        &self,
+        evaluate_properties: bool,
+    ) -> Result<Vec<TrackMovementGeometry>, WorldError> {
         let movements = self.alignment_lane_movements();
         let mut result = Vec::new();
         for pair in movements.chunks_exact(2) {
@@ -127,13 +134,34 @@ impl World {
                     }
                 })
                 .collect();
+            let track_cap = [
+                movement.from.endpoint.alignment_id,
+                movement.to.endpoint.alignment_id,
+            ]
+            .iter()
+            .map(|id| {
+                self.data
+                    .alignments
+                    .iter()
+                    .find(|line| line.id == *id)
+                    .unwrap()
+                    .effective_design_speed_kmh()
+            })
+            .fold(f64::INFINITY, f64::min);
+            let properties = if evaluate_properties {
+                movement_properties(a, b, c, d, track_cap, None)
+            } else {
+                TurnoutMovementProperties::validation_only()
+            };
             result.push(TrackMovementGeometry {
+                properties,
                 movement,
                 from_position,
                 to_position,
                 points: points.clone(),
             });
             result.push(TrackMovementGeometry {
+                properties,
                 movement: pair[1],
                 from_position: to_position,
                 to_position: from_position,
@@ -274,6 +302,7 @@ impl World {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct InternalTrackMovementGeometry {
+    pub properties: TurnoutMovementProperties,
     pub movement: InternalTrackMovement,
     pub from_position: f64,
     pub to_position: f64,
@@ -282,6 +311,12 @@ pub struct InternalTrackMovementGeometry {
 impl World {
     pub fn internal_track_movement_geometries(
         &self,
+    ) -> Result<Vec<InternalTrackMovementGeometry>, WorldError> {
+        self.internal_track_movement_geometries_impl(true)
+    }
+    fn internal_track_movement_geometries_impl(
+        &self,
+        evaluate_properties: bool,
     ) -> Result<Vec<InternalTrackMovementGeometry>, WorldError> {
         let mut result = Vec::new();
         for pair in self.internal_lane_movements().chunks_exact(2) {
@@ -360,13 +395,20 @@ impl World {
                     }
                 })
                 .collect();
+            let properties = if evaluate_properties {
+                movement_properties(p0, p1, p2, p3, a.effective_design_speed_kmh(), None)
+            } else {
+                TurnoutMovementProperties::validation_only()
+            };
             result.push(InternalTrackMovementGeometry {
+                properties,
                 movement,
                 from_position,
                 to_position,
                 points: points.clone(),
             });
             result.push(InternalTrackMovementGeometry {
+                properties,
                 movement: pair[1],
                 from_position: to_position,
                 to_position: from_position,
@@ -374,5 +416,267 @@ impl World {
             });
         }
         Ok(result)
+    }
+}
+
+/// Game calibration, not an approved railway engineering or comfort standard.
+pub const TURNOUT_GAME_LATERAL_ACCELERATION_MPS2: f64 = 0.65;
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TurnoutMovementProperties {
+    pub length_m: f64,
+    /// Curvature extrema from isolated roots of the cubic curvature derivative.
+    /// None denotes a straight movement, not an unknown equipment limit.
+    pub minimum_radius_m: Option<f64>,
+    pub curvature_speed_limit_kmh: Option<f64>,
+    pub track_speed_limit_kmh: f64,
+    /// Reserved for a known switch design. No turnout number is guessed.
+    pub equipment_speed_limit_kmh: Option<f64>,
+    pub speed_limit_kmh: f64,
+    pub lateral_acceleration_mps2: f64,
+}
+impl TurnoutMovementProperties {
+    // Private sentinel, never returned from a public geometry query.
+    fn validation_only() -> Self {
+        Self {
+            length_m: 0.,
+            minimum_radius_m: None,
+            curvature_speed_limit_kmh: None,
+            track_speed_limit_kmh: 0.,
+            equipment_speed_limit_kmh: None,
+            speed_limit_kmh: 0.,
+            lateral_acceleration_mps2: 0.,
+        }
+    }
+}
+impl World {
+    pub(super) fn validate_turnout_geometry(&self) -> Result<(), WorldError> {
+        self.track_movement_geometries_impl(false)?;
+        self.internal_track_movement_geometries_impl(false)?;
+        Ok(())
+    }
+}
+fn poly_value(p: &[f64], t: f64) -> f64 {
+    p.iter().rev().fold(0.0, |v, c| v * t + c)
+}
+fn poly_derivative(p: &[f64]) -> Vec<f64> {
+    p.iter()
+        .enumerate()
+        .skip(1)
+        .map(|(i, c)| *c * i as f64)
+        .collect()
+}
+fn poly_scale(p: &[f64], scale: f64) -> Vec<f64> {
+    p.iter().map(|v| v * scale).collect()
+}
+fn poly_add(a: &[f64], b: &[f64]) -> Vec<f64> {
+    (0..a.len().max(b.len()))
+        .map(|i| a.get(i).unwrap_or(&0.0) + b.get(i).unwrap_or(&0.0))
+        .collect()
+}
+fn poly_sub(a: &[f64], b: &[f64]) -> Vec<f64> {
+    poly_add(a, &poly_scale(b, -1.0))
+}
+fn poly_mul(a: &[f64], b: &[f64]) -> Vec<f64> {
+    if a.is_empty() || b.is_empty() {
+        return vec![];
+    }
+    let mut p = vec![0.0; a.len() + b.len() - 1];
+    for (i, x) in a.iter().enumerate() {
+        for (j, y) in b.iter().enumerate() {
+            p[i + j] += x * y;
+        }
+    }
+    p
+}
+/// Recursive derivative isolation partitions [0,1] into monotone intervals;
+/// sign-changing roots are bisected, and repeated roots are checked at extrema.
+fn poly_roots_unit(coefficients: &[f64]) -> Vec<f64> {
+    let mut p = coefficients.to_vec();
+    while p.last() == Some(&0.0) {
+        p.pop();
+    }
+    if p.len() < 2 {
+        return vec![];
+    }
+    if p.len() == 2 {
+        let root = -p[0] / p[1];
+        return if root.is_finite() && (0.0..=1.0).contains(&root) {
+            vec![root]
+        } else {
+            vec![]
+        };
+    }
+    let mut cuts = vec![0.0];
+    cuts.extend(poly_roots_unit(&poly_derivative(&p)));
+    cuts.push(1.0);
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
+    let tolerance = p.iter().map(|c| c.abs()).sum::<f64>() * 1e-12;
+    let mut roots: Vec<_> = cuts
+        .iter()
+        .copied()
+        .filter(|t| poly_value(&p, *t).abs() <= tolerance)
+        .collect();
+    for window in cuts.windows(2) {
+        let (mut lo, mut hi) = (window[0], window[1]);
+        let mut left = poly_value(&p, lo);
+        let right = poly_value(&p, hi);
+        if left == 0.0 || right == 0.0 || left.is_sign_positive() == right.is_sign_positive() {
+            continue;
+        }
+        for _ in 0..80 {
+            let mid = (lo + hi) / 2.0;
+            let value = poly_value(&p, mid);
+            if value == 0.0 {
+                lo = mid;
+                hi = mid;
+                break;
+            }
+            if value.is_sign_positive() == left.is_sign_positive() {
+                lo = mid;
+                left = value;
+            } else {
+                hi = mid;
+            }
+        }
+        roots.push((lo + hi) / 2.0);
+    }
+    roots
+}
+fn movement_properties(
+    a: GeoPoint,
+    b: GeoPoint,
+    c: GeoPoint,
+    d: GeoPoint,
+    track_cap: f64,
+    equipment_cap: Option<f64>,
+) -> TurnoutMovementProperties {
+    let (bx, by) = vector(a, b);
+    let (cx, cy) = vector(a, c);
+    let (dx, dy) = vector(a, d);
+    let mut maximum_curvature: f64 = 0.0;
+    let mut length = 0.0;
+    let mut previous = (0.0, 0.0);
+    for i in 0..=1024 {
+        let t = f64::from(i) / 1024.0;
+        let u = 1.0 - t;
+        let px = 3.0 * u * u * t * bx + 3.0 * u * t * t * cx + t * t * t * dx;
+        let py = 3.0 * u * u * t * by + 3.0 * u * t * t * cy + t * t * t * dy;
+        if i > 0 {
+            length += (px - previous.0).hypot(py - previous.1);
+        }
+        previous = (px, py);
+    }
+    // v(t)=v0+v1*t+v2*t²; curvature extrema satisfy
+    // 2*N'(t)*Q(t)-3*N(t)*Q'(t)=0, N=cross(v,v'), Q=dot(v,v).
+    let vx = vec![
+        3.0 * bx,
+        6.0 * (cx - 2.0 * bx),
+        3.0 * (dx - 3.0 * cx + 3.0 * bx),
+    ];
+    let vy = vec![
+        3.0 * by,
+        6.0 * (cy - 2.0 * by),
+        3.0 * (dy - 3.0 * cy + 3.0 * by),
+    ];
+    let n = poly_sub(
+        &poly_mul(&vx, &poly_derivative(&vy)),
+        &poly_mul(&vy, &poly_derivative(&vx)),
+    );
+    let q = poly_add(&poly_mul(&vx, &vx), &poly_mul(&vy, &vy));
+    let stationary = poly_sub(
+        &poly_scale(&poly_mul(&poly_derivative(&n), &q), 2.0),
+        &poly_scale(&poly_mul(&n, &poly_derivative(&q)), 3.0),
+    );
+    let mut candidates = vec![0.0, 1.0];
+    candidates.extend(poly_roots_unit(&stationary));
+    candidates.extend(poly_roots_unit(&poly_derivative(&q)));
+    for t in candidates {
+        let speed_sq = poly_value(&q, t);
+        if speed_sq <= 1e-12 || !speed_sq.is_finite() {
+            maximum_curvature = f64::INFINITY;
+            break;
+        }
+        maximum_curvature = maximum_curvature.max(poly_value(&n, t).abs() / speed_sq.powf(1.5));
+    }
+    let radius = (maximum_curvature > 1e-10).then(|| 1.0 / maximum_curvature);
+    let curve = radius.map(|r| 3.6 * (TURNOUT_GAME_LATERAL_ACCELERATION_MPS2 * r).sqrt());
+    let cap = track_cap
+        .min(equipment_cap.unwrap_or(f64::INFINITY))
+        .min(curve.unwrap_or(f64::INFINITY));
+    TurnoutMovementProperties {
+        length_m: length,
+        minimum_radius_m: radius,
+        curvature_speed_limit_kmh: curve,
+        track_speed_limit_kmh: track_cap,
+        equipment_speed_limit_kmh: equipment_cap,
+        speed_limit_kmh: cap,
+        lateral_acceleration_mps2: TURNOUT_GAME_LATERAL_ACCELERATION_MPS2,
+    }
+}
+
+#[cfg(test)]
+mod speed_tests {
+    use super::*;
+    #[test]
+    fn analytic_curvature_extrema_cover_sharp_s_curves_and_stationary_derivatives() {
+        let origin = GeoPoint {
+            latitude: 35.0,
+            longitude: 139.0,
+        };
+        let p = |x, y| offset(origin, x, y);
+        let sharp = movement_properties(
+            p(0., 0.),
+            p(0.001, 0.),
+            p(10., 4.),
+            p(10.001, 4.),
+            120.,
+            None,
+        );
+        let regular = movement_properties(p(0., 0.), p(3., 0.), p(7., 4.), p(10., 4.), 120., None);
+        assert!(sharp.speed_limit_kmh < regular.speed_limit_kmh);
+        let cusp = movement_properties(p(0., 0.), p(10., 0.), p(-10., 0.), p(0., 0.), 120., None);
+        assert_eq!(cusp.speed_limit_kmh, 0.);
+        let roots = poly_roots_unit(&[0.09, -0.6, 1.0]);
+        assert!(roots.iter().any(|r| (*r - 0.3).abs() < 1e-8));
+        // A narrow extremum between regular sample positions must still be found.
+        let r = 0.000_321_234;
+        let roots = poly_roots_unit(&[r * r, -2.0 * r, 1.0]);
+        assert!(roots.iter().any(|x| (*x - r).abs() < 1e-10));
+    }
+
+    #[test]
+    fn turnout_speed_uses_local_curvature_not_total_length_or_net_heading() {
+        let origin = GeoPoint {
+            latitude: 35.0,
+            longitude: 139.0,
+        };
+        let p = |x, y| offset(origin, x, y);
+        // Parallel entry/exit headings still contain an S curve.
+        let short = movement_properties(p(0., 0.), p(5., 0.), p(10., 4.), p(15., 4.), 120., None);
+        let long = movement_properties(p(0., 0.), p(10., 0.), p(20., 4.), p(30., 4.), 120., None);
+        assert!(short.minimum_radius_m.is_some());
+        assert!(short.speed_limit_kmh < long.speed_limit_kmh);
+        let straight = movement_properties(
+            p(0., 0.),
+            p(10., 0.),
+            p(20., 0.),
+            p(30., 0.),
+            120.,
+            Some(45.),
+        );
+        assert_eq!(straight.speed_limit_kmh, 45.);
+        let longer = movement_properties(
+            p(0., 0.),
+            p(100., 0.),
+            p(200., 0.),
+            p(300., 0.),
+            120.,
+            Some(45.),
+        );
+        assert_eq!(longer.speed_limit_kmh, straight.speed_limit_kmh);
+        let low_track =
+            movement_properties(p(0., 0.), p(10., 0.), p(20., 4.), p(30., 4.), 5., None);
+        assert_eq!(low_track.speed_limit_kmh, 5.);
     }
 }
