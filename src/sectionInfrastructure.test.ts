@@ -1,0 +1,20 @@
+import {describe,it,expect} from 'vitest';
+import {infrastructureSections,endpointInfrastructure,schematicTrackPaths,LEVEL_LABELS} from './sectionInfrastructure';
+import {removeConstructionPlan,emptyConstructionPlans} from './constructionPlans';
+describe('physical section infrastructure',()=>{
+ const points=[{latitude:35,longitude:139},{latitude:35,longitude:139.01},{latitude:35,longitude:139.02}];
+ it('maps each interval without replacing geometry and preserves seven levels',()=>{
+  const a={points,anchor_indices:[0,1,2],infrastructure:[{track_count:2 as const,level:'elevated_3' as const},{track_count:4 as const,level:'underground_2' as const}]};
+  expect(infrastructureSections(a).map(s=>s.points)).toEqual([points.slice(0,2),points.slice(1)]);
+  expect(endpointInfrastructure(a,'end')).toEqual(a.infrastructure[1]);
+  expect(Object.keys(LEVEL_LABELS)).toHaveLength(7);
+ });
+ it('draws distinct schematic tracks, not duplicated alignment identities',()=>{
+  for(const count of [1,2,4] as const){const paths=schematicTrackPaths([{x:0,y:0},{x:100,y:0}],count);expect(new Set(paths).size).toBe(count);expect(paths.every(p=>!p.includes('NaN'))).toBe(true);}
+ });
+ it('retains a parked path configuration on plan switch/removal',()=>{
+  const base=emptyConstructionPlans();base.plans=[{id:1,name:'a'},{id:2,name:'b'}];
+  base.parkedPaths=[{id:2,planId:2,name:'b',points,line:points,redo:[],extension:null,trackType:'normal',designSpeedKmh:120,roadFollowing:false,infrastructure:{track_count:4,level:'underground_3'}}];
+  expect(removeConstructionPlan(base,1).infrastructure).toEqual({track_count:4,level:'underground_3'});
+ });
+});

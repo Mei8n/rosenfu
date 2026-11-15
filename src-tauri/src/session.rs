@@ -1,6 +1,7 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
+pub use deletion::AlignmentSectionSelection;
 #[path = "session/save_slots.rs"]
 mod save_slots;
 use rosenfu_core::world::{
@@ -55,6 +56,8 @@ pub struct PlannedAlignmentExtension {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlannedAlignment {
+    #[serde(default)]
+    pub infrastructure: rosenfu_core::world::SectionInfrastructure,
     #[serde(default)]
     pub anchor_indices: Option<Vec<usize>>,
     pub name: String,
@@ -505,6 +508,7 @@ impl WorldEditor {
         reference: Option<PlannedAlignmentReference>,
     ) -> Result<WorldDraft, String> {
         self.build_plan(vec![PlannedAlignment {
+            infrastructure: Default::default(),
             anchor_indices: None,
             name,
             points,
@@ -543,6 +547,9 @@ impl WorldEditor {
             )?;
         }
         for alignment in alignments {
+            if !alignment.infrastructure.is_valid() {
+                return Err("線路数は1・2・4のいずれかです。".into());
+            }
             let anchor_indices = alignment.anchor_indices.clone();
             if anchor_indices.as_ref().is_some_and(|indices| {
                 indices.len() < 2
@@ -688,6 +695,20 @@ impl WorldEditor {
             };
             if let Some(indices) = anchor_indices {
                 candidate.set_anchor_indices(alignment_id, indices)?;
+            }
+            {
+                let mut draft = candidate.world.snapshot().clone();
+                let built = draft
+                    .alignments
+                    .iter_mut()
+                    .find(|item| item.id == alignment_id)
+                    .ok_or("線路がありません。")?;
+                built.infrastructure = if alignment.infrastructure == Default::default() {
+                    Vec::new()
+                } else {
+                    vec![alignment.infrastructure; built.section_count()]
+                };
+                candidate.world.replace(draft).map_err(|e| e.to_string())?;
             }
             if let Some(speed) = alignment.design_speed_kmh {
                 candidate
@@ -2767,6 +2788,7 @@ mod tests {
         ];
         // Attribution on an earlier path must roll back if any later path fails.
         let attributed_path = || PlannedAlignment {
+            infrastructure: Default::default(),
             anchor_indices: None,
             extension: None,
             destination: None,
@@ -2853,6 +2875,7 @@ mod tests {
         let id = editor.snapshot().alignments[0].id;
         let before = editor.snapshot();
         let reference_extension = || PlannedAlignment {
+            infrastructure: Default::default(),
             anchor_indices: None,
             name: "Reference extension".into(),
             points: vec![
@@ -3098,6 +3121,7 @@ mod tests {
         for (lat, lon) in [(0.0, 0.01), (0.01, 0.0), (0.01, 0.01)] {
             editor
                 .build_plan(vec![PlannedAlignment {
+                    infrastructure: Default::default(),
                     anchor_indices: Some(vec![0, 1]),
                     name: "線路".into(),
                     points: vec![
@@ -3228,6 +3252,7 @@ mod tests {
         let expected = a.point_at(0.4);
         let start = a.points[0];
         let extension = PlannedAlignment {
+            infrastructure: Default::default(),
             anchor_indices: None,
             name: "延伸".into(),
             points: vec![
@@ -3259,8 +3284,41 @@ mod tests {
         assert!((actual.longitude - expected.longitude).abs() < 1e-8);
     }
 
+    #[test]
+    fn construction_infrastructure_is_physical_and_invalid_batch_is_atomic() {
+        use rosenfu_core::world::{InfrastructureLevel, SectionInfrastructure};
+        let mut editor = WorldEditor::new();
+        let mut path = planned_path(0.);
+        path.infrastructure = SectionInfrastructure {
+            track_count: 4,
+            level: InfrastructureLevel::Elevated3,
+        };
+        let result = editor.build_plan(vec![path]).unwrap();
+        assert_eq!(
+            result.alignments[0]
+                .section_infrastructure(0)
+                .unwrap()
+                .track_count,
+            4
+        );
+        assert_eq!(
+            result.alignments[0]
+                .section_infrastructure(0)
+                .unwrap()
+                .level,
+            InfrastructureLevel::Elevated3
+        );
+        let before = editor.snapshot();
+        let valid = planned_path(0.1);
+        let mut invalid = planned_path(0.2);
+        invalid.infrastructure.track_count = 3;
+        assert!(editor.build_plan(vec![valid, invalid]).is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+
     fn planned_path(offset: f64) -> PlannedAlignment {
         PlannedAlignment {
+            infrastructure: Default::default(),
             anchor_indices: None,
             name: format!("計画線{offset}"),
             points: planned_alignment_points()
@@ -3351,6 +3409,7 @@ mod tests {
                 *old.points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "延伸".into(),
                 points: vec![
@@ -3445,6 +3504,7 @@ mod tests {
                 *before.alignments[0].points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "Extension".into(),
                 points: vec![
@@ -3527,6 +3587,7 @@ mod tests {
         let endpoint = *old.points.last().unwrap();
         let previous = old.points[old.points.len() - 2];
         let extension = || PlannedAlignment {
+            infrastructure: Default::default(),
             anchor_indices: None,
             name: "Extension".into(),
             points: vec![
@@ -3630,6 +3691,7 @@ mod endpoint_join_tests {
                     .unwrap();
                 let before = editor.snapshot();
                 let request = || PlannedAlignment {
+                    infrastructure: Default::default(),
                     anchor_indices: None,
                     name: "延伸".into(),
                     points: vec![p(139.01), p(139.02)],
@@ -3688,6 +3750,7 @@ mod endpoint_join_tests {
         let before = editor.snapshot();
         for target in [b, AlignmentId(999), a] {
             let request = PlannedAlignment {
+                infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "延伸".into(),
                 points: vec![p(139.01), p(139.02)],
@@ -3728,6 +3791,7 @@ mod endpoint_join_tests {
         let mut bridge: Vec<_> = (175..=185).map(|i| point(i as f64 * 2.)).collect();
         *bridge.last_mut().unwrap() = original[0];
         let request = || PlannedAlignment {
+            infrastructure: Default::default(),
             name: "Close ring".into(),
             points: bridge.clone(),
             anchor_indices: Some(vec![0, bridge.len() - 1]),
