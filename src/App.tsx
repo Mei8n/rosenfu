@@ -1,5 +1,5 @@
 import {constructionPlanFingerprint} from './constructionPlans';
-import {DEFAULT_INFRASTRUCTURE,COUNT_LABELS,LEVEL_LABELS,endpointInfrastructure,infrastructureSections,schematicTrackPaths,type SectionInfrastructure} from './sectionInfrastructure';
+import {DEFAULT_INFRASTRUCTURE,COUNT_LABELS,LEVEL_LABELS,endpointInfrastructure,displayInfrastructureSections,schematicTrackPaths,type SectionInfrastructure} from './sectionInfrastructure';
 import {SaveSlots,type SaveSlot} from "./SaveSlots";
 import {ServiceRouteBindingEditor,type ServiceRouteBindingRecord} from "./ServiceRouteBinding";
 import {RouteDirectory} from "./RouteDirectory";
@@ -647,7 +647,7 @@ export function App() {
     const entry=trackDeleteUndo;
     if(entry.kind==="plan"){
       const saved=savedPlanFingerprint;restoreConstructionPlans(entry.before);setSavedPlanFingerprint(saved);
-      setTrackDeleteRedo({entry,world,plans:JSON.stringify(entry.before)});setTrackDeleteUndo(null);return;
+      setTrackDeleteRedo({entry,world,plans:constructionPlanFingerprint(entry.before)});setTrackDeleteUndo(null);return;
     }
     void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteRedo({entry,world:snapshot,plans:planFingerprint});setTrackDeleteUndo(null);});
   }
@@ -1481,7 +1481,7 @@ export function App() {
               {alignments.map((alignment) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>
                 {!(mainTab==="construction"&&activeTool==="inactive")&&<title>{alignment.name}</title>}
                 <path d={drawPath(alignment.points)} className="track-outline" fill="none" />
-                {infrastructureSections(alignment).map((section,index)=><g key={index} data-track-count={section.infrastructure.track_count} data-structure-level={section.infrastructure.level} pointerEvents="none">
+                {displayInfrastructureSections(alignment).map((section,index)=><g key={index} data-track-count={section.infrastructure.track_count} data-structure-level={section.infrastructure.level} pointerEvents="none">
                   {section.infrastructure.level.startsWith('elevated')&&<path d={drawPath(section.points)} fill="none" stroke="#8095a7" strokeWidth={section.infrastructure.track_count*3+6} opacity=".4"/>}
                   {schematicTrackPaths(section.points.map(point=>project(point.latitude,point.longitude,camera)),section.infrastructure.track_count).map((path,rail)=><path key={rail} d={path} className={alignmentId===alignment.id?"alignment-path alignment-selected":"alignment-path"} style={{strokeWidth:section.infrastructure.track_count===1?undefined:1.5,strokeDasharray:section.infrastructure.level.startsWith('underground')?'5 4':undefined,opacity:section.infrastructure.level.startsWith('underground')?.65:1}}/>)}
                 </g>)}

@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {infrastructureSections,endpointInfrastructure,schematicTrackPaths,LEVEL_LABELS} from './sectionInfrastructure';
+import {infrastructureSections,displayInfrastructureSections,endpointInfrastructure,schematicTrackPaths,LEVEL_LABELS} from './sectionInfrastructure';
 import {removeConstructionPlan,emptyConstructionPlans,constructionPlanFingerprint} from './constructionPlans';
 describe('physical section infrastructure',()=>{
  const points=[{latitude:35,longitude:139},{latitude:35,longitude:139.01},{latitude:35,longitude:139.02}];
@@ -25,4 +25,13 @@ it('normalizes struct key order and default infrastructure for clean saves',()=>
  const changed={...empty,infrastructure:{track_count:2 as const,level:'elevated' as const}};
  expect(constructionPlanFingerprint({infrastructure:changed.infrastructure,...empty})).toBe(constructionPlanFingerprint(changed));
  expect(constructionPlanFingerprint(changed)).not.toBe(constructionPlanFingerprint(empty));
+});
+
+it('keeps continuous same-attribute rendering without deleting physical boundaries',()=>{
+ const points=[{latitude:35,longitude:139},{latitude:35,longitude:139.01},{latitude:35,longitude:139.02}];
+ const a={points,anchor_indices:[0,1,2]};
+ expect(displayInfrastructureSections(a)).toHaveLength(1);
+ expect(displayInfrastructureSections(a)[0].points).toEqual(points);
+ expect(infrastructureSections(a)).toHaveLength(2);
+ expect(displayInfrastructureSections({...a,infrastructure:[{track_count:1,level:'ground'},{track_count:2,level:'ground'}]})).toHaveLength(2);
 });

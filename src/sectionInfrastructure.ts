@@ -23,3 +23,15 @@ export function schematicTrackPaths(points:{x:number;y:number}[],count:1|2|4):st
   }).join(' ');
  });
 }
+
+/** Merge only presentation runs; editable anchor boundaries and physical IDs stay intact. */
+export function displayInfrastructureSections(alignment:Parameters<typeof infrastructureSections>[0]){
+ const runs:ReturnType<typeof infrastructureSections>=[];
+ for(const section of infrastructureSections(alignment)){
+  const previous=runs.at(-1);
+  if(previous&&previous.infrastructure.track_count===section.infrastructure.track_count&&previous.infrastructure.level===section.infrastructure.level){
+   previous.points=[...previous.points,...section.points.slice(1)];
+  }else runs.push(section);
+ }
+ return runs;
+}
