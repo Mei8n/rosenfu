@@ -16,9 +16,6 @@ pub enum RouteSegment {
         to: StationId,
         connections: Vec<AlignmentConnection>,
     },
-    Track {
-        track_id: TrackId,
-    },
     /// A virtual edge between adjacent stations on one alignment, not a Track.
     Alignment {
         alignment_id: AlignmentId,
@@ -30,8 +27,6 @@ pub enum RouteSegment {
 pub struct RouteCandidate {
     pub stations: Vec<StationId>,
     pub segments: Vec<RouteSegment>,
-    /// False means existing save_route cannot consume this candidate.
-    pub track_only: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,21 +77,6 @@ type Graph = BTreeMap<StationId, Vec<Edge>>;
 
 fn graph(data: &WorldDraft) -> (Graph, bool) {
     let mut graph: Graph = data.stations.iter().map(|s| (s.id, vec![])).collect();
-    // Sort independently of save order, to make limited searches deterministic.
-    let mut tracks: Vec<_> = data.tracks.iter().collect();
-    tracks.sort_by_key(|t| t.id);
-    for t in tracks {
-        graph.get_mut(&t.from).unwrap().push(Edge {
-            to: t.to,
-            segment: RouteSegment::Track { track_id: t.id },
-        });
-        graph.get_mut(&t.to).unwrap().push(Edge {
-            to: t.from,
-            segment: RouteSegment::Track { track_id: t.id },
-        });
-    }
-    // Group once rather than scanning every placement for every alignment.
-    // BTreeMap retains alignment-ID order independently of save order.
     let mut by_alignment: BTreeMap<AlignmentId, Vec<&StationPlacement>> = BTreeMap::new();
     for placement in &data.station_placements {
         by_alignment
@@ -155,14 +135,7 @@ fn graph(data: &WorldDraft) -> (Graph, bool) {
     (graph, truncated)
 }
 fn candidate(stations: Vec<StationId>, segments: Vec<RouteSegment>) -> RouteCandidate {
-    let track_only = segments
-        .iter()
-        .all(|s| matches!(s, RouteSegment::Track { .. }));
-    RouteCandidate {
-        stations,
-        segments,
-        track_only,
-    }
+    RouteCandidate { stations, segments }
 }
 // Physical infrastructure distance, not number of stations or route membership.
 fn segment_distance(data: &WorldDraft, segment: &RouteSegment) -> Option<f64> {
@@ -174,17 +147,6 @@ fn segment_distance(data: &WorldDraft, segment: &RouteSegment) -> Option<f64> {
             .map(|a| a.length_m())
     };
     match segment {
-        RouteSegment::Track { track_id } => {
-            let track = data.tracks.iter().find(|t| t.id == *track_id)?;
-            let a = data.stations.iter().find(|s| s.id == track.from)?;
-            let b = data.stations.iter().find(|s| s.id == track.to)?;
-            // Legacy tracks have no sampled geometry: their stored geometry is
-            // the straight station-to-station span, using Alignment's metric.
-            let x = (b.longitude - a.longitude).to_radians()
-                * ((a.latitude + b.latitude) / 2.0).to_radians().cos();
-            let y = (b.latitude - a.latitude).to_radians();
-            Some(6_371_000.0 * x.hypot(y))
-        }
         RouteSegment::Alignment {
             alignment_id,
             from,

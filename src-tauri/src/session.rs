@@ -2,7 +2,7 @@
 #[path = "session/deletion.rs"]
 mod deletion;
 use rosenfu_core::world::{
-    AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, TrackId, World, WorldDraft,
+    AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, World, WorldDraft,
 };
 use std::path::{Path, PathBuf};
 
@@ -285,16 +285,7 @@ impl WorldEditor {
             .map_err(|e| e.to_string())?;
         Ok(self.snapshot())
     }
-    pub fn preview_service_from_route(
-        &self,
-        route_id: RouteId,
-        from_occurrence: u32,
-        to_occurrence: u32,
-    ) -> Result<rosenfu_core::world::ServiceRoutePreview, String> {
-        self.world
-            .preview_service_from_route(route_id, from_occurrence, to_occurrence)
-            .map_err(|e| e.to_string())
-    }
+
     pub fn preview_route_candidates(
         &self,
         start: StationId,
@@ -867,10 +858,6 @@ impl WorldEditor {
             || candidate.service_paths.iter().any(|p|p.stops.iter().any(|stop|matches!(stop,rosenfu_core::world::StationOccurrenceRef::OnLeg{station_id:id,..} if *id==station_id)) || p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Alignment{from,to,..} | rosenfu_core::world::RouteSegment::ConnectedAlignments{from,to,..} if from==station_id || to==station_id)))
             || candidate.route_paths.iter().any(|p| p.member_stations.contains(&station_id) || p.segments.iter().any(|segment| matches!(segment, rosenfu_core::world::RouteSegment::Alignment { from, to, .. } | rosenfu_core::world::RouteSegment::ConnectedAlignments { from,to,.. } if *from == station_id || *to == station_id)))
             || candidate
-            .tracks
-            .iter()
-            .any(|track| track.from == station_id || track.to == station_id)
-            || candidate
                 .routes
                 .iter()
                 .any(|route| route.start == station_id)
@@ -989,74 +976,6 @@ impl WorldEditor {
         Ok(self.snapshot())
     }
 
-    pub fn delete_track(&mut self, track_id: TrackId) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.delete_track_unchecked(track_id)?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
-        Ok(self.snapshot())
-    }
-    fn delete_track_unchecked(&mut self, track_id: TrackId) -> Result<WorldDraft, String> {
-        let mut candidate = self.snapshot();
-        if !candidate
-            .tracks
-            .iter()
-            .any(|track| track.id == track_id && track.owner == self.company)
-        {
-            return Err("削除する線路が見つかりません。".into());
-        }
-        if candidate.service_paths.iter().any(|p|p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Track{track_id:id} if id==track_id)))
-            || candidate.route_paths.iter().any(|p| p.segments.iter().any(|segment| matches!(segment, rosenfu_core::world::RouteSegment::Track { track_id: id } if *id == track_id)))
-            || candidate
-            .routes
-            .iter()
-            .any(|route| route.tracks.contains(&track_id))
-            || candidate
-                .services
-                .iter()
-                .any(|service| service.tracks.contains(&track_id))
-        {
-            return Err(
-                "路線・運行系統から参照されている線路は削除できません。連鎖削除は行いません。"
-                    .into(),
-            );
-        }
-        candidate.tracks.retain(|track| track.id != track_id);
-        self.world
-            .replace(candidate)
-            .map_err(|error| error.to_string())?;
-        Ok(self.snapshot())
-    }
-    pub fn add_track(&mut self, from: StationId, to: StationId) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.add_track_unchecked(from, to)?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
-        Ok(self.snapshot())
-    }
-    fn add_track_unchecked(
-        &mut self,
-        from: StationId,
-        to: StationId,
-    ) -> Result<WorldDraft, String> {
-        if from == to {
-            return Err("接続元と接続先には別の駅を選んでください。".into());
-        }
-        let data = self.world.snapshot();
-        if !data.stations.iter().any(|s| s.id == from) || !data.stations.iter().any(|s| s.id == to)
-        {
-            return Err("接続する駅が見つかりません。ワールドを確認してください。".into());
-        }
-        if data.tracks.iter().any(|track| {
-            (track.from == from && track.to == to) || (track.from == to && track.to == from)
-        }) {
-            return Err("この2駅は既に線路で接続されています。".into());
-        }
-        self.world
-            .add_track(self.company, from, to)
-            .map_err(|e| e.to_string())?;
-        Ok(self.snapshot())
-    }
     pub fn rename_company(&mut self, name: String) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.rename_company_unchecked(name)?;
@@ -1121,24 +1040,16 @@ impl WorldEditor {
                 .iter()
                 .find(|r| r.id == id && r.owner == self.company)
                 .ok_or("編集する路線が見つかりません。")?;
-            let previous_segments = candidate
+            let previous_segments = &candidate
                 .route_paths
                 .iter()
                 .find(|p| p.route_id == id)
-                .map(|p| p.segments.clone())
-                .unwrap_or_else(|| {
-                    previous
-                        .tracks
-                        .iter()
-                        .map(|track_id| rosenfu_core::world::RouteSegment::Track {
-                            track_id: *track_id,
-                        })
-                        .collect()
-                });
+                .ok_or("路線の経路データがありません。")?
+                .segments;
             // Services currently own independent physical paths, not route IDs.
             // Do not guess which service depends on a route: until explicit
             // associations exist, reject path changes conservatively.
-            if (previous.start != start || previous_segments != preview.path.segments)
+            if (previous.start != start || previous_segments != &preview.path.segments)
                 && candidate.services.iter().any(|service| {
                     service.owner == self.company
                         && !candidate
@@ -1156,7 +1067,6 @@ impl WorldEditor {
                 .ok_or("編集する路線が見つかりません。")?;
             route.name = name.trim().to_owned();
             route.start = start;
-            route.tracks.clear();
             candidate.route_paths.retain(|p| p.route_id != id);
             candidate.route_paths.push(rosenfu_core::world::RoutePath {
                 route_id: id,
@@ -1177,170 +1087,7 @@ impl WorldEditor {
         }
         Ok(self.snapshot())
     }
-    pub fn save_route(
-        &mut self,
-        route_id: Option<RouteId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-    ) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.save_route_unchecked(route_id, name, start, tracks)?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
-        Ok(self.snapshot())
-    }
-    fn save_route_unchecked(
-        &mut self,
-        route_id: Option<RouteId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-    ) -> Result<WorldDraft, String> {
-        if name.trim().is_empty() || name.chars().count() > 80 {
-            return Err("路線名は1〜80文字で入力してください。".into());
-        }
-        if tracks.is_empty() {
-            return Err("路線には1本以上の線路を指定してください。".into());
-        }
-        if let Some(id) = route_id {
-            let mut candidate = self.snapshot();
-            if candidate.route_paths.iter().any(|p| p.route_id == id) {
-                return Err(
-                    "この路線は所属駅付き経路です。旧式の線路編集では上書きできません。".into(),
-                );
-            }
-            let previous = candidate
-                .routes
-                .iter()
-                .find(|r| r.id == id && r.owner == self.company)
-                .ok_or("編集する路線が見つかりません。")?;
-            if (previous.start != start || previous.tracks != tracks)
-                && candidate.services.iter().any(|service| {
-                    service.owner == self.company
-                        && !candidate
-                            .service_route_bindings
-                            .iter()
-                            .any(|row| row.service_id == service.id)
-                })
-            {
-                return Err("路線との関連が未確認の系統があります。先に系統の路線を割り当てるか、独立系統として指定してください。系統は変更していません。".into());
-            }
-            let route = candidate
-                .routes
-                .iter_mut()
-                .find(|r| r.id == id && r.owner == self.company)
-                .ok_or("編集する路線が見つかりません。")?;
-            route.name = name.trim().to_owned();
-            route.start = start;
-            route.tracks = tracks;
-            self.world.replace(candidate).map_err(|e| e.to_string())?;
-        } else {
-            self.world
-                .add_route(self.company, name.trim().to_owned(), start, tracks)
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(self.snapshot())
-    }
-    pub fn save_service(
-        &mut self,
-        service_id: Option<ServiceId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-        stops: Vec<u32>,
-    ) -> Result<WorldDraft, String> {
-        self.save_service_with_source_route(service_id, name, start, tracks, stops, None)
-    }
-    pub fn save_service_with_source_route(
-        &mut self,
-        service_id: Option<ServiceId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-        stops: Vec<u32>,
-        source_route_id: Option<RouteId>,
-    ) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        // Rebinding and path replacement are one outer transaction. The temporary
-        // independent row exists only in this discarded-on-failure clone.
-        if source_route_id.is_some() {
-            if let Some(id) = service_id {
-                candidate
-                    .world
-                    .set_service_route_binding(
-                        candidate.company,
-                        id,
-                        rosenfu_core::world::ServiceRouteBindingKind::Independent,
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        candidate.save_service_unchecked(service_id, name, start, tracks, stops)?;
-        if let Some(route_id) = source_route_id {
-            let id = service_id.unwrap_or_else(|| {
-                candidate
-                    .world
-                    .snapshot()
-                    .services
-                    .last()
-                    .expect("created service")
-                    .id
-            });
-            candidate
-                .world
-                .set_service_route_binding(
-                    candidate.company,
-                    id,
-                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
-        Ok(self.snapshot())
-    }
-    fn save_service_unchecked(
-        &mut self,
-        service_id: Option<ServiceId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-        stops: Vec<u32>,
-    ) -> Result<WorldDraft, String> {
-        if name.trim().is_empty() || name.chars().count() > 80 {
-            return Err("系統名は1〜80文字で入力してください。".into());
-        }
-        if let Some(id) = service_id {
-            if self
-                .world
-                .snapshot()
-                .service_paths
-                .iter()
-                .any(|p| p.service_id == id)
-            {
-                return Err("建設線形対応の系統は現在、新規作成と参照のみ対応しています。旧式編集では上書きできません。".into());
-            }
-            let mut candidate = self.snapshot();
-            let service = candidate
-                .services
-                .iter_mut()
-                .find(|service| service.id == id && service.owner == self.company)
-                .ok_or("編集する運行系統が見つかりません。")?;
-            service.name = name.trim().to_owned();
-            service.start = start;
-            service.tracks = tracks;
-            service.stops = stops;
-            self.world
-                .replace(candidate)
-                .map_err(|error| error.to_string())?;
-        } else {
-            self.world
-                .add_service(self.company, name.trim().to_owned(), start, tracks, stops)
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(self.snapshot())
-    }
+
     /// A fresh world may replace an existing healthy save only after approval of
     /// this exact observed version. Loaded-session conflicts stay ordinary errors.
     pub fn request_manual_save(

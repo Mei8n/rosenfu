@@ -99,8 +99,6 @@ impl WorldDraft {
                 .find(|s| s.id == path.service_id)
                 .ok_or(WorldError::InvalidServicePath)?;
             if !ids.insert(path.service_id)
-                || !service.tracks.is_empty()
-                || !service.stops.is_empty()
                 || path.next_leg_key == 0
                 || path.legs.iter().any(|l| l.key >= path.next_leg_key)
             {
@@ -211,21 +209,6 @@ impl WorldDraft {
                             return Err(WorldError::ServicePathEditUnsupported);
                         }
                     }
-                    RouteSegment::Track { track_id } => {
-                        if self
-                            .tracks
-                            .iter()
-                            .find(|t| t.id == track_id)
-                            .map(|t| (t.from, t.to))
-                            != old
-                                .tracks
-                                .iter()
-                                .find(|t| t.id == track_id)
-                                .map(|t| (t.from, t.to))
-                        {
-                            return Err(WorldError::ServicePathEditUnsupported);
-                        }
-                    }
                 }
             }
         }
@@ -268,8 +251,6 @@ impl World {
                 owner,
                 name,
                 start,
-                tracks: vec![],
-                stops: vec![],
             });
             data.service_paths.push(ServicePath {
                 service_id: ServiceId(id),

@@ -24,7 +24,6 @@ id_type!(
     PlayerId,
     CompanyId,
     StationId,
-    TrackId,
     RouteId,
     ServiceId,
     AlignmentId
@@ -52,15 +51,7 @@ pub struct Station {
     pub latitude: f64,
     pub longitude: f64,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Track {
-    pub id: TrackId,
-    pub owner: CompanyId,
-    pub from: StationId,
-    pub to: StationId,
-}
-/// Ordered track traversal. Track infrastructure is independent of this route.
+/// Named route backed by an explicit alignment RoutePath.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
@@ -68,7 +59,6 @@ pub struct Route {
     pub owner: CompanyId,
     pub name: String,
     pub start: StationId,
-    pub tracks: Vec<TrackId>,
 }
 /// An operating path independent of named routes, sharing track infrastructure.
 /// Stops are occurrence indices into the traversed stations: 0 is the start,
@@ -80,8 +70,6 @@ pub struct OperatingService {
     pub owner: CompanyId,
     pub name: String,
     pub start: StationId,
-    pub tracks: Vec<TrackId>,
-    pub stops: Vec<u32>,
 }
 /// Single-player local presentation metadata. This is not simulation state and
 /// must not be used as shared camera authority by future multiplayer protocols.
@@ -140,7 +128,6 @@ pub struct WorldDraft {
     pub players: Vec<Player>,
     pub companies: Vec<Company>,
     pub stations: Vec<Station>,
-    pub tracks: Vec<Track>,
     pub routes: Vec<Route>,
     pub services: Vec<OperatingService>,
 }
@@ -177,7 +164,6 @@ impl Default for WorldDraft {
             players: vec![],
             companies: vec![],
             stations: vec![],
-            tracks: vec![],
             routes: vec![],
             services: vec![],
         }
@@ -279,60 +265,6 @@ impl World {
         })
         .map(StationId)
     }
-    pub fn add_track(
-        &mut self,
-        owner: CompanyId,
-        from: StationId,
-        to: StationId,
-    ) -> Result<TrackId, WorldError> {
-        self.insert(|data, id| {
-            data.tracks.push(Track {
-                id: TrackId(id),
-                owner,
-                from,
-                to,
-            })
-        })
-        .map(TrackId)
-    }
-    pub fn add_route(
-        &mut self,
-        owner: CompanyId,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-    ) -> Result<RouteId, WorldError> {
-        self.insert(|data, id| {
-            data.routes.push(Route {
-                id: RouteId(id),
-                owner,
-                name,
-                start,
-                tracks,
-            })
-        })
-        .map(RouteId)
-    }
-    pub fn add_service(
-        &mut self,
-        owner: CompanyId,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-        stops: Vec<u32>,
-    ) -> Result<ServiceId, WorldError> {
-        self.insert(|data, id| {
-            data.services.push(OperatingService {
-                id: ServiceId(id),
-                owner,
-                name,
-                start,
-                tracks,
-                stops,
-            })
-        })
-        .map(ServiceId)
-    }
     pub fn snapshot(&self) -> &WorldDraft {
         &self.data
     }
@@ -358,7 +290,6 @@ impl World {
         existing_only!(players);
         existing_only!(companies);
         existing_only!(stations);
-        existing_only!(tracks);
         existing_only!(routes);
         existing_only!(services);
         existing_only!(alignments);
@@ -392,7 +323,6 @@ impl WorldDraft {
         ids(self.players.iter().map(|x| x.id.0), "player")?;
         ids(self.companies.iter().map(|x| x.id.0), "company")?;
         ids(self.stations.iter().map(|x| x.id.0), "station")?;
-        ids(self.tracks.iter().map(|x| x.id.0), "track")?;
         ids(self.routes.iter().map(|x| x.id.0), "route")?;
         ids(self.services.iter().map(|x| x.id.0), "service")?;
         ids(self.alignments.iter().map(|x| x.id.0), "alignment")?;
@@ -405,7 +335,6 @@ impl WorldDraft {
             .map(|x| x.id.0)
             .chain(self.companies.iter().map(|x| x.id.0))
             .chain(self.stations.iter().map(|x| x.id.0))
-            .chain(self.tracks.iter().map(|x| x.id.0))
             .chain(self.routes.iter().map(|x| x.id.0))
             .chain(self.services.iter().map(|x| x.id.0))
             .chain(self.alignments.iter().map(|x| x.id.0))
@@ -438,17 +367,6 @@ impl WorldDraft {
                 return Err(WorldError::InvalidCoordinate);
             }
         }
-        for t in &self.tracks {
-            if !owner_exists(t.owner) {
-                return Err(WorldError::MissingReference("track.owner"));
-            }
-            if !station_exists(t.from) || !station_exists(t.to) {
-                return Err(WorldError::MissingReference("track.station"));
-            }
-            if t.from == t.to {
-                return Err(WorldError::SelfLoop);
-            }
-        }
         self.validate_provenance()?;
         self.validate_route_paths()?;
         for r in &self.routes {
@@ -459,26 +377,8 @@ impl WorldDraft {
             if !station_exists(r.start) {
                 return Err(WorldError::MissingReference("route.start"));
             }
-            if self.route_paths.iter().any(|path| path.route_id == r.id) {
-                continue;
-            }
-            if r.tracks.is_empty() {
-                return Err(WorldError::EmptyRoute);
-            }
-            let mut current = r.start;
-            for id in &r.tracks {
-                let t = self
-                    .tracks
-                    .iter()
-                    .find(|t| t.id == *id)
-                    .ok_or(WorldError::MissingReference("route.track"))?;
-                current = if t.from == current {
-                    t.to
-                } else if t.to == current {
-                    t.from
-                } else {
-                    return Err(WorldError::DisconnectedRoute);
-                };
+            if !self.route_paths.iter().any(|path| path.route_id == r.id) {
+                return Err(WorldError::InvalidRoutePath);
             }
         }
         self.validate_service_paths()?;
@@ -491,39 +391,12 @@ impl WorldDraft {
             if !station_exists(service.start) {
                 return Err(WorldError::MissingReference("service.start"));
             }
-            if self
+            if !self
                 .service_paths
                 .iter()
-                .any(|p| p.service_id == service.id)
+                .any(|path| path.service_id == service.id)
             {
-                continue;
-            }
-            if service.tracks.is_empty() {
-                return Err(WorldError::EmptyService);
-            }
-            let mut current = service.start;
-            for id in &service.tracks {
-                let track = self
-                    .tracks
-                    .iter()
-                    .find(|track| track.id == *id)
-                    .ok_or(WorldError::MissingReference("service.track"))?;
-                current = if track.from == current {
-                    track.to
-                } else if track.to == current {
-                    track.from
-                } else {
-                    return Err(WorldError::DisconnectedService);
-                };
-            }
-            let final_index =
-                u32::try_from(service.tracks.len()).map_err(|_| WorldError::InvalidServiceStops)?;
-            if service.stops.first() != Some(&0)
-                || service.stops.last() != Some(&final_index)
-                || service.stops.iter().any(|index| *index > final_index)
-                || service.stops.windows(2).any(|pair| pair[0] >= pair[1])
-            {
-                return Err(WorldError::InvalidServiceStops);
+                return Err(WorldError::InvalidServicePath);
             }
         }
         Ok(())
@@ -675,9 +548,6 @@ pub use route_planning::{
 
 mod route_paths;
 pub use route_paths::RoutePath;
-
-mod service_planning;
-pub use service_planning::{ServiceDraftStation, ServicePlanningError, ServiceRoutePreview};
 
 mod service_paths;
 pub use service_paths::{
