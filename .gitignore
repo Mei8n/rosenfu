@@ -37,3 +37,5 @@ Desktop.ini
 /*.rosenfu.json.lock
 /world.json.lock
 /world.autosave.json.lock
+
+/scripts/road-pack/__pycache__/

@@ -1,3 +1,4 @@
+import {useAutomaticRoad} from './useAutomaticRoad';
 import {useAutomaticRail} from './useAutomaticRail';
 import {AutomaticRailControls} from './AutomaticRailControls';
 import {equalWorldSnapshots,builtAnchorHeight,BuiltAnchorHeightHandles,BuiltAnchorHeightToolbar,type BuiltHeightSelection} from './BuiltAnchorHeight';
@@ -165,13 +166,11 @@ export function App() {
   const requestedTiles = useMemo(() => background === "sample" ? [] : visibleTiles(requestedCamera,background,mapSize,pixelRatio), [requestedCamera,background,mapSize,pixelRatio]);
   const displayTiles = useMemo(() => requestedTiles.map((tile) => positionTile(tile, camera)), [requestedTiles, camera]);
   const bounds = viewBounds(camera, mapSize);
-  const [graphBundle,setGraphBundle]=useState<ReferenceGraphBundle|null>(null);
+  const [manualGraphBundle,setGraphBundle]=useState<ReferenceGraphBundle|null>(null);
   const [graphVisible,setGraphVisible]=useState(true);
   const [pendingGraphChange,setPendingGraphChange]=useState<{bundle:ReferenceGraphBundle|null}|null>(null);
   const [candidateDirty,setCandidateDirty]=useState(false);
   const [routeRenameDirty,setRouteRenameDirty]=useState(false);
-  const graphIndex=useMemo(()=>graphBundle?indexGraphDisplay(graphBundle.graph):[],[graphBundle]);
-  const graphDisplay=useMemo(()=>queryGraphDisplay(graphIndex,viewBounds(camera,mapSize),camera.zoom,graphVisible),[graphIndex,camera,mapSize,graphVisible]);
   const [referencePack,setReferencePack]=useState<ReferencePack|null>(null);
   const [referenceVisible,setReferenceVisible]=useState(true);
   const referenceRepository=useMemo(()=>referencePack?createReferenceRepository(referencePack):null,[referencePack]);
@@ -310,6 +309,12 @@ export function App() {
   function cancelParallel(){setParallelStart(null);}
   useEffect(()=>{cancelParallel();},[activeTool,activePlanId,world]);
   const roadFollowingBlocked=roadFollowing;
+  const [frozenRoadBundle,setFrozenRoadBundle]=useState<ReferenceGraphBundle|null>(null);
+  const automaticRoad=useAutomaticRoad(bounds,status==="ready"&&roadFollowing,worldEpoch,!!frozenRoadBundle);
+  const graphBundle=roadFollowing?(frozenRoadBundle??automaticRoad.snapshot?.bundle??manualGraphBundle):manualGraphBundle;
+  const graphIndex=useMemo(()=>graphBundle?indexGraphDisplay(graphBundle.graph):[],[graphBundle]);
+  const graphDisplay=useMemo(()=>queryGraphDisplay(graphIndex,viewBounds(camera,mapSize),camera.zoom,graphVisible),[graphIndex,camera,mapSize,graphVisible]);
+
   function chooseTrackType(value:TrackType){cancelParallel();setParallelMode(false);setTrackType(value);setDesignSpeedKmh(defaultDesignSpeed(value));setRoadFollowing(value==="tram");setReferencePanel(value==="tram");setHoverPoint(null);}
   const nextPathId = useRef(2);
   const [plannedStations,setPlannedStations]=useState<PlannedStation[]>([]);
@@ -606,7 +611,7 @@ export function App() {
   const referenceExtension=referenceExtensionCandidates.find(candidate=>candidate.key===referenceExtensionKey);
   const referenceExtensionError=referenceExtensionKey?(!referenceExtension?"延伸対象の端点が参照形状に一致しません。起点を選び直してください。":referenceExtension.alignment.owner!==world?.companies[0]?.id?"他社の線路には延伸できません。":extensionJoinError(referenceExtension.build.points,extensionPrevious({alignmentId:referenceExtension.alignment.id,endpoint:referenceExtension.endpoint}))):null;
   const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
-  useEffect(()=>{setReferenceExtensionKey("");},[referenceCopy.active,graphBundle]);
+  useEffect(()=>{setReferenceExtensionKey("");if(!referenceCopy.active)setFrozenRoadBundle(null);},[referenceCopy.active,graphBundle]);
   const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referenceCopy.plan.build?[{id:"reference-plan",pathId:-1,points:referenceCopy.plan.build.points}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:plan.reference?!!extensionJoinError(plan.points,extensionPrevious(plan.extension)):!!plannedGeometry(plan.points,plan.editedGeometry,extensionPrevious(plan.extension)).error})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
   const plannedPlatforms=plannedStations.map(station=>{
     const line=stationLines.find(line=>station.alignmentId?line.pathId===undefined&&line.id===station.alignmentId:line.pathId===station.pathId);
@@ -1563,7 +1568,7 @@ export function App() {
             <p>閲覧・建設範囲: 北緯20〜46度 / 東経122〜154度。領土境界を示すものではありません。範囲端では表示を矩形内に制限します。</p>
             {cameraError && <p role="alert">{cameraError}</p>}
           </div>
-          <ReferenceGraphControls bundle={graphBundle} visible={graphVisible} onBundle={bundle=>{if(referenceCopy.active)setPendingGraphChange({bundle});else setGraphBundle(bundle);}} onVisible={setGraphVisible} total={graphDisplay.total} shown={graphDisplay.edges.length} zoom={camera.zoom}/>
+          {roadFollowing?<label><input type="checkbox" aria-label="道路参考線を表示" checked={graphVisible} onChange={event=>setGraphVisible(event.target.checked)}/>道路参考線を表示</label>:<ReferenceGraphControls bundle={graphBundle} visible={graphVisible} onBundle={bundle=>{if(referenceCopy.active)setPendingGraphChange({bundle});else setGraphBundle(bundle);}} onVisible={setGraphVisible} total={graphDisplay.total} shown={graphDisplay.edges.length} zoom={camera.zoom}/>}
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
             <div className="map-surface">
@@ -1581,7 +1586,7 @@ export function App() {
             <div className="construction-options-row"><label>線路数<select aria-label="敷設する線路数" value={infrastructure.track_count} disabled={!enabled||!!draftExtension||draftPoints.length>0||referenceCopy.active} onChange={e=>setInfrastructure(value=>({...value,track_count:Number(e.target.value) as 1|2|4}))}>{([1,2,4] as const).map(count=><option key={count} value={count}>{COUNT_LABELS[count]}</option>)}</select></label><details className="track-advanced-settings"><summary>詳細設定</summary><div className="target-speed-control"><label htmlFor="track-target-speed">目標最高速度</label><span className="speed-input"><button type="button" className="secondary" aria-label="目標最高速度を20 km/h下げる" disabled={!enabled||!!draftExtension||referenceCopy.active||designSpeedKmh<=1} onClick={()=>setDesignSpeedKmh(value=>Math.max(1,value-20))}>−</button><input id="track-target-speed" aria-label="線路の目標最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/><button type="button" className="secondary" aria-label="目標最高速度を20 km/h上げる" disabled={!enabled||!!draftExtension||referenceCopy.active||designSpeedKmh>=600} onClick={()=>setDesignSpeedKmh(value=>Math.min(600,value+20))}>＋</button><span>km/h</span></span></div></details></div>
 </div>}
             {activeTool === "tracks" && mapMode==="draw" && !parallelMode && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && (draftPoints.length>0 || roadFollowingBlocked || !!previewError) && <div className="construction-tooltip drawing-tooltip drawing-metrics" role="status" style={{left:Math.max(8,Math.min(mapSize.width-210,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-90,cursorPosition.y+18))}}>
-              {(roadFollowingBlocked || previewError)&&<strong>{roadFollowingBlocked?"道路追従を開始するか、道路に合わせるをOFFにしてください":`敷設不可：${previewError}`}</strong>}
+              {(roadFollowingBlocked || previewError)&&<strong>{roadFollowingBlocked?(!graphBundle?automaticRoad.message:"道路追従を開始するか、道路に合わせるをOFFにしてください"):`敷設不可：${previewError}`}</strong>}
               {draftPoints.length>0&&<><div>長さ {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div>{!previewError&&<div>速度上限 <span className="drawing-speed">{Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh)} km/h</span>{circleGuide&&<small>（暫定）</small>}</div>}</>}
             </div>}
             {anchorPreview?.preview&&(anchorPreview.error || anchorPreview.snapped)&&cursorPosition&&<div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{anchorPreview.error??"位置合わせ（接続は変更しません）"}</div>}
@@ -1681,7 +1686,7 @@ export function App() {
             </svg>
             <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
           </div>
-          <MapCredits derivedOsmVisible={alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>!!path.reference&&path.line.length>1)||!!(referenceCopy.active&&referenceCopy.plan.build&&referenceCopy.plan.build.points.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
+          <MapCredits derivedOsmVisible={(roadFollowing&&!!graphBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>!!path.reference&&path.line.length>1)||!!(referenceCopy.active&&referenceCopy.plan.build&&referenceCopy.plan.build.points.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
         </section>
         <aside className={panelCollapsed ? "side-panel collapsed" : "side-panel"}>
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
@@ -1715,7 +1720,7 @@ export function App() {
           </section>
           <section className="track-editor" role="tabpanel" id="panel-tracks" aria-labelledby="tab-tracks" hidden={activeTool !== "tracks" && activeTool !== "inactive"}>
 
-            <details className="reference-tools" hidden={!referencePanel&&!referenceCopy.active} open><summary>実在線路・道路に沿う</summary>{automaticRailSelected?<AutomaticRailControls copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} status={automaticRail.status} retry={automaticRail.retry} enabled={enabled} canStart={copyCanStart} zoom={camera.zoom} truncated={automaticRail.view.truncated}/>:<ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/> }</details>
+            <details className="reference-tools" hidden={!referencePanel&&!referenceCopy.active} open><summary>実在線路・道路に沿う</summary>{roadFollowing&&<div role="status" aria-label="道路データ状態">{automaticRoad.message}<button type="button" className="secondary" disabled={referenceCopy.active} onClick={automaticRoad.retry}>再取得</button><small>道路追従のみ対応。踏切自動作成・水域建設判定は未実装です。</small></div>}{automaticRailSelected?<AutomaticRailControls copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;if(roadFollowing)setFrozenRoadBundle(graphBundle);newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} status={automaticRail.status} retry={automaticRail.retry} enabled={enabled} canStart={copyCanStart} zoom={camera.zoom} truncated={automaticRail.view.truncated}/>:<ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>既存線路 {candidate.alignment.id} の{candidate.endpoint==="start"?"始点":"終点"}から延伸</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;if(roadFollowing)setFrozenRoadBundle(graphBundle);newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/> }</details>
 
             <ul className="construction-list" hidden={mapMode==="draw"}>{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id);setSelectedPlanPath(null);setTrackDeleteConfirm(false);changeMapMode("move"); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name&&a.name!=="新しい線路"?a.name:`線路 ${a.id}`}</button></li>)}</ul>
             {selectedAlignment&&world?.alignment_provenance?.some(p=>p.alignment_id===selectedAlignment.id)&&<AlignmentProvenance alignment={selectedAlignment} provenances={world?.alignment_provenance?.filter(p=>p.alignment_id===selectedAlignment.id)} sourceRecords={world?.source_records??[]}/>}
