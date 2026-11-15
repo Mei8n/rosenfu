@@ -145,6 +145,20 @@ fn place_station_on_alignment(
         .place_station_on_alignment(name, alignment_id, position, length_m, width_m)
 }
 #[tauri::command]
+fn set_service_appearance(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    color: String,
+    shape: rosenfu_core::world::ServiceSymbolShape,
+    symbol: String,
+    expected_appearance: Option<rosenfu_core::world::ServiceAppearance>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .set_service_appearance(service_id, color, shape, symbol, expected_appearance)
+}
+#[tauri::command]
 fn set_service_color(
     editor: State<'_, Mutex<WorldEditor>>,
     service_id: ServiceId,
@@ -507,6 +521,7 @@ fn main() {
             place_station_on_alignment,
             rename_station,
             set_service_color,
+            set_service_appearance,
             duplicate_service,
             delete_station,
             delete_alignment,

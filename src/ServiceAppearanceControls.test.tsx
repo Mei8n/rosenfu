@@ -2,7 +2,7 @@
 import React from 'react';
 import {afterEach,expect,test,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
-import {ServiceAppearanceControls} from './ServiceAppearanceControls';
+import {ServiceAppearanceControls,initialServiceSymbol} from './ServiceAppearanceControls';
 afterEach(cleanup);
 const props=()=>({color:null as string|null,enabled:true,onDirty:vi.fn(),onSave:vi.fn().mockResolvedValue(undefined),onDuplicate:vi.fn().mockResolvedValue(undefined)});
 test('unset colour remains unset until explicit apply and uses compare-and-set value',async()=>{
@@ -82,4 +82,41 @@ test('HEX draft survives external changes and conflict prevents keyboard apply',
  fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Enter'});expect(p.onSave).not.toHaveBeenCalled();
  fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Escape'});
  expect((screen.getByLabelText('系統色 HEX') as HTMLInputElement).value).toBe('#334455');
+});
+
+test('symbol initializes from Unicode name, remains editable and is not overwritten by rename',()=>{
+ expect(initialServiceSymbol(' 八尾線')).toBe('八');expect(initialServiceSymbol('𠮷野線')).toBe('𠮷');expect(initialServiceSymbol('が線')).toBe('が');expect(initialServiceSymbol('🚆急行')).toBe('🚆');expect(initialServiceSymbol('  ')).toBe('');
+ const p={...props(),serviceName:'八尾線'};const view=render(<ServiceAppearanceControls {...p}/>);
+ expect((screen.getByLabelText('系統記号') as HTMLInputElement).value).toBe('八');
+ view.rerender(<ServiceAppearanceControls {...p} serviceName="大阪線"/>);
+ expect((screen.getByLabelText('系統記号') as HTMLInputElement).value).toBe('大');
+ fireEvent.change(screen.getByLabelText('系統記号'),{target:{value:'快'}});
+ view.rerender(<ServiceAppearanceControls {...p} serviceName="京都線"/>);
+ expect((screen.getByLabelText('系統記号') as HTMLInputElement).value).toBe('快');
+});
+
+test('shape and symbol save atomically, matching result clears and foreign shape conflicts',async()=>{
+ const save=vi.fn().mockResolvedValue(undefined);const p={...props(),color:'#112233',serviceName:'八尾線',onSaveAppearance:save};
+ const view=render(<ServiceAppearanceControls {...p}/>);
+ fireEvent.click(screen.getByRole('button',{name:'系統の形 ひし形'}));
+ fireEvent.change(screen.getByLabelText('系統記号'),{target:{value:'快'}});
+ fireEvent.click(screen.getByRole('button',{name:'色を適用'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledWith('#112233','diamond','快'));
+ view.rerender(<ServiceAppearanceControls {...p} appearance={{shape:'diamond',symbol:'快'}}/>);
+ expect(screen.queryByRole('alert')).toBeNull();expect((screen.getByRole('button',{name:'系統を複製'}) as HTMLButtonElement).disabled).toBe(false);
+ view.rerender(<ServiceAppearanceControls {...p} serviceName="改名" appearance={{shape:'diamond',symbol:'快'}}/>);
+ expect((screen.getByLabelText('系統記号') as HTMLInputElement).value).toBe('快');
+ fireEvent.change(screen.getByLabelText('系統記号'),{target:{value:'特'}});
+ view.rerender(<ServiceAppearanceControls {...p} appearance={{shape:'square',symbol:'快'}}/>);
+ expect(screen.getByRole('alert')).toBeTruthy();
+ expect((screen.getByRole('button',{name:'色を適用'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('editing an automatic symbol to the same character can make it explicit',async()=>{
+ const save=vi.fn().mockResolvedValue(undefined);
+ render(<ServiceAppearanceControls {...props()} color="#112233" serviceName="八尾線" onSaveAppearance={save}/>);
+ fireEvent.change(screen.getByLabelText('系統記号'),{target:{value:''}});
+ fireEvent.change(screen.getByLabelText('系統記号'),{target:{value:'八'}});
+ fireEvent.click(screen.getByRole('button',{name:'色を適用'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledWith('#112233','circle','八'));
 });

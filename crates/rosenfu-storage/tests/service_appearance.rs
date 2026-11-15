@@ -90,3 +90,60 @@ fn invalid_duplicate_or_dangling_color_rows_are_rejected() {
     draft.service_appearances[0].service_id = ServiceId(u64::MAX);
     assert!(World::new(draft).is_err());
 }
+#[test]
+fn symbols_shapes_clone_rename_and_save_without_changing_the_original() {
+    let mut w = world();
+    let c = w.snapshot().companies[0].id;
+    let s = w.snapshot().services[0].id;
+    w.set_service_appearance(
+        c,
+        s,
+        "#ab12ef".into(),
+        ServiceSymbolShape::Diamond,
+        "快".into(),
+    )
+    .unwrap();
+    let original = w.snapshot().service_appearances[0].clone();
+    let copy = w.duplicate_service(c, s, "別名".into()).unwrap();
+    let duplicated = w
+        .snapshot()
+        .service_appearances
+        .iter()
+        .find(|row| row.service_id == copy)
+        .unwrap();
+    assert_eq!(duplicated.symbol.as_deref(), Some("快"));
+    assert_eq!(duplicated.shape, ServiceSymbolShape::Diamond);
+    w.set_service_color(c, copy, "#112233".into()).unwrap();
+    assert_eq!(
+        w.snapshot()
+            .service_appearances
+            .iter()
+            .find(|row| row.service_id == copy)
+            .unwrap()
+            .symbol
+            .as_deref(),
+        Some("快")
+    );
+    assert_eq!(
+        w.snapshot()
+            .service_appearances
+            .iter()
+            .find(|row| row.service_id == s),
+        Some(&original)
+    );
+    assert_eq!(
+        decode(&encode(&w).unwrap()).unwrap().snapshot(),
+        w.snapshot()
+    );
+    let before = w.snapshot().clone();
+    assert!(w
+        .set_service_appearance(
+            c,
+            s,
+            "#abcdef".into(),
+            ServiceSymbolShape::Square,
+            "\n".into()
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+}

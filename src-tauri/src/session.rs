@@ -112,6 +112,31 @@ pub struct WorldEditor {
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
 impl WorldEditor {
+    pub fn set_service_appearance(
+        &mut self,
+        service_id: ServiceId,
+        color: String,
+        shape: rosenfu_core::world::ServiceSymbolShape,
+        symbol: String,
+        expected_appearance: Option<rosenfu_core::world::ServiceAppearance>,
+    ) -> Result<WorldDraft, String> {
+        let current = self
+            .snapshot()
+            .service_appearances
+            .into_iter()
+            .find(|row| row.service_id == service_id);
+        if current != expected_appearance {
+            return Err("系統の表示設定が変更されています。最新の設定を確認してください。".into());
+        }
+        let mut candidate = self.clone();
+        candidate
+            .world
+            .set_service_appearance(candidate.company, service_id, color, shape, symbol)
+            .map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
     pub fn set_service_color(
         &mut self,
         service_id: ServiceId,
@@ -1531,6 +1556,54 @@ mod tests {
             .collect();
         e.create_service_path("系統".into(), start, segments, stops)
             .unwrap()
+    }
+
+    #[test]
+    fn appearance_compare_and_set_protects_shape_and_symbol_changes() {
+        use rosenfu_core::world::ServiceSymbolShape;
+        let (mut editor, alignment, stations) = alignment_fixture();
+        let created = create_test_service(
+            &mut editor,
+            stations[0],
+            vec![span(alignment, stations[0], stations[2])],
+        );
+        let service = created.services[0].id;
+        let first = editor
+            .set_service_appearance(
+                service,
+                "#112233".into(),
+                ServiceSymbolShape::Square,
+                "八".into(),
+                None,
+            )
+            .unwrap();
+        let stale = first.service_appearances[0].clone();
+        let second = editor
+            .set_service_appearance(
+                service,
+                "#112233".into(),
+                ServiceSymbolShape::Diamond,
+                "快".into(),
+                Some(stale.clone()),
+            )
+            .unwrap();
+        assert!(editor
+            .set_service_appearance(
+                service,
+                "#445566".into(),
+                ServiceSymbolShape::Circle,
+                "普".into(),
+                Some(stale)
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), second);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("symbol.json");
+        editor.save(&path).unwrap();
+        assert_eq!(
+            WorldEditor::new().load(&path).unwrap().service_appearances,
+            second.service_appearances
+        );
     }
 
     #[test]

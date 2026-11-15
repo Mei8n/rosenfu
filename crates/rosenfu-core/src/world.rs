@@ -579,4 +579,4 @@ mod service_route_bindings;
 pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
 
 mod service_appearance;
-pub use service_appearance::ServiceAppearance;
+pub use service_appearance::{ServiceAppearance, ServiceSymbolShape};
