@@ -301,3 +301,17 @@ test("delayed slot discovery does not turn the early load picker into a world mu
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));
  expect(vi.mocked(invoke).mock.calls.every(([command])=>["engine_info","world_snapshot","list_save_slots","autosave_status"].includes(command))).toBe(true);
 });
+
+test("plan name disables saved-info autocomplete while retaining edits across plan switches",async()=>{
+ const map=await start();
+ const input=screen.getByRole("textbox",{name:"計画名（任意）"}) as HTMLInputElement;
+ expect(input.autocomplete).toBe("off");
+ fireEvent.click(map,{clientX:180,clientY:130});
+ fireEvent.change(input,{target:{value:"第一計画"}});
+ fireEvent.click(trackPanel().getByRole("button",{name:"別の線路計画を追加"}));
+ fireEvent.click(trackPanel().getByRole("button",{name:/第一計画 を編集/}));
+ expect(input.value).toBe("第一計画");
+ fireEvent.change(input,{target:{value:"変更後計画"}});
+ expect(input.value).toBe("変更後計画");
+ expect(input.autocomplete).toBe("off");
+});
