@@ -249,3 +249,42 @@ They do not certify coverage or produce a construction snapshot. See
 [the staging/composite contract](../../docs/water-national-staging.md) for commands,
 limits, unfinished work and the live Takamatsu composite pin. Completed DB size is
 bounded separately from transient location-index/journal disk usage.
+
+## Source area assembly accounting
+
+The PBF reader now compares water-tagged closed-way/relation IDs with water-area
+callbacks after the entire scan. It reports `water-area-not-assembled` when an
+expected source area has no callback. This also covers unsupported water-tagged
+relation types and `area=no` ways; the reason does not diagnose a missing member
+or an assembler defect specifically.
+Callback ordering is not assumed: relation areas may arrive before the relation
+callback. Invalid area geometry retains the existing `invalid-area` issue.
+
+Unassembled areas have no trustworthy bounds. Their issues remain source-wide,
+including in spatial queries outside the available member geometry. At most
+500,000 declared IDs and 500,000 callback IDs are retained; more than 1,000 source
+issues fails the scan instead of publishing truncated issues. Existing staged
+SQLite data must be regenerated with this reader to obtain the new accounting;
+previous stage pins and packs are not retroactively changed or certified.
+
+This establishes accounting only for selected objects present in the input PBF.
+Absent OSM objects, untagged relation geometry, unknown widths, stale features and
+coastal snapshot differences remain unresolved. No coverage is promoted, no dry
+land is inferred, and road fetching/crossing construction is not gated by this
+reader. A source issue is not a located water polygon or proof of a crossing.
+
+The callback lifecycle is documented in the
+[Pyosmium handler reference](https://docs.osmcode.org/pyosmium/latest/reference/Handler-Processing/)
+and [area building reference](https://docs.osmcode.org/pyosmium/v4.3.0/reference/Area/).
+
+Live check: `shikoku-261114.osm.pbf` (source SHA-256
+`ecf914fd451f911b976ef8c37d672c43f8c0234cd2016e8305c8c107551f7c6d`,
+header `2026-11-14T21:20:41Z`) queried at `[134.02,34.32,134.08,34.38]`
+produced 67 area observations, 285 waterway lines and 23 coastlines. It additionally
+reported source-wide `relation/8242073` (黒瀬川): direct source inspection found
+`type=waterway`, `natural=water`, `waterway=river`. This is a non-surface relation,
+not a confirmed missing member or an area-assembler defect. Two scans reproduced
+manifest SHA-256 `a155dccdaa0535cde77b4c5d6cb2194aa6fce6da2f4c8cae4e765b6bcd114dc1`.
+One cloud Linux scan took 34.90 s and peaked at 413,868 KiB RSS using `flex_mem`;
+this measures the entire reader, not incremental set overhead or a national bound.
+Existing national stages and published trial packs have not been regenerated.
