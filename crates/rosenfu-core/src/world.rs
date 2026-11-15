@@ -171,6 +171,7 @@ impl Default for WorldDraft {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldError {
+    InvalidEnvironment,
     InvalidId(&'static str),
     EmptyName(&'static str),
     MissingReference(&'static str),
@@ -615,3 +616,9 @@ pub use turnout_geometry::{
 };
 
 mod height_redevelopment;
+
+mod environment;
+pub use environment::{
+    assess_profile_alignment_environment, AutomaticCrossing, CoverageBounds, EnvironmentAssessment,
+    EnvironmentSnapshot, RoadWay, WaterPolygon,
+};
