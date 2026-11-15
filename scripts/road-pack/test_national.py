@@ -20,6 +20,18 @@ AVAILABLE=importlib.util.find_spec('osmium') and importlib.util.find_spec('shape
 
 @unittest.skipUnless(AVAILABLE,'pinned optional osmium/shapely required')
 class NationalTests(unittest.TestCase):
+    def test_parent_sqlite_is_closed_before_temporary_directory_cleanup(self):
+        self.write()
+        original=sqlite3.connect
+        opened=[]
+        def connect(*args,**kwargs):
+            db=original(*args,**kwargs);opened.append(db);return db
+        with patch('national.sqlite3.connect',side_effect=connect):
+            self.run_pack()
+        self.assertTrue(opened)
+        for db in opened:
+            with self.assertRaises(sqlite3.ProgrammingError):db.execute('SELECT 1')
+
     def setUp(self):
         import osmium
         self.osmium=osmium;self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)

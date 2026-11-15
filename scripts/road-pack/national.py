@@ -5,6 +5,7 @@ No HTTP, interpolation, simplification, or inference of missing coverage. One so
 at a time; whole OSM ways are retained in SQLite, never the national graph in RAM.
 """
 import argparse
+from contextlib import closing
 import hashlib
 import importlib.metadata
 import json
@@ -176,7 +177,7 @@ def _extract_worker(pbf,cells,temp,limits,budget,result):
     A short-lived process owns the entire reader/cache lifetime on every OS.
     """
     try:
-        with sqlite3.connect(temp/'ways.sqlite') as db:
+        with closing(sqlite3.connect(temp/'ways.sqlite')) as db, db:
             db.execute('PRAGMA cache_size=-16384');db.execute('PRAGMA temp_store=FILE')
             result.send((True,extract(pbf,db,cells,temp,limits,budget)))
     except Exception as error:
@@ -275,7 +276,7 @@ def generate(config,output,limits=None):
                 # Child exit closes libosmium's named-index OS handles, including
                 # Windows delete locks. SQLite owns all retained coordinates.
                 (work/'nodes.idx').unlink(missing_ok=True)
-                with sqlite3.connect(work/'ways.sqlite') as db:
+                with closing(sqlite3.connect(work/'ways.sqlite')) as db, db:
                     region=emit_source(stage,name,source,geometry,cells,boundary,db,limits,total,budget);region['statistics']=stats;regions.append(region)
             budget.work=None;budget.check()
             print(json.dumps(dict(region=name,certified_cells=len(cells),boundary_unknown=boundary,output_bytes=total[0])),flush=True)
