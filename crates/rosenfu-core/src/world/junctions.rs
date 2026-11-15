@@ -37,6 +37,7 @@ impl World {
             .clone()
             .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
         let mut infrastructure = alignment.effective_infrastructure();
+        let mut section_profiles = alignment.section_profiles.clone();
         let point_index = if fraction == 0.0 {
             segment
         } else if fraction == 1.0 {
@@ -65,6 +66,23 @@ impl World {
                 let attr = *infrastructure
                     .get(index - 1)
                     .ok_or(WorldError::InvalidAlignment)?;
+                if !section_profiles.is_empty() {
+                    let length = |start: usize, end: usize| {
+                        alignment.points[start..=end]
+                            .windows(2)
+                            .map(|p| super::alignment::distance(p[0], p[1]))
+                            .sum::<f64>()
+                    };
+                    let fraction = length(anchors[index - 1], point_index)
+                        / length(anchors[index - 1], anchors[index]);
+                    let old = section_profiles[index - 1];
+                    section_profiles[index - 1] =
+                        old.clip(0., fraction).ok_or(WorldError::InvalidAlignment)?;
+                    section_profiles.insert(
+                        index,
+                        old.clip(fraction, 1.).ok_or(WorldError::InvalidAlignment)?,
+                    );
+                }
                 anchors.insert(index, point_index);
                 infrastructure.insert(index, attr);
                 index
@@ -72,6 +90,7 @@ impl World {
         };
         alignment.anchor_indices = Some(anchors);
         alignment.infrastructure = infrastructure;
+        alignment.section_profiles = section_profiles;
         if fraction > 0.0 && fraction < 1.0 {
             for provenance in draft
                 .alignment_provenance
@@ -132,6 +151,9 @@ impl World {
         prefix.points = original.points[..=split].to_vec();
         prefix.anchor_indices = Some(boundaries[..=anchor].to_vec());
         prefix.infrastructure = original.effective_infrastructure()[..anchor].to_vec();
+        if !original.section_profiles.is_empty() {
+            prefix.section_profiles = original.section_profiles[..anchor].to_vec();
+        }
         let mut suffix = original.clone();
         suffix.id = AlignmentId(draft.next_id);
         draft.next_id = draft
@@ -141,6 +163,9 @@ impl World {
         suffix.points = original.points[split..].to_vec();
         suffix.anchor_indices = Some(boundaries[anchor..].iter().map(|i| i - split).collect());
         suffix.infrastructure = original.effective_infrastructure()[anchor..].to_vec();
+        if !original.section_profiles.is_empty() {
+            suffix.section_profiles = original.section_profiles[anchor..].to_vec();
+        }
         let cut = prefix.length_m();
         let total = original.length_m();
         if let Some(profile) = original.vertical_profile {

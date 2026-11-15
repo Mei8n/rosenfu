@@ -78,6 +78,8 @@ pub struct Alignment {
     pub infrastructure: Vec<SectionInfrastructure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertical_profile: Option<VerticalProfile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_profiles: Vec<VerticalProfile>,
     pub track_type: TrackType,
     /// None preserves legacy saves and resolves to the track-type default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,6 +160,7 @@ impl WorldDraft {
                 return Err(WorldError::InvalidAlignment);
             }
             if a.vertical_profile.is_none()
+                && a.section_profiles.is_empty()
                 && a.infrastructure
                     .windows(2)
                     .any(|sections| sections[0].level != sections[1].level)
@@ -169,6 +172,31 @@ impl WorldDraft {
                 .is_some_and(|profile| !profile.is_valid(a.length_m(), a.track_type))
             {
                 return Err(WorldError::InvalidAlignment);
+            }
+            if !a.section_profiles.is_empty() {
+                let lengths = a.section_lengths_m();
+                if a.vertical_profile.is_some()
+                    || a.section_profiles.len() != a.section_count()
+                    || a.section_profiles
+                        .iter()
+                        .zip(&lengths)
+                        .any(|(p, length)| !p.is_valid(*length, a.track_type))
+                {
+                    return Err(WorldError::InvalidAlignment);
+                }
+                for i in 1..a.section_profiles.len() {
+                    if (a.section_profiles[i - 1].end_height_m
+                        - a.section_profiles[i].start_height_m)
+                        .abs()
+                        > 1e-6
+                        || (a.section_profiles[i - 1].end_tangent_m / lengths[i - 1]
+                            - a.section_profiles[i].start_tangent_m / lengths[i])
+                            .abs()
+                            > 1e-8
+                    {
+                        return Err(WorldError::InvalidAlignment);
+                    }
+                }
             }
             let speed = a.effective_design_speed_kmh();
             if !speed.is_finite() || !(1.0..=600.0).contains(&speed) {
@@ -202,8 +230,21 @@ impl WorldDraft {
                 .iter()
                 .find(|s| s.id == p.station_id)
                 .ok_or(WorldError::MissingReference("placement.station"))?;
-            if a.vertical_profile.is_some_and(|profile| !profile.is_flat())
-                || !placed.insert(p.station_id)
+            let footprint_start = p.position - p.length_m / (2.0 * a.length_m());
+            let footprint_end = p.position + p.length_m / (2.0 * a.length_m());
+            if footprint_start.is_finite()
+                && footprint_end.is_finite()
+                && footprint_start >= -1e-9
+                && footprint_end <= 1. + 1e-9
+                && footprint_start <= footprint_end
+                && !a.is_flat_over_position(footprint_start, footprint_end)
+            {
+                return Err(WorldError::StationOnGradient);
+            }
+            if !a.is_flat_over_position(
+                p.position - p.length_m / (2.0 * a.length_m()),
+                p.position + p.length_m / (2.0 * a.length_m()),
+            ) || !placed.insert(p.station_id)
                 || a.owner != s.owner
                 || !p.position.is_finite()
                 || !(0.0..=1.0).contains(&p.position)
@@ -277,7 +318,7 @@ impl World {
                 .last()
                 .ok_or(WorldError::InvalidAlignment)?,
         };
-        if alignment.vertical_profile.is_some()
+        if (alignment.vertical_profile.is_some() || !alignment.section_profiles.is_empty())
             || alignment.owner != owner
             || points.len() < 2
             || points.first() != Some(&old_endpoint)
@@ -412,6 +453,7 @@ impl World {
                 anchor_indices: None,
                 infrastructure: Vec::new(),
                 vertical_profile: None,
+                section_profiles: Vec::new(),
                 track_type,
                 design_speed_kmh: None,
             })

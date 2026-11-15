@@ -104,49 +104,90 @@ impl VerticalProfile {
     }
 }
 impl Alignment {
-    /// Signed grade pointing into the alignment from the specified endpoint.
-    pub fn endpoint_inward_grade(&self, endpoint: AlignmentEndpoint) -> f64 {
-        self.vertical_profile.map_or(0.0, |p| {
-            if endpoint == AlignmentEndpoint::Start {
-                p.start_tangent_m / self.length_m()
-            } else {
-                -p.end_tangent_m / self.length_m()
-            }
-        })
+    pub fn section_lengths_m(&self) -> Vec<f64> {
+        if self.points.len() < 2 {
+            return vec![];
+        }
+        let anchors = self
+            .anchor_indices
+            .clone()
+            .unwrap_or_else(|| vec![0, self.points.len() - 1]);
+        anchors
+            .windows(2)
+            .map(|range| {
+                self.points[range[0]..=range[1]]
+                    .windows(2)
+                    .map(|p| super::alignment::distance(p[0], p[1]))
+                    .sum()
+            })
+            .collect()
     }
-
-    /// Actual height along horizontal arc length, including inside a ramp.
-    /// Callers must use this, not categorical level, for crossing-clearance checks.
-    pub fn height_at_position_m(&self, position: f64) -> Option<f64> {
+    pub fn height_and_grade_at_position(&self, position: f64) -> Option<(f64, f64)> {
         if !position.is_finite() || !(0.0..=1.0).contains(&position) {
             return None;
         }
+        if !self.section_profiles.is_empty() {
+            let lengths = self.section_lengths_m();
+            let mut remaining = position * self.length_m();
+            for (index, length) in lengths.iter().enumerate() {
+                if remaining <= *length + 1e-8 || index + 1 == lengths.len() {
+                    let p = self.section_profiles.get(index)?;
+                    let t = (remaining / length).clamp(0., 1.);
+                    return Some((p.height_at(t), p.tangent_at(t) / length));
+                }
+                remaining -= length;
+            }
+            return None;
+        }
         Some(match self.vertical_profile {
-            Some(profile) => profile.height_at(position),
-            None => self.section_infrastructure(0)?.level.height_m(),
+            Some(p) => (
+                p.height_at(position),
+                p.tangent_at(position) / self.length_m(),
+            ),
+            None => (self.section_infrastructure(0)?.level.height_m(), 0.),
         })
     }
-    /// Actual vertical height at an endpoint, used for physical link validation.
+    pub fn height_at_position_m(&self, position: f64) -> Option<f64> {
+        self.height_and_grade_at_position(position).map(|v| v.0)
+    }
     pub fn endpoint_height_m(&self, endpoint: AlignmentEndpoint) -> f64 {
-        let position = if endpoint == AlignmentEndpoint::Start {
-            0.0
+        self.height_at_position_m(if endpoint == AlignmentEndpoint::Start {
+            0.
         } else {
-            1.0
-        };
-        match self.vertical_profile {
-            Some(profile) => profile.height_at(position),
-            None => self
-                .section_infrastructure(if endpoint == AlignmentEndpoint::Start {
-                    0
-                } else {
-                    self.section_count() - 1
-                })
-                .expect("validated section")
-                .level
-                .height_m(),
+            1.
+        })
+        .expect("validated endpoint")
+    }
+    pub fn endpoint_inward_grade(&self, endpoint: AlignmentEndpoint) -> f64 {
+        let start = endpoint == AlignmentEndpoint::Start;
+        self.height_and_grade_at_position(if start { 0. } else { 1. })
+            .expect("validated endpoint")
+            .1
+            * if start { 1. } else { -1. }
+    }
+    /// Whole platform footprint, not just centre or the alignment's global label.
+    pub fn is_flat_over_position(&self, from: f64, to: f64) -> bool {
+        if !from.is_finite() || !to.is_finite() || from < -1e-9 || to > 1. + 1e-9 || from > to {
+            return false;
         }
+        let from = from.clamp(0., 1.);
+        let to = to.clamp(0., 1.);
+        if self.section_profiles.is_empty() {
+            return self.vertical_profile.is_none_or(|p| p.is_flat());
+        }
+        let total = self.length_m();
+        let mut cursor = 0.;
+        for (profile, length) in self.section_profiles.iter().zip(self.section_lengths_m()) {
+            let end = cursor + length;
+            if to * total > cursor + 1e-8 && from * total < end - 1e-8 && !profile.is_flat() {
+                return false;
+            }
+            cursor = end;
+        }
+        true
     }
 }
+
 impl World {
     /// Construct new ramp geometry atomically; never silently raise existing track.
     pub fn build_alignment_ramp(

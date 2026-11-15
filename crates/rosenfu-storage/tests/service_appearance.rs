@@ -49,7 +49,7 @@ fn world() -> World {
     w
 }
 #[test]
-fn schema20_preserves_color_and_rejects_previous_schema() {
+fn schema21_preserves_color_and_rejects_previous_schema() {
     let mut w = world();
     let before = w.snapshot();
     let c = before.companies[0].id;
@@ -59,7 +59,7 @@ fn schema20_preserves_color_and_rejects_previous_schema() {
     assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());
     w.set_service_color(c, service, "#ab12ef".into()).unwrap();
     let encoded = encode(&w).unwrap();
-    assert_eq!(SCHEMA_VERSION, 20);
+    assert_eq!(SCHEMA_VERSION, 21);
     assert_eq!(decode(&encoded).unwrap().snapshot(), w.snapshot());
     let mut disguised: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
     disguised["schema_version"] = 18.into();

@@ -79,11 +79,13 @@ impl World {
             .height_at_position_m(hi / total)
             .ok_or(WorldError::InvalidAlignment)?;
         let g0 = original
-            .vertical_profile
-            .map_or(0., |p| p.tangent_at(lo / total) / total);
+            .height_and_grade_at_position(lo / total)
+            .ok_or(WorldError::InvalidAlignment)?
+            .1;
         let g1 = original
-            .vertical_profile
-            .map_or(0., |p| p.tangent_at(hi / total) / total);
+            .height_and_grade_at_position(hi / total)
+            .ok_or(WorldError::InvalidAlignment)?
+            .1;
         let target = level.height_m();
         let required = |from: f64, to: f64, start_grade: f64, end_grade: f64| -> Option<f64> {
             let valid = |l: f64| {
@@ -144,6 +146,7 @@ impl World {
                 section.level = level;
             }
             line.infrastructure = infrastructure;
+            line.section_profiles.clear();
             line.vertical_profile = Some(VerticalProfile {
                 start_height_m: start,
                 end_height_m: end,

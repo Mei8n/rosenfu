@@ -111,3 +111,21 @@ fn opposite_endpoint_ring_drafts_and_parked_paths_roundtrip() {
     payload["draftDestination"]["endpoint"] = json!("end");
     assert!(make(payload).is_err());
 }
+
+#[test]
+fn anchor_height_arrays_roundtrip_and_reject_mismatched_draft_lengths() {
+    use rosenfu_core::world::InfrastructureLevel;
+    let mut plan = plans();
+    plan.draft_anchor_levels = Some(vec![InfrastructureLevel::Elevated]);
+    plan.redo_anchor_levels = Some(vec![]);
+    plan.parked_paths[0].anchor_levels = Some(vec![InfrastructureLevel::Underground]);
+    plan.parked_paths[0].redo_anchor_levels = Some(vec![]);
+    let mut draft = WorldDraft::default();
+    draft.construction_plans = Some(plan.clone());
+    let world = World::new(draft).unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+    plan.draft_anchor_levels = Some(vec![]);
+    let mut invalid = world.snapshot().clone();
+    invalid.construction_plans = Some(plan);
+    assert!(World::new(invalid).is_err());
+}
