@@ -20,8 +20,9 @@ export function ServiceAppearanceControls({color,serviceName='',appearance,enabl
  const signature=JSON.stringify([color,savedShape,appearance?.symbol??null]);
  const observed=useRef({signature,color:displayColor(color),shape:savedShape,symbol:savedSymbol,hasSymbol:appearance?.symbol!=null}),busy=useRef(false);
  const [symbolTouched,setSymbolTouched]=useState(false);
- const changed=draft!==displayColor(color)||shape!==savedShape||symbol!==savedSymbol||(symbolTouched&&appearance?.symbol==null);
- const valid=/^#[0-9a-f]{6}$/i.test(draft)&&validSymbol(symbol);
+ const effectiveSymbol=appearance?.symbol==null&&!symbolTouched?savedSymbol:symbol;
+ const changed=draft!==displayColor(color)||shape!==savedShape||((symbolTouched||appearance?.symbol!=null)&&symbol!==savedSymbol)||(symbolTouched&&appearance?.symbol==null);
+ const valid=/^#[0-9a-f]{6}$/i.test(draft)&&validSymbol(effectiveSymbol);
  function reset(){setDraft(displayColor(color));setShape(savedShape);setSymbol(savedSymbol);setSymbolTouched(false);observed.current={signature,color:displayColor(color),shape:savedShape,symbol:savedSymbol,hasSymbol:appearance?.symbol!=null};setConflict(false);setError('');onDirty(false);}
  useEffect(()=>{if(observed.current.signature===signature)return;const previous=observed.current;
   const wasDirty=draft!==previous.color||shape!==previous.shape||symbol!==previous.symbol||(symbolTouched&&!previous.hasSymbol);
@@ -32,11 +33,11 @@ export function ServiceAppearanceControls({color,serviceName='',appearance,enabl
  useEffect(()=>{if(appearance?.symbol==null&&!symbolTouched){setSymbol(initialServiceSymbol(serviceName));observed.current.symbol=initialServiceSymbol(serviceName);}},[serviceName]);
  useEffect(()=>{onDirty(changed||conflict);},[changed,conflict,onDirty]);
  async function apply(){if(!enabled||busy.current||conflict||(!changed&&color!==null)||!valid)return;
-  busy.current=true;setPending(true);setError('');try{if(onSaveAppearance)await onSaveAppearance(draft,shape,symbol);else if(onSave)await onSave(draft,color);else throw Error("表示設定を保存できません。");}catch(e){setError(String(e));}finally{busy.current=false;setPending(false);}}
+  busy.current=true;setPending(true);setError('');try{if(onSaveAppearance)await onSaveAppearance(draft,shape,effectiveSymbol);else if(onSave)await onSave(draft,color);else throw Error("表示設定を保存できません。");}catch(e){setError(String(e));}finally{busy.current=false;setPending(false);}}
  async function duplicate(){if(!enabled||busy.current||changed||conflict)return;busy.current=true;setPending(true);setError('');try{await onDuplicate();}catch(e){setError(String(e));}finally{busy.current=false;setPending(false);}}
  return <section aria-label="系統の色と複製"><fieldset disabled={!enabled||pending}>
-  <div className="service-symbol-fields"><ServiceBadge color={/^#[0-9a-f]{6}$/i.test(draft)?draft:displayColor(color)} shape={shape} symbol={symbol}/>
-  <label>記号<input aria-label="系統記号" value={symbol} autoComplete="off" onChange={e=>{setSymbolTouched(true);setSymbol(e.target.value);}}/></label>
+  <div className="service-symbol-fields"><ServiceBadge color={/^#[0-9a-f]{6}$/i.test(draft)?draft:displayColor(color)} shape={shape} symbol={effectiveSymbol}/>
+  <label>記号<input aria-label="系統記号" value={effectiveSymbol} autoComplete="off" onChange={e=>{setSymbolTouched(true);setSymbol(e.target.value);}}/></label>
   <div role="group" aria-label="系統記号の形">{([['circle','丸','●'],['square','四角','■'],['diamond','ひし形','◆']] as const).map(([value,label,glyph])=><button type="button" key={value} aria-label={'系統の形 '+label} aria-pressed={shape===value} onClick={()=>setShape(value)}>{glyph}</button>)}</div></div>
   <div className="service-color-fields"><label>系統色<input type="color" aria-label="系統色" value={valid?draft:displayColor(color)} onChange={e=>setDraft(e.target.value.toLowerCase())}/></label>
   <label className="service-color-hex">HEX<input type="text" aria-label="系統色 HEX" value={draft} maxLength={7} spellCheck={false} autoComplete="off" aria-invalid={!valid}
