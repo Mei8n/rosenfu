@@ -209,8 +209,16 @@ fn rename_company(
         .rename_company(name)
 }
 #[tauri::command]
-fn rename_route(editor: State<'_, Mutex<WorldEditor>>, route_id: RouteId, name: String, expected_name: String) -> Result<WorldDraft, String> {
-    editor.lock().map_err(|_| "world state unavailable")?.rename_route(route_id, name, expected_name)
+fn rename_route(
+    editor: State<'_, Mutex<WorldEditor>>,
+    route_id: RouteId,
+    name: String,
+    expected_name: String,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .rename_route(route_id, name, expected_name)
 }
 #[tauri::command]
 fn save_planned_route(
