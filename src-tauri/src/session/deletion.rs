@@ -69,6 +69,51 @@ impl WorldEditor {
         self.validate_section_selection(&selections, &expected_alignments)?;
         let mut before = self.snapshot();
         before.construction_plans = Some(plans);
+        if let Some(target_level) = level {
+            let mut candidate = self.clone();
+            candidate
+                .world
+                .replace(before.clone())
+                .map_err(|e| e.to_string())?;
+            for selection in selections {
+                let mut indices = selection.section_indices.clone();
+                indices.sort_unstable();
+                if indices.windows(2).any(|p| p[1] != p[0] + 1) {
+                    return Err(
+                        "高さ変更は連続した区間を選択してください。選択外は変更しません。".into(),
+                    );
+                }
+                if let Some(count) = track_count {
+                    let mut draft = candidate.snapshot();
+                    let line = draft
+                        .alignments
+                        .iter_mut()
+                        .find(|a| a.id == selection.alignment_id)
+                        .ok_or("選択した線路がありません。")?;
+                    let mut infrastructure = line.effective_infrastructure();
+                    for index in &indices {
+                        infrastructure[*index].track_count = count;
+                    }
+                    line.infrastructure = infrastructure;
+                    candidate.world.replace(draft).map_err(|e| e.to_string())?;
+                }
+                candidate
+                    .world
+                    .redevelop_alignment_section_height(
+                        candidate.company,
+                        selection.alignment_id,
+                        indices[0],
+                        *indices.last().unwrap(),
+                        target_level,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+            let after = candidate.snapshot();
+            candidate.deleted_alignment = Some((before, after.clone()));
+            *self = candidate;
+            return Ok(after);
+        }
         let mut after = before.clone();
         for selection in selections {
             let alignment = after
@@ -494,6 +539,52 @@ mod tests {
         let id = snapshot.alignments[0].id;
         (editor, id)
     }
+    #[test]
+    fn selected_height_redevelopment_is_one_undo_and_short_run_is_atomic() {
+        use rosenfu_core::world::InfrastructureLevel;
+        let (mut editor, id) = setup();
+        let mut draft = editor.snapshot();
+        for point in &mut draft.alignments[0].points {
+            point.longitude = 139. + (point.longitude - 139.) * 10.;
+        }
+        editor.world.replace(draft).unwrap();
+        let mut before = editor.snapshot();
+        before.construction_plans = Some(plans());
+        let after = editor
+            .update_alignment_section_infrastructure(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1],
+                }],
+                before.alignments.clone(),
+                None,
+                Some(InfrastructureLevel::Elevated),
+                plans(),
+            )
+            .unwrap();
+        assert_eq!(after.alignments.len(), 5);
+        assert!(after.alignments.iter().any(|a| a
+            .vertical_profile
+            .is_some_and(|p| p.is_flat() && p.start_height_m == 6.)));
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        let (mut short, id) = setup();
+        let before = short.snapshot();
+        let error = short
+            .update_alignment_section_infrastructure(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1],
+                }],
+                before.alignments.clone(),
+                None,
+                Some(InfrastructureLevel::Elevated),
+                plans(),
+            )
+            .unwrap_err();
+        assert!(error.contains("区間を長く"));
+        assert_eq!(short.snapshot(), before);
+    }
+
     #[test]
     fn section_infrastructure_is_local_atomic_and_saved_with_one_undo() {
         use rosenfu_core::world::{InfrastructureLevel, SectionInfrastructure};

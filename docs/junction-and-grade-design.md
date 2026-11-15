@@ -244,13 +244,15 @@ against the retained original span. This remains an untrusted lineage claim,
 not evidence that a source bundle was authenticated. Generic replacement still
 cannot rewrite provenance. The optional field is a save-format addition.
 
-Partial height redevelopment is not implemented by rewriting the existing
-single cubic's endpoints: that would silently move unselected track. The safe
-next model is an explicit selected-run transaction: retain its outside boundary
-height/grade, create entry/exit ramp spans and any selected plateau inside the
-selected range, remap station/route/service references through the same split
-mapping, and reject insufficient ramp length or a platform that would move.
-One selected span needs at least two additional internal vertical breakpoints;
-the current single-Hermite representation cannot represent that profile. Until
-that transaction and preview exist, partial height changes remain a reasoned,
-atomic rejection. Count-only edits and exact clipped ramp removal are supported.
+Partial height redevelopment uses an explicit selected-run transaction rather than
+rewriting one cubic's endpoints and moving unselected track. The selected run is
+split into entry ramp, flat plateau and exit ramp; outside heights and boundary
+grades remain unchanged. Each ramp length is solved against the normal/tram 45‰
+or high-speed 30‰ limit, with at least 20m per physical alignment and 20m plateau.
+The transaction remaps station/route/service references using the same protected
+split operation and forms one undo entry. A platform intersecting the selection,
+non-contiguous selection, insufficient space, or invalid downstream references
+is rejected atomically with a reason. Moving a station vertically remains a
+separate unsupported operation; the implementation never lifts it silently.
+Existing source-derived geometry and attribution survive because only the
+vertical profiles change after explicit source-span splitting.
