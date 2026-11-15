@@ -469,6 +469,8 @@ mod tests {
                 assert_eq!(editor.snapshot(), before);
             } else {
                 let after = result.unwrap();
+                // Both retained pieces must remain owned by the original company.
+                assert!(after.alignments.iter().all(|a| a.owner == original.owner));
                 let connection = &after.alignment_connections[0];
                 assert_eq!(connection.b, before.alignment_connections[0].b);
                 let retained = after
