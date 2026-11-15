@@ -1,6 +1,6 @@
 import {readWaterEvidencePack,type WaterEvidencePack} from './waterEvidencePack.ts';
 import type {WaterPolygon} from './environmentData';
-export type WaterEvidenceComposite={status:'incomplete';coverage:[];parts:{key:string;pack:WaterEvidencePack}[];observedAreas:{sourceKey:string;polygon:WaterPolygon}[];hasMixedRevisionClaims:boolean;limitations:string[]};
+export type WaterEvidenceComposite={status:'incomplete';coverage:[];parts:{key:string;pack:WaterEvidencePack}[];observedAreas:{sourceKey:string;sourceObservationId:string;polygonPart:number;sourceTags:Record<string,string>;polygon:WaterPolygon}[];hasMixedRevisionClaims:boolean;limitations:string[]};
 function fail():never{throw Error('水域複合パックが不正・欠損・未対応です。');}
 async function hash(bytes:Uint8Array){return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes as Uint8Array<ArrayBuffer>))].map(v=>v.toString(16).padStart(2,'0')).join('');}
 /** A provenance-preserving inspection view, not a geometry union or construction snapshot. */
@@ -22,12 +22,21 @@ export async function readWaterEvidenceComposite(indexBytes:Uint8Array,indexPin:
   const pack=await readWaterEvidencePack(manifest,entry.manifest_sha256,payload);
   const current=JSON.stringify(pack.bounds);if(bounds!==undefined&&bounds!==current)fail();bounds=current;
   observations+=pack.observations.length;if(observations>20000)fail();
+  let areaIndex=0;
   for(const observation of pack.observations){
    const g=observation.geometry;
    coordinates+=g.type==='LineString'?g.coordinates.length:g.type==='Polygon'?g.coordinates.reduce((n,r)=>n+r.length,0):g.coordinates.reduce((n,p)=>n+p.reduce((n,r)=>n+r.length,0),0);
    if(coordinates>200000)fail();
+   // Keep the semantic source alongside each split polygon. A basin, covered
+   // water or layer tag must not disappear when a consumer selects this view.
+   // polygonPart is zero-based within the original observation, not the pack.
+   if(g.type!=='LineString')for(let polygonPart=0;polygonPart<(g.type==='Polygon'?1:g.coordinates.length);polygonPart++){
+    const polygon=pack.water[areaIndex++];if(!polygon)fail();
+    observedAreas.push({sourceKey:entry.key,sourceObservationId:observation.id,polygonPart,sourceTags:{...observation.tags},polygon});
+   }
   }
-  parts.push({key:entry.key,pack});for(const polygon of pack.water)observedAreas.push({sourceKey:entry.key,polygon});
+  if(areaIndex!==pack.water.length)fail();
+  parts.push({key:entry.key,pack});
  }
  return {status:'incomplete',coverage:[],parts,observedAreas,hasMixedRevisionClaims:new Set(parts.map(p=>p.pack.revision)).size>1,limitations:['No dry-land certification or complete water coverage','Per-part source revisions are claims, not a common verified observation date','Overlaps and duplicate source geometry retained; do not sum lengths or areas','Waterway widths and missing observations remain unresolved']};
 }
