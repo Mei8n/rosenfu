@@ -4,6 +4,7 @@ on:
     paths:
       - 'scripts/water-pack/**'
       - 'src/waterEvidencePack*'
+      - 'src/waterEvidenceComposite*'
       - '.github/workflows/water-evidence-pack.yml'
 permissions:
   contents: read
@@ -28,5 +29,5 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test -- src/waterEvidencePack.test.ts src/automaticWaterData.test.ts
+      - run: npm test -- src/waterEvidencePack.test.ts src/waterEvidenceComposite.test.ts src/automaticWaterData.test.ts
       - run: node --test scripts/water-pack/roundtrip.check.mjs
