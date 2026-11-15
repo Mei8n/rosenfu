@@ -47,7 +47,14 @@ test('saved new-format stops edit blocks selection and saves through atomic comm
  fireEvent.change(editor.getByLabelText('保存済み系統名'),{target:{value:'更新系統'}});fireEvent.click(editor.getByLabelText('保存済み停車 2'));
  vi.mocked(invoke).mockImplementation(async(command)=>command==='update_service_path'?{...saved,services:[{...saved.services[0],name:'更新系統'}],service_paths:[{...saved.service_paths[0],stops:preview.occurrences.map(o=>o.reference)}]}:saved);
  fireEvent.click(editor.getByRole('button',{name:'保存済み系統の変更を適用'}));await screen.findByText(/系統名と停車設定を適用しました/);
+ expect(screen.queryByText(/保存済み系統が変更されています/)).toBeNull();
  expect(invoke).toHaveBeenCalledWith('update_service_path',{serviceId:'10',name:'更新系統',stops:preview.occurrences.map(o=>o.reference)});
+ fireEvent.click(editor.getByLabelText('保存済み停車 2'));
+ expect((editor.getByRole('button',{name:'保存済み系統の変更を適用'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(editor.getByRole('button',{name:'保存済み系統の変更を取り消す'}));
+ expect((editor.getByLabelText('保存済み停車 2') as HTMLInputElement).checked).toBe(true);
+ expect(screen.queryByText(/保存済み系統が変更されています/)).toBeNull();
+
 });
 test('partial reverse alignment section sends preview and creation coordinates consistently',async()=>{
  const save=vi.fn().mockResolvedValue(undefined);vi.mocked(invoke).mockImplementation(async(_command,args:any)=>{const ls=args.segments.map((segment:any,i:number)=>({key:String(i+1),segment}));return {legs:ls,occurrences:resolveServicePath(args.start,ls,world),requires_stop_selection:true};});
@@ -71,4 +78,15 @@ test('inactive creator cannot clear replacement dirty flag and pristine replacem
  await start(saved);const panel=within(screen.getByRole('tabpanel',{name:'系統'}));fireEvent.click(panel.getByRole('button',{name:'系統編集: 独立系統'}));const replacement=within(screen.getByRole('region',{name:'保存済み系統の経路再設定'})),editor=within(screen.getByRole('region',{name:'保存済み新形式系統'}));
  fireEvent.change(editor.getByLabelText('保存済み系統名'),{target:{value:'改名後'}});vi.mocked(invoke).mockResolvedValueOnce({...saved,services:[{...saved.services[0],name:'改名後'}]});fireEvent.click(editor.getByRole('button',{name:'保存済み系統の変更を適用'}));await screen.findByText(/系統名と停車設定を適用しました/);await waitFor(()=>expect((replacement.getByLabelText('新形式の系統名') as HTMLInputElement).value).toBe('改名後'));
  fireEvent.change(replacement.getByLabelText('コピーする路線'),{target:{value:'6'}});const inactive=within(screen.getByRole('region',{name:'線形対応の新規系統'}));expect((inactive.getByRole('button',{name:'新形式下書きを破棄'}) as HTMLButtonElement).disabled).toBe(true);fireEvent.click(inactive.getByRole('button',{name:'新形式下書きを破棄'}));fireEvent.click(panel.getByRole('button',{name:'新規系統'}));expect(screen.getByRole('region',{name:'保存済み系統の経路再設定'})).toBeTruthy();expect((editor.getByLabelText('保存済み系統名').closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true);
+});
+
+test('selected saved service toggles off and protects an unsaved edit',async()=>{
+ await start(saved);
+ const button=()=>screen.getByRole('button',{name:'系統編集: 独立系統'});
+ fireEvent.click(button());fireEvent.click(button());
+ expect(screen.queryByRole('region',{name:'保存済み新形式系統'})).toBeNull();
+ fireEvent.click(button());fireEvent.change(screen.getByLabelText('保存済み系統名'),{target:{value:'下書き'}});
+ fireEvent.click(button());expect(screen.getByRole('region',{name:'保存済み新形式系統'})).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'系統下書きを破棄して切替'}));
+ expect(screen.queryByRole('region',{name:'保存済み新形式系統'})).toBeNull();
 });
