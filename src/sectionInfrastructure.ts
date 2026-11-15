@@ -1,7 +1,7 @@
 import type {GeoPoint} from './constructionPlans';
 export type SectionInfrastructure={track_count:1|2|4;level:'ground'|'elevated'|'elevated_2'|'elevated_3'|'underground'|'underground_2'|'underground_3'};
 export const DEFAULT_INFRASTRUCTURE:SectionInfrastructure={track_count:1,level:'ground'};
-export const LEVEL_LABELS={ground:'地上',elevated:'高架1',elevated_2:'高架2',elevated_3:'高架3',underground:'地下1',underground_2:'地下2',underground_3:'地下3'} as const;
+export const LEVEL_LABELS={ground:'地上 (0)',elevated:'高架 (+1)',elevated_2:'高架 (+2)',elevated_3:'高い高架 (+3)',underground:'開削トンネル (-1)',underground_2:'トンネル (-2)',underground_3:'大深度トンネル (-3)'} as const;
 export const COUNT_LABELS={1:'単線',2:'複線',4:'複々線'} as const;
 export function infrastructureSections(alignment:{points:GeoPoint[];anchor_indices?:number[]|null;infrastructure?:SectionInfrastructure[]}){
  const boundaries=alignment.anchor_indices??[0,alignment.points.length-1];
