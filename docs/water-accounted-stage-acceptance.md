@@ -22,3 +22,19 @@
 6. 道路snapshotの取得・参考追従・踏切交差は、水域取得失敗と分離する。道路取得成功から水域coverageを推定しない。地上水域禁止や30 km制約を適用する最終coreとの接続は、上記の根拠を持つ評価が別途必要。
 
 全国地上の建設許可を実現するには、水域不存在を認定できるcoverage契約がなお不足している。この再生成はその代替ではない。未取得でも成立する最悪条件proofと実水域観測は混合せず、全域を建設不能にするgateを追加しない。追加UIは設けない。
+
+同じ固定版の関東stageでは、`relation/3347533` が `amenity=fountain, covered=yes, layer=2, natural=water`、`way/1210718950` が `tunnel=culvert, layer=-1, natural=water`、`relation/11109864` が `covered=no;yes` を持つ。これらのshapeだけを地表水面と判定しない。OSMのlayer番号からRosenfuの一段6 mの高さを推定しない。属性欠落を「地表」と同義に扱うことも、この監査では承認していない。
+
+## 今回の完了範囲
+
+[機械可読監査結果](water-national-accounted-20261114.json) に全8地域の新manifest/DB pin、原典source-set pin、全行比較、属性件数、10地点抽出とTypeScript readerの結果を記録した。全1,180,640観測・27,352,637座標、DB合計1,303,355,392 bytesを再生成し、旧版とのID・body（形状/tags）・bboxの変更/欠落は0件。source issueは従来1件から5件となった。地域間重複を除いた件数ではない。
+
+水路線874,757観測のうち幅タグなし873,671件、幅タグあり1,086件。タグありを検証済み幅とは扱わない。面のcoveredタグ（値がno以外）155件、tunnelタグ（no以外）53件を数えたが、両者は重複しうるし、タグ値の意味を確定した件数ではない。
+
+旧DBの全199,111面観測をShapely 2.1.2で保存された経緯度平面上のis_valid/is_empty検査に通し、無効0件だった。新旧全行一致を確認してこの結果を引き継いだ。地理的精度・現実の水面・水面高さの保証ではない。
+
+札幌・仙台・東京・父島・名古屋・大阪・広島・高松・福岡・那覇を新stageから抽出し、アプリのTypeScript readerでraw payloadと全observations（ID/tags/形状）・source issuesの一致、incomplete/coverage=[]を確認した。各地点は該当地域の抽出検証で、全8地域と海域の融合済み建設データではない。既存HTTPS試験catalogは更新していない。
+
+東北の初回workerは-9で停止（原因未確定）。未完ディレクトリを保持し、新規出力先の単独再試行で完走した。機械可読結果に失敗先と成功先を区別して記録した。
+
+生成readerはPR151の専用・全体CIともLinux/Windows/macOS成功。全国実PBF再生成・監査はクラウドLinuxでの実行であり、実データ全国再生成を3OSで実行したとは扱わない。今回の変更は監査記録のみで、App/道路/踏切core・保存形式・追加UIを変更していない。
