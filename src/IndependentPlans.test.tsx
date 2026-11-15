@@ -25,6 +25,10 @@ async function start(snapshot: unknown = empty) {
     throw Error("unexpected "+command);
   });
   render(<App/>); fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"})); await screen.findByText(/construction-test/);
+  // Version renders before slot discovery. Resolve startup reads before tests
+  // issue load actions or install one-shot mutation responses.
+  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));
+  await act(async()=>{});
   const map=screen.getByRole("img",{name:"駅配置用サンプル地図"});
   map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
   return map;
@@ -275,4 +279,25 @@ test('station-only plan exposes the same single plan selector and clears it with
  expect(trackPanel().queryByRole('group',{name:'計画を選択'})).toBeNull();
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
  expect(trackPanel().getByRole('button',{name:'計画 1',pressed:true})).toBeTruthy();
+});
+
+test("delayed slot discovery does not turn the early load picker into a world mutation",async()=>{
+ let resolveSlots!:(value:unknown)=>void;
+ const slots=new Promise(resolve=>{resolveSlots=resolve;});
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==="engine_info")return {name:"Rosenfu",version:"delayed-slots"};
+  if(command==="world_snapshot")return built;
+  if(command==="list_save_slots")return slots;
+  if(command==="autosave_status")return {available:false};
+  throw Error("unexpected mutation "+command);
+ });
+ render(<App/>);await screen.findByText(/delayed-slots/);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith("list_save_slots"));
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="autosave_status")).toBe(false);
+ fireEvent.click(screen.getByRole("button",{name:"読込"}));
+ expect(screen.getByRole("dialog",{name:"ワールドを選択"})).toBeTruthy();
+ await act(async()=>{resolveSlots({active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]});});
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));
+ expect(vi.mocked(invoke).mock.calls.every(([command])=>["engine_info","world_snapshot","list_save_slots","autosave_status"].includes(command))).toBe(true);
 });
