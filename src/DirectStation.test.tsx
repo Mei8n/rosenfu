@@ -10,8 +10,8 @@ afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 const empty={next_id:"3",players:[{id:"1",name:"Player"}],companies:[{id:"2",owner:"1",name:"Railway"}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
 async function start(){
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
- if(command==="engine_info")return {name:"Rosenfu",version:"direct-test"};
- if(command==="world_snapshot"||command==="load_world")return empty;
+ if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};if(command==="engine_info")return {name:"Rosenfu",version:"direct-test"};
+ if(command==="world_snapshot"||command==="load_save_slot")return empty;
  if(command==="save_world")return {saved:true};
  throw Error("unexpected "+command);
  });render(<App/>);await screen.findByText(/direct-test/);

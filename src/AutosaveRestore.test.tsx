@@ -19,5 +19,5 @@ test('restore asks before discarding plans, failed restore retains them, success
 });
 test('autosave restore is available before new company setup',async()=>{
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{if(command==='list_save_slots')return {active_slot_id:'active',slots:[]};if(command==='engine_info')return {version:'auto-start',company_setup_required:true};if(command==='autosave_status')return {available:true};return empty;});render(<App/>);
- const dialog=within(await screen.findByRole('dialog'));fireEvent.click(await dialog.findByRole('button',{name:'自動保存から復元'}));await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());expect(invoke).toHaveBeenCalledWith('load_autosave');expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='rename_company')).toBe(false);
+ const dialog=within(await screen.findByRole('dialog'));fireEvent.click(await dialog.findByRole('button',{name:'自動保存から復元'}));await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());expect(invoke).toHaveBeenCalledWith('load_autosave',{slotId:'active'});expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='rename_company')).toBe(false);
 });

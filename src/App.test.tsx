@@ -20,9 +20,10 @@ function renderStationEditor() { const result = render(<App />); fireEvent.click
 function desktop() {
   vi.mocked(isTauri).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async (command) => {
+    if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};
     if (command === "engine_info") return { name: "Rosenfu", version: "test-version" };
     if (command === "world_snapshot") return empty;
-    if (command === "add_station" || command === "load_world") return populated;
+    if (command === "add_station" || command === "load_save_slot") return populated;
     if (command === "save_world") return { saved: true };
     throw new Error(`unexpected command: ${command}`);
   });
@@ -98,9 +99,9 @@ test("loading over unsaved station edits requires an explicit choice", async () 
   fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   await screen.findByText("新駅を配置しました。");
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
-  expect(invoke).not.toHaveBeenCalledWith("load_world");
+  expect(invoke).not.toHaveBeenCalledWith("load_save_slot",{slotId:"test-slot"});
   fireEvent.click(screen.getByRole("button", { name: "戻る" }));
-  expect(invoke).not.toHaveBeenCalledWith("load_world");
+  expect(invoke).not.toHaveBeenCalledWith("load_save_slot",{slotId:"test-slot"});
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   fireEvent.click(screen.getByRole("button", { name: "読込を続ける" }));
   await screen.findByText("保存したワールドを読み込みました。");
@@ -476,6 +477,7 @@ test("browser preview includes a read-only service without implying train operat
 async function editEquipment(snapshot: unknown, action: (command: string, args: any) => Promise<unknown>) {
   vi.mocked(isTauri).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};
     if (command === "engine_info") return { name: "Rosenfu", version: "test-version" };
     if (command === "world_snapshot") return snapshot;
     return action(command, args);
@@ -497,7 +499,7 @@ test("station rename keeps draft on failure and blocks save/switch/load until ex
   expect((region(".equipment-editor").getByLabelText("選択駅の名前") as HTMLInputElement).value).toBe("変更案");
   fireEvent.click(region(".save-controls").getByRole("button", { name: "読込" }));
   expect(region(".load-confirm").getByRole("button", { name: "読込を続ける" })).toBeTruthy();
-  expect(invoke).not.toHaveBeenCalledWith("load_world");
+  expect(invoke).not.toHaveBeenCalledWith("load_save_slot",{slotId:"test-slot"});
   fireEvent.click(region(".load-confirm").getByRole("button", { name: "戻る" }));
   fireEvent.click(document.querySelectorAll(".station-entry")[1]);
   fireEvent.click(region(".equipment-editor + .inline-confirm").getByRole("button", { name: "駅名下書きを破棄して切替" }));
@@ -628,7 +630,7 @@ test("candidate apply invokes RoutePath save and marks world unsaved",async()=>{
  desktop();const stations=[...populated.stations,{id:"4",owner:"2",name:"東",latitude:35.68,longitude:139.8}];
  const path={stations:["3","4"],segments:[{kind:"alignment",alignment_id:"5",from:"3",to:"4"}]};
  const oldRoute={id:"7",owner:"2",name:"既存路線",start:"3"};const oldPath={route_id:"7",segments:path.segments,member_stations:path.stations};const world={...empty,stations,routes:[oldRoute],route_paths:[oldPath]};const applied={...world,routes:[oldRoute,{id:"6",owner:"2",name:"候補路線",start:"3"}],route_paths:[oldPath,{route_id:"6",segments:path.segments,member_stations:path.stations}]};let rejectSave=true;
- vi.mocked(invoke).mockImplementation(async command=>{if(command==="engine_info")return {name:"Rosenfu",version:"test-version"};if(command==="world_snapshot")return world;if(command==="preview_route_candidates")return {status:"unique",candidates:[path],truncated:false};if(command==="preview_route_membership")return {path,member_stations:path.stations,excluded_stations:[]};if(command==="save_planned_route"){if(rejectSave){rejectSave=false;throw Error("temporary route save failure");}return applied;}throw Error(command);});
+ vi.mocked(invoke).mockImplementation(async command=>{if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};if(command==="engine_info")return {name:"Rosenfu",version:"test-version"};if(command==="world_snapshot")return world;if(command==="preview_route_candidates")return {status:"unique",candidates:[path],truncated:false};if(command==="preview_route_membership")return {path,member_stations:path.stations,excluded_stations:[]};if(command==="save_planned_route"){if(rejectSave){rejectSave=false;throw Error("temporary route save failure");}return applied;}throw Error(command);});
  render(<App/>);await screen.findByText(/test-version/);fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.click(screen.getByRole("button",{name:"編集: 既存路線"}));const routePanel=region("#workspace-panel-routes");
  fireEvent.change(routePanel.getByLabelText("候補の起点"),{target:{value:"3"}});fireEvent.change(routePanel.getByLabelText("候補の終点"),{target:{value:"4"}});fireEvent.click(routePanel.getByRole("button",{name:"経路候補を検索"}));
  await routePanel.findByLabelText("候補から作る路線名");fireEvent.change(routePanel.getByLabelText("候補から作る路線名"),{target:{value:"候補路線"}});fireEvent.click(routePanel.getByRole("button",{name:"候補を新規路線へ適用"}));

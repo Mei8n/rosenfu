@@ -29,7 +29,6 @@ import {WorkspaceTabs,type WorkspaceTab} from "./WorkspaceTabs";
 import {PanelResizer} from "./PanelResizer";
 import {CompanySetup} from "./CompanySetup";
 import { useSmoothZoom, wheelZoomDelta } from "./useSmoothZoom";
-import {SaveReplacementDialog} from "./SaveReplacementDialog";
 import {UnsavedCloseDialog} from "./UnsavedCloseDialog";
 import {useUnsavedCloseGuard} from "./useUnsavedCloseGuard";
 import { ErrorNotice } from "./ErrorNotice";
@@ -131,9 +130,6 @@ export function App() {
   const [centerLatitude, setCenterLatitude] = useState(DEFAULT_CAMERA.latitude.toFixed(5));
   const [centerLongitude, setCenterLongitude] = useState(DEFAULT_CAMERA.longitude.toFixed(5));
   const [cameraError, setCameraError] = useState("");
-  const [saveReplacement,setSaveReplacement]=useState<{token:string;company_name:string}|null>(null);
-  const [replacementError,setReplacementError]=useState("");
-  const [replacementInvalid,setReplacementInvalid]=useState(false);
   const [savedViewFingerprint,setSavedViewFingerprint]=useState(JSON.stringify(DEFAULT_CAMERA));
   function restoreView(view:Camera|null|undefined){
     const next=view?cameraAt(view.latitude,view.longitude,view.zoom):DEFAULT_CAMERA;
@@ -508,7 +504,7 @@ export function App() {
   const [pathDraftEpoch,setPathDraftEpoch]=useState(0);
   const [serviceHint, setServiceHint] = useState("");
   const [pendingServiceChoice, setPendingServiceChoice] = useState<{ id: string | null } | null>(null);
-  const enabled = status === "ready" && !busy && !companySetupRequired && !saveReplacement;
+  const enabled = status === "ready" && !busy && !companySetupRequired;
   const stationsById = useMemo(()=>new Map(world?.stations.map((station) => [station.id, station])),[world]);
 
   useEffect(() => {
@@ -589,7 +585,7 @@ export function App() {
   const unapplied = saveBlocked || referenceCopy.active;
   const viewDirty=JSON.stringify(camera)!==savedViewFingerprint;
   const autosaveSnapshot=useMemo(()=>({world,constructionPlans,camera}),[world,constructionPlans,camera]);
-  const autosave=useAutosave({ready:status==="ready"&&slotsReady&&activeSlotId!==null,dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired&&!saveReplacement,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
+  const autosave=useAutosave({slotId:activeSlotId,ready:status==="ready"&&slotsReady&&activeSlotId!==null,dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined,compact=false){
     parkedAnchorHistory.current.clear();
@@ -1319,7 +1315,7 @@ export function App() {
       const snapshot=await invoke<World>(action.kind==="load"?"load_save_slot":"create_new_world",action.kind==="load"?{slotId:action.id}:{companyName:action.name});
       acceptLoadedWorld(snapshot,"manual");
       setDirty(action.kind==="new");setSlotAction(null);setSlotDialog(null);setSlotPicker(false);
-      setNotice(action.kind==="new"?"新しいワールドを作成しました。初回保存で別のセーブを作ります。":"選択したワールドを読み込みました。");
+      setNotice(action.kind==="new"?"新しいワールドを作成しました。初回保存で別のセーブを作ります。":"保存したワールドを読み込みました。");
       await refreshSaveSlots();
     });
   }
@@ -1335,29 +1331,18 @@ export function App() {
     });
   }
   function save() {
-    if (saveBlocked||saveReplacement) return;
+    if (saveBlocked) return;
     void perform(async () => {
       const result=await invoke<{saved:boolean;replacement_required?:{token:string;company_name:string}}>("save_world",{constructionPlans:persistedPlans,viewState:camera}).catch(error=>{if(detail(error).includes("save file changed since it was observed"))throw Error("保存先が読み込み時から変更されています。編集中の内容は保持しています。未保存のまま読込や終了をせず、保存先を確認してください。");throw error;});
-      if(result.replacement_required){setSaveReplacement(result.replacement_required);setReplacementError("");setReplacementInvalid(false);return;}
+      if(result.replacement_required)throw Error("既存セーブの置き換えは行いません。新しい保存先を確認してください。");
       if(!result.saved)throw Error("保存結果を確認できませんでした。編集中の内容は保持しています。");
       completeSave();setWorldEpoch(value=>value+1);await refreshSaveSlots();
     });
   }
-  async function cancelSaveReplacement(){
-    if(!saveReplacement||busyRef.current)return;
-    busyRef.current=true;setBusy(true);
-    try{await invoke("cancel_manual_save",{token:saveReplacement.token});setSaveReplacement(null);setReplacementError("");}
-    catch(error){setReplacementError(detail(error));}
-    finally{busyRef.current=false;setBusy(false);}
-  }
-  async function confirmSaveReplacement(){
-    if(!saveReplacement||replacementInvalid||busyRef.current)return;
-    busyRef.current=true;setBusy(true);
-    try{const result=await invoke<{saved:boolean}>("confirm_manual_save",{token:saveReplacement.token,constructionPlans:persistedPlans,viewState:camera});if(!result.saved)throw Error("保存結果を確認できませんでした。");completeSave();setSaveReplacement(null);setReplacementError("");}
-    catch(error){setReplacementInvalid(true);setReplacementError("保存できませんでした。編集中の内容は保持しています。編集へ戻り、保存先を再確認してください。 "+detail(error));}
-    finally{busyRef.current=false;setBusy(false);}
-  }
   function acceptLoadedWorld(snapshot:World,source:"manual"|"auto"){
+      cancelMapGesture();cancelAnchorGesture();cancelParallel();cancelRouteMapPick();
+      setRouteMapEdit(null);setRouteSequenceKey(0);setDeleteTarget(null);setTrackDeleteRedo(null);
+      setPlanHover(null);setBuiltHover(null);
       restoreView(snapshot.view_state);
       setRestoredAutosaveEpoch(source==="auto"?worldEpoch+1:-1);
       setWorldEpoch(value=>value+1);
@@ -1370,7 +1355,7 @@ export function App() {
   function load(source: "manual"|"auto" = loadSource) {
     setConfirmLoad(false);
     void perform(async () => {
-      const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_world");
+      const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_world",source==="auto"?{slotId:activeSlotId}:undefined);
       acceptLoadedWorld(snapshot,source);await refreshSaveSlots();
       setNotice(source==="auto"?"自動保存から復元しました。手動保存データは上書きしていません。必要なら保存してください。":"保存したワールドを読み込みました。");
     });
@@ -1384,9 +1369,8 @@ export function App() {
       </header>
       <div className="toolbar">
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
-        <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={() => requestLoad("manual")}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
+        <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={()=>activeSlotId?requestSlotAction({kind:"load",id:activeSlotId}):openSlotPicker()}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
       </div>
-      {saveReplacement && <SaveReplacementDialog companyName={saveReplacement.company_name} currentCompanyName={world?.companies[0]?.name??companyName} busy={busy} invalid={replacementInvalid} error={replacementError} onCancel={()=>void cancelSaveReplacement()} onConfirm={()=>void confirmSaveReplacement()}/> }
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
       {pendingGraphChange && <div className="banner load-confirm" role="alert"><p>参考線データを変更すると、現在の実在形状に沿う敷設・道路追従の未着工計画を破棄します。変更しますか。</p><button className="secondary" onClick={()=>setPendingGraphChange(null)}>計画に戻る</button><button disabled={!enabled} onClick={()=>{referenceCopy.clear();setGraphBundle(pendingGraphChange.bundle);setPendingGraphChange(null);}}>参考計画を破棄して変更</button></div>}
 

@@ -15,7 +15,7 @@ function region(selector:string){
  return within(element);
 }
 async function start(){let world=structuredClone(initial);let id=20;const failures={remove:false,place:false,save:false,load:false};vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async(command,args)=>{
- if(command==="engine_info")return {name:"Rosenfu",version:"history-test"};if(command==="world_snapshot")return world;
+ if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};if(command==="engine_info")return {name:"Rosenfu",version:"history-test"};if(command==="world_snapshot")return world;
  if(command==="place_station_on_alignment"||command==="build_plan") {if(failures.place)throw Error("place failure");const p=command==="build_plan"?(args as any).stations[0]:args as any;const station={id:String(id++),owner:"2",name:p.name,latitude:35.67504,longitude:139.75};world={...world,stations:[...world.stations,station],station_placements:[...world.station_placements,{station_id:station.id,alignment_id:p.alignmentId,position:p.position,length_m:p.lengthM,width_m:p.widthM}]};return world;}
  if(command==="delete_station"){if(failures.remove)throw Error("delete failure");const stationId=(args as any).stationId;world={...world,stations:world.stations.filter(s=>s.id!==stationId),station_placements:world.station_placements.filter(p=>p.station_id!==stationId)};return world;}
  if(command==="save_world"){if(failures.save)throw Error("save failure");return {saved:true};}
@@ -24,7 +24,7 @@ async function start(){let world=structuredClone(initial);let id=20;const failur
  if(command==="preview_route_candidates")return {status:"unique",truncated:false,candidates:[{stations:["10","20"],segments:[{kind:"alignment",alignment_id:"3",from:"10",to:"20"}]}]};
  if(command==="preview_route_membership")return {path:{stations:["10","20"],segments:(args as any).segments},member_stations:["10","20"],excluded_stations:[]};
  if(command==="save_planned_route"){const p=args as any;world={...world,routes:[{id:"30",owner:"2",name:p.name,start:p.start}],route_paths:[{route_id:"30",segments:p.segments,member_stations:["10","20"]}]};return world;}
- if(command==="load_world"){if(failures.load)throw Error("load failure");world=structuredClone(initial);return world;}
+ if(command==="load_save_slot"){if(failures.load)throw Error("load failure");world=structuredClone(initial);return world;}
  throw Error(command);
  });render(<App/>);await screen.findByText(/history-test/);await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));return failures;}
 async function place(x=250){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:x,clientY:150});await screen.findByText(/を計画に追加しました/);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/計画駅を建設しました/);await ready();}

@@ -49,3 +49,30 @@ test('save as creates a separate slot, keeps name on failure and never calls ove
  expect(invoke).toHaveBeenCalledWith('save_world_as',expect.objectContaining({name:'別ワールド',constructionPlans:expect.any(Object),viewState:expect.any(Object)}));
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='confirm_manual_save'||c==='save_world')).toBe(false);
 });
+test('switching worlds clears deletion confirmation and station undo even when IDs coincide',async()=>{
+ await setup();
+ const sameId={...world,stations:[{id:'7',owner:'2',name:'別ワールドの駅',latitude:35.67,longitude:139.75}]};
+ let rejectLoad=true;const previous=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='add_station')return {...sameId,stations:[{...sameId.stations[0],name:'旧ワールドの駅'}]};
+  if(command==='load_save_slot'){if(rejectLoad){rejectLoad=false;throw Error('切替失敗');}return sameId;}
+  return previous(command,args);
+ });
+ fireEvent.click(screen.getByRole('tab',{name:'駅'}));fireEvent.click(screen.getByRole('button',{name:'指定座標に配置'}));await screen.findByText('新駅を配置しました。');
+ fireEvent.click(document.querySelector('.station-entry')!);fireEvent.click(screen.getByRole('button',{name:'選択駅を削除'}));expect(screen.getByRole('button',{name:'削除を確定'})).toBeTruthy();
+ fireEvent.click(screen.getByRole('tab',{name:'セーブデータ'}));fireEvent.click(screen.getByRole('button',{name:'第二ワールド'}));fireEvent.click(screen.getByRole('button',{name:'読込を続ける'}));await screen.findByText(/処理できませんでした: 切替失敗/);
+ expect(screen.getByRole('button',{name:'削除を確定'})).toBeTruthy();expect(document.querySelector('.station-entry')?.textContent).toContain('旧ワールドの駅');
+ fireEvent.click(screen.getByRole('button',{name:'第二ワールド'}));fireEvent.click(screen.getByRole('button',{name:'読込を続ける'}));await screen.findByText('保存したワールドを読み込みました。');
+ expect(screen.queryByRole('button',{name:'削除を確定'})).toBeNull();
+ fireEvent.click(screen.getByRole('tab',{name:'建設'}));fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
+ fireEvent.keyDown(window,{key:'z',ctrlKey:true});fireEvent.keyDown(window,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='delete_station'||c==='restore_deleted_alignment')).toBe(false);
+ expect(document.querySelector('.station-entry')?.textContent).toContain('別ワールドの駅');
+});
+test('unexpected overwrite response is rejected without confirming or clearing edits',async()=>{
+ await setup();const previous=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation(async(command,args)=>command==='save_world'?{saved:false,replacement_required:{token:'old',company_name:'別会社'}}:previous(command,args));
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/既存セーブの置き換えは行いません/);
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='confirm_manual_save')).toBe(false);
+ expect(screen.queryByRole('dialog',{name:'保存済みのワールドを置き換えますか？'})).toBeNull();
+});
