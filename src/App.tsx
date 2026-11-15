@@ -880,8 +880,12 @@ export function App() {
   const guideGeometry=hoverPoint?previewGeometry:draftGeometry;
   const guideEndPoint=guideGeometry.points.at(-1);
   const tangentGuideStart=guideEndPoint?project(guideEndPoint.latitude,guideEndPoint.longitude,camera):null;
-  const guideScale=cursorPosition?mapViewport(cursorPosition.width,cursorPosition.height).scale:viewport.scale;
-  const guideLength=300/guideScale;
+  // Reach beyond every viewport corner, even if the fixed end is offscreen.
+  // Use the observed viewport rather than stale pointer dimensions after resize.
+  const guideLength=tangentGuideStart?Math.hypot(
+    Math.max(Math.abs(tangentGuideStart.x-viewport.x),Math.abs(tangentGuideStart.x-viewport.x-viewport.width)),
+    Math.max(Math.abs(tangentGuideStart.y-viewport.y),Math.abs(tangentGuideStart.y-viewport.y-viewport.height)),
+  )+32/viewport.scale:0;
   const tangentGuide=activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!draftFinished&&!dragging&&!anchorPreview&&guideGeometry.tangent&&tangentGuideStart
     ?{start:tangentGuideStart,end:{x:tangentGuideStart.x+guideGeometry.tangent.x*guideLength,y:tangentGuideStart.y-guideGeometry.tangent.y*guideLength}}:null;
 
