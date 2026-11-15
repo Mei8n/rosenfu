@@ -683,7 +683,7 @@ test("browser preview includes a read-only service without implying train operat
   vi.mocked(isTauri).mockReturnValue(false); renderStationEditor();
   fireEvent.click(screen.getByRole("tab", { name: "系統" }));
   expect((region("#workspace-panel-services").getByRole("button", { name: "系統編集: サンプル系統" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(region("#workspace-panel-services").getByText(/種別・ダイヤ・列車運行は未実装です/)).toBeTruthy();
+  expect(region("#workspace-panel-services").getByText(/閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です/)).toBeTruthy();
   expect(invoke).not.toHaveBeenCalled();
 });
 

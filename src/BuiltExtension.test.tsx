@@ -274,3 +274,15 @@ for (const endpoint of ['start','end'] as const) test(`owned connected ${endpoin
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
  expect(screen.queryByText(/延伸元を選択済み/)).toBeNull();
 });
+
+test('reconnected split pieces render a shared D coordinate and report its connection',async()=>{
+ const left={...line,points:[point(100,130),point(180,130),point(250,130)],anchor_indices:[0,1,2]};
+ const right={...line,id:'4',points:[point(250,130),point(330,130)],anchor_indices:[0,1]};
+ const map=await start({alignments:[left,right],alignment_connections:[{a:{alignment_id:'3',endpoint:'end'},b:{alignment_id:'4',endpoint:'start'}}]});
+ const leftPath=map.querySelector('[data-alignment-id="3"] .alignment-path')!.getAttribute('d')!;
+ const rightPath=map.querySelector('[data-alignment-id="4"] .alignment-path')!.getAttribute('d')!;
+ expect(leftPath.split(' ').at(-1)!.slice(1)).toBe(rightPath.split(' ')[0].slice(1));
+ fireEvent.pointerMove(map,{clientX:250,clientY:130});
+ expect(screen.getByText('この端点は接続済みです')).toBeTruthy();
+ expect(screen.queryByText('他社の線路は延伸できません')).toBeNull();
+});

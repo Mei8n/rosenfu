@@ -51,7 +51,41 @@ impl WorldEditor {
                     .ok_or("削除する区間がありません。")?,
             )
             .ok_or("削除する区間がありません。")?;
+        // Only station placements and surviving endpoint links may be remapped.
+        // Paths, plans and provenance retain their stricter protection.
+        let references = |segment: &rosenfu_core::world::RouteSegment| match segment {
+            rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } => {
+                *alignment_id == id
+            }
+            rosenfu_core::world::RouteSegment::ConnectedAlignments { connections, .. } => {
+                connections
+                    .iter()
+                    .any(|c| c.a.alignment_id == id || c.b.alignment_id == id)
+            }
+            _ => false,
+        };
+        if before
+            .route_paths
+            .iter()
+            .any(|p| p.segments.iter().any(&references))
+            || before
+                .service_paths
+                .iter()
+                .any(|p| p.legs.iter().any(|l| references(&l.segment)))
+        {
+            return Err("路線・系統が使用中の線路の区間削除には対応していません。".into());
+        }
         if boundaries.len() == 2 {
+            // Disconnect only this alignment. Validation rejects route/service paths
+            // that still require the link; equipment and plans retain their guards.
+            let mut disconnected = before.clone();
+            disconnected
+                .alignment_connections
+                .retain(|c| c.a.alignment_id != id && c.b.alignment_id != id);
+            candidate
+                .world
+                .replace(disconnected)
+                .map_err(|e| e.to_string())?;
             candidate.delete_alignment(id)?;
         } else {
             // Source metadata describes an exact span. Never silently lose or falsify it.
@@ -61,30 +95,6 @@ impl WorldEditor {
                 .any(|p| p.alignment_id == id)
             {
                 return Err("出典付き線路の区間削除には対応していません。".into());
-            }
-            // Only station placements and surviving endpoint links may be remapped.
-            // Paths, plans and provenance retain their stricter protection.
-            let references = |segment: &rosenfu_core::world::RouteSegment| match segment {
-                rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } => {
-                    *alignment_id == id
-                }
-                rosenfu_core::world::RouteSegment::ConnectedAlignments { connections, .. } => {
-                    connections
-                        .iter()
-                        .any(|c| c.a.alignment_id == id || c.b.alignment_id == id)
-                }
-                _ => false,
-            };
-            if before
-                .route_paths
-                .iter()
-                .any(|p| p.segments.iter().any(&references))
-                || before
-                    .service_paths
-                    .iter()
-                    .any(|p| p.legs.iter().any(|l| references(&l.segment)))
-            {
-                return Err("路線・系統が使用中の線路の区間削除には対応していません。".into());
             }
             let mut stripped = before.clone();
             // Groups require every member to have a placement. This private
@@ -117,20 +127,6 @@ impl WorldEditor {
                         && center - placement.length_m / 2.0 >= cut_end)
                 {
                     return Err("駅のホームに重なる区間は削除できません。".into());
-                }
-            }
-            for endpoint in before
-                .alignment_connections
-                .iter()
-                .flat_map(|c| [c.a, c.b])
-                .filter(|e| e.alignment_id == id)
-            {
-                if (endpoint.endpoint == rosenfu_core::world::AlignmentEndpoint::Start
-                    && start == 0)
-                    || (endpoint.endpoint == rosenfu_core::world::AlignmentEndpoint::End
-                        && end == original.points.len() - 1)
-                {
-                    return Err("接続端点を含む区間は削除できません。".into());
                 }
             }
             let mut piece_ids = vec![id];
@@ -214,7 +210,22 @@ impl WorldEditor {
                     .position(|old| old.station_id == p.station_id)
             });
             restored.station_groups = before.station_groups.clone();
-            restored.alignment_connections = before.alignment_connections.clone();
+            restored.alignment_connections = before
+                .alignment_connections
+                .iter()
+                .filter(|connection| {
+                    ![connection.a, connection.b].iter().any(|endpoint| {
+                        endpoint.alignment_id == id
+                            && match endpoint.endpoint {
+                                rosenfu_core::world::AlignmentEndpoint::Start => start == 0,
+                                rosenfu_core::world::AlignmentEndpoint::End => {
+                                    end == original.points.len() - 1
+                                }
+                            }
+                    })
+                })
+                .cloned()
+                .collect();
             for connection in &mut restored.alignment_connections {
                 for endpoint in [&mut connection.a, &mut connection.b] {
                     if endpoint.alignment_id == id
@@ -428,7 +439,7 @@ mod tests {
         }
     }
     #[test]
-    fn surviving_endpoint_connection_remaps_but_removed_endpoint_rejects() {
+    fn surviving_endpoint_connection_remaps_and_removed_endpoint_disconnects() {
         use rosenfu_core::world::{AlignmentEndpoint, AlignmentEndpointRef};
         for section in 0..3 {
             let (mut editor, id) = setup();
@@ -465,8 +476,14 @@ mod tests {
             let mut before = editor.snapshot();
             let result = editor.delete_alignment_section(id, section, plans());
             if section == 2 {
-                assert!(result.is_err());
-                assert_eq!(editor.snapshot(), before);
+                let after = result.unwrap();
+                assert!(after.alignment_connections.is_empty());
+                assert_eq!(
+                    after.alignments.iter().find(|a| a.id == next),
+                    before.alignments.iter().find(|a| a.id == next)
+                );
+                before.construction_plans = Some(plans());
+                assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
             } else {
                 let after = result.unwrap();
                 // Both retained pieces must remain owned by the original company.
@@ -552,8 +569,15 @@ mod tests {
             )
             .unwrap();
         let before = editor.snapshot();
-        assert!(editor.delete_alignment_section(id, 0, plans()).is_err());
-        assert_eq!(editor.snapshot(), before);
+        let disconnected = editor
+            .clone()
+            .delete_alignment_section(id, 0, plans())
+            .unwrap();
+        assert!(disconnected.alignment_connections.is_empty());
+        assert_eq!(
+            disconnected.alignments.iter().find(|a| a.id == next),
+            before.alignments.iter().find(|a| a.id == next)
+        );
         let after = editor.delete_alignment_section(id, 1, plans()).unwrap();
         assert_eq!(after.alignment_connections, before.alignment_connections);
     }
@@ -741,6 +765,194 @@ mod tests {
         assert_eq!(
             editor.snapshot().alignments[0].anchor_indices,
             Some(vec![0, 2, 4, 6, 7, 8])
+        );
+    }
+    #[test]
+    fn split_remove_gap_reconnect_preserves_owners_endpoints_and_deletion_guards() {
+        use rosenfu_core::world::AlignmentEndpoint;
+        let mut editor = WorldEditor::new();
+        let points: Vec<_> = (0..5)
+            .map(|i| GeoPoint {
+                latitude: 35.,
+                longitude: 139. + i as f64 * 0.002,
+            })
+            .collect();
+        let built = editor
+            .build_plan(vec![PlannedAlignment {
+                anchor_indices: Some(vec![0, 1, 2, 3, 4]),
+                name: "ABCDE".into(),
+                points: points.clone(),
+                track_type: TrackType::Normal,
+                design_speed_kmh: Some(120.),
+                stations: vec![],
+                reference: None,
+                extension: None,
+                destination: None,
+            }])
+            .unwrap();
+        let left = built.alignments[0].id;
+        // Remove BC, then CD from the surviving CDE piece: AB and DE remain.
+        let split = editor.delete_alignment_section(left, 1, plans()).unwrap();
+        let right = split.alignments.iter().find(|a| a.id != left).unwrap().id;
+        let gap = editor.delete_alignment_section(right, 0, plans()).unwrap();
+        assert_eq!(gap.alignments[0].points, points[..2]);
+        assert_eq!(gap.alignments[1].points, points[3..]);
+        let joined = editor
+            .build_plan(vec![PlannedAlignment {
+                anchor_indices: Some(vec![0, 1]),
+                name: "BD".into(),
+                points: vec![points[1], points[3]],
+                track_type: TrackType::Normal,
+                design_speed_kmh: Some(120.),
+                stations: vec![],
+                reference: None,
+                extension: Some(PlannedAlignmentExtension {
+                    alignment_id: left,
+                    endpoint: AlignmentEndpoint::End,
+                }),
+                destination: Some(PlannedAlignmentExtension {
+                    alignment_id: right,
+                    endpoint: AlignmentEndpoint::Start,
+                }),
+            }])
+            .unwrap();
+        assert_eq!(joined.alignments.len(), 2);
+        assert!(joined.alignments.iter().all(|a| a.owner == editor.company));
+        assert_eq!(
+            joined.alignments[0].points,
+            vec![points[0], points[1], points[3]]
+        );
+        assert_eq!(joined.alignments[0].anchor_indices, Some(vec![0, 1, 2]));
+        assert_eq!(joined.alignments[1].points, points[3..]);
+        assert_eq!(joined.alignment_connections.len(), 1);
+        let connection = &joined.alignment_connections[0];
+        assert_eq!(connection.a.alignment_id, left);
+        assert_eq!(connection.a.endpoint, AlignmentEndpoint::End);
+        assert_eq!(connection.b.alignment_id, right);
+        assert_eq!(connection.b.endpoint, AlignmentEndpoint::Start);
+        assert_eq!(
+            joined.alignments[0].points.last(),
+            joined.alignments[1].points.first()
+        );
+        // A connected route/service still owns its corridor: never detach under it.
+        let mut dependent = editor.clone();
+        let station_a = dependent
+            .world
+            .place_station_on_alignment(dependent.company, "A駅".into(), left, 0.1, 20., 12.)
+            .unwrap();
+        let station_e = dependent
+            .world
+            .place_station_on_alignment(dependent.company, "E駅".into(), right, 0.5, 20., 12.)
+            .unwrap();
+        let retained_stations = dependent.snapshot();
+        let without_bridge = dependent
+            .clone()
+            .delete_alignment_section(left, 1, plans())
+            .unwrap();
+        assert_eq!(without_bridge.stations, retained_stations.stations);
+        assert!(without_bridge.alignment_connections.is_empty());
+        assert_eq!(
+            without_bridge
+                .station_placements
+                .iter()
+                .find(|p| p.station_id == station_e),
+            retained_stations
+                .station_placements
+                .iter()
+                .find(|p| p.station_id == station_e)
+        );
+        let mut blocked = dependent.clone();
+        assert!(blocked.delete_alignment_section(right, 0, plans()).is_err());
+        assert_eq!(blocked.snapshot(), retained_stations);
+        let mut overlap = editor.clone();
+        overlap
+            .world
+            .place_station_on_alignment(overlap.company, "橋区間駅".into(), left, 0.7, 20., 12.)
+            .unwrap();
+        let before_overlap = overlap.snapshot();
+        assert!(overlap.delete_alignment_section(left, 1, plans()).is_err());
+        assert_eq!(overlap.snapshot(), before_overlap);
+        let segment = rosenfu_core::world::RouteSegment::ConnectedAlignments {
+            from: station_a,
+            to: station_e,
+            connections: joined.alignment_connections.clone(),
+        };
+        let mut routed = dependent.clone();
+        routed
+            .save_planned_route(
+                None,
+                "連絡路線".into(),
+                station_a,
+                vec![segment.clone()],
+                vec![],
+            )
+            .unwrap();
+        let preview = dependent
+            .preview_service_path(station_a, vec![segment.clone()])
+            .unwrap();
+        dependent
+            .create_service_path(
+                "連絡系統".into(),
+                station_a,
+                vec![segment],
+                preview
+                    .occurrences
+                    .into_iter()
+                    .map(|o| o.reference)
+                    .collect(),
+            )
+            .unwrap();
+        for mut protected in [routed, dependent] {
+            for (id, section) in [(left, 1), (right, 0)] {
+                let before = protected.snapshot();
+                assert!(protected
+                    .delete_alignment_section(id, section, plans())
+                    .unwrap_err()
+                    .contains("路線・系統"));
+                assert_eq!(protected.snapshot(), before);
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("reconnected.json");
+        editor.save(&path).unwrap();
+        let mut loaded = WorldEditor::new();
+        assert_eq!(
+            loaded.load(&path).unwrap().alignment_connections,
+            joined.alignment_connections
+        );
+        for (id, section) in [(left, 1), (right, 0)] {
+            let mut isolated = loaded.clone();
+            let mut before = isolated.snapshot();
+            before.construction_plans = Some(plans());
+            let after = isolated
+                .delete_alignment_section(id, section, plans())
+                .unwrap();
+            assert!(after.alignment_connections.is_empty());
+            let other = if id == left { right } else { left };
+            assert_eq!(
+                after.alignments.iter().find(|a| a.id == other),
+                before.alignments.iter().find(|a| a.id == other)
+            );
+            let deletion_save = temp.path().join(format!("deleted-{section}.json"));
+            let mut saved = isolated.clone();
+            saved.save(&deletion_save).unwrap();
+            let reopened = WorldEditor::new().load(&deletion_save).unwrap();
+            assert_eq!(reopened.alignment_connections, after.alignment_connections);
+            assert_eq!(reopened.alignments, after.alignments);
+            assert_eq!(isolated.undo_alignment_deletion().unwrap(), before);
+            assert_eq!(
+                isolated
+                    .delete_alignment_section(id, section, plans())
+                    .unwrap(),
+                after
+            );
+        }
+        // AB does not include the connected D endpoint, so removing AB remains safe.
+        let remaining = loaded.delete_alignment_section(left, 0, plans()).unwrap();
+        assert_eq!(remaining.alignments[0].points, vec![points[1], points[3]]);
+        assert_eq!(
+            remaining.alignment_connections,
+            joined.alignment_connections
         );
     }
 }

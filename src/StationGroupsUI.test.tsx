@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen} from "@testing-library/react";
+import {cleanup,fireEvent,render,screen,within} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:vi.fn()}));
@@ -40,8 +40,10 @@ test("crossing preview reports actual distance without inventing passenger data"
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
  fireEvent.pointerMove(map,{clientX:250,clientY:150});
- expect(screen.getByText("交差駅から 0.00 km")).toBeTruthy();
- expect(screen.queryByText(/乗客/)).toBeNull();
+ const tooltip=screen.getByText("交差駅から 0.00 km").closest(".construction-tooltip");
+ expect(tooltip).not.toBeNull();
+ expect(within(tooltip as HTMLElement).queryByText(/乗客/)).toBeNull();
+ expect(screen.queryByRole("table",{name:"路線一覧"})).toBeNull();
  fireEvent.click(map,{clientX:250,clientY:150});
  expect(document.querySelectorAll(".planned-station")).toHaveLength(1);
  expect(document.querySelectorAll(".station-group-footprint")).toHaveLength(1);

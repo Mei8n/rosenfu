@@ -116,3 +116,11 @@ test("persistable candidate saves excluded membership without losing physical se
  expect(screen.getByText("所属駅: 始発 → 終点")).toBeTruthy();
  fireEvent.click(screen.getByRole("button",{name:"候補を新規路線へ適用"}));await waitFor(()=>expect(screen.queryByText("所属駅: 始発 → 終点")).toBeNull());
 });
+test('uses only backend-certified shortest candidate and never truncated shortest',async()=>{
+ const response:Candidates={status:'ambiguous',candidates:[path,{...path,segments:[{kind:'track',track_id:'9'}]}],truncated:false,shortest_candidate_index:1};
+ const view=start(response);search();await screen.findByText('最短距離の経路を選択しました。');
+ expect(invoke).toHaveBeenCalledWith('preview_route_membership',{start:'1',segments:response.candidates[1].segments,excludedStations:[]});
+ view.unmount();vi.mocked(invoke).mockClear();start({...response,status:'incomplete',truncated:true});search();
+ await screen.findByText(/探索上限に達しました/);
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='preview_route_membership')).toHaveLength(0);
+});

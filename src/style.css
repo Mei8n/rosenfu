@@ -515,3 +515,8 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .follow-icon { position:relative; }
 .follow-tip { display:none; position:absolute; left:0; top:calc(100% + 7px); width:260px; padding:6px 8px; font-weight:400; font-size:11px; line-height:1.5; text-align:left; white-space:normal; color:var(--ink); background:var(--surface); border:1px solid var(--edge); opacity:.95; pointer-events:none; z-index:10; }
 .follow-icon:hover .follow-tip,.follow-icon:focus-visible .follow-tip { display:block; }
+
+.route-directory table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.route-directory th, .route-directory td { padding: .3rem .2rem; text-align: left; }
+.route-directory td { white-space: nowrap; }
+.route-directory tbody th { font-weight: normal; }
