@@ -1,0 +1,238 @@
+{
+  "format": "rosenfu-water-live-probes",
+  "version": 1,
+  "geographic_completeness": "unknown",
+  "coverage": [],
+  "source_set_sha256": "5a57533706f1d2accd30c93787df95e575eb18c91d3f36cb2466e22cf9c0304e",
+  "marine_archive": {
+    "url": "https://osmdata.openstreetmap.de/download/water-polygons-split-4326.zip",
+    "bytes": 908035793,
+    "sha256": "22d97b206fd5ce4b9fc991e561513b5f3468ed1cfea8ae4410982336991623ed",
+    "etag": "\"6af7c099-361f86d1\"",
+    "last_modified": "2026-11-14T01:59:53Z",
+    "coverage": [],
+    "geographic_completeness": "unknown"
+  },
+  "marine_source_timestamp": "2026-11-13T15:00:00Z",
+  "marine_probes": [
+    {
+      "name": "Takamatsu",
+      "bounds": [
+        134.02,
+        34.32,
+        134.08,
+        34.37
+      ],
+      "polygons": 1,
+      "holes": 0,
+      "manifest_sha256": "5c09ac086a7b2b57448c758af77fa8ed247929d8f1c94d7e0f8f0d7b3f3c2fae"
+    },
+    {
+      "name": "Naoshima split boundary",
+      "bounds": [
+        133.95,
+        34.4,
+        134.05,
+        34.5
+      ],
+      "polygons": 4,
+      "holes": 30,
+      "positive_source_overlap": true,
+      "manifest_sha256": "665bfdd1efb3ab95a378071892c652c786e457b72543e8455c66f800e987f58e"
+    }
+  ],
+  "limitations": [
+    "Only named probes processed, not nationwide leaf coverage",
+    "Marine and inland sources have different OSM timestamps",
+    "Missing width, enclosed channels, missing source relations and coastline age remain unresolved"
+  ],
+  "data_license": "ODbL-1.0",
+  "attribution": "© OpenStreetMap contributors",
+  "inland_probes": [
+    {
+      "region": "hokkaido",
+      "city": "札幌",
+      "cell": "cell-0000",
+      "bounds": [
+        141.33,
+        43.04,
+        141.37,
+        43.08
+      ],
+      "catalog_sha256": "ffbb47a64310b7e89088a0b72c46a87b3eb21152941828644be6837693beb7c9",
+      "manifest_sha256": "97e4c234b701e0369a69ca373f612f09eae3cff664612177e612c2b54441d37c",
+      "observations": 105,
+      "polygons": 50,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    },
+    {
+      "region": "tohoku",
+      "city": "仙台",
+      "cell": "cell-0000",
+      "bounds": [
+        140.86,
+        38.24,
+        140.9,
+        38.28
+      ],
+      "catalog_sha256": "2a6efedb95cfb5efcfa1b54883cceb45b9735e3a557cd31f4094c94f3d29e8c4",
+      "manifest_sha256": "31138f28c4d5c2dacbb002edd2185529b8093ae9a53023b5ecb4264bc80e139b",
+      "observations": 46,
+      "polygons": 12,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    },
+    {
+      "region": "kanto",
+      "city": "東京",
+      "cell": "cell-0000",
+      "bounds": [
+        139.74,
+        35.66,
+        139.78,
+        35.7
+      ],
+      "catalog_sha256": "431ffd13584e00e5a37bb50ce078602a96105fd719feb69b39bcc60f81c27d14",
+      "manifest_sha256": "af4752ea10396736d05fe266dda8d76105f1557d2ce267df4df708ab39ff0a24",
+      "observations": 124,
+      "polygons": 73,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    },
+    {
+      "region": "kanto",
+      "city": "父島",
+      "cell": "cell-0001",
+      "bounds": [
+        142.18,
+        27.08,
+        142.22,
+        27.12
+      ],
+      "catalog_sha256": "431ffd13584e00e5a37bb50ce078602a96105fd719feb69b39bcc60f81c27d14",
+      "manifest_sha256": "8f11453752b137c7757f2523181c2f491ac58766c8f4c42f156c9641c8801af0",
+      "observations": 249,
+      "polygons": 1,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    },
+    {
+      "region": "chubu",
+      "city": "名古屋",
+      "cell": "cell-0000",
+      "bounds": [
+        136.88,
+        35.16,
+        136.92,
+        35.2
+      ],
+      "catalog_sha256": "bfb26afc6324b620786c84d64431e62a94a0dc19680e078ddfdb59e561dbbaa7",
+      "manifest_sha256": "1bf07cb9cfee254fd36eb3d18aedd5046b270f9bd731688e53e25500468d4344",
+      "observations": 48,
+      "polygons": 36,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    },
+    {
+      "region": "kansai",
+      "city": "大阪",
+      "cell": "cell-0000",
+      "bounds": [
+        135.49,
+        34.68,
+        135.53,
+        34.72
+      ],
+      "catalog_sha256": "7b8241c0311ca6ff1441597fd8a2bfe6437ac65846e524380f5332b0033943f1",
+      "manifest_sha256": "93a73772cbfd9e3f94beec6c84e38a2ab40a3835550d0ede22b4926f2900c491",
+      "observations": 130,
+      "polygons": 80,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    },
+    {
+      "region": "chugoku",
+      "city": "広島",
+      "cell": "cell-0000",
+      "bounds": [
+        132.44,
+        34.38,
+        132.48,
+        34.42
+      ],
+      "catalog_sha256": "0c1dcba51f29ab5252b346b1e7f477e89d4393526f606ed13f4a993538162c2a",
+      "manifest_sha256": "4c6d66feae288168c43360815078f160f34b0080ad814d5bb33018e78aaf5de1",
+      "observations": 57,
+      "polygons": 20,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": [
+        {
+          "id": "relation/20045092",
+          "reason": "invalid-area"
+        }
+      ]
+    },
+    {
+      "region": "shikoku",
+      "city": "高松",
+      "cell": "cell-0000",
+      "bounds": [
+        134.02,
+        34.32,
+        134.08,
+        34.37
+      ],
+      "catalog_sha256": "a839c006317ddfb8443fd8f60593fb742caee0b747bf4b1a783365e414ca47b5",
+      "manifest_sha256": "b3940b5e2032a24c565bb9fbb3d7cc4cdcca428aa3a529cbe1c6cea0b16e7b1a",
+      "observations": 373,
+      "polygons": 70,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    },
+    {
+      "region": "kyushu",
+      "city": "福岡",
+      "cell": "cell-0000",
+      "bounds": [
+        130.38,
+        33.58,
+        130.42,
+        33.62
+      ],
+      "catalog_sha256": "0f6d5c3ce63029d997d9caedf3fbfe8a8f0def1bd7683bdf42208706d521412d",
+      "manifest_sha256": "c47240eaebd55778da2435ef6e101f92766c896ebcd0071f722c172ee78f4590",
+      "observations": 46,
+      "polygons": 30,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    },
+    {
+      "region": "kyushu",
+      "city": "那覇",
+      "cell": "cell-0001",
+      "bounds": [
+        127.66,
+        26.2,
+        127.7,
+        26.24
+      ],
+      "catalog_sha256": "0f6d5c3ce63029d997d9caedf3fbfe8a8f0def1bd7683bdf42208706d521412d",
+      "manifest_sha256": "8ed7141f17a6cf9d0ee6864f8df4f3134b925537112b98084b599e52df052a8a",
+      "observations": 69,
+      "polygons": 10,
+      "status": "incomplete",
+      "coverage": [],
+      "source_issues": []
+    }
+  ]
+}

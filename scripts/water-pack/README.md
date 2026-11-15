@@ -134,7 +134,7 @@ Live Shikoku validation: four Takamatsu cells, 395 emitted observation copies an
 Catalog SHA-256: `289c22ae85dc6bd56250c688e98d15698f1ed2024512b4d44a19dac7857f5a15`.
 Cloud artifact: `/workspace/shared/rosenfu-water-pack-artifacts/takamatsu-grid-v1`.
 
-## Marine polygon adapter (synthetic validation only)
+## Marine polygon adapter (live regional validation)
 
 `marine.py` is **only for an operator-verified OSM-derived water-polygons dataset**
 with verified ODbL rights and source date. It fixes the OSM license/attribution and
@@ -167,7 +167,74 @@ ZIP's hash or the SHP's hash. Inputs are hashed before and after processing.
 
 Synthetic tests cover island holes, clip boundaries, projection mismatch, orphan
 holes, invalid polygons and empty results, including Python-to-TypeScript readback.
-The real worldwide marine ZIP connection timed out on 2026-11-15; no real marine
-archive was downloaded or transformed. Global processing and marine/inland fusion
-remain unverified. The resulting pack still has `coverage=[]`, even for an apparently
+After an initial timeout, the real worldwide marine ZIP was obtained on 2026-11-15
+and a Takamatsu region was successfully transformed and read back. Full-country
+marine processing and marine/inland fusion remain unverified. The resulting pack still has `coverage=[]`, even for an apparently
 all-ocean rectangle. Absence of a marine polygon is never proof of dry land.
+
+
+## Verified regional source set and live marine receipt
+
+`source_set.py receipts.json --timestamp 2026-11-14T21:20:41Z --output new-set.json`
+requires all eight distinct Geofabrik Japan regions, dated source URLs/names, input
+byte sizes and SHA-256 matches, and identical PBF header timestamps. It rehashes
+after header access to reject an input changed during verification. The receipt
+array contains `region`, `status: verified-transfer`, `path`, `source_url`, `bytes`,
+and `sha256`. Receipts are bounded to 1 MiB, each source to 768 MiB and the set to
+3 GiB. Output is created exclusively and never overwrites an earlier audit.
+
+`verified-transfer` is an operator receipt claim: this validator does not contact
+or authenticate the provider and does not fetch MD5 files itself. In the live run,
+the acquisition step separately checked the provider's `.md5` for transport
+consistency, computed SHA-256, and recorded HTTP headers. MD5 is not a security pin;
+keep the SHA-256 source-set pin independently. Matching source headers is not proof
+of geographic completeness, correct classification or relation assembly.
+
+The 2026-11-14 set contains 2,552,220,912 bytes across eight PBFs, all reporting
+`2026-11-14T21:20:41Z` and `osmium/1.16.0`. The public metadata-only receipt is
+[water-source-set-20261114.json](../../docs/water-source-set-20261114.json), SHA-256
+`5a57533706f1d2accd30c93787df95e575eb18c91d3f36cb2466e22cf9c0304e`.
+It excludes local paths and retains `coverage=[]` and `geographic_completeness=unknown`.
+Raw source data remain in the cloud workspace; this does not distribute a complete
+nationwide game pack or certify all extract-border relations.
+
+Marine acquisition receipt: 908,035,793-byte ZIP, SHA-256
+`22d97b206fd5ce4b9fc991e561513b5f3468ed1cfea8ae4410982336991623ed`,
+ETag `"6af7c099-361f86d1"`, HTTP Last-Modified `2026-11-14T01:59:53Z`.
+Archive CRCs checked during bounded extraction. The enclosed README states 53,328
+polygon records and **source data date `2026-11-13T15:00:00Z`**, which differs from
+the inland PBF snapshot. Do not substitute HTTP modification time for data time,
+or claim these sources are one coherent snapshot.
+
+Live Takamatsu marine output: 1 polygon / 893 coordinates, reader status incomplete,
+empty coverage. Manifest pin `5c09ac086a7b2b57448c758af77fa8ed247929d8f1c94d7e0f8f0d7b3f3c2fae`,
+payload SHA-256 `2bc877f950ec1ddce27bed4ab46d3cb1a702b08736810865d29c7ec9790998b9`.
+Workspace `/workspace/shared/rosenfu-water-pack-artifacts/takamatsu-marine-v1`.
+The marine source bundle hash is distinct from the archive hash, as described above.
+A port-sea probe (134.05,34.365) intersects the output; an inland probe (134.05,34.33)
+does not. The latter is not a dry-land certificate or an independent field survey.
+
+Provider terms: [Geofabrik](https://www.geofabrik.de/data/download.html) and
+[marine data license](https://osmdata.openstreetmap.de/info/license.html) identify
+ODbL/OSM attribution. The marine [download guidance](https://osmdata.openstreetmap.de/info/downloading.html)
+asks clients not to repeat unnecessary downloads and to use If-Modified-Since for
+recurring retrieval. This was a one-time ETag-pinned acquisition, not a scheduled job.
+
+Real island/seam probe: `[133.95,34.4,134.05,34.5]` around Naoshima crosses a source
+split boundary. Three source features become four polygons with **30 interior
+rings**, all preserved through the TypeScript reader. Their geometric overlap is
+positive (approximately 0.00009681 square degrees, an overlap diagnostic rather
+than a metric area). Do not add overlapping area/crossing lengths. A Naoshima probe
+(133.99,34.46) is outside the water union; this is a geometry check, not dry-land
+certification. Manifest pin `665bfdd1efb3ab95a378071892c652c786e457b72543e8455c66f800e987f58e`,
+payload SHA-256 `0c81f53cee51662bb8f8a1d65ccc1451d84417e8568f6b48d637b59d32c3667e`.
+Workspace `/workspace/shared/rosenfu-water-pack-artifacts/naoshima-marine-v1`.
+
+All eight regional PBFs were parsed in full to produce ten named probes (Sapporo,
+Sendai, Tokyo, Chichijima, Nagoya, Osaka, Hiroshima, Takamatsu, Fukuoka, Naha), totaling
+1,247 observation copies. All ten packs passed the TypeScript reader. This samples
+regional functionality and remote islands, not every square metre of Japan.
+The Chugoku source reported `relation/20045092: invalid-area`; this unlocalized
+issue remains attached to its Hiroshima pack. Zero issues elsewhere also cannot
+prove all relations assembled. Probe bounds/counts/pins/issues are recorded in
+[water-live-probes-20261115.json](../../docs/water-live-probes-20261115.json).
