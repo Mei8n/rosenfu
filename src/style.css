@@ -501,3 +501,14 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .deletion-hit { cursor: crosshair; }
 .deletion-hover { stroke-linecap: round; stroke-linejoin: round; }
 .deletion-tooltip { pointer-events: none; }
+/* Toolbar hit areas stay on the controls, never on a wrapping label. */
+.workbench .construction-toolbar .track-type-options { flex-wrap:nowrap; }
+.workbench .construction-toolbar .track-type-options button { flex:0 0 auto; white-space:nowrap; padding:3px 8px; min-width:0; }
+.workbench .construction-toolbar .target-speed-control { margin:0; white-space:nowrap; }
+.workbench .construction-toolbar .target-speed-control label { margin:0; }
+.workbench .construction-toolbar .speed-input button { flex:none; width:25px; height:25px; padding:0; }
+.workbench .construction-toolbar .speed-input input { height:25px; padding:2px 4px; text-align:center; }
+.track-follow-options { display:flex; flex-wrap:nowrap; gap:3px; }
+.workbench .construction-toolbar .follow-icon { width:27px; height:25px; padding:0; }
+.track-follow-options button[aria-pressed="true"] { background:var(--accent); }
+.map-surface .follow-icon svg { width:20px; height:20px; margin:auto; }
