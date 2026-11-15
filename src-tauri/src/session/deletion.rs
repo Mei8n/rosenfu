@@ -104,15 +104,23 @@ impl WorldEditor {
                     .iter()
                     .find(|a| a.id == selection.alignment_id)
                     .expect("validated selection");
-                let unchanged_height = match line.vertical_profile {
-                    Some(profile) => {
-                        profile.is_flat()
-                            && (profile.start_height_m - target_level.height_m()).abs() < 1e-9
+                let unchanged_height = if !line.section_profiles.is_empty() {
+                    indices.iter().all(|i| {
+                        line.section_profiles.get(*i).is_some_and(|p| {
+                            p.is_flat() && (p.start_height_m - target_level.height_m()).abs() < 1e-9
+                        })
+                    })
+                } else {
+                    match line.vertical_profile {
+                        Some(profile) => {
+                            profile.is_flat()
+                                && (profile.start_height_m - target_level.height_m()).abs() < 1e-9
+                        }
+                        None => indices.iter().all(|i| {
+                            line.section_infrastructure(*i)
+                                .is_some_and(|s| s.level == target_level)
+                        }),
                     }
-                    None => indices.iter().all(|i| {
-                        line.section_infrastructure(*i)
-                            .is_some_and(|s| s.level == target_level)
-                    }),
                 };
                 if unchanged_height {
                     let mut draft = candidate.snapshot();
@@ -121,7 +129,7 @@ impl WorldEditor {
                         .iter_mut()
                         .find(|a| a.id == selection.alignment_id)
                         .unwrap();
-                    if line.vertical_profile.is_some() {
+                    if line.vertical_profile.is_some() || !line.section_profiles.is_empty() {
                         let mut sections = line.effective_infrastructure();
                         for index in &indices {
                             sections[*index].level = target_level;
@@ -388,6 +396,11 @@ impl WorldEditor {
                     original
                         .vertical_profile
                         .and_then(|p| p.clip(0.0, cut_start / old_length)),
+                    if original.section_profiles.is_empty() {
+                        vec![]
+                    } else {
+                        original.section_profiles[..section_index].to_vec()
+                    },
                 ));
             }
             if end < original.points.len() - 1 {
@@ -401,10 +414,15 @@ impl WorldEditor {
                     original
                         .vertical_profile
                         .and_then(|p| p.clip(cut_end / old_length, 1.0)),
+                    if original.section_profiles.is_empty() {
+                        vec![]
+                    } else {
+                        original.section_profiles[section_index + 1..].to_vec()
+                    },
                 ));
             }
             let mut draft = candidate.snapshot();
-            let (points, indices, infrastructure, profile) = pieces.remove(0);
+            let (points, indices, infrastructure, profile, section_profiles) = pieces.remove(0);
             let surviving = draft
                 .alignments
                 .iter_mut()
@@ -414,11 +432,12 @@ impl WorldEditor {
             surviving.anchor_indices = Some(indices);
             surviving.infrastructure = infrastructure;
             surviving.vertical_profile = profile;
+            surviving.section_profiles = section_profiles;
             candidate
                 .world
                 .replace(draft)
                 .map_err(|_| "残る線路が短すぎるため、この区間は削除できません。".to_owned())?;
-            for (points, indices, infrastructure, profile) in pieces {
+            for (points, indices, infrastructure, profile, section_profiles) in pieces {
                 let new_id = candidate
                     .world
                     .build_alignment_typed(
@@ -441,6 +460,8 @@ impl WorldEditor {
                     .find(|a| a.id == new_id)
                     .unwrap()
                     .vertical_profile = profile;
+                let line = data.alignments.iter_mut().find(|a| a.id == new_id).unwrap();
+                line.section_profiles = section_profiles;
                 candidate.world.replace(data).map_err(|e| e.to_string())?;
                 if let Some(speed) = original.design_speed_kmh {
                     candidate
@@ -556,6 +577,7 @@ mod tests {
             .collect();
         let snapshot = editor
             .build_plan(vec![PlannedAlignment {
+                anchor_levels: None,
                 junction_source: None,
                 start_level: None,
                 infrastructure: Default::default(),
@@ -713,6 +735,44 @@ mod tests {
             WorldEditor::new().load(&path).unwrap().alignments,
             after.alignments
         );
+    }
+
+    #[test]
+    fn piecewise_height_cut_keeps_platform_height_and_undo() {
+        use rosenfu_core::world::VerticalProfile;
+        let (mut editor, id) = setup();
+        let mut draft = editor.snapshot();
+        for point in &mut draft.alignments[0].points {
+            point.longitude = 139. + (point.longitude - 139.) * 10.;
+        }
+        draft.alignments[0].section_profiles = [(0., 6.), (6., 6.), (6., 0.)]
+            .into_iter()
+            .map(|(start_height_m, end_height_m)| VerticalProfile {
+                start_height_m,
+                end_height_m,
+                start_tangent_m: 0.,
+                end_tangent_m: 0.,
+            })
+            .collect();
+        editor.world.replace(draft).unwrap();
+        editor
+            .place_station_on_alignment("plateau".into(), id, 0.5, 100., 10.)
+            .unwrap();
+        let mut before = editor.snapshot();
+        before.construction_plans = Some(plans());
+        let after = editor.delete_alignment_section(id, 0, plans()).unwrap();
+        assert_eq!(after.alignments[0].section_profiles.len(), 2);
+        assert_eq!(after.stations, before.stations);
+        let placement = &after.station_placements[0];
+        assert!(
+            (after.alignments[0]
+                .height_at_position_m(placement.position)
+                .unwrap()
+                - 6.)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
     }
 
     #[test]
@@ -1349,6 +1409,7 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
         editor
             .build_plan(vec![PlannedAlignment {
+                anchor_levels: None,
                 junction_source: None,
                 start_level: None,
                 infrastructure: Default::default(),
@@ -1396,6 +1457,7 @@ mod tests {
             .collect();
         let built = editor
             .build_plan(vec![PlannedAlignment {
+                anchor_levels: None,
                 junction_source: None,
                 start_level: None,
                 infrastructure: Default::default(),
@@ -1419,6 +1481,7 @@ mod tests {
         assert_eq!(gap.alignments[1].points, points[3..]);
         let joined = editor
             .build_plan(vec![PlannedAlignment {
+                anchor_levels: None,
                 junction_source: None,
                 start_level: None,
                 infrastructure: Default::default(),

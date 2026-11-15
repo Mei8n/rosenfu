@@ -190,6 +190,7 @@ pub enum WorldError {
     ProvenanceEditUnsupported,
     ServicePathEditUnsupported,
     InvalidStationPlacement,
+    StationOnGradient,
     StationFootprintOverlap,
     InvalidStationGroup,
     SelfLoop,
@@ -204,6 +205,9 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::StationOnGradient) {
+            return write!(f,"ホーム全長が平坦な場所に駅を設置してください。勾配やその境界に重なるホームは設置できません。");
+        }
         if matches!(self, Self::HeightRedevelopmentSpace) {
             return write!(f,"選択区間内に入口・出口の勾配と平坦部を収められません。区間を長く選択してください。選択外の高さは変更していません。");
         }

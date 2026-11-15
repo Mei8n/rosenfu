@@ -5,6 +5,10 @@ use super::*;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPlans {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_anchor_levels: Option<Vec<InfrastructureLevel>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo_anchor_levels: Option<Vec<InfrastructureLevel>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft_junction_source: Option<ConstructionJunctionSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_level: Option<InfrastructureLevel>,
@@ -53,6 +57,10 @@ pub struct ConstructionReference {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPath {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_levels: Option<Vec<InfrastructureLevel>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redo_anchor_levels: Option<Vec<InfrastructureLevel>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub junction_source: Option<ConstructionJunctionSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,6 +167,27 @@ fn valid_points(points: &[GeoPoint]) -> bool {
 }
 impl ConstructionPlans {
     pub fn validate(&self) -> Result<(), WorldError> {
+        if self
+            .draft_anchor_levels
+            .as_ref()
+            .is_some_and(|levels| levels.len() != self.draft_points.len())
+            || self
+                .redo_anchor_levels
+                .as_ref()
+                .is_some_and(|levels| levels.len() != self.redo_points.len())
+            || self.parked_paths.iter().any(|path| {
+                path.anchor_levels
+                    .as_ref()
+                    .is_some_and(|levels| levels.len() != path.points.len())
+                    || path
+                        .redo_anchor_levels
+                        .as_ref()
+                        .is_some_and(|levels| levels.len() != path.redo.len())
+            })
+        {
+            return Err(WorldError::InvalidConstructionPlans);
+        }
+
         let invalid = WorldError::InvalidConstructionPlans;
         if self
             .draft_junction_source
