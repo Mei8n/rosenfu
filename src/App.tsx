@@ -1174,6 +1174,9 @@ export function App() {
         event.preventDefault();if(event.repeat || busyRef.current)return;
         if(parallelStart){if(!event.shiftKey)cancelParallel();return;}
         if(anchorGesture.current){cancelAnchorGesture();return;}
+        // Tool changes are not edits: undo the last deletion before per-tool
+        // drawing/placement history while its exact post-operation state still matches.
+        if(event.shiftKey?canRedoTrackDelete:canUndoTrackDelete){if(event.shiftKey)redoTrackDelete();else undoTrackDelete();return;}
         if(activeTool==="delete"){if(event.shiftKey)redoTrackDelete();else undoTrackDelete();return;}
         if(activeTool==="tracks" && (event.shiftKey?anchorRedo.length:anchorUndo.length)){undoAnchor(event.shiftKey);return;}
         if(referenceCopy.active && activeTool==="tracks"){if(event.shiftKey)referenceCopy.redoPick();else referenceCopy.undo();}
