@@ -266,3 +266,69 @@ fn grouping_keeps_existing_route_service_platform_references_and_occurrences() {
     );
     assert_eq!(World::new(world.snapshot().clone()).unwrap(), world);
 }
+
+#[test]
+fn different_height_crossing_platforms_group_without_physical_track_connection() {
+    for level in [
+        InfrastructureLevel::Elevated,
+        InfrastructureLevel::Elevated3,
+        InfrastructureLevel::Underground,
+        InfrastructureLevel::Underground3,
+    ] {
+        let mut world = World::default();
+        let player = world.add_player("P".into()).unwrap();
+        let company = world.add_company(player, "C".into()).unwrap();
+        let ground_station = line(
+            &mut world,
+            company,
+            vec![point(-500., 0.), point(500., 0.)],
+            "中央",
+            100.,
+        );
+        let ground_alignment = world.snapshot().station_placements[0].alignment_id;
+        let raised = world
+            .build_alignment_ramp(
+                company,
+                "別階層".into(),
+                vec![point(0., -500.), point(0., 500.)],
+                TrackType::Normal,
+                level,
+                level,
+            )
+            .unwrap();
+        let before = world.snapshot().clone();
+        let raised_station = world
+            .place_station_on_alignment(company, "仮名".into(), raised, 0.5, 100., 12.)
+            .unwrap();
+        let draft = world.snapshot();
+        assert_eq!(
+            draft.station_groups,
+            vec![StationGroup {
+                station_id: ground_station,
+                members: vec![ground_station, raised_station],
+            }]
+        );
+        assert_eq!(draft.station_group_id(raised_station), ground_station);
+        assert!(draft.stations.iter().all(|station| station.name == "中央"));
+        let ground = draft
+            .alignments
+            .iter()
+            .find(|a| a.id == ground_alignment)
+            .unwrap();
+        let upper = draft.alignments.iter().find(|a| a.id == raised).unwrap();
+        assert_eq!(ground.height_at_position_m(0.5), Some(0.));
+        assert_eq!(upper.height_at_position_m(0.5), Some(level.height_m()));
+        assert!(ground.is_flat_over_position(0.45, 0.55));
+        assert!(upper.is_flat_over_position(0.45, 0.55));
+        assert_eq!(draft.alignments, before.alignments);
+        assert!(draft.alignment_connections.is_empty());
+        assert!(world.alignment_lane_movements().is_empty());
+        assert_eq!(draft.routes, before.routes);
+        assert_eq!(draft.service_paths, before.service_paths);
+        let saved = serde_json::to_string(draft).unwrap();
+        let restored = World::new(serde_json::from_str(&saved).unwrap()).unwrap();
+        assert_eq!(restored.snapshot(), draft);
+        assert!(restored.snapshot().alignment_connections.is_empty());
+        assert!(restored.alignment_lane_movements().is_empty());
+    }
+}
