@@ -29,7 +29,7 @@ test('dedicated deletion mode highlights only selected real anchor interval, can
 });
 test('individual plan anchor deletion leaves a finished singleton and supports undo',async()=>{
  const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b],draftFinished:true}});
- fireEvent.click(map.querySelector('[data-delete-anchor="1"]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(1);expect(map.querySelector('.candidate-draft')).toBeNull();
+ fireEvent.click(map.querySelector('[data-delete-anchor="1"]')!);expect(screen.queryByRole('dialog')).toBeNull();expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(1);expect(map.querySelector('.candidate-draft')).toBeNull();
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(2);
  expect(vi.mocked(invoke).mock.calls.some(([cmd])=>cmd==='build_plan'||cmd==='delete_alignment_section')).toBe(false);
 });
@@ -37,7 +37,53 @@ test('built stations are removable through the same map mode',async()=>{
  const map=await start({...empty,stations:[{id:'4',owner:'2',name:'駅',...b}]});fireEvent.click(map.querySelector('[data-delete-station="4"]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
  await waitFor(()=>expect(map.querySelector('[data-delete-station]')).toBeNull());expect(invoke).toHaveBeenCalledWith('delete_station',expect.objectContaining({stationId:'4',constructionPlans:expect.any(Object)}));
 });
-test('referenced track cannot be deleted and error does not mutate anything',async()=>{
- const map=await start({...built,stations:[{id:'4',owner:'2',name:'駅',...b}],station_placements:[{station_id:'4',alignment_id:'3',position:.5,length_m:200,width_m:12}]});
- fireEvent.click(map.querySelector('[data-delete-section="0"]')!);expect(screen.getByRole('alert').textContent).toContain('駅が使用中');expect((screen.getByRole('button',{name:'削除する'}) as HTMLButtonElement).disabled).toBe(true);
+test('connected line section reaches backend instead of whole-line reference guard',async()=>{
+ const snapshot={...built,alignment_connections:[{a:{alignment_id:'3',endpoint:'end'},b:{alignment_id:'5',endpoint:'start'}}]};
+ const map=await start(snapshot);
+ fireEvent.click(map.querySelector('[data-delete-section="0"]')!);
+ expect((screen.getByRole('button',{name:'削除する'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('delete_alignment_section',expect.objectContaining({alignmentId:'3',sectionIndex:0})));
+});
+test('station on surviving section is validated by backend instead of blocked globally',async()=>{
+ const map=await start({...built,stations:[{id:'4',owner:'2',name:'駅',...c}],station_placements:[{station_id:'4',alignment_id:'3',position:.9,length_m:200,width_m:12}]});
+ fireEvent.click(map.querySelector('[data-delete-section="0"]')!);
+ fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('delete_alignment_section',expect.objectContaining({alignmentId:'3',sectionIndex:0})));
+});
+test.each(['接続端点を含む区間は削除できません。','駅のホームに重なる区間は削除できません。','路線・系統が使用中の線路の区間削除には対応していません。'])('backend rejection stays atomic and can be cancelled: %s',async message=>{
+ const map=await start();
+ vi.mocked(invoke).mockRejectedValueOnce(message);
+ fireEvent.click(map.querySelector('[data-delete-section="0"]')!);
+ fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ await screen.findByText(message,{exact:true});
+ expect(map.querySelectorAll('[data-delete-alignment="3"]')).toHaveLength(2);
+ expect(screen.queryByRole('button',{name:'削除を元に戻す'})).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'キャンセル'}));
+ expect(screen.queryByRole('dialog')).toBeNull();
+});
+test('anchor rejection leaves plan intact without opening confirmation',async()=>{
+ const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b],draftFinished:true,roadFollowing:true}});
+ fireEvent.click(map.querySelector('[data-delete-anchor="1"]')!);
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(2);
+ expect(screen.getByText(/参照線路のアンカーは個別に削除できません/)).toBeTruthy();
+ expect(screen.queryByRole('button',{name:'削除を元に戻す'})).toBeNull();
+});
+test('other company section remains blocked before invocation',async()=>{
+ const map=await start({...built,alignments:[{...alignment,owner:'99'}]});
+ fireEvent.click(map.querySelector('[data-delete-section="0"]')!);
+ expect((screen.getByRole('button',{name:'削除する'}) as HTMLButtonElement).disabled).toBe(true);
+ expect(invoke).not.toHaveBeenCalledWith('delete_alignment_section',expect.anything());
+});
+
+test('idle construction hides line name and internal identifier without changing selection',async()=>{
+ const map=await start();
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));
+ fireEvent.click(map.querySelector('.alignment-hit')!);
+ expect(map.querySelector('[data-alignment-id="3"] title')).toBeNull();
+ expect(screen.queryByText('線路 3')).toBeNull();
+ expect(screen.getByRole('button',{name:'選択線路を削除'})).toBeTruthy();
+ fireEvent.click(screen.getByRole('tab',{name:'削除'}));
+ expect(map.querySelector('[data-alignment-id="3"] title')?.textContent).toBe('線路');
 });

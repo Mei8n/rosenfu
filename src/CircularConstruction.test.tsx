@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import React from 'react';
 import {afterEach,expect,test,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {invoke,isTauri} from '@tauri-apps/api/core';
 import {App} from './App';
-import {project} from './map';
+import {project,mapViewport} from './map';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:vi.fn()}));
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 test('circular hover guide precedes saved geometry and undo/redo restores the path',async()=>{
@@ -58,7 +58,7 @@ test('automatic straights and curves need no mode switch, use identical preview/
  expect(points.map((point,index)=>{const p=project(point.latitude,point.longitude);return(index?'L':'M')+p.x+','+p.y;}).join(' ')).toBe(finalPreview);
 });
 
-test('outgoing tangent guide follows the preview endpoint and has a stable CSS length',async()=>{
+test('outgoing tangent guide follows the preview endpoint and extends beyond the viewport',async()=>{
  vi.stubGlobal('PointerEvent',MouseEvent);
  const world={next_id:'3',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'R'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
  vi.mocked(isTauri).mockReturnValue(true);
@@ -76,13 +76,14 @@ test('outgoing tangent guide follows the preview endpoint and has a stable CSS l
  expect(Number(guide()!.getAttribute('x1'))).toBeCloseTo(600,5);
  expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(360,5);
  expect(Number(guide()!.getAttribute('x2'))).toBeCloseTo(600,4);
- expect(Number(guide()!.getAttribute('y2'))-360).toBeCloseTo(600,4);
+ expect(Number(guide()!.getAttribute('y2'))).toBeGreaterThan(600);
  const curvedGuide=guide()!.outerHTML;
  fireEvent.pointerMove(map,{clientX:320,clientY:160});
  expect(guide()!.outerHTML).not.toBe(curvedGuide);
  const dx=Number(guide()!.getAttribute('x2'))-Number(guide()!.getAttribute('x1'));
  const dy=Number(guide()!.getAttribute('y2'))-Number(guide()!.getAttribute('y1'));
- expect(Math.hypot(dx,dy)*.5).toBeCloseTo(300,5);
+ expect(Math.hypot(dx,dy)).toBeGreaterThan(600);
+ expect(Number(guide()!.getAttribute('x2'))>1000 || Number(guide()!.getAttribute('y2'))>600).toBe(true);
  // No invented forward direction for a refused curve.
  fireEvent.pointerMove(map,{clientX:220,clientY:190});
  expect(map.querySelector('.invalid-candidate')).toBeTruthy();
@@ -129,4 +130,35 @@ test('Ctrl bypasses straight snapping until release, including stationary previe
  expect(map.querySelector('.draft-path')!.getAttribute('d')).toBe(committed);
  fireEvent.blur(window);
  expect(map.querySelector('.curve-circle-guide')).toBeNull();
+});
+
+test('tangent guide reaches past resized viewport edges at different zoom levels',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);
+ let resize: (entries: {contentRect:{width:number;height:number}}[])=>void=()=>{};
+ vi.stubGlobal('ResizeObserver',class {constructor(callback:typeof resize){resize=callback;}observe(){}disconnect(){}});
+ const world={next_id:'3',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'R'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'guide-resize-test'}:world);
+ render(<App/>);fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));await screen.findByText(/guide-resize-test/);
+ const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
+ let width=1000,height=600;
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:width,bottom:height,width,height,toJSON:()=>({})});
+ fireEvent.click(map,{clientX:360,clientY:260});fireEvent.click(map,{clientX:500,clientY:260});
+ fireEvent.pointerMove(map,{clientX:600,clientY:360});
+ for(const size of [{width:1920,height:400},{width:400,height:1200},{width:2560,height:1440}]){
+   ({width,height}=size);
+   await act(async()=>resize([{contentRect:size}]));
+   // No pointer movement: the observed dimensions must supersede old cursor data.
+   const check=()=>{
+     const line=map.querySelector('.construction-tangent-guide')!;
+     expect(line).toBeTruthy();
+     const end={x:Number(line.getAttribute('x2')),y:Number(line.getAttribute('y2'))};
+     const viewport=mapViewport(width,height);
+     expect(Number.isFinite(end.x)&&Number.isFinite(end.y)).toBe(true);
+     expect(end.x<viewport.x||end.x>viewport.x+viewport.width||end.y<viewport.y||end.y>viewport.y+viewport.height).toBe(true);
+   };
+   check();
+   fireEvent.click(screen.getByRole('button',{name:'拡大'}));check();
+   fireEvent.click(screen.getByRole('button',{name:'縮小'}));check();
+ }
 });
