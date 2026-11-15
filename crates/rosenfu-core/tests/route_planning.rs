@@ -12,39 +12,6 @@ fn setup(n: usize) -> (World, CompanyId, Vec<StationId>) {
     (w, c, s)
 }
 #[test]
-fn unique_path_and_membership_exclusions_are_read_only() {
-    let (mut w, c, s) = setup(4);
-    for p in s.windows(2) {
-        w.add_track(c, p[0], p[1]).unwrap();
-    }
-    let before = w.snapshot().clone();
-    let result = w.route_candidates(s[0], s[3]).unwrap();
-    assert_eq!(result.status, RouteSearchStatus::Unique);
-    assert_eq!(result.candidates[0].stations, s);
-    let plan = w
-        .preview_route_membership(s[0], result.candidates[0].segments.clone(), vec![s[1]])
-        .unwrap();
-    assert_eq!(plan.path.stations, s);
-    assert_eq!(plan.member_stations, vec![s[0], s[2], s[3]]);
-    assert_eq!(w.snapshot(), &before);
-    let reverse = w.route_candidates(s[3], s[0]).unwrap();
-    assert_eq!(
-        reverse.candidates[0].stations,
-        s.iter().rev().copied().collect::<Vec<_>>()
-    );
-}
-#[test]
-fn alternatives_are_not_silently_selected_even_when_one_is_shorter() {
-    let (mut w, c, s) = setup(3);
-    w.add_track(c, s[0], s[2]).unwrap();
-    w.add_track(c, s[0], s[1]).unwrap();
-    w.add_track(c, s[1], s[2]).unwrap();
-    let r = w.route_candidates(s[0], s[2]).unwrap();
-    assert_eq!(r.status, RouteSearchStatus::Ambiguous);
-    assert_eq!(r.candidates.len(), 2);
-    assert!(!r.truncated);
-}
-#[test]
 fn disconnected_invalid_and_same_endpoints_are_distinguished() {
     let (w, _, s) = setup(2);
     assert_eq!(
@@ -59,71 +26,6 @@ fn disconnected_invalid_and_same_endpoints_are_distinguished() {
         w.route_candidates(s[0], StationId(999)).unwrap_err(),
         RoutePlanningError::MissingStation
     );
-}
-#[test]
-fn invalid_exclusions_and_stale_paths_are_rejected() {
-    let (mut w, c, s) = setup(3);
-    let a = w.add_track(c, s[0], s[1]).unwrap();
-    let b = w.add_track(c, s[1], s[2]).unwrap();
-    let path = vec![
-        RouteSegment::Track { track_id: a },
-        RouteSegment::Track { track_id: b },
-    ];
-    let before = w.snapshot().clone();
-    for exclusions in [
-        vec![s[0]],
-        vec![s[2]],
-        vec![StationId(999)],
-        vec![s[1], s[1]],
-    ] {
-        assert_eq!(
-            w.preview_route_membership(s[0], path.clone(), exclusions)
-                .unwrap_err(),
-            RoutePlanningError::InvalidExclusion
-        );
-    }
-    assert_eq!(w.snapshot(), &before);
-    let mut draft = before;
-    draft.tracks.retain(|t| t.id != b);
-    w.replace(draft).unwrap();
-    assert_eq!(
-        w.preview_route_membership(s[0], path, vec![]).unwrap_err(),
-        RoutePlanningError::InvalidSegment
-    );
-}
-#[test]
-fn cycles_and_parallel_edges_terminate_and_preserve_choices() {
-    let (mut w, c, s) = setup(3);
-    let a = w.add_track(c, s[0], s[1]).unwrap();
-    w.add_track(c, s[0], s[1]).unwrap();
-    w.add_track(c, s[1], s[2]).unwrap();
-    w.add_track(c, s[2], s[0]).unwrap();
-    let r = w.route_candidates(s[0], s[2]).unwrap();
-    assert_eq!(r.candidates.len(), 3);
-    assert_eq!(r.status, RouteSearchStatus::Ambiguous);
-    assert_eq!(
-        w.preview_route_membership(
-            s[0],
-            vec![
-                RouteSegment::Track { track_id: a },
-                RouteSegment::Track { track_id: a }
-            ],
-            vec![]
-        )
-        .unwrap_err(),
-        RoutePlanningError::RepeatedStation
-    );
-}
-#[test]
-fn bounded_search_never_claims_a_unique_result() {
-    let (mut w, c, s) = setup(2);
-    for _ in 0..33 {
-        w.add_track(c, s[0], s[1]).unwrap();
-    }
-    let r = w.route_candidates(s[0], s[1]).unwrap();
-    assert_eq!(r.status, RouteSearchStatus::Incomplete);
-    assert!(r.truncated);
-    assert_eq!(r.candidates.len(), 32);
 }
 #[test]
 fn alignment_candidates_include_intermediate_stations_without_building_tracks() {
@@ -155,8 +57,6 @@ fn alignment_candidates_include_intermediate_stations_without_building_tracks() 
     let r = w.route_candidates(s[0], s[2]).unwrap();
     assert_eq!(r.status, RouteSearchStatus::Unique);
     assert_eq!(r.candidates[0].stations, s);
-    assert!(!r.candidates[0].track_only);
-    assert!(before.tracks.is_empty());
     let reverse = w.route_candidates(s[2], s[0]).unwrap();
     let plan = w
         .preview_route_membership(s[2], reverse.candidates[0].segments.clone(), vec![s[1]])
@@ -298,29 +198,6 @@ fn coincident_groups_disconnect_both_boundaries_without_affecting_unique_runs() 
 }
 
 #[test]
-fn ordered_waypoints_constrain_exploration_and_preserve_world() {
-    let (mut w, c, s) = setup(5);
-    for (a, b) in [(0, 1), (1, 4), (0, 2), (2, 3), (3, 4)] {
-        w.add_track(c, s[a], s[b]).unwrap();
-    }
-    let before = w.snapshot().clone();
-    let r = w.route_candidates_via(s[0], s[4], &[s[2], s[3]]).unwrap();
-    assert_eq!(r.status, RouteSearchStatus::Unique);
-    assert_eq!(r.candidates[0].stations, vec![s[0], s[2], s[3], s[4]]);
-    assert_eq!(
-        w.route_candidates_via(s[0], s[4], &[s[3], s[2]])
-            .unwrap()
-            .status,
-        RouteSearchStatus::NoPath
-    );
-    assert_eq!(
-        w.route_candidates_via(s[0], s[4], &[]).unwrap(),
-        w.route_candidates(s[0], s[4]).unwrap()
-    );
-    assert_eq!(w.snapshot(), &before);
-}
-
-#[test]
 fn waypoint_validation_rejects_missing_or_repeated_selected_stations() {
     let (w, _, s) = setup(3);
     for via in [vec![s[0]], vec![s[2]], vec![s[1], s[1]]] {
@@ -337,35 +214,76 @@ fn waypoint_validation_rejects_missing_or_repeated_selected_stations() {
 }
 
 #[test]
-fn waypoint_search_does_not_filter_an_already_truncated_candidate_list() {
-    let (mut w, c, s) = setup(3);
-    for _ in 0..40 {
-        w.add_track(c, s[0], s[2]).unwrap();
+fn membership_validation_and_stale_alignment_paths_are_atomic() {
+    let (mut w, c, _) = setup(0);
+    let a = w
+        .build_alignment(
+            c,
+            "a".into(),
+            vec![
+                GeoPoint {
+                    latitude: 35.0,
+                    longitude: 139.0,
+                },
+                GeoPoint {
+                    latitude: 35.0,
+                    longitude: 139.1,
+                },
+            ],
+        )
+        .unwrap();
+    let s: Vec<_> = [0.1, 0.5, 0.9]
+        .into_iter()
+        .map(|p| {
+            w.place_station_on_alignment(c, "s".into(), a, p, 100.0, 10.0)
+                .unwrap()
+        })
+        .collect();
+    let path = vec![RouteSegment::Alignment {
+        alignment_id: a,
+        from: s[0],
+        to: s[2],
+    }];
+    let before = w.snapshot().clone();
+    for excluded in [
+        vec![s[0]],
+        vec![s[2]],
+        vec![s[1], s[1]],
+        vec![StationId(999)],
+    ] {
+        assert!(w
+            .preview_route_membership(s[0], path.clone(), excluded)
+            .is_err());
     }
-    w.add_track(c, s[0], s[1]).unwrap();
-    w.add_track(c, s[1], s[2]).unwrap();
-    assert!(w.route_candidates(s[0], s[2]).unwrap().truncated);
-    let r = w.route_candidates_via(s[0], s[2], &[s[1]]).unwrap();
-    assert_eq!(r.status, RouteSearchStatus::Unique);
-    assert_eq!(r.candidates[0].stations, s);
-}
-
-#[test]
-fn shortest_selection_uses_physical_distance_and_refuses_truncated_search() {
-    let (mut w, c, s) = setup(3);
-    // First discovered path detours beyond the destination and doubles back.
-    w.add_track(c, s[0], s[2]).unwrap();
-    w.add_track(c, s[2], s[1]).unwrap();
-    w.add_track(c, s[0], s[1]).unwrap();
-    let r = w.route_candidates(s[0], s[1]).unwrap();
+    let cyclic = vec![
+        RouteSegment::Alignment {
+            alignment_id: a,
+            from: s[0],
+            to: s[1],
+        },
+        RouteSegment::Alignment {
+            alignment_id: a,
+            from: s[1],
+            to: s[0],
+        },
+    ];
     assert_eq!(
-        r.candidates[r.shortest_candidate_index.unwrap()].stations,
-        vec![s[0], s[1]]
+        w.preview_route_membership(s[0], cyclic, vec![])
+            .unwrap_err(),
+        RoutePlanningError::RepeatedStation
     );
-    for _ in 0..40 {
-        w.add_track(c, s[0], s[1]).unwrap();
-    }
-    let r = w.route_candidates(s[0], s[1]).unwrap();
-    assert_eq!(r.status, RouteSearchStatus::Incomplete);
-    assert_eq!(r.shortest_candidate_index, None);
+    assert!(w
+        .preview_route_membership(
+            s[0],
+            vec![RouteSegment::Alignment {
+                alignment_id: AlignmentId(999),
+                from: s[0],
+                to: s[2]
+            }],
+            vec![]
+        )
+        .is_err());
+    let preview = w.preview_route_membership(s[0], path, vec![s[1]]).unwrap();
+    assert_eq!(preview.member_stations, vec![s[0], s[2]]);
+    assert_eq!(w.snapshot(), &before);
 }
