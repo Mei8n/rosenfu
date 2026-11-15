@@ -1,0 +1,10 @@
+.construction-toolbar .height-controls {display:flex;align-items:center;gap:6px;flex-basis:100%;min-width:0;}
+.height-options {display:flex;flex-wrap:wrap;gap:1px;}
+.height-option {position:relative;display:inline-flex;}
+.workbench .height-choice {min-width:28px;min-height:28px;padding:3px 5px;border:1px solid #8c9aa8;border-radius:0;color:#243442;font:inherit;line-height:1.2;}
+.workbench .height-elevated_3 {background:#ddd7f3;}.workbench .height-elevated_2 {background:#cbdff1;}.workbench .height-elevated {background:#c9e5dc;}
+.workbench .height-ground {background:#d7e8c0;}.workbench .height-underground {background:#ffe5aa;}.workbench .height-underground_2 {background:#f4c79d;}.workbench .height-underground_3 {background:#efb7a5;}
+.workbench .height-choice[aria-pressed="true"] {background:#32873e;color:white;outline:2px solid #253f2b;outline-offset:-2px;font-weight:bold;}
+.workbench .height-choice:focus-visible {outline:2px solid #2459c0;outline-offset:2px;}
+.height-tooltip {position:absolute;top:calc(100% + 4px);left:0;z-index:10;display:grid;gap:2px;width:max-content;max-width:min(280px,70vw);padding:5px 7px;border:1px solid #9ca7ae;border-radius:3px;background:rgba(247,249,250,.95);color:#26343e;font-size:11px;pointer-events:none;box-shadow:0 2px 5px #0002;}
+.height-option:nth-last-child(-n+3) .height-tooltip {left:auto;right:0;}

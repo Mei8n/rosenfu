@@ -4,6 +4,8 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPlans {
+    #[serde(default)]
+    pub infrastructure: SectionInfrastructure,
     pub version: u32,
     pub plans: Vec<ConstructionPlan>,
     pub parked_paths: Vec<ConstructionPath>,
@@ -47,6 +49,8 @@ pub struct ConstructionReference {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPath {
+    #[serde(default)]
+    pub infrastructure: SectionInfrastructure,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edited_geometry: Option<EditedPlanGeometry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,7 +130,12 @@ fn valid_points(points: &[GeoPoint]) -> bool {
 impl ConstructionPlans {
     pub fn validate(&self) -> Result<(), WorldError> {
         let invalid = WorldError::InvalidConstructionPlans;
-        if self.version != 1
+        if !self.infrastructure.is_valid()
+            || self
+                .parked_paths
+                .iter()
+                .any(|path| !path.infrastructure.is_valid())
+            || self.version != 1
             || self.plans.is_empty()
             || self.plans.len() > 10_000
             || self.parked_paths.len() > 10_000

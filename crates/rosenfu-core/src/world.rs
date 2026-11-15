@@ -411,7 +411,10 @@ impl WorldDraft {
 mod alignment_connections;
 pub use alignment_connections::{AlignmentConnection, AlignmentEndpointRef};
 mod alignment;
-pub use alignment::{Alignment, AlignmentEndpoint, GeoPoint, StationPlacement, TrackType};
+pub use alignment::{
+    Alignment, AlignmentEndpoint, GeoPoint, InfrastructureLevel, SectionInfrastructure,
+    StationPlacement, TrackType,
+};
 
 #[cfg(test)]
 mod tests {

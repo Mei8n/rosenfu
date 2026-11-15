@@ -45,7 +45,7 @@ export function removePlannedTarget(value:ConstructionPlans,target:PlannedDelete
 /** Cut an anchor interval without re-fitting surviving curves or moving station centers. */
 function removePlannedSection(value:ConstructionPlans,target:Extract<PlannedDeleteTarget,{kind:'plan-section'}>,previous:(extension:Extension|null)=>GeoPoint|undefined):ConstructionPlans{
  const active=target.pathId===value.activePathId;
- const path:PlannedPath|undefined=active?{id:value.activePathId,planId:value.activePlanId,name:'',points:value.draftPoints,line:[],redo:[],extension:value.draftExtension,destination:value.draftDestination,editedGeometry:value.draftEditedGeometry,designSpeedKmh:value.designSpeedKmh,trackType:value.trackType,roadFollowing:value.roadFollowing}:value.parkedPaths.find(p=>p.id===target.pathId);
+ const path:PlannedPath|undefined=active?{id:value.activePathId,planId:value.activePlanId,name:'',points:value.draftPoints,line:[],redo:[],extension:value.draftExtension,destination:value.draftDestination,editedGeometry:value.draftEditedGeometry,infrastructure:value.infrastructure,designSpeedKmh:value.designSpeedKmh,trackType:value.trackType,roadFollowing:value.roadFollowing}:value.parkedPaths.find(p=>p.id===target.pathId);
  if(!path)throw Error('削除する計画線路が見つかりません');
  // Reference paths lack editable anchor semantics. Never guess their segmentation.
  if(path.reference||path.roadFollowing)throw Error('参照線路は区間ごとに削除できません');

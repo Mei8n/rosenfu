@@ -1,0 +1,7 @@
+.workbench svg.map-selection-mode, .workbench svg.map-delete-mode,
+.workbench svg.map-selection-mode *, .workbench svg.map-delete-mode * { cursor: crosshair; }
+.workbench svg.map-dragging, .workbench svg.map-dragging *, .workbench svg.map-move-mode { cursor: default; }
+.workbench svg.map-dragging.map-delete-mode, .workbench svg.map-dragging.map-delete-mode * { cursor: crosshair; }
+.selection-box { fill:#3186d422; stroke:#3186d4; stroke-width:1.5; stroke-dasharray:5 3; pointer-events:none; }
+.selected-built-section { stroke:#2783d8; stroke-opacity:.8; fill:none; pointer-events:none; }
+.range-selection-actions { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }

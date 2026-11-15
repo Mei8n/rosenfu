@@ -1,18 +1,186 @@
 use super::*;
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AlignmentSectionSelection {
+    pub alignment_id: AlignmentId,
+    pub section_indices: Vec<usize>,
+}
+
 impl WorldEditor {
+    fn validate_section_selection(
+        &self,
+        selections: &[AlignmentSectionSelection],
+        expected_alignments: &[rosenfu_core::world::Alignment],
+    ) -> Result<(), String> {
+        if selections.is_empty() || selections.len() > 4096 {
+            return Err("変更する区間を選択してください。".into());
+        }
+        let before = self.snapshot();
+        let mut seen = std::collections::BTreeSet::new();
+        if expected_alignments.len() != selections.len() {
+            return Err("選択した線路の情報が一致しません。選択し直してください。".into());
+        }
+        for selection in selections {
+            let id = selection.alignment_id;
+            if !seen.insert(id) || selection.section_indices.is_empty() {
+                return Err("選択した区間が重複しているか空です。".into());
+            }
+            let current = before
+                .alignments
+                .iter()
+                .find(|a| a.id == id && a.owner == self.company)
+                .ok_or("選択した自社線路がありません。")?;
+            let expected = expected_alignments
+                .iter()
+                .filter(|a| a.id == id)
+                .collect::<Vec<_>>();
+            if expected.len() != 1 || expected[0] != current {
+                return Err("選択した線路が変更されています。選択し直してください。".into());
+            }
+            let count = current.anchor_indices.as_ref().map_or(1, |a| a.len() - 1);
+            let unique = selection
+                .section_indices
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique.len() != selection.section_indices.len() || unique.iter().any(|i| *i >= count)
+            {
+                return Err("選択した区間が不正です。".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn update_alignment_section_infrastructure(
+        &mut self,
+        selections: Vec<AlignmentSectionSelection>,
+        expected_alignments: Vec<rosenfu_core::world::Alignment>,
+        track_count: Option<u8>,
+        level: Option<rosenfu_core::world::InfrastructureLevel>,
+        plans: rosenfu_core::world::ConstructionPlans,
+    ) -> Result<WorldDraft, String> {
+        if track_count.is_none() && level.is_none() {
+            return Err("線路数または構造を指定してください。".into());
+        }
+        if track_count.is_some_and(|count| !matches!(count, 1 | 2 | 4)) {
+            return Err("線路数は1・2・4から選択してください。".into());
+        }
+        self.validate_section_selection(&selections, &expected_alignments)?;
+        let mut before = self.snapshot();
+        before.construction_plans = Some(plans);
+        let mut after = before.clone();
+        for selection in selections {
+            let alignment = after
+                .alignments
+                .iter_mut()
+                .find(|a| a.id == selection.alignment_id)
+                .ok_or("選択した線路がありません。")?;
+            let mut infrastructure = alignment.effective_infrastructure();
+            for index in selection.section_indices {
+                if let Some(count) = track_count {
+                    infrastructure[index].track_count = count;
+                }
+                if let Some(level) = level {
+                    infrastructure[index].level = level;
+                }
+            }
+            alignment.infrastructure = infrastructure;
+        }
+        let mut candidate = self.clone();
+        candidate.world.replace(after).map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        let after = candidate.snapshot();
+        candidate.deleted_alignment = Some((before, after.clone()));
+        *self = candidate;
+        Ok(after)
+    }
+
+    /// Batch removal is atomic and forms one undo entry.
+    /// Indices refer to the supplied, exact original alignment snapshots.
+    pub fn delete_alignment_sections(
+        &mut self,
+        selections: Vec<AlignmentSectionSelection>,
+        expected_alignments: Vec<rosenfu_core::world::Alignment>,
+        plans: rosenfu_core::world::ConstructionPlans,
+    ) -> Result<WorldDraft, String> {
+        if selections.is_empty() || selections.len() > 4096 {
+            return Err("削除する区間を選択してください。".into());
+        }
+        let mut candidate = self.clone();
+        let mut before = self.snapshot();
+        before.construction_plans = Some(plans.clone());
+        candidate
+            .world
+            .replace(before.clone())
+            .map_err(|e| e.to_string())?;
+        self.validate_section_selection(&selections, &expected_alignments)?;
+        for selection in selections {
+            // Collapse adjacent selected intervals before removing them: temporary
+            // sub-20m fragments must not reject a valid final contiguous removal.
+            let mut indices = selection.section_indices;
+            indices.sort_unstable();
+            let mut ranges = Vec::new();
+            for index in indices {
+                match ranges.last_mut() {
+                    Some((_, end)) if index == *end + 1 => *end = index,
+                    _ => ranges.push((index, index)),
+                }
+            }
+            // Removing from the end keeps the original prefix ID and lower indices stable.
+            for (start, end) in ranges.into_iter().rev() {
+                if start != end {
+                    let current = candidate.snapshot();
+                    let alignment = current
+                        .alignments
+                        .iter()
+                        .find(|a| a.id == selection.alignment_id)
+                        .ok_or("選択した線路がありません。")?;
+                    let mut anchors = alignment
+                        .anchor_indices
+                        .clone()
+                        .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
+                    anchors.drain(start + 1..=end);
+                    candidate.set_anchor_indices(selection.alignment_id, anchors)?;
+                }
+                candidate.delete_alignment_section(selection.alignment_id, start, plans.clone())?;
+            }
+        }
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        let after = candidate.snapshot();
+        candidate.deleted_alignment = Some((before, after.clone()));
+        *self = candidate;
+        Ok(after)
+    }
+
     pub(super) fn set_anchor_indices(
         &mut self,
         id: AlignmentId,
         indices: Vec<usize>,
     ) -> Result<(), String> {
         let mut draft = self.snapshot();
-        draft
+        let alignment = draft
             .alignments
             .iter_mut()
             .find(|a| a.id == id)
-            .ok_or("線路がありません。")?
-            .anchor_indices = Some(indices);
+            .ok_or("線路がありません。")?;
+        if !alignment.infrastructure.is_empty() {
+            let old = alignment
+                .anchor_indices
+                .clone()
+                .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
+            let attrs = alignment.effective_infrastructure();
+            alignment.infrastructure = indices
+                .windows(2)
+                .map(|pair| {
+                    let section = old
+                        .partition_point(|point| *point <= pair[0])
+                        .saturating_sub(1);
+                    attrs[section.min(attrs.len() - 1)]
+                })
+                .collect();
+        }
+        alignment.anchor_indices = Some(indices);
         self.world.replace(draft).map_err(|e| e.to_string())
     }
 
@@ -51,29 +219,6 @@ impl WorldEditor {
                     .ok_or("削除する区間がありません。")?,
             )
             .ok_or("削除する区間がありません。")?;
-        // Only station placements and surviving endpoint links may be remapped.
-        // Paths, plans and provenance retain their stricter protection.
-        let references = |segment: &rosenfu_core::world::RouteSegment| match segment {
-            rosenfu_core::world::RouteSegment::Alignment { alignment_id, .. } => {
-                *alignment_id == id
-            }
-            rosenfu_core::world::RouteSegment::ConnectedAlignments { connections, .. } => {
-                connections
-                    .iter()
-                    .any(|c| c.a.alignment_id == id || c.b.alignment_id == id)
-            }
-        };
-        if before
-            .route_paths
-            .iter()
-            .any(|p| p.segments.iter().any(&references))
-            || before
-                .service_paths
-                .iter()
-                .any(|p| p.legs.iter().any(|l| references(&l.segment)))
-        {
-            return Err("路線・系統が使用中の線路の区間削除には対応していません。".into());
-        }
         if boundaries.len() == 2 {
             // Disconnect only this alignment. Validation rejects route/service paths
             // that still require the link; equipment and plans retain their guards.
@@ -84,7 +229,7 @@ impl WorldEditor {
             candidate
                 .world
                 .replace(disconnected)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| format!("路線・系統の接続を保持できません: {e}"))?;
             candidate.delete_alignment(id)?;
         } else {
             // Source metadata describes an exact span. Never silently lose or falsify it.
@@ -99,15 +244,20 @@ impl WorldEditor {
             // Groups require every member to have a placement. This private
             // intermediate candidate temporarily omits placements; restore the
             // exact groups only after all retained placements are remapped.
+            // Private scratch state: all original route/service records are restored
+            // and remapped before the single public commit below.
+            stripped.routes.clear();
+            stripped.route_paths.clear();
+            stripped.services.clear();
+            stripped.service_paths.clear();
+            stripped.service_appearances.clear();
+            stripped.service_route_bindings.clear();
             stripped.station_groups.clear();
             stripped.station_placements.retain(|p| p.alignment_id != id);
             stripped
                 .alignment_connections
                 .retain(|c| c.a.alignment_id != id && c.b.alignment_id != id);
-            candidate
-                .world
-                .replace(stripped)
-                .map_err(|e| e.to_string())?;
+            candidate.world = World::new(stripped).map_err(|e| e.to_string())?;
             candidate.clone().delete_alignment(id)?;
             let mut prefix = original.clone();
             prefix.points = original.points[..=start].to_vec();
@@ -134,6 +284,7 @@ impl WorldEditor {
                 pieces.push((
                     original.points[..=start].to_vec(),
                     boundaries[..=section_index].to_vec(),
+                    original.effective_infrastructure()[..section_index].to_vec(),
                 ));
             }
             if end < original.points.len() - 1 {
@@ -143,10 +294,11 @@ impl WorldEditor {
                         .iter()
                         .map(|i| i - end)
                         .collect(),
+                    original.effective_infrastructure()[section_index + 1..].to_vec(),
                 ));
             }
             let mut draft = candidate.snapshot();
-            let (points, indices) = pieces.remove(0);
+            let (points, indices, infrastructure) = pieces.remove(0);
             let surviving = draft
                 .alignments
                 .iter_mut()
@@ -154,11 +306,12 @@ impl WorldEditor {
                 .ok_or("線路がありません。")?;
             surviving.points = points;
             surviving.anchor_indices = Some(indices);
+            surviving.infrastructure = infrastructure;
             candidate
                 .world
                 .replace(draft)
                 .map_err(|_| "残る線路が短すぎるため、この区間は削除できません。".to_owned())?;
-            for (points, indices) in pieces {
+            for (points, indices, infrastructure) in pieces {
                 let new_id = candidate
                     .world
                     .build_alignment_typed(
@@ -170,6 +323,13 @@ impl WorldEditor {
                     .map_err(|e| e.to_string())?;
                 piece_ids.push(new_id);
                 candidate.set_anchor_indices(new_id, indices)?;
+                let mut data = candidate.snapshot();
+                data.alignments
+                    .iter_mut()
+                    .find(|a| a.id == new_id)
+                    .ok_or("残る線路がありません。")?
+                    .infrastructure = infrastructure;
+                candidate.world.replace(data).map_err(|e| e.to_string())?;
                 if let Some(speed) = original.design_speed_kmh {
                     candidate
                         .world
@@ -234,10 +394,105 @@ impl WorldEditor {
                     }
                 }
             }
-            candidate
-                .world
-                .replace(restored)
-                .map_err(|e| e.to_string())?;
+            restored.routes = before.routes.clone();
+            restored.route_paths = before.route_paths.clone();
+            restored.services = before.services.clone();
+            restored.service_paths = before.service_paths.clone();
+            restored.service_appearances = before.service_appearances.clone();
+            restored.service_route_bindings = before.service_route_bindings.clone();
+            let placements = restored.station_placements.clone();
+            let remap = |segment: &mut rosenfu_core::world::RouteSegment| -> Result<(), String> {
+                use rosenfu_core::world::{AlignmentEndpoint, RouteSegment};
+                match segment {
+                    RouteSegment::Alignment {
+                        alignment_id,
+                        from,
+                        to,
+                    } if *alignment_id == id => {
+                        let a = placements
+                            .iter()
+                            .find(|p| p.station_id == *from)
+                            .ok_or("使用中の路線・系統の駅を保持できません。")?;
+                        let b = placements
+                            .iter()
+                            .find(|p| p.station_id == *to)
+                            .ok_or("使用中の路線・系統の駅を保持できません。")?;
+                        if a.alignment_id != b.alignment_id {
+                            return Err("路線・系統が通る区間は削除できません。".into());
+                        }
+                        *alignment_id = a.alignment_id;
+                    }
+                    RouteSegment::ConnectedAlignments { connections, .. } => {
+                        for connection in connections {
+                            for endpoint in [&mut connection.a, &mut connection.b] {
+                                if endpoint.alignment_id == id
+                                    && endpoint.endpoint == AlignmentEndpoint::End
+                                {
+                                    endpoint.alignment_id = right_id;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            };
+            for path in &mut restored.route_paths {
+                for segment in &mut path.segments {
+                    remap(segment)?;
+                }
+            }
+            for path in &mut restored.service_paths {
+                for leg in &mut path.legs {
+                    remap(&mut leg.segment)?;
+                }
+            }
+            // This operation only clips unreferenced geometry and remaps surviving
+            // station positions/IDs. Generic replace intentionally rejects geometry
+            // changes to in-service alignments, so validate the complete candidate.
+            candidate.world = World::new(restored)
+                .map_err(|_| "路線・系統の接続を保持できない区間は削除できません。".to_owned())?;
+            let original_world = World::new(before.clone()).map_err(|e| e.to_string())?;
+            for path in &before.service_paths {
+                let service = before
+                    .services
+                    .iter()
+                    .find(|s| s.id == path.service_id)
+                    .ok_or("系統がありません。")?;
+                let old_stations = original_world
+                    .preview_service_path(
+                        service.start,
+                        path.legs.iter().map(|l| l.segment.clone()).collect(),
+                    )
+                    .map_err(|e| e.to_string())?
+                    .occurrences;
+                let updated = candidate
+                    .world
+                    .snapshot()
+                    .service_paths
+                    .iter()
+                    .find(|p| p.service_id == path.service_id)
+                    .ok_or("系統がありません。")?;
+                let new_stations = candidate
+                    .world
+                    .preview_service_path(
+                        service.start,
+                        updated.legs.iter().map(|l| l.segment.clone()).collect(),
+                    )
+                    .map_err(|e| e.to_string())?
+                    .occurrences;
+                if old_stations
+                    .iter()
+                    .map(|o| o.station_id)
+                    .collect::<Vec<_>>()
+                    != new_stations
+                        .iter()
+                        .map(|o| o.station_id)
+                        .collect::<Vec<_>>()
+                {
+                    return Err("系統の通過駅が変わる区間は削除できません。".into());
+                }
+            }
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
@@ -284,6 +539,7 @@ mod tests {
             .collect();
         let snapshot = editor
             .build_plan(vec![PlannedAlignment {
+                infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 2, 4, 6]),
                 name: "線路".into(),
                 points,
@@ -298,6 +554,312 @@ mod tests {
         let id = snapshot.alignments[0].id;
         (editor, id)
     }
+    #[test]
+    fn split_remaps_unaffected_route_and_service_spans_and_undo_restores_them() {
+        use rosenfu_core::world::RouteSegment;
+        let (mut editor, id) = setup();
+        let a = editor
+            .world
+            .place_station_on_alignment(editor.company, "A".into(), id, 0.75, 20., 12.)
+            .unwrap();
+        let b = editor
+            .world
+            .place_station_on_alignment(editor.company, "B".into(), id, 0.9, 20., 12.)
+            .unwrap();
+        let segments = vec![RouteSegment::Alignment {
+            alignment_id: id,
+            from: a,
+            to: b,
+        }];
+        editor
+            .save_planned_route(None, "路線".into(), a, segments.clone(), vec![])
+            .unwrap();
+        let stops = editor
+            .preview_service_path(a, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect();
+        editor
+            .create_service_path("系統".into(), a, segments, stops)
+            .unwrap();
+        let created = editor.snapshot();
+        let service = created.services[0].id;
+        editor
+            .set_service_route_binding(
+                service,
+                rosenfu_core::world::ServiceRouteBindingKind::Route {
+                    route_id: created.routes[0].id,
+                },
+            )
+            .unwrap();
+        editor
+            .set_service_color(service, "#ab12ef".into(), None)
+            .unwrap();
+        let mut before = editor.snapshot();
+        before.construction_plans = Some(plans());
+        let after = editor.delete_alignment_section(id, 1, plans()).unwrap();
+        let right_id = after.alignments[1].id;
+        assert_ne!(right_id, id);
+        assert_eq!(after.routes, before.routes);
+        assert_eq!(after.services, before.services);
+        assert_eq!(after.service_appearances, before.service_appearances);
+        assert_eq!(after.service_route_bindings, before.service_route_bindings);
+        assert_eq!(after.service_paths[0].stops, before.service_paths[0].stops);
+        assert_eq!(
+            after.route_paths[0].segments[0],
+            RouteSegment::Alignment {
+                alignment_id: right_id,
+                from: a,
+                to: b
+            }
+        );
+        assert_eq!(
+            after.service_paths[0].legs[0].segment,
+            after.route_paths[0].segments[0]
+        );
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        let after = editor.delete_alignment_section(id, 1, plans()).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("remapped.json");
+        editor.save(&path).unwrap();
+        let restored = WorldEditor::new().load(&path).unwrap();
+        assert_eq!(restored.route_paths, after.route_paths);
+        assert_eq!(restored.service_paths, after.service_paths);
+        assert_eq!(restored.service_appearances, after.service_appearances);
+        assert_eq!(
+            restored.service_route_bindings,
+            after.service_route_bindings
+        );
+    }
+
+    #[test]
+    fn section_infrastructure_is_local_atomic_and_saved_with_one_undo() {
+        use rosenfu_core::world::{InfrastructureLevel, SectionInfrastructure};
+        let (mut editor, id) = setup();
+        editor
+            .place_station_on_alignment("駅".into(), id, 0.1, 20., 12.)
+            .unwrap();
+        let mut before = editor.snapshot();
+        before.construction_plans = Some(plans());
+        let after = editor
+            .update_alignment_section_infrastructure(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1],
+                }],
+                before.alignments.clone(),
+                Some(4),
+                Some(InfrastructureLevel::Elevated),
+                plans(),
+            )
+            .unwrap();
+        assert_eq!(
+            after.alignments[0].effective_infrastructure(),
+            vec![
+                SectionInfrastructure::default(),
+                SectionInfrastructure {
+                    track_count: 4,
+                    level: InfrastructureLevel::Elevated
+                },
+                SectionInfrastructure::default()
+            ]
+        );
+        assert_eq!(after.alignments[0].points, before.alignments[0].points);
+        assert_eq!(after.station_placements, before.station_placements);
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        for count in [None, Some(0), Some(3)] {
+            assert!(editor
+                .update_alignment_section_infrastructure(
+                    vec![AlignmentSectionSelection {
+                        alignment_id: id,
+                        section_indices: vec![1]
+                    }],
+                    before.alignments.clone(),
+                    count,
+                    None,
+                    plans()
+                )
+                .is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+        let after = editor
+            .update_alignment_section_infrastructure(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![0, 2],
+                }],
+                before.alignments,
+                Some(2),
+                Some(InfrastructureLevel::Underground),
+                plans(),
+            )
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("infra.json");
+        editor.save(&path).unwrap();
+        assert_eq!(
+            WorldEditor::new().load(&path).unwrap().alignments,
+            after.alignments
+        );
+    }
+
+    #[test]
+    fn section_attributes_survive_split_and_both_endpoint_extensions() {
+        use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel, SectionInfrastructure};
+        for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+            let (mut editor, id) = setup();
+            let mut draft = editor.snapshot();
+            let attrs = vec![
+                SectionInfrastructure {
+                    track_count: 2,
+                    level: InfrastructureLevel::Elevated,
+                },
+                SectionInfrastructure::default(),
+                SectionInfrastructure {
+                    track_count: 4,
+                    level: InfrastructureLevel::Underground,
+                },
+            ];
+            draft.alignments[0].infrastructure = attrs.clone();
+            editor.world.replace(draft).unwrap();
+            let after = editor.delete_alignment_section(id, 1, plans()).unwrap();
+            assert_eq!(after.alignments[0].infrastructure, attrs[..1]);
+            assert_eq!(after.alignments[1].infrastructure, attrs[2..]);
+            editor.undo_alignment_deletion().unwrap();
+            let original = editor.snapshot().alignments[0].clone();
+            let point = if endpoint == AlignmentEndpoint::Start {
+                original.points[0]
+            } else {
+                *original.points.last().unwrap()
+            };
+            let delta = if endpoint == AlignmentEndpoint::Start {
+                -0.001
+            } else {
+                0.001
+            };
+            editor
+                .extend_alignment(
+                    id,
+                    endpoint,
+                    vec![
+                        point,
+                        GeoPoint {
+                            longitude: point.longitude + delta,
+                            ..point
+                        },
+                    ],
+                )
+                .unwrap();
+            let updated = editor.snapshot().alignments[0].clone();
+            let expected = if endpoint == AlignmentEndpoint::Start {
+                vec![attrs[0], attrs[0], attrs[1], attrs[2]]
+            } else {
+                vec![attrs[0], attrs[1], attrs[2], attrs[2]]
+            };
+            assert_eq!(updated.infrastructure, expected);
+        }
+    }
+
+    #[test]
+    fn batch_adjacent_short_sections_can_be_removed_as_one_range() {
+        let (mut editor, id) = setup();
+        let mut before = editor.snapshot();
+        for (i, point) in before.alignments[0].points.iter_mut().enumerate() {
+            point.longitude = 139.0 + i as f64 * 0.00005;
+        }
+        editor.world.replace(before.clone()).unwrap();
+        let after = editor
+            .delete_alignment_sections(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![0, 1, 2],
+                }],
+                before.alignments,
+                plans(),
+            )
+            .unwrap();
+        assert!(after.alignments.is_empty());
+    }
+
+    #[test]
+    fn batch_sections_are_one_atomic_undo_and_save_roundtrip() {
+        let (mut editor, id) = setup();
+        let mut before = editor.snapshot();
+        before.construction_plans = Some(plans());
+        let after = editor
+            .delete_alignment_sections(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![0, 2],
+                }],
+                before.alignments.clone(),
+                plans(),
+            )
+            .unwrap();
+        assert_eq!(after.alignments.len(), 1);
+        assert_eq!(
+            after.alignments[0].points,
+            before.alignments[0].points[2..=4]
+        );
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        let after = editor
+            .delete_alignment_sections(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![2, 0, 1],
+                }],
+                before.alignments.clone(),
+                plans(),
+            )
+            .unwrap();
+        assert!(after.alignments.is_empty());
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("batch.json");
+        editor.save(&path).unwrap();
+        assert!(WorldEditor::new()
+            .load(&path)
+            .unwrap()
+            .alignments
+            .is_empty());
+    }
+
+    #[test]
+    fn batch_rejects_stale_duplicate_invalid_and_partial_failure_without_mutation() {
+        let (mut editor, id) = setup();
+        editor
+            .place_station_on_alignment("駅".into(), id, 0.5, 40., 12.)
+            .unwrap();
+        let before = editor.snapshot();
+        for indices in [vec![1, 2], vec![0, 0], vec![99], vec![]] {
+            assert!(editor
+                .delete_alignment_sections(
+                    vec![AlignmentSectionSelection {
+                        alignment_id: id,
+                        section_indices: indices
+                    }],
+                    before.alignments.clone(),
+                    plans()
+                )
+                .is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+        let mut stale = before.alignments.clone();
+        stale[0].name = "古い選択".into();
+        assert!(editor
+            .delete_alignment_sections(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![2]
+                }],
+                stale,
+                plans()
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+
     #[test]
     fn section_deletion_splits_exact_geometry_and_undo_restores_ids() {
         let (mut editor, id) = setup();
@@ -505,7 +1067,7 @@ mod tests {
         }
     }
     #[test]
-    fn route_reference_is_protected_even_when_removed_section_is_distant() {
+    fn distant_route_reference_is_remapped_when_a_section_is_removed() {
         use rosenfu_core::world::RouteSegment;
         let (mut editor, id) = setup();
         let a = editor
@@ -530,8 +1092,11 @@ mod tests {
             )
             .unwrap();
         let before = editor.snapshot();
-        assert!(editor.delete_alignment_section(id, 0, plans()).is_err());
-        assert_eq!(editor.snapshot(), before);
+        let after = editor.delete_alignment_section(id, 0, plans()).unwrap();
+        assert_eq!(after.routes, before.routes);
+        assert_eq!(after.route_paths, before.route_paths);
+        assert_eq!(after.stations, before.stations);
+        assert!(after.station_placements[0].position < before.station_placements[0].position);
     }
     #[test]
     fn start_connection_survives_middle_split_without_retargeting() {
@@ -734,6 +1299,7 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
         editor
             .build_plan(vec![PlannedAlignment {
+                infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1, 2]),
                 name: "延伸".into(),
                 points: vec![
@@ -778,6 +1344,7 @@ mod tests {
             .collect();
         let built = editor
             .build_plan(vec![PlannedAlignment {
+                infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1, 2, 3, 4]),
                 name: "ABCDE".into(),
                 points: points.clone(),
@@ -798,6 +1365,7 @@ mod tests {
         assert_eq!(gap.alignments[1].points, points[3..]);
         let joined = editor
             .build_plan(vec![PlannedAlignment {
+                infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1]),
                 name: "BD".into(),
                 points: vec![points[1], points[3]],
