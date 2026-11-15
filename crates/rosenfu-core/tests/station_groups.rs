@@ -218,4 +218,51 @@ fn grouping_keeps_existing_route_service_platform_references_and_occurrences() {
         world.snapshot().station_placements[..2],
         before.station_placements
     );
+
+    // Replacement still uses the physical platform (not the shared group ID).
+    let b_alignment = world
+        .snapshot()
+        .station_placements
+        .iter()
+        .find(|p| p.station_id == b)
+        .unwrap()
+        .alignment_id;
+    let b_end = world
+        .place_station_on_alignment(c, "別線終点".into(), b_alignment, 0.85, 100., 12.)
+        .unwrap();
+    let replacement = vec![RouteSegment::Alignment {
+        alignment_id: b_alignment,
+        from: b,
+        to: b_end,
+    }];
+    let expected = world.snapshot().service_paths[0].clone();
+    let groups = world.snapshot().station_groups.clone();
+    let preview = world
+        .preview_service_path_replacement(c, service, b, replacement.clone())
+        .unwrap();
+    assert_eq!(preview.occurrences[0].station_id, b);
+    assert_ne!(b, world.snapshot().station_group_id(b));
+    let stops = preview
+        .occurrences
+        .into_iter()
+        .map(|o| o.reference)
+        .collect();
+    world
+        .replace_service_path(
+            c,
+            service,
+            expected,
+            "別線系統".into(),
+            b,
+            replacement,
+            stops,
+        )
+        .unwrap();
+    assert_eq!(world.snapshot().services[0].start, b);
+    assert_eq!(world.snapshot().station_groups, groups);
+    assert_eq!(
+        world.service_path_occurrences(service).unwrap()[0].station_id,
+        b
+    );
+    assert_eq!(World::new(world.snapshot().clone()).unwrap(), world);
 }
