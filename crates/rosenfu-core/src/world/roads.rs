@@ -16,12 +16,16 @@ pub struct RoadClassification {
     pub class: String,
     pub subclass: Option<String>,
     pub access: Option<String>,
+    /// Raw supplier direction tag. Missing/null is unknown, not two-way access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oneway: Option<String>,
 }
 impl RoadClassification {
     fn valid(&self) -> bool {
         std::iter::once(&self.class)
             .chain(self.subclass.iter())
             .chain(self.access.iter())
+            .chain(self.oneway.iter())
             .all(|s| !s.trim().is_empty() && s.len() <= 100 && !s.chars().any(char::is_control))
     }
 }
@@ -538,6 +542,38 @@ impl World {
     }
 }
 
+/// Recognize the canonical OFM provider separately from its revision-bearing URL.
+/// Other suppliers keep their existing source identity rules.
+fn ofm_tile_revision(url: &str) -> Result<Option<&str>, WorldError> {
+    let Some(path) = url.strip_prefix("https://tiles.openfreemap.org/") else {
+        return Ok(None);
+    };
+    let parts: Vec<_> = path.split('/').collect();
+    let invalid = || WorldError::InvalidRoadSnapshot;
+    if parts.len() != 5 || parts[0] != "planet" || parts[2] != "14" {
+        return Err(invalid());
+    }
+    let revision = parts[1];
+    if revision.is_empty()
+        || revision.len() > 64
+        || !revision
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err(invalid());
+    }
+    let coordinate = |s: &str| {
+        !s.is_empty()
+            && s.bytes().all(|b| b.is_ascii_digit())
+            && (s.len() == 1 || !s.starts_with('0'))
+            && s.parse::<u32>().is_ok_and(|n| n < 16384)
+    };
+    if !coordinate(parts[3]) || !parts[4].strip_suffix(".pbf").is_some_and(coordinate) {
+        return Err(invalid());
+    }
+    Ok(Some(revision))
+}
+
 /// Conflicting revisions/geometries never silently replace saved reference facts.
 pub(super) fn validate_road_snapshots(snapshots: &[RoadSnapshot]) -> Result<(), WorldError> {
     use std::collections::BTreeMap;
@@ -547,8 +583,17 @@ pub(super) fn validate_road_snapshots(snapshots: &[RoadSnapshot]) -> Result<(), 
     let mut sources = BTreeMap::new();
     let mut roads: BTreeMap<&str, &RoadWay> = BTreeMap::new();
     let mut point_count = 0;
+    let mut ofm_revision = None;
     for snapshot in snapshots {
         snapshot.validate()?;
+        if let Some(revision) = ofm_tile_revision(&snapshot.source_url)? {
+            if snapshot.revision != revision
+                || ofm_revision.is_some_and(|previous| previous != revision)
+            {
+                return Err(WorldError::InvalidRoadSnapshot);
+            }
+            ofm_revision = Some(revision);
+        }
         let identity = (
             &snapshot.revision,
             &snapshot.source_url,

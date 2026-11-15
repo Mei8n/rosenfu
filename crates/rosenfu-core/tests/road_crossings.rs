@@ -461,6 +461,7 @@ fn road_classification_is_preserved_and_conflicting_kinds_are_rejected() {
         class: "path".into(),
         subclass: Some("steps".into()),
         access: Some("private".into()),
+        oneway: Some("-1".into()),
     });
     world.add_road_snapshot(s.clone()).unwrap();
     let loaded = World::new(
@@ -487,17 +488,19 @@ fn classification_values_are_bounded_without_silent_coercion() {
         "path\nsteps".into(),
         "道".repeat(34),
     ] {
-        for field in 0..3 {
+        for field in 0..4 {
             let mut s = snapshot();
             let mut c = RoadClassification {
                 class: "path".into(),
                 subclass: None,
                 access: None,
+                oneway: None,
             };
             match field {
                 0 => c.class = value.clone(),
                 1 => c.subclass = Some(value.clone()),
-                _ => c.access = Some(value.clone()),
+                2 => c.access = Some(value.clone()),
+                _ => c.oneway = Some(value.clone()),
             };
             s.roads[0].classification = Some(c);
             assert!(s.validate().is_err());
@@ -511,4 +514,72 @@ fn classification_values_are_bounded_without_silent_coercion() {
     json["classification"] =
         serde_json::json!({"class":"path","subclass":null,"access":null,"vehicular":true});
     assert!(serde_json::from_value::<RoadWay>(json).is_err());
+}
+
+#[test]
+fn raw_oneway_is_not_inferred_and_conflicting_directions_are_atomic_errors() {
+    let (mut world, _) = world();
+    let mut s = snapshot();
+    let json = serde_json::json!({"class":"minor","subclass":null,"access":null});
+    let absent: RoadClassification = serde_json::from_value(json.clone()).unwrap();
+    let mut explicit_null = json;
+    explicit_null["oneway"] = serde_json::Value::Null;
+    assert_eq!(
+        absent,
+        serde_json::from_value::<RoadClassification>(explicit_null).unwrap()
+    );
+    assert!(absent.oneway.is_none());
+    s.roads[0].classification = Some(absent);
+    world.add_road_snapshot(s.clone()).unwrap();
+    let before = world.clone();
+    for raw in ["yes", "no", "-1", "reversible", "supplier-unknown"] {
+        let mut changed = s.clone();
+        changed.road_coverage[0].west += 0.001;
+        changed.roads[0].classification.as_mut().unwrap().oneway = Some(raw.into());
+        assert!(changed.validate().is_ok()); // Preserve raw information, not a routing decision.
+        assert!(world.add_road_snapshot(changed).is_err());
+        assert_eq!(world, before);
+    }
+}
+
+#[test]
+fn ofm_revision_is_provider_wide_and_failed_add_keeps_saved_facts() {
+    let (mut world, _) = world();
+    let mut s = snapshot();
+    s.revision = "20261101_080013_pt".into();
+    s.source_url = format!(
+        "https://tiles.openfreemap.org/planet/{}/14/14551/6465.pbf",
+        s.revision
+    );
+    s.source = s.source_url.clone();
+    world.add_road_snapshot(s.clone()).unwrap();
+    let mut adjacent = s.clone();
+    adjacent.source_url = adjacent.source_url.replace("14551", "14552");
+    adjacent.source = adjacent.source_url.clone();
+    world.add_road_snapshot(adjacent).unwrap();
+    let before = world.clone();
+    let mut newer = s.clone();
+    newer.revision = "20261102_080013_pt".into();
+    newer.source_url = newer.source_url.replace("20261101", "20261102");
+    newer.source = "different source identity cannot evade provider pin".into();
+    assert!(world.add_road_snapshot(newer).is_err());
+    assert_eq!(world, before);
+    for path in [
+        "planet/wrong/14/14551/6465.pbf",
+        "planet/20261101_080013_pt/13/14551/6465.pbf",
+        "planet/20261101_080013_pt/14/16384/6465.pbf",
+        "planet/20261101_080013_pt/14/014551/6465.pbf",
+        "planet/20261101_080013_pt/14/14551/6465.pbf?revision=other",
+    ] {
+        let mut bad = s.clone();
+        bad.source_url = format!("https://tiles.openfreemap.org/{path}");
+        bad.source = bad.source_url.clone();
+        assert!(world.add_road_snapshot(bad).is_err());
+        assert_eq!(world, before);
+    }
+    let mut other = s;
+    other.source = "Other supplier".into();
+    other.source_url = "https://example.org/dataset".into();
+    other.revision = "different".into();
+    world.add_road_snapshot(other).unwrap(); // Existing non-OFM identity rules unchanged.
 }

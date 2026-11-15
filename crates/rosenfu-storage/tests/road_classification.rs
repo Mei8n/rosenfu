@@ -9,6 +9,7 @@ fn classified_paths_and_unclassified_legacy_roads_roundtrip_without_relabelling(
             class: "path".into(),
             subclass: Some("steps".into()),
             access: Some("private".into()),
+            oneway: Some("-1".into()),
         }),
         coverage: None,
         points: vec![
@@ -26,6 +27,9 @@ fn classified_paths_and_unclassified_legacy_roads_roundtrip_without_relabelling(
         bridge: None,
         tunnel: None,
     };
+    let mut unknown_direction = road.clone();
+    unknown_direction.id = "unknown-direction/1".into();
+    unknown_direction.classification.as_mut().unwrap().oneway = None;
     let mut legacy = road.clone();
     legacy.id = "legacy/1".into();
     legacy.classification = None;
@@ -44,7 +48,7 @@ fn classified_paths_and_unclassified_legacy_roads_roundtrip_without_relabelling(
                 south: 35.6,
                 north: 35.8,
             }],
-            roads: vec![road, legacy],
+            roads: vec![road, legacy, unknown_direction],
         })
         .unwrap();
     let loaded = decode(&encode(&world).unwrap()).unwrap();
@@ -59,5 +63,10 @@ fn classified_paths_and_unclassified_legacy_roads_roundtrip_without_relabelling(
             .as_deref(),
         Some("steps")
     );
+    assert_eq!(
+        roads[0].classification.as_ref().unwrap().oneway.as_deref(),
+        Some("-1")
+    );
     assert!(roads[1].classification.is_none());
+    assert!(roads[2].classification.as_ref().unwrap().oneway.is_none());
 }
