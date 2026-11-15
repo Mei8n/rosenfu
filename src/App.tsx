@@ -227,7 +227,7 @@ export function App() {
   const [draftFinished, setDraftFinished] = useState(false);
   const [draftPoints, setDraftPoints] = useState<GeoPoint[]>([]);
   const [draftEditedGeometry,setDraftEditedGeometry]=useState<EditedGeometry|undefined>();
-  type AnchorEdit={kind?:"point";id:number;before:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];destination?:Extension;redoDestination?:Extension};after:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];destination?:Extension;redoDestination?:Extension}};
+  type AnchorEdit={kind?:"point";id:number;before:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];extension?:Extension|null;destination?:Extension;redoDestination?:Extension};after:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];extension?:Extension|null;destination?:Extension;redoDestination?:Extension}};
   const [anchorUndo,setAnchorUndo]=useState<AnchorEdit[]>([]),[anchorRedo,setAnchorRedo]=useState<AnchorEdit[]>([]);
   // Keep session-only edit history with its path while another plan is selected.
   const parkedAnchorHistory=useRef(new Map<number,{undo:AnchorEdit[];redo:AnchorEdit[]}>());
@@ -369,14 +369,29 @@ export function App() {
     if (!enabled || referenceCopy.active) return;
     newPath();const id=nextPlanId.current++;setPlans(items=>[...items,{id,name:""}]);setActivePlanId(id);
   }
-  function selectPath(id:number,resume=true) {
+  // Reverse the sampled curve, not just its control points: recomputing the
+  // curve from the other end would change geometry and station positions.
+  function reversePlanForExtension(path:PlannedPath){
+    const points=[...path.points].reverse();
+    const geometry:EditedGeometry={version:1,anchors:points,line:[...path.line].reverse()};
+    const edit:AnchorEdit={id:path.id,
+      before:{points:path.points,geometry:path.editedGeometry,redo:path.redo,extension:path.extension,destination:path.destination,redoDestination:path.redoDestination},
+      after:{points,geometry,redo:[],extension:path.destination??null}};
+    return {points,geometry,edit};
+  }
+  function selectPath(id:number,resume=true,endpoint:"start"|"end"="end") {
     if(!enabled || referenceCopy.active)return;
-    const target=parkedPaths.find(path=>path.id===id);if(!target||target.reference)return;
+    const found=parkedPaths.find(path=>path.id===id);if(!found||found.reference)return;const target={...found};
     const current=parkCurrentPlan();
     if(current)parkAnchorHistory();
     const history=parkedAnchorHistory.current.get(id);parkedAnchorHistory.current.delete(id);
     setParkedPaths(paths=>[...paths.filter(path=>path.id!==id),...(current?[current]:[])]);
-    setAnchorUndo(history?.undo??[]);setAnchorRedo(history?.redo??[]);setActivePlanId(target.planId);setDraftFinished(!resume||!!target.destination);setActivePathId(target.id);setDraftExtension(target.extension);setDraftDestination(target.destination);setDraftRedoDestination(target.redoDestination);setDraftPoints(target.points);setDraftEditedGeometry(target.editedGeometry);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
+    if(resume&&endpoint==="start"&&target.points.length>1&&!target.extension){
+      const reversed=reversePlanForExtension(target);
+      setAnchorUndo([...(history?.undo??[]),reversed.edit]);setAnchorRedo([]);
+      target.points=reversed.points;target.editedGeometry=reversed.geometry;target.redo=[];target.extension=target.destination??null;target.destination=undefined;target.redoDestination=undefined;
+    }else {setAnchorUndo(history?.undo??[]);setAnchorRedo(history?.redo??[]);}
+    setActivePlanId(target.planId);setDraftFinished(!resume||!!target.destination);setActivePathId(target.id);setDraftExtension(target.extension);setDraftDestination(target.destination);setDraftRedoDestination(target.redoDestination);setDraftPoints(target.points);setDraftEditedGeometry(target.editedGeometry);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function choosePlan(id:number){
     if(id===activePlanId)return;
@@ -805,9 +820,9 @@ export function App() {
     cancelAnchorGesture();cancelMapGesture(); setMapMode(mode);setStationCursor(null); setCursorPosition(null); setHoverPoint(null); setPlanHover(null);setBuiltHover(null);
     if (!wasGesturing) { suppressMapClick.current = false; suppressSelectionClick.current = false; }
   }
-  function applyAnchorEdit(id:number,value:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];destination?:Extension;redoDestination?:Extension}){
-    if(id===activePathId){setDraftDestination(value.destination);setDraftRedoDestination(value.redoDestination);setDraftPoints(value.points);setDraftEditedGeometry(value.geometry);setRedoPoints(value.redo);setHoverPoint(null);}
-    else {parkedAnchorHistory.current.delete(id);setParkedPaths(paths=>paths.map(path=>path.id===id?{...path,destination:value.destination,redoDestination:value.redoDestination,points:value.points,editedGeometry:value.geometry,line:plannedGeometry(value.points,value.geometry,extensionPrevious(path.extension)).points,redo:value.redo}:path));}
+  function applyAnchorEdit(id:number,value:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];extension?:Extension|null;destination?:Extension;redoDestination?:Extension}){
+    if(id===activePathId){if("extension" in value)setDraftExtension(value.extension??null);setDraftDestination(value.destination);setDraftRedoDestination(value.redoDestination);setDraftPoints(value.points);setDraftEditedGeometry(value.geometry);setRedoPoints(value.redo);setHoverPoint(null);}
+    else {parkedAnchorHistory.current.delete(id);setParkedPaths(paths=>paths.map(path=>path.id===id?{...path,extension:"extension" in value?value.extension??null:path.extension,destination:value.destination,redoDestination:value.redoDestination,points:value.points,editedGeometry:value.geometry,line:plannedGeometry(value.points,value.geometry,extensionPrevious("extension" in value?value.extension??null:path.extension)).points,redo:value.redo}:path));}
   }
   function undoLastSegment(historyEntries=0){
     const entry:AnchorEdit={kind:"point",id:activePathId,
@@ -941,13 +956,14 @@ export function App() {
     return destinationJoinError(line,source,destination,alignments,world?.alignment_connections??[],world?.companies[0]?.id);
   }
   function startTarget(coordinates:GeoPoint,width:number,height:number) {
-        const candidates=[...(draftFinished?[{id:activePathId,points:draftPoints}]:[]),...parkedPaths.filter(path=>path.planId===activePlanId&&!path.reference)]
-          .filter(plan=>plan.points.length>=1)
-          .map(plan=>({id:plan.id,distance:endpointDistance(coordinates,plan.points[plan.points.length-1],width,height)}))
-          .filter(plan=>plan.distance<=8).sort((a,b)=>a.distance-b.distance);
-
-    if(candidates.length)return {kind:"plan" as const,id:candidates[0].id,
-      point:candidates[0].id===activePathId?draftPoints.at(-1)!:parkedPaths.find(path=>path.id===candidates[0].id)!.points.at(-1)!};
+    const candidates=[...(draftFinished?[{id:activePathId,points:draftPoints,extension:draftExtension,destination:draftDestination}]:[]),...parkedPaths.filter(path=>path.planId===activePlanId&&!path.reference)]
+      .filter(plan=>plan.points.length>=1)
+      .flatMap(plan=>[
+        {id:plan.id,endpoint:"end" as const,point:plan.points.at(-1)!,blocked:!!plan.destination},
+        ...(plan.points.length>1?[{id:plan.id,endpoint:"start" as const,point:plan.points[0],blocked:!!plan.extension}]:[]),
+      ]).map(end=>({...end,distance:endpointDistance(coordinates,end.point,width,height)}))
+      .filter(end=>end.distance<=8).sort((a,b)=>a.distance-b.distance);
+    if(candidates.length)return {kind:"plan" as const,...candidates[0]};
         const builtEnds=alignments.flatMap(alignment=>[
           {alignment,endpoint:"start" as const,point:alignment.points[0]},
           {alignment,endpoint:"end" as const,point:alignment.points.at(-1)!},
@@ -958,7 +974,7 @@ export function App() {
   }
   const endpointCandidate=!parallelMode&&enabled&&activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!roadFollowingBlocked&&!dragging&&(draftFinished||!draftPoints.length)&&hoverPoint&&cursorPosition
     ?startTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
-  const endpointCandidateAllowed=endpointCandidate?.kind!=="built"||(endpointCandidate.alignment.owner===world?.companies[0]?.id&&!occupiedEndpoint(world?.alignment_connections??[],{alignmentId:endpointCandidate.alignment.id,endpoint:endpointCandidate.endpoint}));
+  const endpointCandidateAllowed=endpointCandidate?.kind==="plan"?!endpointCandidate.blocked:endpointCandidate?.kind!=="built"||(endpointCandidate.alignment.owner===world?.companies[0]?.id&&!occupiedEndpoint(world?.alignment_connections??[],{alignmentId:endpointCandidate.alignment.id,endpoint:endpointCandidate.endpoint}));
   const destinationCandidate=enabled&&activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!dragging&&hoverPoint&&cursorPosition?destinationTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
   const destinationError=destinationCandidate?(previewGeometry.error||joinError(previewLine,draftExtension,{alignmentId:destinationCandidate.alignment.id,endpoint:destinationCandidate.endpoint})):null;
   // Show where the current preview would continue, not the tangent at its
@@ -1010,8 +1026,15 @@ export function App() {
         if(event.detail>=2)return;
         const target=startTarget(coordinates,rect.width,rect.height);
         if(target?.kind==="plan"){
-          if(target.id===activePathId){if(draftDestination)return;setDraftFinished(false);setHoverPoint(null);}
-          else selectPath(target.id);
+          if(target.blocked)return;
+          if(target.id===activePathId){
+            if(target.endpoint==="start"){
+              const reversed=reversePlanForExtension(parkCurrentPlan()!);
+              applyAnchorEdit(activePathId,reversed.edit.after);
+              setAnchorUndo(items=>[...items,reversed.edit]);setAnchorRedo([]);
+            }
+            setDraftFinished(false);setHoverPoint(null);
+          }else selectPath(target.id,true,target.endpoint);
           return;
         }
         if(target?.kind==="built"){
