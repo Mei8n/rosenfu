@@ -25,9 +25,10 @@ class Packaging(unittest.TestCase):
     def write(self):
         (self.root / 'index.json').write_text(json.dumps(self.index))
 
-    def test_reproducible_and_unverified_not_publishable(self):
+    def test_reproducible_distribution_and_coverage_are_distinct(self):
         result = package.package(self.root, self.output)
-        self.assertFalse(result['publishable'])
+        self.assertTrue(result['publishable'])
+        self.assertFalse(result['coverage_verified'])
         other = Path(self.tmp.name) / 'other'
         self.assertEqual(result, package.package(self.root, other))
         with zipfile.ZipFile(self.output / result['assets'][0]['name']) as archive:
@@ -55,6 +56,14 @@ class Packaging(unittest.TestCase):
         try:
             with self.assertRaises(ValueError): package.package(self.root, self.output)
         finally: package.MAX_EXPANDED = old
+
+    def test_total_budget(self):
+        old = package.MAX_TOTAL_COMPRESSED
+        package.MAX_TOTAL_COMPRESSED = 1
+        try:
+            with self.assertRaises(ValueError): package.package(self.root, self.output)
+        finally: package.MAX_TOTAL_COMPRESSED = old
+        self.assertFalse(self.output.exists())
 
     def test_existing_output_preserved(self):
         self.output.mkdir()

@@ -114,7 +114,7 @@ jobs:
           python - <<'PY'
           import hashlib, json, pathlib
           p=pathlib.Path('road-release'); c=json.loads((p/'catalog.json').read_text())
-          assert c['publishable'] is True, 'Unverified coverage cannot be published'
+          assert c['publishable'] is True, 'Unverified package integrity cannot be distributed'
           assert len(c['assets']) <= 998
           assert hashlib.sha256((p/'index.json').read_bytes()).hexdigest()==c['index_sha256']
           for a in c['assets']:
@@ -122,5 +122,5 @@ jobs:
               b=f.read_bytes(); assert len(b)==a['bytes'] and hashlib.sha256(b).hexdigest()==a['sha256']
           PY
           gh release create "$TAG" --verify-tag --draft --title "$TAG" \
-            --notes 'OSM-derived road data under ODbL-1.0. © OpenStreetMap contributors. https://www.openstreetmap.org/copyright . Review exact coverage and download hashes before publication.' \
+            --notes 'Observed OSM source roads only; unverified coverage is not complete road coverage. OSM-derived road data under ODbL-1.0. © OpenStreetMap contributors. https://www.openstreetmap.org/copyright . Review exact coverage and download hashes before publication.' \
             road-release/*

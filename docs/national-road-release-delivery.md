@@ -60,7 +60,10 @@ one per one-degree shard and a hash/size catalog. Failure leaves no final output
 Archives are limited to 64 MiB compressed and 256 MiB expanded, and 998 shard
 assets; oversized shards need subdivision, not a silent budget increase. This is
 a packaging integrity check, not a replacement for the source coverage audit.
-Unverified polygon/snapshot coverage is retained as `publishable: false`.
+Distribution integrity (`publishable`) is separate from `coverage_verified`;
+unverified polygon/snapshot coverage remains false. Missing roads are never
+certified absent. Total compressed output is limited to 2 GiB, with at least
+512 MiB free-space reserve; larger releases must be partitioned.
 
 Measured against the generated unverified Shikoku pack: 12,381 cells, 12 archives,
 265.49 MiB expanded -> 60.14 MiB ZIP total, largest ZIP 17.54 MiB. These are local
@@ -97,7 +100,7 @@ consumes `road-pack-staging` from a successful, exact-SHA, same-repository push 
 manual producer run. No producer or generated national data is created by that
 workflow. Default preparation is read-only plus a short-lived artifact.
 An explicit optional draft job is restricted to the development integration branch,
-requires an already existing `data-road-*` tag and verified coverage, grants only
+requires an already existing `data-road-*` tag and verified package integrity, grants only
 that job `contents: write`, and creates a **draft**, never a public release.
 
 GitHub requires a `workflow_dispatch` definition on the default branch before it
@@ -109,6 +112,6 @@ invoke preparation without changing main; no such producer is enabled here. The 
 inside an authorized cloud producer and use authenticated release tooling once
 publication is approved. Do not work around the main restriction or claim a draft
 can be fetched anonymously. Final publication, anonymous download/hash verification,
-coverage audit, native client integration and end-to-end GUI testing are outstanding.
+honest coverage handling, native client integration and end-to-end GUI testing are outstanding.
 
 https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow

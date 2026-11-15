@@ -11,6 +11,8 @@ import zipfile
 MAX_FILE = 5 * 1024 * 1024
 MAX_EXPANDED = 256 * 1024 * 1024
 MAX_COMPRESSED = 64 * 1024 * 1024
+MAX_TOTAL_COMPRESSED = 2 * 1024 * 1024 * 1024
+MIN_FREE = 512 * 1024 * 1024
 MAX_ASSETS = 998  # national index + catalog also consume release slots
 
 
@@ -49,6 +51,7 @@ def package(root, output):
     output.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix='.road-release-', dir=output.parent))
     assets, seen = [], set()
+    total_compressed = 0
     try:
         for region in regions:
             name = region['name']
@@ -59,6 +62,7 @@ def package(root, output):
                 require(isinstance(path, str) and re.fullmatch(r'packs/' + re.escape(name) + r'/-?\d+_-?\d+/manifest\.json', path), 'manifest path')
                 require(path not in seen and len(seen) < MAX_ASSETS, 'duplicate or asset limit')
                 seen.add(path)
+                require(shutil.disk_usage(stage).free >= MIN_FREE + MAX_COMPRESSED, 'insufficient output disk')
                 directory = root / Path(path).parent
                 require(not directory.is_symlink(), 'symlink directory')
                 data = read(root / path)
@@ -78,12 +82,16 @@ def package(root, output):
                         require(size <= MAX_EXPANDED, 'expanded shard budget exceeded; subdivide source')
                         add(z, path.rsplit('/', 1)[0] + '/' + cell['file'], content)
                 archive = read(stage / filename, MAX_COMPRESSED)
+                total_compressed += len(archive)
+                require(total_compressed <= MAX_TOTAL_COMPRESSED, 'total output budget exceeded')
                 assets.append(dict(name=filename, manifest=path, manifest_sha256=shard['sha256'],
                                    sha256=digest(archive), bytes=len(archive), expanded_bytes=size, files=len(cells)+1))
         require(assets, 'no shards')
         (stage / 'index.json').write_bytes(raw)
         catalog = dict(format='rosenfu-road-release', version=1, revision=index['revision'],
-                       publishable=index.get('coverage_verified') is True and index.get('polygon_snapshot_match') == 'verified',
+                       publishable=True,
+                       coverage_verified=index.get('coverage_verified') is True and index.get('polygon_snapshot_match') == 'verified',
+                       coverage_note='Observed source roads only. Missing or unverified data is not proof of road absence.',
                        index_sha256=digest(raw), license=index['license'], attribution=index['attribution'],
                        license_url='https://opendatacommons.org/licenses/odbl/1-0/',
                        attribution_url='https://www.openstreetmap.org/copyright', assets=assets)
