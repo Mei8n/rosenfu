@@ -57,6 +57,10 @@ pub struct PlannedAlignmentExtension {
 #[serde(rename_all = "camelCase")]
 pub struct PlannedAlignment {
     #[serde(default)]
+    pub junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
+    #[serde(default)]
+    pub start_level: Option<rosenfu_core::world::InfrastructureLevel>,
+    #[serde(default)]
     pub infrastructure: rosenfu_core::world::SectionInfrastructure,
     #[serde(default)]
     pub anchor_indices: Option<Vec<usize>>,
@@ -115,6 +119,31 @@ pub struct WorldEditor {
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
 impl WorldEditor {
+    pub fn set_service_appearance(
+        &mut self,
+        service_id: ServiceId,
+        color: String,
+        shape: rosenfu_core::world::ServiceSymbolShape,
+        symbol: String,
+        expected_appearance: Option<rosenfu_core::world::ServiceAppearance>,
+    ) -> Result<WorldDraft, String> {
+        let current = self
+            .snapshot()
+            .service_appearances
+            .into_iter()
+            .find(|row| row.service_id == service_id);
+        if current != expected_appearance {
+            return Err("系統の表示設定が変更されています。最新の設定を確認してください。".into());
+        }
+        let mut candidate = self.clone();
+        candidate
+            .world
+            .set_service_appearance(candidate.company, service_id, color, shape, symbol)
+            .map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
     pub fn set_service_color(
         &mut self,
         service_id: ServiceId,
@@ -218,9 +247,28 @@ impl WorldEditor {
         stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
         source_route_id: Option<RouteId>,
     ) -> Result<WorldDraft, String> {
+        self.create_service_path_with_source_routes(
+            name,
+            start,
+            segments,
+            stops,
+            source_route_id,
+            None,
+        )
+    }
+    pub fn create_service_path_with_source_routes(
+        &mut self,
+        name: String,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+        stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+        source_route_id: Option<RouteId>,
+        source_route_ids: Option<Vec<RouteId>>,
+    ) -> Result<WorldDraft, String> {
+        let binding = source_route_binding(source_route_id, source_route_ids)?;
         let mut candidate = self.clone();
         candidate.create_service_path_unchecked(name, start, segments, stops)?;
-        if let Some(route_id) = source_route_id {
+        if let Some(binding) = binding {
             let id = candidate
                 .world
                 .snapshot()
@@ -230,11 +278,7 @@ impl WorldEditor {
                 .id;
             candidate
                 .world
-                .set_service_route_binding(
-                    candidate.company,
-                    id,
-                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
-                )
+                .set_service_route_binding(candidate.company, id, binding)
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
@@ -295,10 +339,34 @@ impl WorldEditor {
         stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
         source_route_id: Option<RouteId>,
     ) -> Result<WorldDraft, String> {
+        self.replace_service_path_with_source_routes(
+            service_id,
+            expected_path,
+            name,
+            start,
+            segments,
+            stops,
+            source_route_id,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_service_path_with_source_routes(
+        &mut self,
+        service_id: ServiceId,
+        expected_path: rosenfu_core::world::ServicePath,
+        name: String,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+        stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+        source_route_id: Option<RouteId>,
+        source_route_ids: Option<Vec<RouteId>>,
+    ) -> Result<WorldDraft, String> {
+        let binding = source_route_binding(source_route_id, source_route_ids)?;
         let mut candidate = self.clone();
         // Rebinding and path replacement are one outer transaction. The temporary
         // independent row exists only in this discarded-on-failure clone.
-        if source_route_id.is_some() {
+        if binding.is_some() {
             if let Some(id) = Some(service_id) {
                 candidate
                     .world
@@ -322,15 +390,11 @@ impl WorldEditor {
                 stops,
             )
             .map_err(|e| e.to_string())?;
-        if let Some(route_id) = source_route_id {
+        if let Some(binding) = binding {
             let id = service_id;
             candidate
                 .world
-                .set_service_route_binding(
-                    candidate.company,
-                    id,
-                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
-                )
+                .set_service_route_binding(candidate.company, id, binding)
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
@@ -568,6 +632,8 @@ impl WorldEditor {
         reference: Option<PlannedAlignmentReference>,
     ) -> Result<WorldDraft, String> {
         self.build_plan(vec![PlannedAlignment {
+            junction_source: None,
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name,
@@ -594,7 +660,18 @@ impl WorldEditor {
         if alignments.is_empty() && stations.is_empty() {
             return Err("着工する線路・駅がありません。".into());
         }
+        let has_junction = alignments.iter().any(|path| path.junction_source.is_some());
+        let before_junction = self.snapshot();
         let mut candidate = self.clone();
+        // Track only pieces created by this transaction. This permits several
+        // planned splits of one observed source without accepting external edits.
+        let mut split_sources: std::collections::BTreeMap<
+            AlignmentId,
+            (
+                rosenfu_core::world::Alignment,
+                Vec<rosenfu_core::world::Alignment>,
+            ),
+        > = std::collections::BTreeMap::new();
         // Place these before any extensions. Extending an alignment remaps its
         // existing placements, preserving the planned station's physical location.
         for station in stations {
@@ -606,7 +683,7 @@ impl WorldEditor {
                 station.width_m,
             )?;
         }
-        for alignment in alignments {
+        for mut alignment in alignments {
             if !alignment.infrastructure.is_valid() {
                 return Err("線路数は1・2・4のいずれかです。".into());
             }
@@ -618,6 +695,193 @@ impl WorldEditor {
                     || indices.windows(2).any(|p| p[0] >= p[1])
             }) {
                 return Err("線路の区間境界が不正です。".into());
+            }
+            if let Some(source) = alignment.junction_source.take() {
+                if alignment.extension.is_some() || !source.is_valid() {
+                    return Err("分岐元の指定が不正です。".into());
+                }
+                let expected = &source.expected_alignment;
+                let a = expected.points[source.segment_index];
+                let b = expected.points[source.segment_index + 1];
+                let point = GeoPoint {
+                    latitude: a.latitude + (b.latitude - a.latitude) * source.fraction,
+                    longitude: a.longitude + (b.longitude - a.longitude) * source.fraction,
+                };
+                let (source_id, segment_index, fraction) = if let Some((base, pieces)) =
+                    split_sources.get(&source.alignment_id)
+                {
+                    if base != expected
+                        || pieces.iter().any(|piece| {
+                            candidate
+                                .world
+                                .snapshot()
+                                .alignments
+                                .iter()
+                                .find(|a| a.id == piece.id)
+                                != Some(piece)
+                        })
+                    {
+                        return Err(
+                            "分岐元の線路が変更されています。計画を作り直してください。".into()
+                        );
+                    }
+                    let mut found = None;
+                    for piece in pieces {
+                        for (index, pair) in piece.points.windows(2).enumerate() {
+                            let dx = pair[1].longitude - pair[0].longitude;
+                            let dy = pair[1].latitude - pair[0].latitude;
+                            let t = ((point.longitude - pair[0].longitude) * dx
+                                + (point.latitude - pair[0].latitude) * dy)
+                                / (dx * dx + dy * dy);
+                            if (0.0..=1.0).contains(&t)
+                                && (pair[0].longitude + dx * t - point.longitude).abs() < 1e-10
+                                && (pair[0].latitude + dy * t - point.latitude).abs() < 1e-10
+                                && !(index == 0 && t < 1e-9)
+                                && !(index + 2 == piece.points.len() && t > 1.0 - 1e-9)
+                            {
+                                if let Some((prior_id, prior_index, prior_t)) = found {
+                                    let same_vertex = prior_id == piece.id
+                                        && prior_index + 1 == index
+                                        && prior_t > 1.0 - 1e-9
+                                        && t < 1e-9;
+                                    if !same_vertex {
+                                        return Err("分岐位置が重複する線形です。分岐を分けて計画してください。".into());
+                                    }
+                                } else {
+                                    found = Some((piece.id, index, t));
+                                }
+                            }
+                        }
+                    }
+                    found
+                        .ok_or("同じ分岐点への重複分岐、または変更された線路には分岐できません。")?
+                } else {
+                    let original = candidate
+                        .world
+                        .snapshot()
+                        .alignments
+                        .iter()
+                        .find(|a| a.id == source.alignment_id)
+                        .ok_or("分岐元の線路がありません。")?;
+                    if original != expected {
+                        return Err(
+                            "分岐元の線路が変更されています。計画を作り直してください。".into()
+                        );
+                    }
+                    split_sources.insert(
+                        source.alignment_id,
+                        (expected.clone(), vec![original.clone()]),
+                    );
+                    (source.alignment_id, source.segment_index, source.fraction)
+                };
+                let first = alignment
+                    .points
+                    .first_mut()
+                    .ok_or("分岐の線路がありません。")?;
+                if (first.latitude - point.latitude).abs() > 1e-7
+                    || (first.longitude - point.longitude).abs() > 1e-7
+                {
+                    return Err("分岐の始点が指定位置と一致しません。".into());
+                }
+                *first = point;
+                let suffix_id = candidate
+                    .world
+                    .split_alignment_at_position(
+                        candidate.company,
+                        source_id,
+                        segment_index,
+                        fraction,
+                    )
+                    .map_err(|e| format!("この位置では分岐できません: {e}"))?;
+                let start_height = candidate
+                    .world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == source_id)
+                    .ok_or("分岐元がありません。")?
+                    .endpoint_height_m(rosenfu_core::world::AlignmentEndpoint::End);
+                if let Some(destination) = &mut alignment.destination {
+                    if destination.alignment_id == source_id
+                        && destination.endpoint == rosenfu_core::world::AlignmentEndpoint::End
+                    {
+                        destination.alignment_id = suffix_id;
+                    }
+                }
+                alignment.extension = Some(PlannedAlignmentExtension {
+                    alignment_id: if source.reverse { suffix_id } else { source_id },
+                    endpoint: if source.reverse {
+                        rosenfu_core::world::AlignmentEndpoint::Start
+                    } else {
+                        rosenfu_core::world::AlignmentEndpoint::End
+                    },
+                });
+                candidate.build_sloped_plan(alignment, start_height)?;
+                let (_, pieces) = split_sources
+                    .get_mut(&source.alignment_id)
+                    .expect("registered source");
+                pieces.retain(|p| p.id != source_id);
+                for id in [source_id, suffix_id] {
+                    pieces.push(
+                        candidate
+                            .world
+                            .snapshot()
+                            .alignments
+                            .iter()
+                            .find(|a| a.id == id)
+                            .expect("split piece")
+                            .clone(),
+                    );
+                }
+                continue;
+            }
+            let start_height = if let Some(extension) = &alignment.extension {
+                let old = candidate
+                    .world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == extension.alignment_id)
+                    .ok_or("延伸対象の線路がありません。")?;
+                Some(old.endpoint_height_m(extension.endpoint))
+            } else {
+                alignment.start_level.map(|level| level.height_m())
+            };
+            if let Some(start_height) = start_height {
+                let finish_height = alignment
+                    .destination
+                    .as_ref()
+                    .and_then(|end| {
+                        candidate
+                            .world
+                            .snapshot()
+                            .alignments
+                            .iter()
+                            .find(|a| a.id == end.alignment_id)
+                            .map(|a| a.endpoint_height_m(end.endpoint))
+                    })
+                    .unwrap_or_else(|| alignment.infrastructure.level.height_m());
+                let has_endpoint_grade = alignment.extension.as_ref().is_some_and(|end| {
+                    candidate
+                        .world
+                        .snapshot()
+                        .alignments
+                        .iter()
+                        .find(|a| a.id == end.alignment_id)
+                        .is_some_and(|a| a.endpoint_inward_grade(end.endpoint).abs() > 1e-12)
+                }) || alignment.destination.as_ref().is_some_and(|end| {
+                    candidate
+                        .world
+                        .snapshot()
+                        .alignments
+                        .iter()
+                        .find(|a| a.id == end.alignment_id)
+                        .is_some_and(|a| a.endpoint_inward_grade(end.endpoint).abs() > 1e-12)
+                });
+                if (start_height - finish_height).abs() > 1e-6 || has_endpoint_grade {
+                    candidate.build_sloped_plan(alignment, start_height)?;
+                    continue;
+                }
             }
             if alignment.destination.is_some() && alignment.extension.is_none() {
                 return Err("接続先を指定するには既存線路から延伸してください。".into());
@@ -787,9 +1051,120 @@ impl WorldEditor {
             }
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        if has_junction {
+            candidate.deleted_alignment = Some((before_junction, candidate.snapshot()));
+        }
         *self = candidate;
         Ok(self.snapshot())
     }
+    /// A rising/falling extension is a new explicit span, never a rewrite of old track.
+    fn build_sloped_plan(
+        &mut self,
+        alignment: PlannedAlignment,
+        start_height: f64,
+    ) -> Result<(), String> {
+        if alignment.reference.is_some() {
+            return Err("参照データを使った勾配敷設は未対応です。".into());
+        }
+        let id = self.build_alignment_typed_unchecked(
+            alignment.name,
+            alignment.points,
+            alignment.track_type,
+        )?;
+        let mut draft = self.world.snapshot().clone();
+        let built = draft
+            .alignments
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or("線路がありません。")?;
+        built.anchor_indices = alignment.anchor_indices;
+        built.infrastructure = vec![alignment.infrastructure; built.section_count()];
+        let start_grade = alignment
+            .extension
+            .as_ref()
+            .and_then(|end| {
+                self.world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == end.alignment_id)
+                    .map(|a| -a.endpoint_inward_grade(end.endpoint))
+            })
+            .unwrap_or(0.0);
+        let destination = alignment.destination.as_ref().and_then(|end| {
+            self.world
+                .snapshot()
+                .alignments
+                .iter()
+                .find(|a| a.id == end.alignment_id)
+                .map(|a| {
+                    (
+                        a.endpoint_height_m(end.endpoint),
+                        a.endpoint_inward_grade(end.endpoint),
+                    )
+                })
+        });
+        let (finish_height, end_grade) =
+            destination.unwrap_or((alignment.infrastructure.level.height_m(), 0.0));
+        let profile = rosenfu_core::world::VerticalProfile {
+            start_tangent_m: start_grade * built.length_m(),
+            end_tangent_m: end_grade * built.length_m(),
+            start_height_m: start_height,
+            end_height_m: finish_height,
+        };
+        built.vertical_profile = (!profile.is_flat()).then_some(profile);
+        if let Some(speed) = alignment.design_speed_kmh {
+            built.design_speed_kmh = Some(speed);
+        }
+        if !profile.is_valid(built.length_m(), built.track_type) {
+            return Err(format!(
+                "勾配が上限 {}‰ を超えます。線路を長くしてください。",
+                built.track_type.maximum_construction_gradient_per_mille()
+            ));
+        }
+        self.world.replace(draft).map_err(|e| e.to_string())?;
+        if let Some(extension) = alignment.extension {
+            self.world
+                .connect_alignment_endpoints(
+                    self.company,
+                    rosenfu_core::world::AlignmentEndpointRef {
+                        alignment_id: extension.alignment_id,
+                        endpoint: extension.endpoint,
+                    },
+                    rosenfu_core::world::AlignmentEndpointRef {
+                        alignment_id: id,
+                        endpoint: rosenfu_core::world::AlignmentEndpoint::Start,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(destination) = alignment.destination {
+            self.world
+                .connect_alignment_endpoints(
+                    self.company,
+                    rosenfu_core::world::AlignmentEndpointRef {
+                        alignment_id: id,
+                        endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+                    },
+                    rosenfu_core::world::AlignmentEndpointRef {
+                        alignment_id: destination.alignment_id,
+                        endpoint: destination.endpoint,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        for station in alignment.stations {
+            self.place_station_on_alignment_unchecked(
+                station.name,
+                id,
+                station.position,
+                station.length_m,
+                station.width_m,
+            )?;
+        }
+        Ok(())
+    }
+
     fn build_alignment_typed_unchecked(
         &mut self,
         name: String,
@@ -1552,6 +1927,54 @@ mod tests {
             .collect();
         e.create_service_path("系統".into(), start, segments, stops)
             .unwrap()
+    }
+
+    #[test]
+    fn appearance_compare_and_set_protects_shape_and_symbol_changes() {
+        use rosenfu_core::world::ServiceSymbolShape;
+        let (mut editor, alignment, stations) = alignment_fixture();
+        let created = create_test_service(
+            &mut editor,
+            stations[0],
+            vec![span(alignment, stations[0], stations[2])],
+        );
+        let service = created.services[0].id;
+        let first = editor
+            .set_service_appearance(
+                service,
+                "#112233".into(),
+                ServiceSymbolShape::Square,
+                "八".into(),
+                None,
+            )
+            .unwrap();
+        let stale = first.service_appearances[0].clone();
+        let second = editor
+            .set_service_appearance(
+                service,
+                "#112233".into(),
+                ServiceSymbolShape::Diamond,
+                "快".into(),
+                Some(stale.clone()),
+            )
+            .unwrap();
+        assert!(editor
+            .set_service_appearance(
+                service,
+                "#445566".into(),
+                ServiceSymbolShape::Circle,
+                "普".into(),
+                Some(stale)
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), second);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("symbol.json");
+        editor.save(&path).unwrap();
+        assert_eq!(
+            WorldEditor::new().load(&path).unwrap().service_appearances,
+            second.service_appearances
+        );
     }
 
     #[test]
@@ -2962,6 +3385,8 @@ mod tests {
         ];
         // Attribution on an earlier path must roll back if any later path fails.
         let attributed_path = || PlannedAlignment {
+            junction_source: None,
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             extension: None,
@@ -3049,6 +3474,8 @@ mod tests {
         let id = editor.snapshot().alignments[0].id;
         let before = editor.snapshot();
         let reference_extension = || PlannedAlignment {
+            junction_source: None,
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name: "Reference extension".into(),
@@ -3295,6 +3722,8 @@ mod tests {
         for (lat, lon) in [(0.0, 0.01), (0.01, 0.0), (0.01, 0.01)] {
             editor
                 .build_plan(vec![PlannedAlignment {
+                    junction_source: None,
+                    start_level: None,
                     infrastructure: Default::default(),
                     anchor_indices: Some(vec![0, 1]),
                     name: "線路".into(),
@@ -3426,6 +3855,8 @@ mod tests {
         let expected = a.point_at(0.4);
         let start = a.points[0];
         let extension = PlannedAlignment {
+            junction_source: None,
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name: "延伸".into(),
@@ -3490,8 +3921,306 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
     }
 
+    #[test]
+    fn sloped_plan_and_rising_extension_are_atomic_and_preserve_old_track() {
+        use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel};
+        let mut editor = WorldEditor::new();
+        let mut flat = planned_path(0.);
+        flat.stations.clear();
+        let built = editor.build_plan(vec![flat]).unwrap();
+        let original = built.alignments[0].clone();
+        let mut ramp = planned_path(0.);
+        ramp.stations.clear();
+        ramp.points = vec![
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.01,
+            },
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.02,
+            },
+        ];
+        ramp.extension = Some(PlannedAlignmentExtension {
+            alignment_id: original.id,
+            endpoint: AlignmentEndpoint::End,
+        });
+        ramp.infrastructure.level = InfrastructureLevel::Elevated;
+        let after = editor.build_plan(vec![ramp]).unwrap();
+        assert_eq!(after.alignments[0], original);
+        assert_eq!(after.alignments.len(), 2);
+        assert_eq!(after.alignment_connections.len(), 1);
+        assert_eq!(
+            after.alignments[1].endpoint_height_m(AlignmentEndpoint::End),
+            6.
+        );
+        assert!(after.alignments[1].vertical_profile.is_some());
+        let mut short = planned_path(1.);
+        short.stations.clear();
+        short.start_level = Some(InfrastructureLevel::Ground);
+        short.infrastructure.level = InfrastructureLevel::Elevated3;
+        short.points = vec![
+            GeoPoint {
+                latitude: 36.,
+                longitude: 139.,
+            },
+            GeoPoint {
+                latitude: 36.,
+                longitude: 139.0001,
+            },
+        ];
+        let before = editor.snapshot();
+        assert!(editor.build_plan(vec![short]).is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
+    fn ambiguous_repeated_geometry_split_batch_is_atomic() {
+        use rosenfu_core::world::ConstructionJunctionSource;
+        let mut editor = WorldEditor::new();
+        let mut flat = planned_path(0.);
+        flat.stations.clear();
+        flat.points = [139.0, 139.01, 139.02, 139.01, 139.03]
+            .into_iter()
+            .map(|longitude| GeoPoint {
+                latitude: 35.,
+                longitude,
+            })
+            .collect();
+        let built = editor.build_plan(vec![flat]).unwrap();
+        let original = built.alignments[0].clone();
+        let paths = [(0, 139.005), (1, 139.015)]
+            .into_iter()
+            .map(|(segment_index, x)| {
+                let mut branch = planned_path(0.);
+                branch.stations.clear();
+                branch.points = vec![
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: x,
+                    },
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: x + 0.0005,
+                    },
+                    GeoPoint {
+                        latitude: 35.01,
+                        longitude: x + 0.001,
+                    },
+                ];
+                branch.junction_source = Some(ConstructionJunctionSource {
+                    alignment_id: original.id,
+                    expected_alignment: original.clone(),
+                    segment_index,
+                    fraction: 0.5,
+                    reverse: false,
+                });
+                branch
+            })
+            .collect();
+        assert!(editor
+            .build_plan(paths)
+            .unwrap_err()
+            .contains("重複する線形"));
+        assert_eq!(editor.snapshot(), built);
+    }
+
+    #[test]
+    fn multiple_junctions_from_one_observed_source_commit_and_undo_together() {
+        use rosenfu_core::world::ConstructionJunctionSource;
+        for fractions in [[0.25, 0.75], [0.75, 0.25]] {
+            let mut editor = WorldEditor::new();
+            let mut flat = planned_path(0.);
+            flat.stations.clear();
+            let built = editor.build_plan(vec![flat]).unwrap();
+            let original = built.alignments[0].clone();
+            let paths = fractions
+                .into_iter()
+                .map(|fraction| {
+                    let mut branch = planned_path(0.);
+                    branch.stations.clear();
+                    let x = 139.0 + 0.01 * fraction;
+                    branch.points = vec![
+                        GeoPoint {
+                            latitude: 35.,
+                            longitude: x,
+                        },
+                        GeoPoint {
+                            latitude: 35.,
+                            longitude: x + 0.0005,
+                        },
+                        GeoPoint {
+                            latitude: 35.01,
+                            longitude: x + 0.001,
+                        },
+                    ];
+                    branch.junction_source = Some(ConstructionJunctionSource {
+                        alignment_id: original.id,
+                        expected_alignment: original.clone(),
+                        segment_index: 0,
+                        fraction,
+                        reverse: false,
+                    });
+                    branch
+                })
+                .collect();
+            let after = editor.build_plan(paths).unwrap();
+            assert_eq!(after.alignments.len(), 5);
+            assert_eq!(after.alignment_connections.len(), 4);
+            let saved = serde_json::to_string(&after).unwrap();
+            assert!(World::new(serde_json::from_str(&saved).unwrap()).is_ok());
+            assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        }
+    }
+
+    #[test]
+    fn arbitrary_position_junction_commit_undo_and_stale_source_are_atomic() {
+        use rosenfu_core::world::ConstructionJunctionSource;
+        let mut editor = WorldEditor::new();
+        let mut flat = planned_path(0.);
+        flat.stations.clear();
+        let built = editor.build_plan(vec![flat]).unwrap();
+        let original = built.alignments[0].clone();
+        let source = ConstructionJunctionSource {
+            reverse: false,
+            alignment_id: original.id,
+            segment_index: 0,
+            fraction: 0.5,
+            expected_alignment: original.clone(),
+        };
+        let mut branch = planned_path(0.);
+        branch.stations.clear();
+        branch.junction_source = Some(source.clone());
+        branch.points = vec![
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.005,
+            },
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.006,
+            },
+            GeoPoint {
+                latitude: 35.01,
+                longitude: 139.015,
+            },
+        ];
+        let after = editor.build_plan(vec![branch]).unwrap();
+        assert_eq!(after.alignments.len(), 3);
+        assert_eq!(after.alignment_connections.len(), 2);
+        assert_eq!(
+            after.alignments[0].points.last().unwrap().longitude,
+            139.005
+        );
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        let mut stale = planned_path(0.);
+        stale.stations.clear();
+        stale.junction_source = Some(source);
+        stale
+            .junction_source
+            .as_mut()
+            .unwrap()
+            .expected_alignment
+            .name = "stale".into();
+        let before = editor.snapshot();
+        assert!(editor.build_plan(vec![stale]).is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
+    fn reverse_interior_turnout_uses_suffix_as_stem() {
+        use rosenfu_core::world::{AlignmentEndpoint, ConstructionJunctionSource};
+        let mut editor = WorldEditor::new();
+        let mut flat = planned_path(0.);
+        flat.stations.clear();
+        let built = editor.build_plan(vec![flat]).unwrap();
+        let original = built.alignments[0].clone();
+        let mut branch = planned_path(0.);
+        branch.stations.clear();
+        branch.junction_source = Some(ConstructionJunctionSource {
+            reverse: true,
+            alignment_id: original.id,
+            segment_index: 0,
+            fraction: 0.5,
+            expected_alignment: original,
+        });
+        branch.points = vec![
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.005,
+            },
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.004,
+            },
+            GeoPoint {
+                latitude: 35.01,
+                longitude: 139.,
+            },
+        ];
+        let after = editor.build_plan(vec![branch]).unwrap();
+        let suffix = after.alignments[1].id;
+        assert_eq!(after.alignment_connections[1].a.alignment_id, suffix);
+        assert_eq!(
+            after.alignment_connections[1].a.endpoint,
+            AlignmentEndpoint::Start
+        );
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+    }
+
+    #[test]
+    fn ramp_branch_inherits_exact_height_and_grade() {
+        use rosenfu_core::world::{
+            AlignmentEndpoint, ConstructionJunctionSource, InfrastructureLevel,
+        };
+        let mut editor = WorldEditor::new();
+        let mut ramp = planned_path(0.);
+        ramp.stations.clear();
+        ramp.start_level = Some(InfrastructureLevel::Ground);
+        ramp.infrastructure.level = InfrastructureLevel::Elevated;
+        let built = editor.build_plan(vec![ramp]).unwrap();
+        let original = built.alignments[0].clone();
+        let mut branch = planned_path(0.);
+        branch.stations.clear();
+        branch.junction_source = Some(ConstructionJunctionSource {
+            reverse: false,
+            alignment_id: original.id,
+            segment_index: 0,
+            fraction: 0.5,
+            expected_alignment: original.clone(),
+        });
+        branch.points = vec![
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.005,
+            },
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.006,
+            },
+            GeoPoint {
+                latitude: 35.01,
+                longitude: 139.015,
+            },
+        ];
+        let after = editor.build_plan(vec![branch]).unwrap();
+        assert_eq!(after.alignments.len(), 3);
+        let stem = &after.alignments[0];
+        let branch = &after.alignments[2];
+        assert!((branch.endpoint_height_m(AlignmentEndpoint::Start) - 3.).abs() < 1e-8);
+        assert!(
+            (branch.endpoint_inward_grade(AlignmentEndpoint::Start)
+                + stem.endpoint_inward_grade(AlignmentEndpoint::End))
+            .abs()
+                < 1e-9
+        );
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+    }
+
     fn planned_path(offset: f64) -> PlannedAlignment {
         PlannedAlignment {
+            junction_source: None,
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name: format!("計画線{offset}"),
@@ -3583,6 +4312,8 @@ mod tests {
                 *old.points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                junction_source: None,
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "延伸".into(),
@@ -3678,6 +4409,8 @@ mod tests {
                 *before.alignments[0].points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                junction_source: None,
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "Extension".into(),
@@ -3761,6 +4494,8 @@ mod tests {
         let endpoint = *old.points.last().unwrap();
         let previous = old.points[old.points.len() - 2];
         let extension = || PlannedAlignment {
+            junction_source: None,
+            start_level: None,
             infrastructure: Default::default(),
             anchor_indices: None,
             name: "Extension".into(),
@@ -3865,6 +4600,8 @@ mod endpoint_join_tests {
                     .unwrap();
                 let before = editor.snapshot();
                 let request = || PlannedAlignment {
+                    junction_source: None,
+                    start_level: None,
                     infrastructure: Default::default(),
                     anchor_indices: None,
                     name: "延伸".into(),
@@ -3924,6 +4661,8 @@ mod endpoint_join_tests {
         let before = editor.snapshot();
         for target in [b, AlignmentId(999), a] {
             let request = PlannedAlignment {
+                junction_source: None,
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: None,
                 name: "延伸".into(),
@@ -3965,6 +4704,8 @@ mod endpoint_join_tests {
         let mut bridge: Vec<_> = (175..=185).map(|i| point(i as f64 * 2.)).collect();
         *bridge.last_mut().unwrap() = original[0];
         let request = || PlannedAlignment {
+            junction_source: None,
+            start_level: None,
             infrastructure: Default::default(),
             name: "Close ring".into(),
             points: bridge.clone(),
@@ -4009,3 +4750,27 @@ mod endpoint_join_tests {
 #[cfg(test)]
 #[path = "session_binding_review_tests.rs"]
 mod binding_review_tests;
+
+fn source_route_binding(
+    route_id: Option<RouteId>,
+    route_ids: Option<Vec<RouteId>>,
+) -> Result<Option<rosenfu_core::world::ServiceRouteBindingKind>, String> {
+    use rosenfu_core::world::ServiceRouteBindingKind;
+    match (route_id, route_ids) {
+        (Some(_), Some(_)) => Err("単一路線と直通路線を同時には指定できません。".into()),
+        (Some(route_id), None) => Ok(Some(ServiceRouteBindingKind::Route { route_id })),
+        (None, Some(route_ids)) => {
+            if !(2..=64).contains(&route_ids.len())
+                || route_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != route_ids.len()
+            {
+                return Err("直通系統には重複しない2〜64路線を指定してください。".into());
+            }
+            Ok(Some(ServiceRouteBindingKind::Routes { route_ids }))
+        }
+        (None, None) => Ok(None),
+    }
+}

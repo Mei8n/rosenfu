@@ -17,15 +17,30 @@ pub struct AlignmentConnection {
 impl WorldDraft {
     pub(super) fn validate_alignment_connections(&self) -> Result<(), WorldError> {
         let invalid = WorldError::InvalidAlignmentConnection;
-        let mut occupied = BTreeSet::new();
+        let mut occupied = std::collections::BTreeMap::new();
+        let mut pairs = BTreeSet::new();
         for connection in &self.alignment_connections {
             if connection.a == connection.b {
                 return Err(invalid);
             }
+            let key = |end: AlignmentEndpointRef| {
+                (end.alignment_id, end.endpoint == AlignmentEndpoint::End)
+            };
+            let pair = if key(connection.a) < key(connection.b) {
+                (key(connection.a), key(connection.b))
+            } else {
+                (key(connection.b), key(connection.a))
+            };
+            if !pairs.insert(pair) {
+                return Err(invalid);
+            }
             let mut ends = Vec::with_capacity(2);
             for end in [connection.a, connection.b] {
-                // Degree one per endpoint: no implicit junction/branch creation.
-                if !occupied.insert((end.alignment_id, end.endpoint == AlignmentEndpoint::End)) {
+                // At most three physical ports meet at a supported turnout.
+                let key = (end.alignment_id, end.endpoint == AlignmentEndpoint::End);
+                let degree = occupied.entry(key).or_insert(0);
+                *degree += 1;
+                if *degree > 2 {
                     return Err(invalid);
                 }
                 let alignment = self
@@ -44,7 +59,22 @@ impl WorldDraft {
             }
             let (a, point, ai) = ends[0];
             let (b, other, bi) = ends[1];
-            if a.owner != b.owner || a.track_type != b.track_type || point != other {
+            // Connections require equal actual elevation, not merely equal map coordinates.
+            if a.owner != b.owner
+                || a.track_type != b.track_type
+                || point != other
+                || (a.endpoint_height_m(connection.a.endpoint)
+                    - b.endpoint_height_m(connection.b.endpoint))
+                .abs()
+                    > 1e-6
+            {
+                return Err(invalid);
+            }
+            if (a.endpoint_inward_grade(connection.a.endpoint)
+                + b.endpoint_inward_grade(connection.b.endpoint))
+            .abs()
+                > 1e-6
+            {
                 return Err(invalid);
             }
             // Speed caps need not match: each original alignment keeps its own cap.
@@ -64,12 +94,32 @@ impl WorldDraft {
                 return Err(invalid);
             }
         }
+        // Reject unsupported multi-way cliques/cycles rather than silently choosing
+        // a movement. One turnout consists of a stem and two branches.
+        for initial in occupied.keys() {
+            let mut ports = BTreeSet::from([*initial]);
+            loop {
+                let before = ports.len();
+                for (a, b) in &pairs {
+                    if ports.contains(a) || ports.contains(b) {
+                        ports.insert(*a);
+                        ports.insert(*b);
+                    }
+                }
+                if ports.len() > 3 {
+                    return Err(invalid);
+                }
+                if ports.len() == before {
+                    break;
+                }
+            }
+        }
         Ok(())
     }
 }
 impl World {
     /// Connect exact, free endpoints without merging or renumbering infrastructure.
-    /// Validation rejects accidental overlap, cusps, foreign ownership and branches.
+    /// Validation rejects accidental overlap, cusps and foreign ownership; a three-port turnout is supported.
     pub fn connect_alignment_endpoints(
         &mut self,
         owner: CompanyId,
@@ -220,23 +270,30 @@ pub(super) fn corridor_edges(
             let Some(source) = nearest(first.a) else {
                 continue;
             };
-            let mut chain = vec![first.clone()];
-            let mut incoming = first.b;
-            let mut seen = BTreeSet::from([first.a.alignment_id]);
-            loop {
-                if chain.len() > 256 {
+            let mut pending = vec![(
+                vec![first.clone()],
+                first.b,
+                BTreeSet::from([first.a.alignment_id]),
+            )];
+            let mut searched = 0usize;
+            while let Some((chain, incoming, mut seen)) = pending.pop() {
+                searched += 1;
+                if chain.len() > 256 || searched > 4096 {
                     truncated = true;
-                    break;
+                    if searched > 4096 {
+                        break;
+                    }
+                    continue;
                 }
                 if let Some(target) = nearest(incoming) {
                     if resolve_corridor(data, source.station_id, target.station_id, &chain).is_ok()
                     {
                         edges.push((source.station_id, target.station_id, chain));
                     }
-                    break;
+                    continue;
                 }
                 if !seen.insert(incoming.alignment_id) {
-                    break;
+                    continue;
                 }
                 let exit = AlignmentEndpointRef {
                     alignment_id: incoming.alignment_id,
@@ -246,22 +303,33 @@ pub(super) fn corridor_edges(
                         AlignmentEndpoint::Start
                     },
                 };
-                let Some(next) = data.alignment_connections.iter().find_map(|link| {
-                    if link.a == exit {
-                        Some(link.clone())
-                    } else if link.b == exit {
-                        Some(AlignmentConnection {
-                            a: link.b,
-                            b: link.a,
-                        })
-                    } else {
-                        None
-                    }
-                }) else {
-                    break;
-                };
-                incoming = next.b;
-                chain.push(next);
+                let mut next: Vec<_> = data
+                    .alignment_connections
+                    .iter()
+                    .filter_map(|link| {
+                        if link.a == exit {
+                            Some(link.clone())
+                        } else if link.b == exit {
+                            Some(AlignmentConnection {
+                                a: link.b,
+                                b: link.a,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                next.sort_by_key(|link| {
+                    (
+                        link.b.alignment_id,
+                        link.b.endpoint == AlignmentEndpoint::End,
+                    )
+                });
+                for link in next.into_iter().rev() {
+                    let mut extended = chain.clone();
+                    extended.push(link.clone());
+                    pending.push((extended, link.b, seen.clone()));
+                }
             }
         }
     }

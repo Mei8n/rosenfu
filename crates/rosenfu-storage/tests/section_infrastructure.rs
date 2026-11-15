@@ -49,7 +49,10 @@ fn all_counts_and_seven_levels_roundtrip_without_changing_geometry_or_ids() {
                     track_count: count,
                     level,
                 },
-                SectionInfrastructure::default(),
+                SectionInfrastructure {
+                    track_count: 1,
+                    level,
+                },
             ];
             w.replace(draft).unwrap();
             let restored = decode(&encode(&w).unwrap()).unwrap();
@@ -65,7 +68,10 @@ fn all_counts_and_seven_levels_roundtrip_without_changing_geometry_or_ids() {
             );
             assert_eq!(
                 a.section_infrastructure(1).unwrap(),
-                SectionInfrastructure::default()
+                SectionInfrastructure {
+                    track_count: 1,
+                    level
+                }
             );
             assert_eq!(a.section_infrastructure(2), None);
         }

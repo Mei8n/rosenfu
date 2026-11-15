@@ -287,6 +287,7 @@ impl World {
                 points,
                 anchor_indices: None,
                 infrastructure: Vec::new(),
+                vertical_profile: None,
                 track_type,
                 design_speed_kmh: None,
             });

@@ -89,3 +89,23 @@ test("empty-plan persistence cleanup does not invalidate in-session track undo",
  fireEvent.click(screen.getByRole("button",{name:"線路削除を元に戻す"}));
  expect(map.querySelector(".parked-plan")).not.toBeNull();
 });
+
+test.each(['ground','elevated'] as const)('whole planned line deletion restores %s start height through repeated Undo/Redo',async startLevel=>{
+ const {emptyConstructionPlans}=await import('./constructionPlans');
+ const plans={...emptyConstructionPlans(),draftPoints:alignment.points,startLevel,infrastructure:{track_count:2,level:'elevated_2'},draftFinished:true};
+ const map=await start({...empty,construction_plans:plans});
+ const before=map.querySelector('.confirmed-draft')!.getAttribute('d');
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('.plan-hover-hit')!);
+ fireEvent.click(screen.getByRole('button',{name:'選択線路を削除'}));fireEvent.click(screen.getByRole('button',{name:'線路を削除'}));
+ for(let i=0;i<2;i++){
+  expect(map.querySelector('.confirmed-draft')).toBeNull();
+  fireEvent.keyDown(window,{key:'z',ctrlKey:true});
+  expect(map.querySelector('.confirmed-draft')!.getAttribute('d')).toBe(before);
+  fireEvent.keyDown(window,{key:'z',ctrlKey:true,shiftKey:true});
+ }
+ expect(map.querySelector('.confirmed-draft')).toBeNull();
+ fireEvent.keyDown(window,{key:'z',ctrlKey:true});
+ vi.mocked(invoke).mockImplementation(async command=>{if(command==='save_world')return {saved:true};if(command==='list_save_slots')return {active_slot_id:null,slots:[]};throw Error(command);});
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('save_world',expect.objectContaining({constructionPlans:expect.objectContaining({startLevel,infrastructure:{track_count:2,level:'elevated_2'}})})));
+});

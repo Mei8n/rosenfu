@@ -205,3 +205,31 @@
 検索で[作者の作品ページ](https://anita.garden/projects/trainsworld/)は確認できたが、分岐の内部アルゴリズム、鎖錠・閉塞の詳細は確認できない。ユーザーが実演で説明した平面/立体の区別と列車支障は要求の根拠であり、Rosenfuの内部実装案をTrainsWorldの方式と断定しない。
 
 現実概念の照合として [Rail Industry Association Rail Lexicon](https://riagb.org.uk/common/Uploaded%20files/OnePlace/Rail-Lexicon-Mk24.pdf) の flat/flying junction 定義を検索結果で確認した。平面は横断待ちが生じ、立体は橋梁によって対向方向との交差を避けるという概念に限り参照。数値や安全基準の根拠には使用しない。
+
+
+### Movement-specific turnout speed (game model)
+
+Each endpoint or internal lane-count movement has its own cubic geometry, length,
+minimum-radius estimate, track cap, optional equipment cap, and resulting cap.
+Curvature uses cubic derivatives and isolated polynomial extrema, not total length / net
+heading; parallel-ended S curves therefore receive a finite limit. The game uses
+`V = 3.6 * sqrt(0.65 * R)` km/h, capped by both tracks and a known equipment limit
+when available. **0.65 m/s² is a game calibration, not an owner-approved engineering
+standard.** This numerical extremum evaluation is not a certified safety or jerk
+analysis. Extending unrelated straight track does not increase a turnout limit.
+
+Real equipment examples are not generic conversion tables: JRTT documents a
+No.38 diverging route at 160 km/h
+(https://www.jrtt.go.jp/construction/technology/track.html); a JR West-authored
+paper documents a 50N No.12 turnout example at 45 km/h diverging and 120/130 km/h
+on its reference route
+(https://www.jstage.jst.go.jp/article/jsceim/5/1/5_290/_pdf/-char/en).
+No turnout number or equipment cap is inferred merely from our game curve length.
+Straight and diverging movements remain separate for future one-line-through
+layouts; train dispatch and occupancy locking remain unimplemented.
+
+Turnout construction requires at least one gameplay lane spacing (4m) of approach
+on each side, always within the adjoining anchor section and outside a platform.
+This is a geometry usability floor, not a railway-standard turnout length.
+The candidate world rejects insufficient space atomically with an actionable
+message rather than saving a world which cannot produce its track rendering.

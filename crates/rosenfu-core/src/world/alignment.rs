@@ -76,6 +76,8 @@ pub struct Alignment {
     /// Otherwise exactly one item per anchor interval, in geometry order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub infrastructure: Vec<SectionInfrastructure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical_profile: Option<VerticalProfile>,
     pub track_type: TrackType,
     /// None preserves legacy saves and resolves to the track-type default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,7 +93,7 @@ pub struct StationPlacement {
     pub width_m: f64,
 }
 
-fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
+pub(super) fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
     let x = (b.longitude - a.longitude).to_radians()
         * ((a.latitude + b.latitude) / 2.0).to_radians().cos();
     let y = (b.latitude - a.latitude).to_radians();
@@ -155,6 +157,19 @@ impl WorldDraft {
             {
                 return Err(WorldError::InvalidAlignment);
             }
+            if a.vertical_profile.is_none()
+                && a.infrastructure
+                    .windows(2)
+                    .any(|sections| sections[0].level != sections[1].level)
+            {
+                // A category change is not a vertical ramp: reject instantaneous steps.
+                return Err(WorldError::InvalidAlignment);
+            }
+            if a.vertical_profile
+                .is_some_and(|profile| !profile.is_valid(a.length_m(), a.track_type))
+            {
+                return Err(WorldError::InvalidAlignment);
+            }
             let speed = a.effective_design_speed_kmh();
             if !speed.is_finite() || !(1.0..=600.0).contains(&speed) {
                 return Err(WorldError::InvalidAlignmentDesignSpeed);
@@ -187,7 +202,8 @@ impl WorldDraft {
                 .iter()
                 .find(|s| s.id == p.station_id)
                 .ok_or(WorldError::MissingReference("placement.station"))?;
-            if !placed.insert(p.station_id)
+            if a.vertical_profile.is_some_and(|profile| !profile.is_flat())
+                || !placed.insert(p.station_id)
                 || a.owner != s.owner
                 || !p.position.is_finite()
                 || !(0.0..=1.0).contains(&p.position)
@@ -261,7 +277,11 @@ impl World {
                 .last()
                 .ok_or(WorldError::InvalidAlignment)?,
         };
-        if alignment.owner != owner || points.len() < 2 || points.first() != Some(&old_endpoint) {
+        if alignment.vertical_profile.is_some()
+            || alignment.owner != owner
+            || points.len() < 2
+            || points.first() != Some(&old_endpoint)
+        {
             return Err(WorldError::InvalidAlignment);
         }
         // Sampled tangent arcs have at most 2.5 degrees of chord deviation.
@@ -391,6 +411,7 @@ impl World {
                 points,
                 anchor_indices: None,
                 infrastructure: Vec::new(),
+                vertical_profile: None,
                 track_type,
                 design_speed_kmh: None,
             })

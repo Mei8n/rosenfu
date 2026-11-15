@@ -101,7 +101,7 @@ impl ViewState {
 pub struct WorldDraft {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub station_groups: Vec<StationGroup>,
-    /// Explicit, non-branching infrastructure endpoint links.
+    /// Explicit infrastructure endpoint links, including supported three-port turnouts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alignment_connections: Vec<AlignmentConnection>,
     /// Optional local presentation metadata, independent of physical world geometry.
@@ -182,6 +182,7 @@ pub enum WorldError {
     InvalidViewState,
     InvalidAlignment,
     InvalidAlignmentConnection,
+    InsufficientTurnoutSpace,
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
@@ -205,6 +206,9 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::InsufficientTurnoutSpace) {
+            return write!(f, "分岐・単複線の合流に必要な空間がありません。接続位置をホームから離すか、前後の区間を長くしてください。");
+        }
         if matches!(self, Self::InvalidServiceRouteBinding) {
             return write!(f, "既存系統の経路が割り当てた路線に含まれなくなるため変更できません。路線と系統は変更していません。");
         }
@@ -385,6 +389,10 @@ impl WorldDraft {
                 return Err(WorldError::InvalidRoutePath);
             }
         }
+        // All references and platform footprints are valid by this point. Check
+        // derived turnout geometry before any candidate snapshot is committed.
+        let geometry_world = World { data: self.clone() };
+        geometry_world.validate_turnout_geometry()?;
         self.validate_service_paths()?;
         self.validate_service_route_bindings()?;
         self.validate_service_appearances()?;
@@ -573,7 +581,7 @@ pub use provenance::{
 };
 
 mod construction_plans;
-pub use construction_plans::ConstructionPlans;
+pub use construction_plans::{ConstructionJunctionSource, ConstructionPlans};
 
 mod station_groups;
 pub use station_groups::StationGroup;
@@ -582,4 +590,20 @@ mod service_route_bindings;
 pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
 
 mod service_appearance;
-pub use service_appearance::ServiceAppearance;
+pub use service_appearance::{ServiceAppearance, ServiceSymbolShape};
+mod track_topology;
+pub use track_topology::{
+    InternalTrackMovement, InternalTrackPoint, TrackLanePort, TrackMovement, TrackPointResource,
+    TrackSectionPort,
+};
+
+mod vertical_profile;
+pub use vertical_profile::{VerticalProfile, LEVEL_SPACING_M};
+
+mod junctions;
+
+mod turnout_geometry;
+pub use turnout_geometry::{
+    InternalTrackMovementGeometry, TrackLaneGeometry, TrackMovementGeometry, TrackRenderGeometry,
+    TurnoutMovementProperties, TRACK_LANE_SPACING_M, TURNOUT_GAME_LATERAL_ACCELERATION_MPS2,
+};

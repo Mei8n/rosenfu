@@ -1,10 +1,22 @@
 //! Explicit presentation metadata. Absence preserves the renderer's default.
 use super::*;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceSymbolShape {
+    #[default]
+    Circle,
+    Square,
+    Diamond,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceAppearance {
     pub service_id: ServiceId,
     pub color: String,
+    #[serde(default)]
+    pub shape: ServiceSymbolShape,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
 }
 fn valid_color(color: &str) -> bool {
     color.len() == 7
@@ -15,7 +27,12 @@ impl WorldDraft {
     pub(super) fn validate_service_appearances(&self) -> Result<(), WorldError> {
         let mut ids = BTreeSet::new();
         for row in &self.service_appearances {
-            if !valid_color(&row.color) || !ids.insert(row.service_id) {
+            if !valid_color(&row.color)
+                || row.symbol.as_ref().is_some_and(|symbol| {
+                    symbol.chars().count() > 8 || symbol.chars().any(char::is_control)
+                })
+                || !ids.insert(row.service_id)
+            {
                 return Err(WorldError::InvalidServiceAppearance);
             }
             if !self
@@ -47,6 +64,12 @@ impl World {
         {
             return Err(WorldError::MissingReference("owned service"));
         }
+        let previous = self
+            .data
+            .service_appearances
+            .iter()
+            .find(|row| row.service_id == service_id)
+            .cloned();
         let mut candidate = self.data.clone();
         candidate
             .service_appearances
@@ -54,8 +77,32 @@ impl World {
         candidate.service_appearances.push(ServiceAppearance {
             service_id,
             color: color.to_ascii_uppercase(),
+            shape: previous.as_ref().map(|row| row.shape).unwrap_or_default(),
+            symbol: previous.and_then(|row| row.symbol),
         });
         self.replace(candidate)
+    }
+    pub fn set_service_appearance(
+        &mut self,
+        owner: CompanyId,
+        service_id: ServiceId,
+        color: String,
+        shape: ServiceSymbolShape,
+        symbol: String,
+    ) -> Result<(), WorldError> {
+        let mut candidate = self.clone();
+        candidate.set_service_color(owner, service_id, color)?;
+        let row = candidate
+            .data
+            .service_appearances
+            .iter_mut()
+            .find(|row| row.service_id == service_id)
+            .ok_or(WorldError::InvalidServiceAppearance)?;
+        row.shape = shape;
+        row.symbol = Some(symbol);
+        candidate.data.validate()?;
+        *self = candidate;
+        Ok(())
     }
     pub fn duplicate_service(
         &mut self,

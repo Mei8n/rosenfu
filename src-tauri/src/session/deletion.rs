@@ -76,6 +76,9 @@ impl WorldEditor {
                 .iter_mut()
                 .find(|a| a.id == selection.alignment_id)
                 .ok_or("選択した線路がありません。")?;
+            if alignment.vertical_profile.is_some() && level.is_some() {
+                return Err("勾配区間の変更には縦断の再計算が必要です。".into());
+            }
             let mut infrastructure = alignment.effective_infrastructure();
             for index in selection.section_indices {
                 if let Some(count) = track_count {
@@ -285,6 +288,9 @@ impl WorldEditor {
                     original.points[..=start].to_vec(),
                     boundaries[..=section_index].to_vec(),
                     original.effective_infrastructure()[..section_index].to_vec(),
+                    original
+                        .vertical_profile
+                        .and_then(|p| p.clip(0.0, cut_start / old_length)),
                 ));
             }
             if end < original.points.len() - 1 {
@@ -295,10 +301,13 @@ impl WorldEditor {
                         .map(|i| i - end)
                         .collect(),
                     original.effective_infrastructure()[section_index + 1..].to_vec(),
+                    original
+                        .vertical_profile
+                        .and_then(|p| p.clip(cut_end / old_length, 1.0)),
                 ));
             }
             let mut draft = candidate.snapshot();
-            let (points, indices, infrastructure) = pieces.remove(0);
+            let (points, indices, infrastructure, profile) = pieces.remove(0);
             let surviving = draft
                 .alignments
                 .iter_mut()
@@ -307,11 +316,12 @@ impl WorldEditor {
             surviving.points = points;
             surviving.anchor_indices = Some(indices);
             surviving.infrastructure = infrastructure;
+            surviving.vertical_profile = profile;
             candidate
                 .world
                 .replace(draft)
                 .map_err(|_| "残る線路が短すぎるため、この区間は削除できません。".to_owned())?;
-            for (points, indices, infrastructure) in pieces {
+            for (points, indices, infrastructure, profile) in pieces {
                 let new_id = candidate
                     .world
                     .build_alignment_typed(
@@ -329,6 +339,11 @@ impl WorldEditor {
                     .find(|a| a.id == new_id)
                     .ok_or("残る線路がありません。")?
                     .infrastructure = infrastructure;
+                data.alignments
+                    .iter_mut()
+                    .find(|a| a.id == new_id)
+                    .unwrap()
+                    .vertical_profile = profile;
                 candidate.world.replace(data).map_err(|e| e.to_string())?;
                 if let Some(speed) = original.design_speed_kmh {
                     candidate
@@ -539,6 +554,8 @@ mod tests {
             .collect();
         let snapshot = editor
             .build_plan(vec![PlannedAlignment {
+                junction_source: None,
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 2, 4, 6]),
                 name: "線路".into(),
@@ -651,7 +668,7 @@ mod tests {
                 }],
                 before.alignments.clone(),
                 Some(4),
-                Some(InfrastructureLevel::Elevated),
+                None,
                 plans(),
             )
             .unwrap();
@@ -661,7 +678,7 @@ mod tests {
                 SectionInfrastructure::default(),
                 SectionInfrastructure {
                     track_count: 4,
-                    level: InfrastructureLevel::Elevated
+                    level: InfrastructureLevel::Ground
                 },
                 SectionInfrastructure::default()
             ]
@@ -692,7 +709,7 @@ mod tests {
                 }],
                 before.alignments,
                 Some(2),
-                Some(InfrastructureLevel::Underground),
+                None,
                 plans(),
             )
             .unwrap();
@@ -706,6 +723,49 @@ mod tests {
     }
 
     #[test]
+    fn ramp_section_cut_preserves_profile_and_undo() {
+        use rosenfu_core::world::{InfrastructureLevel, VerticalProfile};
+        let (mut editor, id) = setup();
+        let mut draft = editor.snapshot();
+        let profile = VerticalProfile {
+            start_height_m: 0.,
+            end_height_m: 6.,
+            start_tangent_m: 0.,
+            end_tangent_m: 0.,
+        };
+        draft.alignments[0].vertical_profile = Some(profile);
+        draft.alignments[0].infrastructure = vec![
+            rosenfu_core::world::SectionInfrastructure {
+                track_count: 2,
+                level: InfrastructureLevel::Elevated
+            };
+            3
+        ];
+        editor.world.replace(draft).unwrap();
+        let original = editor.snapshot().alignments[0].clone();
+        let before = editor.snapshot();
+        let after = editor.delete_alignment_section(id, 1, plans()).unwrap();
+        assert_eq!(after.alignments.len(), 2);
+        for i in 0..11 {
+            let t = i as f64 / 10.;
+            assert!(
+                (after.alignments[0].height_at_position_m(t).unwrap()
+                    - original.height_at_position_m(t / 3.).unwrap())
+                .abs()
+                    < 1e-8
+            );
+            assert!(
+                (after.alignments[1].height_at_position_m(t).unwrap()
+                    - original.height_at_position_m(2. / 3. + t / 3.).unwrap())
+                .abs()
+                    < 1e-8
+            );
+        }
+        let restored = editor.undo_alignment_deletion().unwrap();
+        assert_eq!(restored.alignments, before.alignments);
+    }
+
+    #[test]
     fn section_attributes_survive_split_and_both_endpoint_extensions() {
         use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel, SectionInfrastructure};
         for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
@@ -714,12 +774,12 @@ mod tests {
             let attrs = vec![
                 SectionInfrastructure {
                     track_count: 2,
-                    level: InfrastructureLevel::Elevated,
+                    level: InfrastructureLevel::Ground,
                 },
                 SectionInfrastructure::default(),
                 SectionInfrastructure {
                     track_count: 4,
-                    level: InfrastructureLevel::Underground,
+                    level: InfrastructureLevel::Ground,
                 },
             ];
             draft.alignments[0].infrastructure = attrs.clone();
@@ -1299,6 +1359,8 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
         editor
             .build_plan(vec![PlannedAlignment {
+                junction_source: None,
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1, 2]),
                 name: "延伸".into(),
@@ -1344,6 +1406,8 @@ mod tests {
             .collect();
         let built = editor
             .build_plan(vec![PlannedAlignment {
+                junction_source: None,
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1, 2, 3, 4]),
                 name: "ABCDE".into(),
@@ -1365,6 +1429,8 @@ mod tests {
         assert_eq!(gap.alignments[1].points, points[3..]);
         let joined = editor
             .build_plan(vec![PlannedAlignment {
+                junction_source: None,
+                start_level: None,
                 infrastructure: Default::default(),
                 anchor_indices: Some(vec![0, 1]),
                 name: "BD".into(),

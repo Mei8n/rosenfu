@@ -4,6 +4,10 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPlans {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_junction_source: Option<ConstructionJunctionSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_level: Option<InfrastructureLevel>,
     #[serde(default)]
     pub infrastructure: SectionInfrastructure,
     pub version: u32,
@@ -49,6 +53,10 @@ pub struct ConstructionReference {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPath {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub junction_source: Option<ConstructionJunctionSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_level: Option<InfrastructureLevel>,
     #[serde(default)]
     pub infrastructure: SectionInfrastructure,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,6 +91,28 @@ pub struct ConstructionStation {
     pub name: String,
     pub point: GeoPoint,
     pub length_m: f64,
+}
+/// Exact clicked source geometry plus optimistic concurrency snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConstructionJunctionSource {
+    #[serde(default)]
+    pub reverse: bool,
+    pub alignment_id: AlignmentId,
+    pub segment_index: usize,
+    pub fraction: f64,
+    pub expected_alignment: Alignment,
+}
+impl ConstructionJunctionSource {
+    pub fn is_valid(&self) -> bool {
+        self.expected_alignment.id == self.alignment_id
+            && self.fraction.is_finite()
+            && (0.0..=1.0).contains(&self.fraction)
+            && self
+                .segment_index
+                .checked_add(1)
+                .is_some_and(|i| i < self.expected_alignment.points.len())
+    }
 }
 /// Versioned sampled edit; never reconstruct old plan shapes from moved anchors.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,7 +160,16 @@ fn valid_points(points: &[GeoPoint]) -> bool {
 impl ConstructionPlans {
     pub fn validate(&self) -> Result<(), WorldError> {
         let invalid = WorldError::InvalidConstructionPlans;
-        if !self.infrastructure.is_valid()
+        if self
+            .draft_junction_source
+            .as_ref()
+            .is_some_and(|source| !source.is_valid())
+            || self.parked_paths.iter().any(|path| {
+                path.junction_source
+                    .as_ref()
+                    .is_some_and(|source| !source.is_valid())
+            })
+            || !self.infrastructure.is_valid()
             || self
                 .parked_paths
                 .iter()
@@ -156,9 +195,11 @@ impl ConstructionPlans {
             return Err(invalid);
         }
         if self.draft_destination.as_ref().is_some_and(|d| {
-            self.draft_extension
-                .as_ref()
-                .is_none_or(|e| e.alignment_id == d.alignment_id && e.endpoint == d.endpoint)
+            (self.draft_extension.is_none() && self.draft_junction_source.is_none())
+                || self
+                    .draft_extension
+                    .as_ref()
+                    .is_some_and(|e| e.alignment_id == d.alignment_id && e.endpoint == d.endpoint)
                 || self.draft_points.len() < 2
         }) {
             return Err(invalid);
@@ -175,9 +216,10 @@ impl ConstructionPlans {
         let mut paths = BTreeSet::from([self.active_path_id]);
         for path in &self.parked_paths {
             if path.destination.as_ref().is_some_and(|d| {
-                path.extension
-                    .as_ref()
-                    .is_none_or(|e| e.alignment_id == d.alignment_id && e.endpoint == d.endpoint)
+                (path.extension.is_none() && path.junction_source.is_none())
+                    || path.extension.as_ref().is_some_and(|e| {
+                        e.alignment_id == d.alignment_id && e.endpoint == d.endpoint
+                    })
                     || path.points.len() < 2
             }) {
                 return Err(invalid);

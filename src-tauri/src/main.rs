@@ -22,6 +22,24 @@ fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInf
     })
 }
 #[tauri::command]
+fn preview_track_movement_geometry(
+    world: WorldDraft,
+) -> Result<Vec<rosenfu_core::world::TrackMovementGeometry>, String> {
+    rosenfu_core::world::World::new(world)
+        .map_err(|e| e.to_string())?
+        .track_movement_geometries()
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn preview_track_render_geometry(
+    world: WorldDraft,
+) -> Result<rosenfu_core::world::TrackRenderGeometry, String> {
+    rosenfu_core::world::World::new(world)
+        .map_err(|e| e.to_string())?
+        .track_render_geometry()
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
 fn world_snapshot(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
     Ok(editor
         .lock()
@@ -51,11 +69,15 @@ fn build_alignment_from_reference(
     design_speed_kmh: Option<f64>,
     anchor_indices: Option<Vec<usize>>,
     infrastructure: Option<rosenfu_core::world::SectionInfrastructure>,
+    start_level: Option<rosenfu_core::world::InfrastructureLevel>,
+    junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            junction_source,
+            start_level,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,
@@ -80,11 +102,15 @@ fn build_alignment(
     design_speed_kmh: Option<f64>,
     anchor_indices: Option<Vec<usize>>,
     infrastructure: Option<rosenfu_core::world::SectionInfrastructure>,
+    start_level: Option<rosenfu_core::world::InfrastructureLevel>,
+    junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            junction_source,
+            start_level,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,
@@ -108,11 +134,15 @@ fn build_alignment_with_stations(
     design_speed_kmh: Option<f64>,
     anchor_indices: Option<Vec<usize>>,
     infrastructure: Option<rosenfu_core::world::SectionInfrastructure>,
+    start_level: Option<rosenfu_core::world::InfrastructureLevel>,
+    junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            junction_source,
+            start_level,
             infrastructure: infrastructure.unwrap_or_default(),
             anchor_indices,
             name,
@@ -149,6 +179,20 @@ fn place_station_on_alignment(
         .lock()
         .map_err(|_| "world state unavailable")?
         .place_station_on_alignment(name, alignment_id, position, length_m, width_m)
+}
+#[tauri::command]
+fn set_service_appearance(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    color: String,
+    shape: rosenfu_core::world::ServiceSymbolShape,
+    symbol: String,
+    expected_appearance: Option<rosenfu_core::world::ServiceAppearance>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .set_service_appearance(service_id, color, shape, symbol, expected_appearance)
 }
 #[tauri::command]
 fn set_service_color(
@@ -328,11 +372,19 @@ fn create_service_path(
     segments: Vec<rosenfu_core::world::RouteSegment>,
     stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
     source_route_id: Option<RouteId>,
+    source_route_ids: Option<Vec<RouteId>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .create_service_path_with_source_route(name, start, segments, stops, source_route_id)
+        .create_service_path_with_source_routes(
+            name,
+            start,
+            segments,
+            stops,
+            source_route_id,
+            source_route_ids,
+        )
 }
 #[tauri::command]
 fn update_service_path(
@@ -369,11 +421,12 @@ fn replace_service_path(
     segments: Vec<rosenfu_core::world::RouteSegment>,
     stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
     source_route_id: Option<RouteId>,
+    source_route_ids: Option<Vec<RouteId>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .replace_service_path_with_source_route(
+        .replace_service_path_with_source_routes(
             service_id,
             expected_path,
             name,
@@ -381,6 +434,7 @@ fn replace_service_path(
             segments,
             stops,
             source_route_id,
+            source_route_ids,
         )
 }
 
@@ -536,6 +590,8 @@ fn main() {
             preview_route_candidates,
             preview_route_membership,
             world_snapshot,
+            preview_track_movement_geometry,
+            preview_track_render_geometry,
             add_station,
             build_alignment_from_reference,
             build_alignment,
@@ -545,6 +601,7 @@ fn main() {
             place_station_on_alignment,
             rename_station,
             set_service_color,
+            set_service_appearance,
             duplicate_service,
             delete_station,
             delete_alignment,

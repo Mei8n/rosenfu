@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 19;
+pub const SCHEMA_VERSION: u64 = 20;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -107,13 +107,10 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or(StorageError::InvalidHeader)?;
-    if version != 18 && version != SCHEMA_VERSION {
+    if version != SCHEMA_VERSION {
         return Err(StorageError::UnsupportedVersion(version));
     }
     let data = value.get("world").ok_or(StorageError::InvalidHeader)?;
-    if version == 18 && data.get("service_appearances").is_some() {
-        return Err(StorageError::InvalidHeader);
-    }
     if data.get("tracks").is_some()
         || ["routes", "services"].iter().any(|field| {
             data.get(*field)
