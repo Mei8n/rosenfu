@@ -1,3 +1,4 @@
+mod common;
 use rosenfu_core::world::{Company, CompanyId, Player, PlayerId, World, WorldDraft};
 
 #[test]
@@ -22,25 +23,37 @@ fn json_roundtrip_preserves_ids_and_ownership() {
 
 #[test]
 fn deserialization_does_not_bypass_reference_validation() {
-    let json = r#"{"next_id":"43","players":[],"companies":[{"id":"1","owner":"42","name":"orphan"}],"stations":[],"tracks":[],"routes":[],"services":[]}"#;
+    let json = r#"{"next_id":"43","players":[],"companies":[{"id":"1","owner":"42","name":"orphan"}],"stations":[],"routes":[],"services":[]}"#;
     let restored: WorldDraft = serde_json::from_str(json).unwrap();
     assert!(World::new(restored).is_err());
 }
 
 #[test]
 fn construction_graph_roundtrip_preserves_order_coordinates_and_endpoints() {
-    let json = r#"{
-      "next_id":"9", "players":[{"id":"1","name":"Player"}],
-      "companies":[{"id":"1","owner":"1","name":"Railway"}],
-      "stations":[
-        {"id":"1","owner":"1","name":"A","latitude":35.125,"longitude":139.25},
-        {"id":"2","owner":"1","name":"B","latitude":35.5,"longitude":139.75},
-        {"id":"3","owner":"1","name":"C","latitude":35.75,"longitude":139.875}
-      ],
-      "tracks":[{"id":"8","owner":"1","from":"1","to":"2"},{"id":"4","owner":"1","from":"3","to":"2"}],
-      "routes":[{"id":"1","owner":"1","name":"Main","start":"1","tracks":["8","4"]}], "services":[]
-    }"#;
-    let source: WorldDraft = serde_json::from_str(json).unwrap();
-    let restored = serde_json::from_str(&serde_json::to_string(&source).unwrap()).unwrap();
-    assert_eq!(World::new(restored).unwrap().snapshot(), &source);
+    let (mut world, company, alignment, stations) = common::line(3);
+    world
+        .add_planned_route(
+            company,
+            "Main".into(),
+            stations[2],
+            vec![common::segment(alignment, stations[2], stations[0])],
+            stations.iter().rev().copied().collect(),
+        )
+        .unwrap();
+    common::service(
+        &mut world,
+        company,
+        stations[0],
+        vec![common::segment(alignment, stations[0], stations[2])],
+    );
+    let source = world.snapshot();
+    let restored = serde_json::from_str(&serde_json::to_string(source).unwrap()).unwrap();
+    assert_eq!(World::new(restored).unwrap().snapshot(), source);
+}
+
+#[test]
+fn legacy_track_payload_is_rejected_not_silently_migrated() {
+    let mut old = serde_json::to_value(WorldDraft::default()).unwrap();
+    old["tracks"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<WorldDraft>(old).is_err());
 }
