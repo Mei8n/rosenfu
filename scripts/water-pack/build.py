@@ -129,10 +129,25 @@ def read_osm(path, collector, location_index='flex_mem'):
         header = reader.header()
         collector.source_header = {key: header.get(key) for key in ('osmosis_replication_timestamp', 'generator') if header.get(key)}
     factory = osmium.geom.GeoJSONFactory()
+    # Area callbacks can precede relation callbacks or be absent on failed
+    # assembly. Compare source identities only after the entire scan.
+    declared_areas, received_areas = set(), set()
+
+    def remember(identities, identity):
+        identities.add(identity)
+        if len(identities) > 500000:
+            raise ValueError('Source area accounting limit exceeded')
+
+    def issue(identity, reason):
+        if len(collector.issues) >= 1000:
+            raise ValueError('Too many unresolved source geometries')
+        collector.issues.append(dict(id=identity, reason=reason))
 
     class Handler(osmium.SimpleHandler):
         def way(self, way):
             tags = dict(way.tags)
+            if water_tags(tags) and way.is_closed():
+                remember(declared_areas, f'way/{way.id}')
             kind = 'coastline' if tags.get('natural') == 'coastline' else 'waterway-line' if 'waterway' in tags and tags['waterway'] != 'riverbank' else None
             # A non-closed water-tagged way cannot provide a surface polygon.
             if not kind and water_tags(tags) and not way.is_closed():
@@ -142,29 +157,32 @@ def read_osm(path, collector, location_index='flex_mem'):
             try:
                 geometry = json.loads(factory.create_linestring(way))
             except (osmium.InvalidLocationError, RuntimeError):
-                if len(collector.issues) >= 1000:
-                    raise ValueError('Too many unresolved source geometries')
-                collector.issues.append(dict(id=f'way/{way.id}', reason='missing-location-or-invalid-line'))
+                issue(f'way/{way.id}', 'missing-location-or-invalid-line')
                 return
             collector.add(f'way/{way.id}', kind, geometry, tags)
+
+        def relation(self, relation):
+            if water_tags(dict(relation.tags)):
+                remember(declared_areas, f'relation/{relation.id}')
 
         def area(self, area):
             tags = dict(area.tags)
             if not water_tags(tags):
                 return
             identity = f'{"way" if area.from_way() else "relation"}/{area.orig_id()}'
+            remember(received_areas, identity)
             try:
                 geometry = json.loads(factory.create_multipolygon(area))
             except (osmium.InvalidLocationError, RuntimeError):
-                if len(collector.issues) >= 1000:
-                    raise ValueError('Too many unresolved source geometries')
-                collector.issues.append(dict(id=identity, reason='invalid-area'))
+                issue(identity, 'invalid-area')
                 return
             collector.add(identity, 'water-area', geometry, tags)
 
-    # Pyosmium assembles multipolygon relations and retains inner rings. Failed assembly
-    # can omit areas without a callback; hence this is observations, never completeness.
     Handler().apply_file(str(path), locations=True, idx=location_index)
+    # Missing geometry has no trustworthy location: retain the issue at source
+    # scope, even for bounded queries. Never infer dry land or invent a polygon.
+    for identity in sorted(declared_areas - received_areas):
+        issue(identity, 'water-area-not-assembled')
 
 
 def build(path, bounds, revision, source_url, license_name, license_url, attribution, output, max_input_bytes=768*1024*1024):
