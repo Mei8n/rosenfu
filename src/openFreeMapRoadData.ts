@@ -8,7 +8,7 @@ import type {RoadWayMetadata} from './referenceGraphBundle';
 export const OFM_METADATA='https://tiles.openfreemap.org/planet';
 export const OFM_ATTRIBUTION='© OpenMapTiles © OpenStreetMap contributors';
 export const OFM_LIMITS={bytes:5*1024*1024,sessionBytes:50*1024*1024,sessionTiles:3000,tilesPerLoad:16,timeout:20000,cacheEntries:64,retry:60000} as const;
-export type OpenFreeMapRoadLine={id:string;revision:string;z:14;x:number;y:number;extent:number;coordinates:[number,number][];class:string;subclass?:string;brunnel?:string;layer?:number;oneway?:number};
+export type OpenFreeMapRoadLine={id:string;revision:string;z:14;x:number;y:number;extent:number;coordinates:[number,number][];class:string;subclass?:string;access?:string;brunnel?:string;layer?:number;oneway?:number};
 export type OpenFreeMapTileSnapshot=RoadSnapshot&{tileLines:OpenFreeMapRoadLine[]};
 export type OpenFreeMapRoadSnapshot=RoadSnapshot&{tileSnapshots:OpenFreeMapTileSnapshot[];tileLines:OpenFreeMapRoadLine[]};
 const roadClasses=new Set(['motorway','trunk','primary','secondary','tertiary','minor','service','track','busway','bus_guideway','path']);
@@ -22,13 +22,13 @@ export async function decodeOpenFreeMapRoadTile(bytes:Uint8Array,x:number,y:numb
  const tileLines:OpenFreeMapRoadLine[]=[];
  const bounds=roadTileBounds(x,y),extent={...bounds},nodes:GraphNode[]=[],edges:GraphEdge[]=[],roads:RoadWay[]=[],roadWays:Record<string,RoadWayMetadata>=Object.create(null);
  for(let i=0;i<layer.length;i++){const f=layer.feature(i),p=f.properties;if(f.type!==2||!roadClasses.has(String(p.class)))continue;
- const str=(k:string)=>typeof p[k]==='string'||typeof p[k]==='number'?String(p[k]):null;const brunnel=str('brunnel'),rawLayer=str('layer'),nLayer=rawLayer===null?null:Number(rawLayer);const supportedLayer=nLayer===null||Number.isInteger(nLayer)&&Math.abs(nLayer)<=10;
+ const str=(k:string)=>{const v=typeof p[k]==='string'||typeof p[k]==='number'?String(p[k]):null;if(v!==null&&(!v||new TextEncoder().encode(v).length>100||/[\p{Cc}\p{Cf}]/u.test(v)))throw Error('道路属性が不正です。');return v;};const brunnel=str('brunnel'),rawLayer=str('layer'),nLayer=rawLayer===null?null:Number(rawLayer);const supportedLayer=nLayer===null||Number.isInteger(nLayer)&&Math.abs(nLayer)<=10;
  const bridge=brunnel==='bridge'?'yes':brunnel===null?'no':null,tunnel=brunnel==='tunnel'?'yes':brunnel===null?'no':null;
  const geom=f.loadGeometry();for(let j=0;j<geom.length;j++){const line=geom[j];if(line.length<2)continue;const id=`ofm:${revision}:14:${x}:${y}:${i}:${j}`;const points=line.map((pt,k)=>{const longitude=(x+pt.x/f.extent)/16384*360-180,latitude=Math.atan(Math.sinh(Math.PI*(1-2*(y+pt.y/f.extent)/16384)))*180/Math.PI;extent.west=Math.min(extent.west,longitude);extent.east=Math.max(extent.east,longitude);extent.south=Math.min(extent.south,latitude);extent.north=Math.max(extent.north,latitude);return {osmId:`${id}:${k}`,latitude,longitude};});
  if(nodes.length+points.length>20000)throw Error('道路頂点数が上限を超えています。');nodes.push(...points);
- tileLines.push({id,revision,z:14,x,y,extent:f.extent,coordinates:points.map(p=>[p.longitude,p.latitude]),class:String(p.class),...(str("subclass")===null?{}:{subclass:str("subclass")!}),...(brunnel===null?{}:{brunnel}),...(nLayer===null?{}:{layer:nLayer}),...(typeof p.oneway==='number'?{oneway:p.oneway}:{})});
+ tileLines.push({id,revision,z:14,x,y,extent:f.extent,coordinates:points.map(p=>[p.longitude,p.latitude]),class:String(p.class),...(str("access")===null?{}:{access:str("access")!}),...(str("subclass")===null?{}:{subclass:str("subclass")!}),...(brunnel===null?{}:{brunnel}),...(nLayer===null?{}:{layer:nLayer}),...(typeof p.oneway==='number'?{oneway:p.oneway}:{})});
  // OpenMapTiles omits default ground structural tags; unsupported values stay unknown.
- roads.push({id,points:points.map(({latitude,longitude})=>({latitude,longitude})),layer:rawLayer,level:null,bridge,tunnel,coverage:[bounds]});
+ const observed:RoadWay&{classification:{class:string;subclass:string|null;access:string|null}}={classification:{class:String(p.class),subclass:str("subclass"),access:str("access")},id,points:points.map(({latitude,longitude})=>({latitude,longitude})),layer:rawLayer,level:null,bridge,tunnel,coverage:[bounds]};roads.push(observed);
  roadWays[id]={highway:String(p.class)==='minor'?'residential':String(p.class),access:str('access'),motorVehicle:null,structureUnsupported:String(p.class)==='path'||!supportedLayer||(nLayer!==null&&nLayer!==0)||brunnel!==null};
  for(let k=0;k<points.length-1;k++){const a=points[k],b=points[k+1];if(a.longitude===b.longitude&&a.latitude===b.latitude)continue;edges.push({id:`${id}/${k}`,osmWayId:id,segmentIndex:k,from:a.osmId,to:b.osmId,mode:'road',layer:supportedLayer?nLayer:null,level:null,bridge:bridge===null?null:bridge==='yes',tunnel:tunnel===null?null:tunnel==='yes'});}
  }}
