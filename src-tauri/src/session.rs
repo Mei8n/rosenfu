@@ -1587,6 +1587,35 @@ impl WorldEditor {
         self.company_setup_required = false;
         Ok(self.snapshot())
     }
+    pub fn rename_route(
+        &mut self,
+        route_id: RouteId,
+        name: String,
+        expected_name: String,
+    ) -> Result<WorldDraft, String> {
+        if name.trim().is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control)
+        {
+            return Err("路線名は制御文字を含まない1〜80文字で入力してください。".into());
+        }
+        let mut candidate = self.clone();
+        let mut draft = candidate.snapshot();
+        let route = draft
+            .routes
+            .iter_mut()
+            .find(|route| route.id == route_id && route.owner == self.company)
+            .ok_or("編集する路線が見つかりません。")?;
+        if route.name != expected_name {
+            return Err(
+                "路線名が変更されています。最新の名前を確認してから変更してください。".into(),
+            );
+        }
+        route.name = name.trim().to_owned();
+        candidate.world.replace(draft).map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
+
     pub fn save_planned_route(
         &mut self,
         route_id: Option<RouteId>,
@@ -2224,6 +2253,65 @@ mod tests {
             .is_err());
         assert_eq!(e.snapshot(), before);
         e.company = company;
+    }
+
+    #[test]
+    fn route_rename_preserves_everything_except_name_and_roundtrips() {
+        let (mut e, a, s) = alignment_fixture();
+        let route = e
+            .save_planned_route(None, "本線".into(), s[0], vec![span(a, s[0], s[2])], vec![])
+            .unwrap()
+            .routes[0]
+            .id;
+        let service = create_test_service(&mut e, s[0], vec![span(a, s[0], s[2])]).services[0].id;
+        e.set_service_route_binding(
+            service,
+            rosenfu_core::world::ServiceRouteBindingKind::Route { route_id: route },
+        )
+        .unwrap();
+        e.set_service_appearance(
+            service,
+            "#123456".into(),
+            rosenfu_core::world::ServiceSymbolShape::Diamond,
+            "快".into(),
+            None,
+        )
+        .unwrap();
+        let before = e.snapshot();
+        let result = e
+            .rename_route(route, " 新本線 ".into(), "本線".into())
+            .unwrap();
+        let mut expected = before;
+        expected.routes[0].name = "新本線".into();
+        assert_eq!(result, expected);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rename.json");
+        e.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), expected);
+    }
+    #[test]
+    fn route_rename_conflict_invalid_name_and_wrong_owner_are_atomic() {
+        let (mut e, a, s) = alignment_fixture();
+        let id = e
+            .save_planned_route(None, "本線".into(), s[0], vec![span(a, s[0], s[2])], vec![])
+            .unwrap()
+            .routes[0]
+            .id;
+        let before = e.snapshot();
+        for (name, expected) in [
+            ("".to_owned(), "本線"),
+            ("x".repeat(81), "本線"),
+            ("改\n名".to_owned(), "本線"),
+            ("変更".to_owned(), "古い名前"),
+        ] {
+            assert!(e.rename_route(id, name, expected.into()).is_err());
+            assert_eq!(e.snapshot(), before);
+        }
+        let owner = e.company;
+        e.company = CompanyId(u64::MAX);
+        assert!(e.rename_route(id, "変更".into(), "本線".into()).is_err());
+        assert_eq!(e.snapshot(), before);
+        e.company = owner;
     }
 
     #[test]

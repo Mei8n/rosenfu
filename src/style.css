@@ -570,3 +570,4 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
   .workbench .construction-toolbar .construction-options-row .track-advanced-settings { flex-basis:8em; }
   .workbench .construction-toolbar .speed-input { max-width:100%; }
 }
+.workbench .route-station-select, .workbench .route-station-select * { cursor:crosshair; }
