@@ -19,7 +19,7 @@ async function start(){
   if(command==='load_save_slot')return {...base,view_state:view};
   throw Error('unexpected '+command);
  });
- render(<App/>);await screen.findByText(/view-test/);
+ render(<App/>);await screen.findByText(/view-test/);await waitFor(()=>expect(invoke).toHaveBeenCalledWith('autosave_status',{slotId:'test-slot'}));
 }
 const latitude=()=>Number((screen.getByLabelText('中心緯度') as HTMLInputElement).value);
 test('restores saved center and zoom on startup, includes current view in manual save and restores on reload',async()=>{
