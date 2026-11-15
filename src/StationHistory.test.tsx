@@ -28,7 +28,7 @@ async function start(){let world=structuredClone(initial);let id=20;const failur
  if(command==="load_world"){if(failures.load)throw Error("load failure");world=structuredClone(initial);return world;}
  throw Error(command);
  });render(<App/>);await screen.findByText(/history-test/);await ready();fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));return failures;}
-async function place(){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:250,clientY:150});await screen.findByText(/を計画に追加しました/);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/計画駅を建設しました/);await ready();}
+async function place(x=250){const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:x,clientY:150});await screen.findByText(/を計画に追加しました/);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/計画駅を建設しました/);await ready();}
 async function ready(){await waitFor(()=>expect((document.querySelector(".save-controls button:last-child") as HTMLButtonElement).disabled).toBe(false));}
 const undo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});const redo=()=>fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
 test("station undo and redo preserve failed history, issue a fresh ID and protect existing stations",async()=>{
@@ -59,7 +59,7 @@ test("repeated keydown cannot issue duplicate station deletion",async()=>{
 });
 
 test("multiple placements undo and redo in LIFO order",async()=>{
- await start();await place();await place();undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();undo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="delete_station")).toHaveLength(2));
+ await start();await place();await place(300);undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();undo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="delete_station")).toHaveLength(2));
  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="delete_station").map(([,args])=>(args as any).stationId)).toEqual(["21","20"]);
  await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置をやり直す",hidden:true}) as HTMLButtonElement).disabled).toBe(false));redo();await screen.findByText(/駅を再設置しました/);await ready();redo();await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>(command==="place_station_on_alignment"||command==="build_plan"))).toHaveLength(4));
  await waitFor(()=>expect((region(".station-history").getByRole("button",{name:"駅設置を取り消す",hidden:true}) as HTMLButtonElement).disabled).toBe(false));undo();await screen.findByText(/直前の駅設置を取り消しました/);await ready();expect(invoke).toHaveBeenCalledWith("delete_station",{stationId:"23"});

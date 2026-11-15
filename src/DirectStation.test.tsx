@@ -114,3 +114,18 @@ test("station controls are on the map, invalid placement is boxed and names are 
  expect(JSON.parse(localStorage.getItem('rosenfu.display-settings')!).settings.stationNamesVisible).toBe(true);
  fireEvent.click(screen.getByLabelText('駅名を表示'));expect(map.querySelector('.planned-station text')).toBeNull();
 });
+
+test("planned station hover names it, blocks duplicate placement and edits persist in saved plans",async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:250,clientY:150});
+ fireEvent.pointerMove(map,{clientX:250,clientY:150});
+ expect(screen.getByText("新駅 · 10両")).toBeTruthy();
+ expect(map.querySelector(".station-placement-preview")).toBeNull();
+ fireEvent.click(map,{clientX:250,clientY:150});
+ expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
+ fireEvent.change(screen.getByLabelText("計画駅名"),{target:{value:"中央"}});
+ expect(screen.getByText("中央 · 10両")).toBeTruthy();
+ fireEvent.click(screen.getByRole("button",{name:"保存"}));
+ await screen.findByText(/ワールドと未着工計画を保存しました/);
+ expect(invoke).toHaveBeenCalledWith("save_world",expect.objectContaining({constructionPlans:expect.objectContaining({plannedStations:[expect.objectContaining({name:"中央"})]})}));
+});
