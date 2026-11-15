@@ -49,3 +49,25 @@ test('first anchor height stays fixed while destination changes through undo sav
  fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/inspect grade/);
  expect(invoke).toHaveBeenCalledWith('build_alignment',expect.objectContaining({startLevel:'ground',infrastructure:{track_count:1,level:'elevated'}}));
 });
+
+test('individual anchor levels survive edits Undo Redo save and reload',async()=>{
+ let map=await start();
+ fireEvent.click(map,{clientX:100,clientY:100});
+ fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
+ fireEvent.click(map,{clientX:220,clientY:100});
+ fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.ground}));
+ fireEvent.click(map,{clientX:340,clientY:100});fireEvent.click(map,{clientX:340,clientY:100});
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
+ fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}));
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated}).getAttribute('aria-pressed')).toBe('true');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
+ const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?Promise.resolve({saved:true}):original(command,args));
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText('ワールドと未着工計画を保存しました。');
+ const saved=(vi.mocked(invoke).mock.calls.filter(([c])=>c==='save_world').at(-1)![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
+ expect(saved.draftAnchorLevels).toEqual(['ground','elevated_2','ground']);
+ cleanup();map=await start({...empty,construction_plans:saved});
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
+ expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
+});
