@@ -1,0 +1,26 @@
+name: Water core adapter
+on:
+  pull_request:
+    paths:
+      - 'scripts/water-proof/core-adapter/**'
+      - 'crates/rosenfu-core/**'
+      - '.github/workflows/water-core-adapter.yml'
+permissions:
+  contents: read
+jobs:
+  adapter:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      TMPDIR: ${{ github.workspace }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/water-adapter-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --manifest-path scripts/water-proof/core-adapter/Cargo.toml --check
+      - run: cargo test --locked --manifest-path scripts/water-proof/core-adapter/Cargo.toml

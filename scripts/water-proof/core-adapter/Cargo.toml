@@ -1,0 +1,10 @@
+[package]
+name = "rosenfu-water-worst-case-adapter"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+rosenfu-core = { path = "../../../crates/rosenfu-core" }
