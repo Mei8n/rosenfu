@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 import React from 'react';
 import {afterEach,expect,test,vi} from 'vitest';
-import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {invoke,isTauri} from '@tauri-apps/api/core';
 import {App} from './App';
 import {project,mapViewport} from './map';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:vi.fn()}));
+// Geometry/type tests deliberately have no road reference. Road acquisition and
+// its deadline are covered by ConstructionRoadAcceptance, not real network calls.
+vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'unavailable fixture',load:async()=>{throw Error('road reference unavailable in geometry fixture');}})}));
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 test('circular hover guide precedes saved geometry and undo/redo restores the path',async()=>{
  vi.stubGlobal("PointerEvent",MouseEvent);
@@ -22,6 +25,7 @@ test('circular hover guide precedes saved geometry and undo/redo restores the pa
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelector('.curve-circle-guide')).toBeNull();
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelector('.draft-path')!.getAttribute('d')).toBe(preview);
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_alignment',expect.any(Object)));
  const call=vi.mocked(invoke).mock.calls.find(([command])=>command==='build_alignment')!;
  expect(call).toBeTruthy();
  const points=(call[1] as {points:{latitude:number;longitude:number}[]}).points;
@@ -52,6 +56,7 @@ test('automatic straights and curves need no mode switch, use identical preview/
  expect(map.querySelector('.draft-path')!.getAttribute('d')).toContain(straightPath);
  const finalPreview=map.querySelector('.draft-path')!.getAttribute('d');
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_alignment',expect.any(Object)));
  const call=vi.mocked(invoke).mock.calls.find(([command])=>command==='build_alignment')!;
  expect(call[1]).toMatchObject({designSpeedKmh:80});
  const points=(call[1] as {points:{latitude:number;longitude:number}[]}).points;

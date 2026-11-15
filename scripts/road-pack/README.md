@@ -175,3 +175,57 @@ not permission to certify absence of roads or permit construction. Current `.pol
 downloads do not establish that a historical PBF used the same clipping geometry.
 The data may serve reference display/following, but construction coverage must
 remain UNKNOWN until that separate provenance gap is resolved and reviewed.
+
+### Boundary revision evidence (2026-11-16 investigation)
+
+The official [Geofabrik polygon history](https://github.com/geofabrik/polygons_download.geofabrik.de)
+permits inspecting changes, but its README explains that download-server polygons
+are intersections of regional and parent polygons, not the raw regional files.
+At inspected tree `c26b05e77065591be18f83cbb38622468afd8af5`, the most recent
+Kanto polygon author date was 2017-11-09, Japan 2022-03-16, Asia 2022-09-14.
+The repository imported that history in 2025. These dates are evidence of stability,
+not proof of the exact extraction configuration used for a particular PBF.
+
+`kanto-261114.poly` returned HTTP 404. The official Kanto listing associated
+`kanto-261114.osm.pbf` and the undated `kanto.poly` with the same displayed
+2026-11-15 01:49 time, but does not publish a PBF-to-polygon hash binding.
+Intersecting the pinned repository region/Japan/Asia polygons did **not** produce
+geometrically identical boundaries to the downloaded polygons: Kanto symmetric
+difference 0.0005398823 square degrees, Shikoku 0.0001223265. Rounding is a
+possible explanation, not an established fact. No tolerance is used to turn this
+into a coverage guarantee. Actual generated packs remain `coverage_verified:false`.
+Even an exact clipping match would only certify extraction of selected OSM road
+classes from that snapshot, not completeness of roads in the real world.
+
+`generate_contract_fixture.py` creates an invented four-cell PBF and polygon
+pair together, then explicitly marks **only that synthetic fixture** verified.
+`src/nationalRoadRepository.test.ts` loads its real generator output through the
+production index/shard/cell reader and checks source identity, revision and hashes.
+It must not be used as a certification tool for real Geofabrik data.
+
+### Independent disk budgets
+
+The generator reserves at least 3 GiB globally (`min_free_bytes`) and caps its own
+allocated filesystem blocks at 4 GiB (`work_bytes`) by default. Do not implement
+the latter by subtracting current free space from startup free space: unrelated
+builds would be charged to this generator. Accounting includes output files,
+output directories and the active SQLite/node-index working directory, but not
+input PBFs or other jobs. Immutable output files are statted once; only their
+small directory chain and the few mutable index files are refreshed. Thus emitting
+400,000 cells does not repeatedly scan 400,000 prior files. Sparse-file accounting
+uses Linux `st_blocks * 512`, not logical size. Platforms without `st_blocks` use
+logical bytes as a fallback; exact allocated-block accounting is supported only
+where `st_blocks` is available. The guard runs at bounded extraction
+checkpoints and before/after output writes; it detects an overage and aborts
+without publication rather than providing an OS-enforced instantaneous quota.
+Node indexes are released after extraction and before cell emission.
+
+PBF extraction runs in a short-lived `spawn` process. In osmium 4.3.2 a named
+`sparse_file_array` file descriptor can remain open even after reader closure,
+cache clear, reference deletion and Python garbage collection. Waiting for the
+child to exit makes descriptor release explicit before removing `nodes.idx`,
+including on Windows. This is not a cleanup-error suppression. SQLite and the
+node cache remain inside the same own-work budget; no source data is sent elsewhere.
+Extraction/shutdown has a two-hour default deadline; error, timeout or parent
+interruption terminates and joins the child before temporary-directory cleanup.
+No index is published on failure.

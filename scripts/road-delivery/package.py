@@ -9,6 +9,7 @@ import tempfile
 import zipfile
 
 MAX_FILE = 5 * 1024 * 1024
+TARGET_EXPANDED = 32 * 1024 * 1024
 MAX_EXPANDED = 256 * 1024 * 1024
 MAX_COMPRESSED = 64 * 1024 * 1024
 MAX_TOTAL_COMPRESSED = 2 * 1024 * 1024 * 1024
@@ -70,32 +71,47 @@ def package(root, output):
                 manifest = json.loads(data)
                 cells = manifest['cells']
                 require(isinstance(cells, dict) and len(cells) == shard['cells'] and len(cells) <= 2500, 'cell count')
-                filename = name + '-' + directory.name + '.zip'
-                size = len(data)
-                with zipfile.ZipFile(stage / filename, 'w') as z:
-                    add(z, path, data)
-                    for key, cell in sorted(cells.items()):
-                        require(re.fullmatch(r'-?\d+_-?\d+', key) and cell['file'] == key + '.json', 'cell path')
-                        content = read(directory / cell['file'])
-                        require(len(content) == cell['bytes'] and digest(content) == cell['sha256'], 'cell hash mismatch')
-                        size += len(content)
-                        require(size <= MAX_EXPANDED, 'expanded shard budget exceeded; subdivide source')
-                        add(z, path.rsplit('/', 1)[0] + '/' + cell['file'], content)
-                archive = read(stage / filename, MAX_COMPRESSED)
-                total_compressed += len(archive)
-                require(total_compressed <= MAX_TOTAL_COMPRESSED, 'total output budget exceeded')
-                assets.append(dict(name=filename, manifest=path, manifest_sha256=shard['sha256'],
-                                   sha256=digest(archive), bytes=len(archive), expanded_bytes=size, files=len(cells)+1))
+                require(cells, 'empty shard')
+                groups, group, size = [], [], len(data)
+                for key, cell in sorted(cells.items()):
+                    require(re.fullmatch(r'-?\d+_-?\d+', key) and cell['file'] == key + '.json', 'cell path')
+                    require(type(cell['bytes']) is int and 0 <= cell['bytes'] <= MAX_FILE, 'cell size')
+                    require(len(data) + cell['bytes'] <= MAX_EXPANDED, 'expanded cell budget exceeded')
+                    if group and size + cell['bytes'] > min(TARGET_EXPANDED, MAX_EXPANDED):
+                        groups.append(group); group, size = [], len(data)
+                    group.append((key, cell)); size += cell['bytes']
+                if group: groups.append(group)
+                for number, group in enumerate(groups):
+                    require(len(assets) < MAX_ASSETS, 'asset limit')
+                    require(shutil.disk_usage(stage).free >= MIN_FREE + MAX_EXPANDED + 16 * 1024 * 1024, 'insufficient output disk')
+                    filename = name + '-' + directory.name + f'-p{number:03d}.zip'
+                    size = len(data)
+                    with zipfile.ZipFile(stage / filename, 'w') as z:
+                        add(z, path, data)
+                        for key, cell in group:
+                            content = read(directory / cell['file'])
+                            require(len(content) == cell['bytes'] and digest(content) == cell['sha256'], 'cell hash mismatch')
+                            size += len(content)
+                            require(size <= MAX_EXPANDED, 'expanded part budget exceeded')
+                            add(z, path.rsplit('/', 1)[0] + '/' + cell['file'], content)
+                    archive = read(stage / filename, MAX_COMPRESSED)
+                    total_compressed += len(archive)
+                    require(total_compressed <= MAX_TOTAL_COMPRESSED, 'total output budget exceeded')
+                    assets.append(dict(name=filename, manifest=path, manifest_sha256=shard['sha256'],
+                                       sha256=digest(archive), bytes=len(archive), expanded_bytes=size,
+                                       files=len(group)+1, cell_count=len(group), first_cell=group[0][0], last_cell=group[-1][0]))
         require(assets, 'no shards')
         (stage / 'index.json').write_bytes(raw)
-        catalog = dict(format='rosenfu-road-release', version=1, revision=index['revision'],
+        catalog = dict(format='rosenfu-road-release', version=2, revision=index['revision'],
                        publishable=True,
                        coverage_verified=index.get('coverage_verified') is True and index.get('polygon_snapshot_match') == 'verified',
                        coverage_note='Observed source roads only. Missing or unverified data is not proof of road absence.',
                        index_sha256=digest(raw), license=index['license'], attribution=index['attribution'],
                        license_url='https://opendatacommons.org/licenses/odbl/1-0/',
                        attribution_url='https://www.openstreetmap.org/copyright', assets=assets)
-        (stage / 'catalog.json').write_text(json.dumps(catalog, sort_keys=True, separators=(',', ':')) + '\n')
+        catalog_bytes = (json.dumps(catalog, sort_keys=True, separators=(',', ':')) + '\n').encode()
+        require(len(catalog_bytes) <= MAX_FILE, 'catalog size')
+        (stage / 'catalog.json').write_bytes(catalog_bytes)
         stage.rename(output)
         return catalog
     finally:

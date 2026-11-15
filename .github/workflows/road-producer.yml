@@ -1,0 +1,140 @@
+name: Pinned road data producer
+on:
+  pull_request:
+    paths: ['scripts/road-producer/**', '.github/workflows/road-producer.yml']
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'Generate one region first; all is sequential and may exceed runner budgets'
+        type: choice
+        options: [shikoku, kanto, hokkaido, tohoku, chubu, kansai, chugoku, kyushu, all]
+        default: shikoku
+      prepare_draft:
+        description: 'Explicitly prepare a draft only, on the development integration branch'
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Existing data-road-* tag; required only for draft creation'
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: road-producer-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -B -m unittest discover -s scripts/road-producer -v
+  select:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-24.04
+    outputs:
+      regions: ${{ steps.select.outputs.regions }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: select
+        env:
+          REGION: ${{ inputs.region }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          sys.path.insert(0,'scripts/road-producer')
+          import produce
+          selected=os.environ['REGION']
+          assert selected in (*produce.NAMES,'all')
+          names=list(produce.NAMES) if selected=='all' else [selected]
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('regions='+json.dumps(names)+'\n')
+          PY
+  region:
+    needs: select
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        region: ${{ fromJSON(needs.select.outputs.regions) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install osmium==4.3.2 shapely==2.1.2
+      - name: Generate pinned source and package locally
+        env:
+          REGION: ${{ matrix.region }}
+        run: python scripts/road-producer/produce.py produce "$REGION" "release/$REGION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: road-region-${{ matrix.region }}
+          path: release/${{ matrix.region }}
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+  combine:
+    needs: [select, region]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: road-region-*
+          path: region-artifacts
+      - name: Verify and combine exactly the requested regions
+        env:
+          REGIONS: ${{ needs.select.outputs.regions }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+          sys.path.insert(0,'scripts/road-producer'); import produce
+          names=json.loads(os.environ['REGIONS'])
+          root=pathlib.Path('region-artifacts')
+          for name in names: (root/('road-region-'+name)).rename(root/name)
+          produce.combine(root,pathlib.Path('road-release'),names)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prepared-road-release
+          path: road-release
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+  draft:
+    if: inputs.prepare_draft && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev/construction-review-integration'
+    needs: combine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: prepared-road-release
+          path: road-release
+      - name: Explicit draft only, never publish or overwrite
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$TAG" =~ ^data-road-[a-zA-Z0-9._-]+$ ]]
+          gh release create "$TAG" --verify-tag --draft --title "$TAG" \
+            --notes "Pinned OSM road observations, producer $GITHUB_SHA / run $GITHUB_RUN_ID. ODbL-1.0; © OpenStreetMap contributors https://www.openstreetmap.org/copyright . Coverage remains unverified; this is not complete real-world road coverage. Review before any publication." road-release/*

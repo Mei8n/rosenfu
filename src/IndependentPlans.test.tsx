@@ -10,6 +10,8 @@ import { alignmentLength, pointOnAlignment } from "./alignment";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 HTMLDialogElement.prototype.showModal=function(){this.setAttribute("open","");};
 HTMLDialogElement.prototype.close=function(){this.removeAttribute("open");};
+// These history fixtures exclude road data; provider/timeout behavior has separate acceptance tests.
+vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'unavailable fixture',load:async()=>{throw Error('road reference unavailable in history fixture');}})}));
 afterEach(() => { localStorage.removeItem("rosenfu.display-settings"); cleanup(); vi.resetAllMocks(); });
 const alignment = { id:"3",owner:"2",name:"試験線",points:[{latitude:35.67504,longitude:139.72},{latitude:35.67504,longitude:139.78}] };
 const trackPanel = () => within(document.querySelector<HTMLElement>(".construction-content")!);
@@ -46,10 +48,11 @@ test("disconnected plans remain visible and build separately without losing the 
   fireEvent.click(trackPanel().getByRole("button",{name:/計画 1 を編集/}));
   expect(map.querySelector(".draft-path:not(.parked-plan)")!.getAttribute("d")).toBe(first);
   expect(map.querySelector(".parked-plan")!.getAttribute("d")).toBe(second);
-  vi.mocked(invoke).mockRejectedValueOnce(Error("build rejected"));
+  const original=vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async(command,args)=>{if(command==="build_alignment")throw Error("build rejected");return original(command,args);});
   fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/build rejected/);
   expect(map.querySelectorAll(".draft-path")).toHaveLength(2);
-  vi.mocked(invoke).mockResolvedValueOnce(built);
+  vi.mocked(invoke).mockImplementation(async(command,args)=>command==="build_alignment"?built:original(command,args));
   fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
   expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
   expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false);

@@ -36,6 +36,40 @@ class Packaging(unittest.TestCase):
             self.assertEqual(len(archive.namelist()), 2)
             self.assertIsNone(archive.testzip())
 
+    def many_cells(self):
+        cells={}
+        for key in ['10_2','2_2','3_2']:
+            data=(key*20).encode();(self.shard/(key+'.json')).write_bytes(data)
+            cells[key]={'file':key+'.json','bytes':len(data),'sha256':package.digest(data)}
+        raw=json.dumps({'cells':cells}).encode();(self.shard/'manifest.json').write_bytes(raw)
+        self.index['regions'][0]['shards'][0].update(bytes=len(raw),sha256=package.digest(raw),cells=len(cells));self.write()
+        return raw
+
+    def test_parts_are_lexicographic_complete_and_bounded(self):
+        raw=self.many_cells()
+        with patch.object(package,'TARGET_EXPANDED',len(raw)+80):
+            result=package.package(self.root,self.output)
+        self.assertEqual(result['version'],2)
+        self.assertEqual([a['first_cell'] for a in result['assets']],['10_2','2_2','3_2'])
+        for n,a in enumerate(result['assets']):
+            self.assertTrue(a['name'].endswith(f'-p{n:03d}.zip'))
+            self.assertEqual(a['first_cell'],a['last_cell']);self.assertEqual(a['cell_count'],1)
+            with zipfile.ZipFile(self.output/a['name']) as z:
+                self.assertEqual(z.read(a['manifest']),raw)
+                self.assertEqual(len(z.namelist()),2)
+                self.assertEqual(sum(i.file_size for i in z.infolist()),a['expanded_bytes'])
+
+    def test_split_asset_limit_is_atomic(self):
+        raw=self.many_cells()
+        with patch.object(package,'TARGET_EXPANDED',len(raw)+80),patch.object(package,'MAX_ASSETS',2):
+            with self.assertRaisesRegex(ValueError,'asset limit'):package.package(self.root,self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_empty_shard_rejected(self):
+        raw=b'{"cells":{}}';(self.shard/'manifest.json').write_bytes(raw)
+        self.index['regions'][0]['shards'][0].update(bytes=len(raw),sha256=package.digest(raw),cells=0);self.write()
+        with self.assertRaisesRegex(ValueError,'empty shard'):package.package(self.root,self.output)
+
     def test_corruption_fails_atomically(self):
         (self.shard / '6500_1500.json').write_text('bad')
         with self.assertRaises(ValueError): package.package(self.root, self.output)
