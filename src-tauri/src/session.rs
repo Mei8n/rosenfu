@@ -664,6 +664,35 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.clone().build_construction_plan(alignments, stations)
     }
+    /// Reference snapshots and construction commit together; failures leave the
+    /// current editor (including Undo state) untouched. Road coverage is advisory.
+    pub fn build_construction_plan_with_roads(
+        &mut self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+        roads: Vec<rosenfu_core::world::RoadSnapshot>,
+    ) -> Result<WorldDraft, String> {
+        let before = self.snapshot();
+        let has_junction = alignments.iter().any(|path| path.junction_source.is_some());
+        let mut candidate = self.clone();
+        for snapshot in roads {
+            candidate
+                .world
+                .add_road_snapshot(snapshot)
+                .map_err(|error| error.to_string())?;
+        }
+        candidate.build_construction_plan(alignments, stations)?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world)
+            .map_err(|error| error.to_string())?;
+        if has_junction {
+            candidate.deleted_alignment = Some((before, candidate.snapshot()));
+        }
+        *self = candidate;
+        Ok(self.snapshot())
+    }
+    pub fn road_assessments(&self) -> Vec<(AlignmentId, rosenfu_core::world::RoadAssessment)> {
+        self.world.road_assessments().into_iter().collect()
+    }
     pub fn build_construction_plan(
         &mut self,
         alignments: Vec<PlannedAlignment>,
@@ -5377,5 +5406,92 @@ fn source_route_binding(
             Ok(Some(ServiceRouteBindingKind::Routes { route_ids }))
         }
         (None, None) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod road_snapshot_transaction_tests {
+    use super::*;
+    use rosenfu_core::world::{CoverageBounds, RoadSnapshot, RoadWay};
+    fn point(x: f64, y: f64) -> GeoPoint {
+        GeoPoint {
+            longitude: 139.0 + x,
+            latitude: 35.0 + y,
+        }
+    }
+    fn roads() -> RoadSnapshot {
+        RoadSnapshot {
+            coverage_verified: true,
+            source: "test-osm".into(),
+            source_url: "https://example.org/source.osm.pbf".into(),
+            source_sha256: "a".repeat(64),
+            attribution: "© OpenStreetMap contributors".into(),
+            license: "ODbL-1.0".into(),
+            revision: "2026-11-14T00:00:00Z".into(),
+            road_coverage: vec![CoverageBounds {
+                west: 138.9,
+                east: 139.1,
+                south: 34.9,
+                north: 35.1,
+            }],
+            roads: vec![RoadWay {
+                id: "way/1".into(),
+                coverage: None,
+                points: vec![point(0.0, -0.01), point(0.0, 0.01)],
+                layer: None,
+                level: None,
+                bridge: None,
+                tunnel: None,
+            }],
+        }
+    }
+    fn plan() -> PlannedAlignment {
+        PlannedAlignment {
+            anchor_levels: None,
+            junction_source: None,
+            start_level: None,
+            infrastructure: Default::default(),
+            anchor_indices: None,
+            name: "Crossing".into(),
+            points: vec![point(-0.01, 0.0), point(0.01, 0.0)],
+            track_type: rosenfu_core::world::TrackType::Normal,
+            design_speed_kmh: None,
+            stations: vec![],
+            reference: None,
+            extension: None,
+            destination: None,
+        }
+    }
+    #[test]
+    fn road_snapshot_and_alignment_commit_atomically_and_survive_serialization() {
+        let mut editor = WorldEditor::new();
+        let old = editor.snapshot();
+        let mut invalid = plan();
+        invalid.points.clear();
+        assert!(editor
+            .build_construction_plan_with_roads(vec![invalid], vec![], vec![roads()])
+            .is_err());
+        assert_eq!(editor.snapshot(), old);
+        let result = editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(result.road_snapshots.len(), 1);
+        let decoded: WorldDraft =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(decoded, result);
+        let checks = editor.road_assessments();
+        assert_eq!(checks.len(), 1);
+        assert!(checks[0].1.roads_ready);
+        assert_eq!(checks[0].1.crossings.len(), 1);
+    }
+    #[test]
+    fn missing_roads_are_unverified_without_disabling_ordinary_building() {
+        let mut editor = WorldEditor::new();
+        editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![])
+            .unwrap();
+        let check = &editor.road_assessments()[0].1;
+        assert!(!check.roads_ready);
+        assert!(check.crossings.is_empty());
     }
 }

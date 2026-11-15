@@ -108,3 +108,70 @@ PBF fixture tests run with the pinned optional dependency; stdlib-only tests ski
 Publishing requires copying the completed pack to public/road-data, setting its exact
 manifest SHA in src/roadPackRelease.ts, retaining ODbL notices and running the real-cell
 reader tests. Never promote partial output or change a manifest without changing its pin.
+
+## National source extraction (operator-only, not an enabled app release)
+
+`national.py` processes up to eight **same-timestamp** Geofabrik Japan PBF regions
+sequentially using `osmium==4.3.2`, `shapely==2.1.2`, a file-backed node-location
+index and SQLite (16 MiB page cache). It does not download or copy TrainsWorld code.
+
+```sh
+python national.py sources.json /absolute/output/not-yet-existing
+```
+
+`sources.json` is a list of `{ "name": "kanto", "pbf": "/.../kanto-261114.osm.pbf",
+"poly": "/.../kanto.poly", "sha256": "<verified PBF SHA-256>",
+"url": "https://download.geofabrik.de/asia/japan/kanto-261114.osm.pbf" }`.
+Retain the provider receipt and matching source clipping polygon. Files are hash
+verified before extraction. A current `.poly` alone is **not** evidence of a
+historical clip boundary; the operator must establish the polygon applies to the
+pinned PBF before distributing coverage claims.
+
+The atomic output contains `index.json` (`rosenfu-road-pack-index`, version 1) and
+`packs/<region>/<integer-longitude>_<integer-latitude>/manifest.json`. Each shard
+contains at most 2,500 existing v1 `.02°` road cells. The index records source PBF
+URL/hash/timestamp, polygon hash, shard path/hash/bytes/bounds and certified-cell
+counts. Shard `source.format` is `osm-pbf`; `xml_sha256` is deliberately absent,
+because this pipeline does not produce XML. The PBF hash is `file_sha256` and
+`parent_pbf_sha256`. `coverage_geojson` has its own canonical JSON hash; original
+`.poly` bytes are independently identified by `poly_sha256`.
+
+Only cells wholly covered by the source clipping polygon are emitted, including
+valid empty-road cells. Holes are subtracted. Partially intersecting regional
+boundary cells are counted as **unknown and omitted**, not claimed empty or land.
+A nationwide source inventory is not nationwide complete runtime coverage.
+Consumers must verify the pinned index, shard manifests and every cell. A shard's
+bounding rectangle is a locator, **not coverage**. Conflicting overlapping source
+ways must be rejected by consumers, not silently replaced. All sources must use
+exactly the same OSM replication timestamp. The source manifest records selected
+OSM-road extraction completeness, not real-world road completeness.
+
+Whole original node IDs, way IDs, vertex order and structure tags are retained.
+No smoothing, missing-node inference, generalized-vector-tile completeness claim,
+or map-background redistribution is performed. Road filtering matches the Tokyo
+pack; excluded classes such as footways are not counted as vehicle roads.
+
+Budgets are explicit: 2 GiB PBF/source, 200M source nodes/source, 10M ways/source,
+300k certified cells/source, 10k nodes/way, 10k ways and 100k coordinates/cell,
+5 MiB/cell or manifest, 12 GiB total output and 3 GiB free-disk floor. The full
+national output is never held in RAM. Node indexes and SQLite spill to disk;
+source processing removes their temporary indexes before starting the next source.
+Any missing node, hash/version mismatch, invalid polygon, limit breach or exhausted
+disk aborts without publishing an index/output directory. Nothing is truncated.
+Actual national output size, source polygon provenance, cold-cache load, source
+boundary behavior and hosting limits must be measured before enabling a release.
+
+Data attribution: © OpenStreetMap contributors, ODbL 1.0, via Geofabrik.
+Keep the original data's attribution/license and derived-database obligations;
+this generator does not grant a new license. Hosting/distribution is a separate
+step and is not performed by the generator.
+
+Tests: `python -m unittest -v test_national` (optional pinned dependencies required).
+
+**Current provenance gate:** the national index and each shard source explicitly
+carry `coverage_verified: false` and `polygon_snapshot_match: "unverified"`.
+`certified_cells` counts geometric containment in the supplied polygon only; it is
+not permission to certify absence of roads or permit construction. Current `.poly`
+downloads do not establish that a historical PBF used the same clipping geometry.
+The data may serve reference display/following, but construction coverage must
+remain UNKNOWN until that separate provenance gap is resolved and reviewed.

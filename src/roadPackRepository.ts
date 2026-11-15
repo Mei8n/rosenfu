@@ -28,7 +28,7 @@ function parseManifest(value:unknown):Manifest{
  string(m.attribution);string(m.license_url);string(m.coverage_meaning);box(m.requested_bounds);
  const revision=string(m.revision,256);
  if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(revision)||!Number.isFinite(Date.parse(revision))||new Date(revision).toISOString()!==revision.replace(/(?<!\.\d{3})Z$/,'.000Z'))fail('revisionは有効なUTC ISO日時が必要です。');
- const url=string(source.url);hash(source.file_sha256);hash(source.xml_sha256);hash(source.coverage_sha256);object(source.coverage_geojson);if(source.parent_pbf_sha256!==undefined)hash(source.parent_pbf_sha256);
+ const url=string(source.url);hash(source.file_sha256);if(source.format!=="osm-pbf")hash(source.xml_sha256);hash(source.coverage_sha256);object(source.coverage_geojson);if(source.parent_pbf_sha256!==undefined)hash(source.parent_pbf_sha256);
  const keys=Object.keys(entries);if(!keys.length||keys.length>ROAD_PACK_LIMITS.cells)fail('manifestセル数が上限外です。');
  const cells=new Map<string,CellEntry>();
  for(const key of keys){const entry=object(entries[key]),bounds=box(entry.bounds);if(entry.file!==`${key}.json`||!equalBox(bounds,gridBox(key)))fail('セルのファイル名または範囲が不正です。');cells.set(key,{file:`${key}.json`,bounds,sha256:hash(entry.sha256),bytes:integer(entry.bytes,ROAD_PACK_LIMITS.bytes,1),ways:integer(entry.ways,ROAD_PACK_LIMITS.ways)});}
@@ -48,25 +48,25 @@ function parseCell(value:unknown,entry:CellEntry,revision:string):Way[]{
 
 /** Requires a build-pinned manifest hash. This only certifies extraction from that
  * source snapshot, never completeness of roads in the real world. No fallback host. */
-export function createRoadPackRepository(base:URL,expectedSha256:string,fetcher:typeof fetch=fetch,now:()=>number=Date.now){
+export function createRoadPackRepository(base:URL,expectedSha256:string,fetcher:typeof fetch=fetch,now:()=>number=Date.now,budget:{spent:number}={spent:0}){
  hash(expectedSha256);
  const origin=globalThis.location?.origin;
- if(!origin||base.origin!==origin||base.pathname!=='/road-data/'||base.search||base.hash||base.username||base.password)fail('同一originの固定配信先が必要です。');
+ if(!origin||base.origin!==origin||!(base.pathname==='/road-data/'||/^\/road-data\/packs\/[A-Za-z0-9-]+\/-?\d+_-?\d+\/$/.test(base.pathname))||base.search||base.hash||base.username||base.password)fail('同一originの固定配信先が必要です。');
  // Copy the caller's mutable URL; no later URL mutation can redirect requests.
  const fixedBase=base.href;
  const failures=new Map<string,number>();
- let manifest:Manifest|undefined,spent=0,queue:Promise<unknown>=Promise.resolve();
+ let manifest:Manifest|undefined,queue:Promise<unknown>=Promise.resolve();
  const cells=new Map<string,Way[]>(),cache=new Map<string,RoadSnapshot>(),pending=new Map<string,Promise<RoadSnapshot>>();
  function remember<T>(store:Map<string,T>,key:string,value:T){store.delete(key);store.set(key,value);while(store.size>ROAD_PACK_LIMITS.cacheEntries)store.delete(store.keys().next().value!);}
  async function download(file:string):Promise<Uint8Array>{
-  if(spent>=ROAD_PACK_LIMITS.sessionBytes)fail('セッション取得容量の上限です。');
+  if(budget.spent>=ROAD_PACK_LIMITS.sessionBytes)fail('セッション取得容量の上限です。');
   const url=new URL(file,fixedBase).href,controller=new AbortController(),timer=setTimeout(()=>controller.abort(),ROAD_PACK_LIMITS.timeoutMs);
   try{const response=await fetcher(url,{signal:controller.signal,redirect:'error',credentials:'same-origin'});
    if(!response.ok)fail(`取得できません（HTTP ${response.status}）。`);
    if(response.url&&response.url!==url)fail('転送された応答は使用できません。');
-   const header=response.headers.get('content-length');if(header!==null&&(!/^\d+$/.test(header)||Number(header)>ROAD_PACK_LIMITS.bytes||Number(header)>ROAD_PACK_LIMITS.sessionBytes-spent))fail('応答サイズが上限外です。');
+   const header=response.headers.get('content-length');if(header!==null&&(!/^\d+$/.test(header)||Number(header)>ROAD_PACK_LIMITS.bytes||Number(header)>ROAD_PACK_LIMITS.sessionBytes-budget.spent))fail('応答サイズが上限外です。');
    if(!response.body)fail('応答本文がありません。');const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0;
-   try{for(;;){const {done,value}=await reader.read();if(done)break;spent+=value.byteLength;size+=value.byteLength;if(size>ROAD_PACK_LIMITS.bytes||spent>ROAD_PACK_LIMITS.sessionBytes){await reader.cancel();fail('取得容量が上限を超えました。');}chunks.push(value);}}finally{reader.releaseLock();}
+   try{for(;;){const {done,value}=await reader.read();if(done)break;budget.spent+=value.byteLength;size+=value.byteLength;if(size>ROAD_PACK_LIMITS.bytes||budget.spent>ROAD_PACK_LIMITS.sessionBytes){await reader.cancel();fail('取得容量が上限を超えました。');}chunks.push(value);}}finally{reader.releaseLock();}
    const result=new Uint8Array(size);let offset=0;for(const chunk of chunks){result.set(chunk,offset);offset+=chunk.length;}return result;
   }finally{controller.abort();clearTimeout(timer);}
  }

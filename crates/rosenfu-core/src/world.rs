@@ -100,6 +100,8 @@ impl ViewState {
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub road_snapshots: Vec<RoadSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub station_groups: Vec<StationGroup>,
     /// Explicit infrastructure endpoint links, including supported three-port turnouts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -151,6 +153,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            road_snapshots: vec![],
             station_groups: vec![],
             alignment_connections: vec![],
             view_state: None,
@@ -179,6 +182,7 @@ pub enum WorldError {
     MissingReference(&'static str),
     InvalidCoordinate,
     InvalidConstructionPlans,
+    InvalidRoadSnapshot,
     InvalidViewState,
     InvalidAlignment,
     InvalidAlignmentConnection,
@@ -334,6 +338,7 @@ fn name(value: &str, entity: &'static str) -> Result<(), WorldError> {
 }
 impl WorldDraft {
     pub fn validate(&self) -> Result<(), WorldError> {
+        roads::validate_road_snapshots(&self.road_snapshots)?;
         if let Some(view) = self.view_state {
             view.validate()?;
         }
@@ -622,3 +627,8 @@ pub use turnout_geometry::{
 };
 
 mod height_redevelopment;
+
+mod roads;
+pub use roads::{
+    assess_road_crossings, AutomaticCrossing, CoverageBounds, RoadAssessment, RoadSnapshot, RoadWay,
+};
