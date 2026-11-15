@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
+import {act,cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
 import {emptyConstructionPlans} from "./constructionPlans";
@@ -16,7 +16,11 @@ const world={next_id:"4",players:[{id:"1",name:"P"}],companies:[{id:"2",owner:"1
 async function start(extra={}){
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
  if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};throw Error("unexpected "+command);
- });render(<App/>);fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));await screen.findByText(/extension-test/);
+ });
+ // Resolve the mocked startup IPC and restored-plan effects before the first key.
+ // Version text alone can render before the window keyboard listener is refreshed.
+ await act(async()=>{render(<App/>);});
+ fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));expect(screen.getByText(/extension-test/)).toBeTruthy();
  const map=screen.getByRole("img",{name:"駅配置用サンプル地図"});map.getBoundingClientRect=()=>rect;return map;
 }
 
@@ -97,7 +101,8 @@ test('atomic Undo saves explicit sampled geometry for exact Redo after reload',a
  const payload=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='save_world')![1] as any;
  expect(payload.constructionPlans.draftEditedGeometry).toEqual(geometry);
  vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[],construction_plans:payload.constructionPlans});
- fireEvent.click(screen.getByRole('button',{name:'読込'}));await screen.findByText(/保存したワールドを読み込みました/);
+ await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'読込'}));});
+ expect(screen.getByText(/保存したワールドを読み込みました/)).toBeTruthy();
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect(map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d')).toBe(before);
