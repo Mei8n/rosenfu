@@ -451,7 +451,6 @@ export function App() {
   const [deletePlanConfirm,setDeletePlanConfirm]=useState(false);
   function deleteCurrentPlan(){
     const saved=savedPlanFingerprint,nextPlans=removeConstructionPlan(constructionPlans,activePlanId);restoreConstructionPlans(nextPlans);setSavedPlanFingerprint(saved);
-      if(requests.some(request=>request.junctionSource)){setTrackDeleteUndo({kind:"built",world:snapshot,plans:constructionPlanFingerprint(nextPlans),command:"build_plan",args:{alignments:requests,stations}});setTrackDeleteRedo(null);}
     setStationUndo([]);setStationRedo([]);setHoverPoint(null);setDeletePlanConfirm(false);
   }
   function clearCurrentPlan(){
