@@ -53,3 +53,23 @@ test.each(['駅設置','削除','Escape'])('building then returning via %s allow
  click(120,80);click(240,80);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
 });
+test.each([false,true])('all anchors undone then new drawing builds without a hidden redo-only path (extension=%s)',async extension=>{
+ const map=await start();
+ const click=(x:number,y=200)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(120);click(240);click(240);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ if(extension){click(250,130);click(350,130);}
+ else {click(120,80);click(240,80);}
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});
+test('switching plans retains a fully undone start point for Redo',async()=>{
+ const map=await start({alignments:[]});
+ fireEvent.click(map,{clientX:120,clientY:200,detail:1});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
+ fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+});
