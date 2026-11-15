@@ -9,16 +9,18 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import multiprocessing
 import os
 from pathlib import Path
 import shutil
 import sqlite3
 import tempfile
+import time
 import build
 
 LIMITS = dict(source_bytes=2*1024**3, source_nodes=200000000, ways=10000000,
               cells=300000, way_nodes=10000, cell_ways=10000, cell_coords=100000,
-              cell_bytes=5*1024**2, output_bytes=12*1024**3, work_bytes=4*1024**3, min_free_bytes=3*1024**3)
+              cell_bytes=5*1024**2, output_bytes=12*1024**3, work_bytes=4*1024**3, min_free_bytes=3*1024**3, extract_timeout_seconds=7200)
 
 
 def digest_file(path):
@@ -169,6 +171,46 @@ def extract(pbf,db,cells,temp,limits,budget=None):
     return stats
 
 
+def _extract_worker(pbf,cells,temp,limits,budget,result):
+    """Named osmium disk indexes retain an OS descriptor beyond Python GC.
+    A short-lived process owns the entire reader/cache lifetime on every OS.
+    """
+    try:
+        with sqlite3.connect(temp/'ways.sqlite') as db:
+            db.execute('PRAGMA cache_size=-16384');db.execute('PRAGMA temp_store=FILE')
+            result.send((True,extract(pbf,db,cells,temp,limits,budget)))
+    except Exception as error:
+        result.send((False,f'{type(error).__name__}: {error}'))
+    finally:result.close()
+
+
+def isolated_extract(pbf,cells,temp,limits,budget):
+    context=multiprocessing.get_context('spawn')
+    receiver,sender=context.Pipe(duplex=False)
+    process=context.Process(target=_extract_worker,args=(pbf,cells,temp,limits,budget,sender))
+    try:
+        deadline=time.monotonic()+limits['extract_timeout_seconds']
+        process.start();sender.close()
+        # The result is small, but consume it before join to avoid a pipe-capacity
+        # dependency if an exception has a long message. join proves all handles
+        # are gone before the caller removes the disk index.
+        build.require(receiver.poll(limits['extract_timeout_seconds']),'extraction process timeout; nothing published')
+        try:ok,value=receiver.recv()
+        except EOFError:ok,value=False,'extraction process exited without a result'
+        process.join(max(0,deadline-time.monotonic()))
+        build.require(not process.is_alive(),'extraction process shutdown timeout; nothing published')
+        if process.exitcode!=0:raise RuntimeError(f'extraction process failed ({process.exitcode})')
+        if not ok:raise ValueError(value)
+        return value
+    finally:
+        sender.close();receiver.close()
+        if process.pid is not None:
+            if process.is_alive():
+                process.terminate();process.join(5)
+                if process.is_alive():process.kill();process.join()
+            process.close()
+
+
 def emit_source(stage,name,source,geometry,cells,boundary,db,limits,total,budget=None):
     from shapely.geometry import mapping
     shards={}
@@ -229,12 +271,11 @@ def generate(config,output,limits=None):
             disk_guard(stage,limits);cells,boundary=certified_cells(geometry,limits['cells'])
             with tempfile.TemporaryDirectory(prefix='road-index-',dir=output.parent) as work:
                 work=Path(work);budget.work=work
+                stats=isolated_extract(pbf,cells,work,limits,budget)
+                # Child exit closes libosmium's named-index OS handles, including
+                # Windows delete locks. SQLite owns all retained coordinates.
+                (work/'nodes.idx').unlink(missing_ok=True)
                 with sqlite3.connect(work/'ways.sqlite') as db:
-                    db.execute('PRAGMA cache_size=-16384');db.execute('PRAGMA temp_store=FILE')
-                    stats=extract(pbf,db,cells,work,limits,budget)
-                    # Osmium has closed its reader; SQLite now owns all retained
-                    # coordinates. Do not keep the disk node index during emit.
-                    (work/'nodes.idx').unlink(missing_ok=True)
                     region=emit_source(stage,name,source,geometry,cells,boundary,db,limits,total,budget);region['statistics']=stats;regions.append(region)
             budget.work=None;budget.check()
             print(json.dumps(dict(region=name,certified_cells=len(cells),boundary_unknown=boundary,output_bytes=total[0])),flush=True)

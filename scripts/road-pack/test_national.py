@@ -2,6 +2,8 @@ import contextlib
 import importlib.util
 import io
 import json
+import multiprocessing
+import time
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -9,6 +11,10 @@ import unittest
 from unittest.mock import patch
 import national
 import build
+
+def stalled_extraction(*args):
+    time.sleep(60)
+
 
 AVAILABLE=importlib.util.find_spec('osmium') and importlib.util.find_spec('shapely')
 
@@ -80,6 +86,12 @@ class NationalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'allocated work'):self.run_pack(limits={'work_bytes':1})
         self.assertFalse(self.out.exists());self.assertFalse(list(self.root.glob('.national-roads-*')))
         self.assertFalse(list(self.root.glob('road-index-*')))
+    def test_extraction_timeout_joins_child_and_cleans_temp(self):
+        self.write();before={p.pid for p in multiprocessing.active_children()}
+        with patch.object(national,'_extract_worker',stalled_extraction):
+            with self.assertRaisesRegex(ValueError,'timeout'):self.run_pack(limits={'extract_timeout_seconds':1})
+        self.assertEqual({p.pid for p in multiprocessing.active_children()},before)
+        self.assertFalse(self.out.exists());self.assertFalse(list(self.root.glob('road-index-*')))
     def test_region_boundary_cells_unknown_and_holes_never_certified(self):
         from shapely.geometry import Polygon
         geometry=Polygon([(139.70,35.60),(139.745,35.60),(139.745,35.645),(139.70,35.645)])
@@ -100,8 +112,9 @@ class NationalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'SHA256'):self.run_pack([row])
         self.assertFalse(self.out.exists())
     def test_missing_nodes_fail_without_publishing(self):
-        self.write(missing=True)
+        self.write(missing=True);before={p.pid for p in multiprocessing.active_children()}
         with self.assertRaises((ValueError,RuntimeError)):self.run_pack()
+        self.assertEqual({p.pid for p in multiprocessing.active_children()},before)
         self.assertFalse(self.out.exists());self.assertFalse(list(self.root.glob('.national-roads-*')))
     def test_small_output_budget_is_atomic(self):
         self.write()

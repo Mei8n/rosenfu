@@ -219,3 +219,13 @@ where `st_blocks` is available. The guard runs at bounded extraction
 checkpoints and before/after output writes; it detects an overage and aborts
 without publication rather than providing an OS-enforced instantaneous quota.
 Node indexes are released after extraction and before cell emission.
+
+PBF extraction runs in a short-lived `spawn` process. In osmium 4.3.2 a named
+`sparse_file_array` file descriptor can remain open even after reader closure,
+cache clear, reference deletion and Python garbage collection. Waiting for the
+child to exit makes descriptor release explicit before removing `nodes.idx`,
+including on Windows. This is not a cleanup-error suppression. SQLite and the
+node cache remain inside the same own-work budget; no source data is sent elsewhere.
+Extraction/shutdown has a two-hour default deadline; error, timeout or parent
+interruption terminates and joins the child before temporary-directory cleanup.
+No index is published on failure.
