@@ -1,3 +1,4 @@
+import {TrackGeometryLayer,useTrackRenderGeometry} from './TrackRenderGeometry';
 import {JunctionPoints} from './JunctionPoints';
 import {nearestJunctionSource,junctionDirection,junctionPrevious,type JunctionSource} from './junctionSelection';
 import {HeightControls} from './HeightControls';
@@ -347,6 +348,7 @@ export function App() {
   const [editLength, setEditLength] = useState("200");
   const [editWidth, setEditWidth] = useState("12");
   const alignments = world?.alignments ?? [];
+  const trackRender=useTrackRenderGeometry(world,status==="ready"&&!!world?.alignment_connections?.length);
   const detailedStations = camera.zoom >= 13;
   const [stationResizePending,setStationResizePending]=useState(false);
   const [stationResizeFailure,setStationResizeFailure]=useState<string|null>(null);
@@ -1447,6 +1449,7 @@ export function App() {
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
             <div className="map-surface">
+            {trackRender.error&&<div role="status" className="field-error">ポイント形状を表示できません: {trackRender.error}</div>}
             {deleteTarget&&<DeletionDialog defaultDelete={deleteTarget.kind==='built-section'||deleteTarget.kind==='plan-section'} label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
             {activeTool==="delete"&&deleteHover&&!dragging&&<div className="construction-tooltip deletion-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,deleteHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,deleteHover.y+18))}}>{deletionLabel(deleteHover.target)}を{deleteHover.target.kind==="built-section"||deleteHover.target.kind==="station"?"撤去":"削除"}</div>}
             {activeTool==="stations"&&<fieldset className="construction-toolbar station-toolbar" disabled={!enabled} aria-label="駅設置設定"><PlatformLengthInput id="platform-length" label="駅の長さ" value={platformLength} onChange={setPlatformLength} compact/></fieldset>}
@@ -1496,7 +1499,7 @@ export function App() {
                 <path d={drawPath(alignment.points)} className="track-outline" fill="none" />
                 {infrastructureSections(alignment).map((section,index)=><g key={index} data-track-count={section.infrastructure.track_count} data-structure-level={section.infrastructure.level} pointerEvents="none">
                   {section.infrastructure.level.startsWith('elevated')&&<path d={drawPath(section.points)} fill="none" stroke="#8095a7" strokeWidth={section.infrastructure.track_count*3+6} opacity=".4"/>}
-                  {schematicTrackPaths(section.points.map(point=>project(point.latitude,point.longitude,camera)),section.infrastructure.track_count).map((path,rail)=><path key={rail} d={path} className={alignmentId===alignment.id?"alignment-path alignment-selected":"alignment-path"} style={{strokeWidth:section.infrastructure.track_count===1?undefined:1.5,strokeDasharray:section.infrastructure.level.startsWith('underground')?'5 4':undefined,opacity:section.infrastructure.level.startsWith('underground')?.65:1}}/>)}
+                  {!trackRender.value&&schematicTrackPaths(section.points.map(point=>project(point.latitude,point.longitude,camera)),section.infrastructure.track_count).map((path,rail)=><path key={rail} d={path} className={alignmentId===alignment.id?"alignment-path alignment-selected":"alignment-path"} style={{strokeWidth:section.infrastructure.track_count===1?undefined:1.5,strokeDasharray:section.infrastructure.level.startsWith('underground')?'5 4':undefined,opacity:section.infrastructure.level.startsWith('underground')?.65:1}}/>)}
                 </g>)}
                 {routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={index} d={drawPath(points)} className="alignment-path route-assigned-section" />)}
                 <path d={drawPath(alignment.points)} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && !suppressSelectionClick.current) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
@@ -1507,6 +1510,7 @@ export function App() {
               {parallelMode&&parallelStart&&(()=>{const q=project(parallelStart.point.latitude,parallelStart.point.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
               {parallelMode&&parallelPreview&&<path d={drawInfrastructurePath(parallelPreview.line,infrastructure)} data-track-count={infrastructure.track_count} className="draft-path candidate-draft" pointerEvents="none"/>}
               {parallelMode&&parallelCandidate&&!parallelStart&&(()=>{const line=offsetTrack(parallelCandidate.source.points,parallelCandidate.projection!.offset),p=line&&hoverPoint&&parallelProjection(line,hoverPoint)?.point;if(!p)return null;const q=project(p.latitude,p.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
+              {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} lines={alignments} selectedId={alignmentId}/>}
               <JunctionPoints key={worldEpoch} lines={alignments} connections={world?.alignment_connections??[]} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"}/>
               {parkedPaths.map(plan=><g key={plan.id} className={plan.planId===activePlanId?undefined:"inactive-plan"}><path d={drawInfrastructurePath(plan.line,plan.infrastructure)} data-track-count={plan.infrastructure?.track_count??1} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
