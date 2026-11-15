@@ -1,9 +1,10 @@
+import type {RoadWay} from './environmentData';
 import {validateReferenceGraph, type GraphBounds, type GraphNode, type GraphEdge} from './referenceGraph';
 import type {ReferenceGraphBundle, RoadWayMetadata} from './referenceGraphBundle';
 
 export const ROAD_ENDPOINT='https://overpass-api.de/api/interpreter';
 export const ROAD_LIMITS={spanDegrees:0.04,bytes:5*1024*1024,ways:10000,cacheEntries:12,ttlMs:86400000,retryMs:60000,timeoutMs:25000} as const;
-export type RoadSnapshot={bounds:GraphBounds;fetchedAt:number;bundle:ReferenceGraphBundle};
+export type RoadSnapshot={bounds:GraphBounds;fetchedAt:number;bundle:ReferenceGraphBundle;roads:RoadWay[]};
 export type RoadDataState={status:'unavailable'|'loading'|'ready'|'error';snapshot?:RoadSnapshot;message:string};
 const classes='motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service';
 export function roadBoundsKey(b:GraphBounds):string{
@@ -19,7 +20,7 @@ export async function parseRoadResponse(value:unknown,bounds:GraphBounds,fetched
  roadBoundsKey(bounds);const root=record(value),meta=record(root.osm3s);
  if(root.remark!==undefined||typeof meta.timestamp_osm_base!=='string'||!Number.isFinite(Date.parse(meta.timestamp_osm_base))||!Array.isArray(root.elements)||root.elements.length>ROAD_LIMITS.ways)throw Error('道路応答が未完了または上限超過です。');
  const nodes=new Map<string,GraphNode>(),edges:GraphEdge[]=[],roadWays:Record<string,RoadWayMetadata>=Object.create(null),seen=new Set<string>();
- const extent={...bounds};
+ const extent={...bounds};const roads:RoadWay[]=[];
  for(const raw of root.elements){
   const w=record(raw);if(w.type!=='way')throw Error('未対応の道路要素です。');const way=id(w.id),tags=record(w.tags);
   if(seen.has(way)||!Array.isArray(w.nodes)||!Array.isArray(w.geometry)||w.nodes.length!==w.geometry.length||w.nodes.length<2)throw Error('道路形状が欠損しています。');seen.add(way);
@@ -36,13 +37,14 @@ export async function parseRoadResponse(value:unknown,bounds:GraphBounds,fetched
    if(!Number.isFinite(node.latitude)||!Number.isFinite(node.longitude)||Math.abs(node.latitude)>85||Math.abs(node.longitude)>180)throw Error('道路座標が不正です。');
    const previous=nodes.get(node.osmId);if(previous&&(previous.latitude!==node.latitude||previous.longitude!==node.longitude))throw Error('道路ノードの座標が競合しています。');
    nodes.set(node.osmId,node);extent.west=Math.min(extent.west,node.longitude);extent.east=Math.max(extent.east,node.longitude);extent.south=Math.min(extent.south,node.latitude);extent.north=Math.max(extent.north,node.latitude);return node;});
+  roads.push({id:way,points:points.map(({latitude,longitude})=>({latitude,longitude})),layer,level,bridge:tag('bridge'),tunnel:tag('tunnel')});
   for(let i=0;i<points.length-1;i++){const a=points[i],b=points[i+1];if(a.osmId===b.osmId||(a.latitude===b.latitude&&a.longitude===b.longitude))continue;
    edges.push({id:`road/${way}/${i}`,osmWayId:way,segmentIndex:i,from:a.osmId,to:b.osmId,mode:'road',layer:numericLayer,level,bridge,tunnel});}
  }
  const sourceDate=meta.timestamp_osm_base,source=ROAD_ENDPOINT;
  const graph=validateReferenceGraph({format:'rosenfu-reference-graph',version:1,dataset:{id:`osm-roads/${roadBoundsKey(bounds)}`,revision:sourceDate,source,license:'ODbL-1.0',bounds:extent},nodes:[...nodes.values()],edges});
  const graphSha256=await digest(JSON.stringify(graph)),sourceSha256=await digest(JSON.stringify(root));
- return {bounds:{...bounds},fetchedAt,bundle:{graph,roadWays,graphSha256,sourceSha256,source:{source,sourceDate,license:'ODbL-1.0',attribution:'© OpenStreetMap contributors'}}};
+ return {bounds:{...bounds},fetchedAt,roads,bundle:{graph,roadWays,graphSha256,sourceSha256,source:{source,sourceDate,license:'ODbL-1.0',attribution:'© OpenStreetMap contributors'}}};
 }
 /** One queue per repository: coalesce identical requests and never hammer the public service.
  * Failure and valid empty results are distinct; failed entries have a retry cooldown. */

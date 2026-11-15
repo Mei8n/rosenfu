@@ -10,7 +10,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@mapbox/vector-tile": "^3.0.0",
     "@tauri-apps/api": "^2",
+    "pbf": "^5.1.2",
+    "pmtiles": "^4.5.0",
     "react": "^19",
     "react-dom": "^19"
   },
@@ -21,9 +24,9 @@
     "@types/react-dom": "^19",
     "fake-indexeddb": "^6.2.8",
     "jsdom": "^26",
+    "saxes": "6.0.0",
     "typescript": "^5",
     "vite": "^7",
-    "vitest": "^4.1.12",
-    "saxes": "6.0.0"
+    "vitest": "^4.1.12"
   }
 }

@@ -126,6 +126,39 @@ fn build_alignment_with_stations(
         }])
 }
 #[tauri::command]
+fn preview_environment(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignments: Vec<session::PlannedAlignment>,
+    stations: Vec<session::PlannedBuiltStation>,
+    environment: rosenfu_core::world::EnvironmentSnapshot,
+) -> Result<session::ConstructionEnvironmentPreview, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_environment(alignments, stations, environment)
+}
+#[tauri::command]
+fn build_plan_with_environment(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignments: Vec<session::PlannedAlignment>,
+    stations: Vec<session::PlannedBuiltStation>,
+    environment: rosenfu_core::world::EnvironmentSnapshot,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .build_plan_with_environment(alignments, stations, environment)
+}
+#[tauri::command]
+fn automatic_crossings(
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<Vec<rosenfu_core::world::AutomaticCrossing>, String> {
+    Ok(editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .automatic_crossings())
+}
+#[tauri::command]
 fn build_plan(
     editor: State<'_, Mutex<WorldEditor>>,
     alignments: Vec<session::PlannedAlignment>,
@@ -517,6 +550,9 @@ fn main() {
             build_alignment,
             build_alignment_with_stations,
             build_plan,
+            preview_environment,
+            build_plan_with_environment,
+            automatic_crossings,
             update_station_placement,
             place_station_on_alignment,
             rename_station,

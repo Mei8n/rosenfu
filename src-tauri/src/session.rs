@@ -1,4 +1,7 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
+#[path = "session/environment.rs"]
+mod environment;
+pub use environment::ConstructionEnvironmentPreview;
 #[path = "session/deletion.rs"]
 mod deletion;
 pub use deletion::AlignmentSectionSelection;

@@ -99,6 +99,8 @@ impl ViewState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub station_groups: Vec<StationGroup>,
     /// Explicit, non-branching infrastructure endpoint links.
@@ -149,6 +151,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            environment: None,
             station_groups: vec![],
             alignment_connections: vec![],
             view_state: None,
@@ -177,6 +180,7 @@ pub enum WorldError {
     InvalidCoordinate,
     InvalidConstructionPlans,
     InvalidViewState,
+    InvalidEnvironment,
     InvalidAlignment,
     InvalidAlignmentConnection,
     InvalidAlignmentDesignSpeed,
@@ -314,6 +318,9 @@ fn name(value: &str, entity: &'static str) -> Result<(), WorldError> {
 }
 impl WorldDraft {
     pub fn validate(&self) -> Result<(), WorldError> {
+        if let Some(environment) = &self.environment {
+            environment.validate()?;
+        }
         if let Some(view) = self.view_state {
             view.validate()?;
         }
@@ -575,3 +582,10 @@ pub use station_groups::StationGroup;
 
 mod service_route_bindings;
 pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
+
+mod environment;
+pub use environment::{
+    assess_alignment_environment, assess_environment, same_crossing_point,
+    validate_connected_water, AutomaticCrossing, CoverageBounds, EnvironmentAssessment,
+    EnvironmentSnapshot, RoadWay, WaterPolygon,
+};
