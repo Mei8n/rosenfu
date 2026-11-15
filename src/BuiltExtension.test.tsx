@@ -2,7 +2,7 @@
 import React from "react";
 import styles from "./style.css?raw";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
+import {act,cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
 import {coordinatesFromClient,DEFAULT_CAMERA} from "./map";
@@ -235,6 +235,8 @@ test('restored undone destination is retained when redo finishes the path',async
  const target={...line,id:'4',points:[point(350,130),point(420,130)]};
  const plans={version:1,plans:[{id:1,name:''}],parkedPaths:[],activePathId:1,activePlanId:1,draftPoints:[point(250,130)],redoPoints:[point(350,130)],draftExtension:{alignmentId:'3',endpoint:'end'},draftRedoDestination:{alignmentId:'4',endpoint:'start'},trackType:'normal',designSpeedKmh:120,roadFollowing:false,plannedStations:[],draftFinished:true};
  const map=await start({alignments:[line,target],construction_plans:plans});
+ // Startup text can appear before React flushes the restored keyboard-handler effect.
+ await act(async()=>{});
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  vi.mocked(invoke).mockResolvedValueOnce(world);
