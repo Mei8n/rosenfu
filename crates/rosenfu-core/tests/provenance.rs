@@ -499,6 +499,9 @@ fn imported_geometry_split_retains_source_claim_and_composes_explicit_lineage() 
         .as_mut()
         .unwrap()
         .to_position = 0.99;
+    assert!(World::new(forged.clone()).is_err());
+    let forged_json = serde_json::to_string(&forged).unwrap();
+    assert!(World::new(serde_json::from_str(&forged_json).unwrap()).is_err());
     assert!(w.replace(forged).is_err());
     assert_eq!(w.snapshot(), &before);
 }
