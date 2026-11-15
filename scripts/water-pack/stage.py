@@ -6,6 +6,9 @@ import re
 import hashlib
 import json
 import sqlite3
+import subprocess
+import sys
+from types import SimpleNamespace
 from contextlib import closing
 from pathlib import Path
 from build import Collector, MAX_BYTES, WATER_SELECTION, digest_file, encoded, geometry_points, pack_bytes, read_osm
@@ -54,6 +57,26 @@ class DiskCollector:
         if self.count%1000==0:self.connection.commit()
 
 
+
+def _scan_region(path,db,location_cache):
+    # A named libosmium file index can retain an OS handle until process exit.
+    # Keep the whole scan in a worker; never send regional geometries over IPC.
+    with closing(sqlite3.connect(db)) as connection:
+        connection.execute('PRAGMA temp_store=MEMORY')
+        connection.execute('CREATE TABLE observations(kind TEXT NOT NULL, source_id TEXT NOT NULL, west REAL NOT NULL, south REAL NOT NULL, east REAL NOT NULL, north REAL NOT NULL, body BLOB NOT NULL, UNIQUE(kind,source_id))')
+        collector=DiskCollector(connection)
+        read_osm(path,collector,location_index='sparse_file_array,'+str(Path(location_cache).resolve()))
+        connection.commit()
+        return dict(count=collector.count,coordinates=collector.coordinates,issues=collector.issues,source_header=collector.source_header)
+
+
+def _scan_isolated(path,db,location_cache):
+    result=subprocess.run([sys.executable,str(Path(__file__).resolve()),'_scan',str(Path(path).resolve()),str(db.resolve()),str(location_cache.resolve())],capture_output=True,text=True)
+    if result.returncode:
+        raise ValueError(f'Regional scan failed (exit {result.returncode}): {result.stderr[-4096:]}')
+    return json.loads(result.stdout)
+
+
 def stage_region(path,source_set,source_set_pin,region,output):
     path,output=Path(path),Path(output)
     if output.exists() or region not in REGIONS:raise ValueError('New stage directory and known region required')
@@ -69,12 +92,10 @@ def stage_region(path,source_set,source_set_pin,region,output):
     db=output/'stage.sqlite'
     location_cache=output/'locations.idx'
     if ',' in str(location_cache.resolve()):raise ValueError('Location cache path cannot contain comma')
+    collector=SimpleNamespace(**_scan_isolated(path,db,location_cache))
+    # subprocess.run has waited for exit: handles are closed even on Windows.
+    location_cache.unlink(missing_ok=True)
     with closing(sqlite3.connect(db)) as connection:
-        connection.execute('PRAGMA temp_store=MEMORY')
-        connection.execute('CREATE TABLE observations(kind TEXT NOT NULL, source_id TEXT NOT NULL, west REAL NOT NULL, south REAL NOT NULL, east REAL NOT NULL, north REAL NOT NULL, body BLOB NOT NULL, UNIQUE(kind,source_id))')
-        collector=DiskCollector(connection)
-        read_osm(path,collector,location_index='sparse_file_array,'+str(location_cache.resolve()))
-        location_cache.unlink(missing_ok=True)
         if collector.source_header.get('osmosis_replication_timestamp')!=source_set['osm_timestamp'] or source.get('osm_timestamp')!=source_set['osm_timestamp']:raise ValueError('Stage timestamp mismatch')
         if path.stat().st_size!=source['bytes'] or digest_file(path)!=source['sha256']:raise ValueError('Source changed during staging')
         connection.execute('CREATE INDEX observation_bounds ON observations(west,east,south,north)')
@@ -119,11 +140,15 @@ def extract_stage(stage,manifest_pin,bounds,output):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);commands=parser.add_subparsers(dest='command',required=True)
+    scan=commands.add_parser('_scan');scan.add_argument('input',type=Path);scan.add_argument('db',type=Path);scan.add_argument('index',type=Path)
     stage=commands.add_parser('stage');stage.add_argument('input',type=Path)
     for name in ('source-set','source-set-pin','region','output'):stage.add_argument('--'+name,required=True)
     extract=commands.add_parser('extract');extract.add_argument('stage',type=Path);extract.add_argument('--pin',required=True);extract.add_argument('--bounds',nargs=4,type=float,required=True);extract.add_argument('--output',required=True)
     args=parser.parse_args()
     try:
+        if args.command=='_scan':
+            print(json.dumps(_scan_region(args.input,args.db,args.index)))
+            sys.exit(0)
         result=stage_region(args.input,args.source_set,args.source_set_pin,args.region,args.output) if args.command=='stage' else extract_stage(args.stage,args.pin,args.bounds,args.output)
         print(json.dumps(result))
     except (ValueError,OSError,KeyError,TypeError,ImportError,sqlite3.Error) as error:parser.exit(1,f'water stage: {error}\n')

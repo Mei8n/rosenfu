@@ -107,3 +107,13 @@ workspace `/workspace/shared/rosenfu-water-pack-artifacts/` 下の
 朝の評価範囲は、8地域の全観測保存・任意の小範囲抽出・海域/内水面の版別複合読込。
 1回の抽出上限を超える場所は分割が必要で、すべての範囲の成功は保証しない。
 全国全域で建設可能とするcoverageや道路側へのready移行は、引き続き未認定。
+
+### Worker lifetime on Windows
+
+Regional PBF scanning runs in a subprocess using the same Python interpreter.
+The parent waits for successful exit before removing the named disk location
+index, validating the database and source again, and writing the completion
+manifest. This avoids a retained libosmium index handle blocking deletion on
+Windows. A failed worker leaves an incomplete directory without a completion
+manifest; it must not be consumed or silently resumed. Only small count/header/
+issue metadata crosses the process boundary; observations stay in SQLite.
