@@ -41,9 +41,20 @@ pub struct AlignmentProvenanceInput {
     pub end_segment_index: u64,
     pub end_fraction: f64,
 }
+/// Explicit lineage for a geometric subset. The original OSM segment range is
+/// retained unchanged; we do not guess correspondence to missing raw way nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvenanceGeometrySlice {
+    pub original_points: Vec<GeoPoint>,
+    pub from_position: f64,
+    pub to_position: f64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlignmentProvenance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_slice: Option<ProvenanceGeometrySlice>,
     pub alignment_id: AlignmentId,
     pub source: AlignmentProvenanceInput,
     /// Inclusive point range in the current alignment; outside this range is not attributed.
@@ -134,6 +145,24 @@ impl WorldDraft {
                 || !p.source.valid()
             {
                 return Err(WorldError::InvalidProvenance);
+            }
+            if let Some(slice) = &p.derived_slice {
+                if !(2..=4096).contains(&slice.original_points.len())
+                    || !slice.from_position.is_finite()
+                    || !slice.to_position.is_finite()
+                    || slice.from_position < 0.0
+                    || slice.to_position > 1.0
+                    || slice.from_position >= slice.to_position
+                    || slice.original_points.iter().any(|point| {
+                        !point.latitude.is_finite()
+                            || !point.longitude.is_finite()
+                            || point.latitude.abs() > 85.0
+                            || point.longitude.abs() > 180.0
+                    })
+                {
+                    return Err(WorldError::InvalidProvenance);
+                }
+                bytes += slice.original_points.len() * 16 + 32;
             }
             let ranges = spans.entry(p.alignment_id).or_default();
             if ranges
@@ -292,6 +321,7 @@ impl World {
                 design_speed_kmh: None,
             });
             data.alignment_provenance.push(AlignmentProvenance {
+                derived_slice: None,
                 alignment_id: AlignmentId(id),
                 source: provenance,
                 start_point_index: 0,
@@ -360,6 +390,7 @@ impl World {
             .data
             .alignment_provenance
             .push(AlignmentProvenance {
+                derived_slice: None,
                 alignment_id: id,
                 source,
                 start_point_index,

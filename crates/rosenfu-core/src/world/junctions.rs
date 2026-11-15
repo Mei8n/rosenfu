@@ -16,6 +16,13 @@ impl World {
             return Err(WorldError::InvalidAlignment);
         }
         let mut draft = self.data.clone();
+        let original_points = draft
+            .alignments
+            .iter()
+            .find(|a| a.id == id && a.owner == owner)
+            .ok_or(WorldError::MissingReference("junction.alignment"))?
+            .points
+            .clone();
         let alignment = draft
             .alignments
             .iter_mut()
@@ -65,6 +72,32 @@ impl World {
         };
         alignment.anchor_indices = Some(anchors);
         alignment.infrastructure = infrastructure;
+        if fraction > 0.0 && fraction < 1.0 {
+            for provenance in draft
+                .alignment_provenance
+                .iter_mut()
+                .filter(|p| p.alignment_id == id)
+            {
+                if provenance.start_point_index < next
+                    && next <= provenance.end_point_index
+                    && provenance.derived_slice.is_none()
+                {
+                    provenance.derived_slice = Some(ProvenanceGeometrySlice {
+                        original_points: original_points
+                            [provenance.start_point_index..=provenance.end_point_index]
+                            .to_vec(),
+                        from_position: 0.0,
+                        to_position: 1.0,
+                    });
+                }
+                if provenance.start_point_index >= next {
+                    provenance.start_point_index += 1;
+                }
+                if provenance.end_point_index >= next {
+                    provenance.end_point_index += 1;
+                }
+            }
+        }
         let mut candidate = Self::new(draft)?;
         let suffix = candidate.split_alignment_at_anchor(owner, id, anchor)?;
         *self = candidate;
@@ -73,7 +106,7 @@ impl World {
     /// Split a user-drawn alignment without removing any physical section.
     /// The prefix keeps its ID. Station IDs, service leg keys and stop references
     /// are preserved; crossing path segments become explicit connected corridors.
-    /// Vertical profiles are clipped exactly; provenance and straddling platforms are rejected.
+    /// Vertical profiles and source lineage are clipped exactly; straddling platforms are rejected.
     pub fn split_alignment_at_anchor(
         &mut self,
         owner: CompanyId,
@@ -87,13 +120,6 @@ impl World {
             .position(|a| a.id == id && a.owner == owner)
             .ok_or(WorldError::MissingReference("junction.alignment"))?;
         let original = draft.alignments[index].clone();
-        if draft
-            .alignment_provenance
-            .iter()
-            .any(|p| p.alignment_id == id)
-        {
-            return Err(WorldError::ProvenanceEditUnsupported);
-        }
         let boundaries = original
             .anchor_indices
             .clone()
@@ -125,6 +151,59 @@ impl World {
             }
         }
         let suffix_id = suffix.id;
+        let old_provenance = std::mem::take(&mut draft.alignment_provenance);
+        for provenance in old_provenance {
+            if provenance.alignment_id != id {
+                draft.alignment_provenance.push(provenance);
+                continue;
+            }
+            if provenance.end_point_index <= split {
+                draft.alignment_provenance.push(provenance);
+                continue;
+            }
+            if provenance.start_point_index >= split {
+                let mut p = provenance;
+                p.alignment_id = suffix_id;
+                p.start_point_index -= split;
+                p.end_point_index -= split;
+                draft.alignment_provenance.push(p);
+                continue;
+            }
+            let span = &original.points[provenance.start_point_index..=provenance.end_point_index];
+            let span_length: f64 = span
+                .windows(2)
+                .map(|p| super::alignment::distance(p[0], p[1]))
+                .sum();
+            let left_length: f64 = original.points[provenance.start_point_index..=split]
+                .windows(2)
+                .map(|p| super::alignment::distance(p[0], p[1]))
+                .sum();
+            let lineage = provenance
+                .derived_slice
+                .clone()
+                .unwrap_or(ProvenanceGeometrySlice {
+                    original_points: span.to_vec(),
+                    from_position: 0.,
+                    to_position: 1.,
+                });
+            let mid = lineage.from_position
+                + (lineage.to_position - lineage.from_position) * left_length / span_length;
+            let mut left = provenance.clone();
+            left.end_point_index = split;
+            left.derived_slice = Some(ProvenanceGeometrySlice {
+                to_position: mid,
+                ..lineage.clone()
+            });
+            let mut right = provenance;
+            right.alignment_id = suffix_id;
+            right.start_point_index = 0;
+            right.end_point_index -= split;
+            right.derived_slice = Some(ProvenanceGeometrySlice {
+                from_position: mid,
+                ..lineage
+            });
+            draft.alignment_provenance.extend([left, right]);
+        }
         for placement in draft
             .station_placements
             .iter_mut()

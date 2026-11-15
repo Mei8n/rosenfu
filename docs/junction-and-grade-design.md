@@ -233,3 +233,24 @@ on each side, always within the adjoining anchor section and outside a platform.
 This is a geometry usability floor, not a railway-standard turnout length.
 The candidate world rejects insufficient space atomically with an actionable
 message rather than saving a world which cannot produce its track rendering.
+
+### Source-derived splits and partial height redevelopment
+
+A source-derived alignment can be split without inventing raw OSM node indices.
+`AlignmentProvenance.derived_slice` retains the original attributed point span
+and normalized subrange. Source key, raw segment claim, hashes, licence and
+attribution remain unchanged. Repeated geometric splits compose their ranges
+against the retained original span. This remains an untrusted lineage claim,
+not evidence that a source bundle was authenticated. Generic replacement still
+cannot rewrite provenance. The optional field is a save-format addition.
+
+Partial height redevelopment is not implemented by rewriting the existing
+single cubic's endpoints: that would silently move unselected track. The safe
+next model is an explicit selected-run transaction: retain its outside boundary
+height/grade, create entry/exit ramp spans and any selected plateau inside the
+selected range, remap station/route/service references through the same split
+mapping, and reject insufficient ramp length or a platform that would move.
+One selected span needs at least two additional internal vertical breakpoints;
+the current single-Hermite representation cannot represent that profile. Until
+that transaction and preview exist, partial height changes remain a reasoned,
+atomic rejection. Count-only edits and exact clipped ramp removal are supported.

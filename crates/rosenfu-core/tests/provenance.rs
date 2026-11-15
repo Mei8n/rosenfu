@@ -450,3 +450,55 @@ fn multiple_reference_extensions_keep_separate_sources_and_orientation() {
         .is_err());
     assert_eq!(w.snapshot(), &before);
 }
+
+#[test]
+fn imported_geometry_split_retains_source_claim_and_composes_explicit_lineage() {
+    let (mut w, c, source, input, points) = sample();
+    let id = w
+        .build_alignment_from_reference(
+            c,
+            "import".into(),
+            points.clone(),
+            source.clone(),
+            input.clone(),
+        )
+        .unwrap();
+    let suffix = w.split_alignment_at_position(c, id, 0, 0.4).unwrap();
+    assert_eq!(w.snapshot().source_records, vec![source]);
+    assert_eq!(w.snapshot().alignment_provenance.len(), 2);
+    for p in &w.snapshot().alignment_provenance {
+        assert_eq!(p.source, input); // No fabricated OSM segment correspondence.
+        assert_eq!(p.derived_slice.as_ref().unwrap().original_points, points);
+    }
+    let last = w.split_alignment_at_position(c, suffix, 0, 0.5).unwrap();
+    let intervals: Vec<_> = [id, suffix, last]
+        .into_iter()
+        .map(|id| {
+            let p = w
+                .snapshot()
+                .alignment_provenance
+                .iter()
+                .find(|p| p.alignment_id == id)
+                .unwrap();
+            let slice = p.derived_slice.as_ref().unwrap();
+            (slice.from_position, slice.to_position)
+        })
+        .collect();
+    assert!((intervals[0].1 - 0.4).abs() < 1e-6);
+    assert_eq!(intervals[0].1, intervals[1].0);
+    assert_eq!(intervals[1].1, intervals[2].0);
+    assert!((intervals[1].1 - 0.7).abs() < 1e-6);
+    assert_eq!(intervals[2].1, 1.0);
+    let saved = serde_json::to_string(w.snapshot()).unwrap();
+    let restored = World::new(serde_json::from_str(&saved).unwrap()).unwrap();
+    assert_eq!(restored, w);
+    let before = w.snapshot().clone();
+    let mut forged = before.clone();
+    forged.alignment_provenance[0]
+        .derived_slice
+        .as_mut()
+        .unwrap()
+        .to_position = 0.99;
+    assert!(w.replace(forged).is_err());
+    assert_eq!(w.snapshot(), &before);
+}
