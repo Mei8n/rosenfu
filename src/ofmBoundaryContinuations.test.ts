@@ -18,3 +18,5 @@ describe('tile boundary geometric candidates',()=>{
  it('rejects duplicate ids and invalid input',()=>{expect(find([line('a'),line('a',14553)]).pairs).toHaveLength(0);expect(find([{...line('a'),x:NaN}]).pairs).toHaveLength(0);});
  it('fails closed on capacity',()=>expect(find(Array.from({length:2001},(_,i)=>line(String(i)))).truncated).toBe(true));
 });
+
+it('rejects unknown raw oneway without treating it as absent',()=>{for(const oneway of ['yes','no','unknown',NaN,Infinity,2])expect(find([{...line('a'),oneway},{...line('b',14553),oneway}]).pairs).toHaveLength(0);});
