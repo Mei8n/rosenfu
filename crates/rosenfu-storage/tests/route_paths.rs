@@ -49,7 +49,7 @@ fn current_schema_roundtrip_preserves_alignment_membership_and_future_insertions
         .unwrap();
     let bytes = encode(&w).unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["schema_version"], 16);
+    assert_eq!(value["schema_version"], 17);
     assert_eq!(
         value["world"]["route_paths"][0]["member_stations"],
         json!([s[0], s[2]])
@@ -62,6 +62,10 @@ fn old_schemas_migrate_without_mutation_and_preserve_bytes_on_save() {
     for version in [2, 3] {
         let mut old: Value = serde_json::from_slice(&encode(&w).unwrap()).unwrap();
         old["schema_version"] = json!(version);
+        old["world"]
+            .as_object_mut()
+            .unwrap()
+            .remove("service_route_bindings");
         for alignment in old["world"]["alignments"].as_array_mut().unwrap() {
             alignment.as_object_mut().unwrap().remove("track_type");
         }
@@ -88,7 +92,7 @@ fn old_schemas_migrate_without_mutation_and_preserve_bytes_on_save() {
         save_world(&file, &restored).unwrap();
         assert_eq!(fs::read(backup_path(&file)).unwrap(), bytes);
         let new: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
-        assert_eq!(new["schema_version"], 16);
+        assert_eq!(new["schema_version"], 17);
     }
 }
 #[test]
@@ -98,6 +102,10 @@ fn legacy_files_cannot_smuggle_new_fields_and_current_requires_paths() {
     for version in [2, 3] {
         let mut bad = current.clone();
         bad["schema_version"] = json!(version);
+        bad["world"]
+            .as_object_mut()
+            .unwrap()
+            .remove("service_route_bindings");
         assert!(decode(&serde_json::to_vec(&bad).unwrap()).is_err());
         bad["world"].as_object_mut().unwrap().remove("route_paths");
         bad["world"]["unknown"] = json!(true);

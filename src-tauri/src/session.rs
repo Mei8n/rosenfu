@@ -108,6 +108,23 @@ pub struct WorldEditor {
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
 impl WorldEditor {
+    pub fn set_service_route_binding(
+        &mut self,
+        service_id: ServiceId,
+        binding: rosenfu_core::world::ServiceRouteBindingKind,
+    ) -> Result<WorldDraft, String> {
+        let mut candidate = self.clone();
+        candidate
+            .world
+            .set_service_route_binding(candidate.company, service_id, binding)
+            .map_err(|_| {
+                "この系統の経路は指定した路線に含まれていません。変更は保存していません。"
+                    .to_owned()
+            })?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
     pub fn preview_service_path(
         &self,
         start: StationId,
@@ -124,8 +141,35 @@ impl WorldEditor {
         segments: Vec<rosenfu_core::world::RouteSegment>,
         stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
     ) -> Result<WorldDraft, String> {
+        self.create_service_path_with_source_route(name, start, segments, stops, None)
+    }
+    pub fn create_service_path_with_source_route(
+        &mut self,
+        name: String,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+        stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+        source_route_id: Option<RouteId>,
+    ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.create_service_path_unchecked(name, start, segments, stops)?;
+        if let Some(route_id) = source_route_id {
+            let id = candidate
+                .world
+                .snapshot()
+                .services
+                .last()
+                .expect("created service")
+                .id;
+            candidate
+                .world
+                .set_service_route_binding(
+                    candidate.company,
+                    id,
+                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
+                )
+                .map_err(|e| e.to_string())?;
+        }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -164,7 +208,41 @@ impl WorldEditor {
         segments: Vec<rosenfu_core::world::RouteSegment>,
         stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
     ) -> Result<WorldDraft, String> {
+        self.replace_service_path_with_source_route(
+            service_id,
+            expected_path,
+            name,
+            start,
+            segments,
+            stops,
+            None,
+        )
+    }
+    pub fn replace_service_path_with_source_route(
+        &mut self,
+        service_id: ServiceId,
+        expected_path: rosenfu_core::world::ServicePath,
+        name: String,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+        stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+        source_route_id: Option<RouteId>,
+    ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
+        // Rebinding and path replacement are one outer transaction. The temporary
+        // independent row exists only in this discarded-on-failure clone.
+        if source_route_id.is_some() {
+            if let Some(id) = Some(service_id) {
+                candidate
+                    .world
+                    .set_service_route_binding(
+                        candidate.company,
+                        id,
+                        rosenfu_core::world::ServiceRouteBindingKind::Independent,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         candidate
             .world
             .replace_service_path(
@@ -177,6 +255,17 @@ impl WorldEditor {
                 stops,
             )
             .map_err(|e| e.to_string())?;
+        if let Some(route_id) = source_route_id {
+            let id = service_id;
+            candidate
+                .world
+                .set_service_route_binding(
+                    candidate.company,
+                    id,
+                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
+                )
+                .map_err(|e| e.to_string())?;
+        }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -1050,12 +1139,15 @@ impl WorldEditor {
             // Do not guess which service depends on a route: until explicit
             // associations exist, reject path changes conservatively.
             if (previous.start != start || previous_segments != preview.path.segments)
-                && candidate
-                    .services
-                    .iter()
-                    .any(|service| service.owner == self.company)
+                && candidate.services.iter().any(|service| {
+                    service.owner == self.company
+                        && !candidate
+                            .service_route_bindings
+                            .iter()
+                            .any(|row| row.service_id == service.id)
+                })
             {
-                return Err("既存系統との路線関連付けをまだ判定できないため、系統がある会社の路線経路は変更できません。系統は変更していません。".into());
+                return Err("路線との関連が未確認の系統があります。先に系統の路線を割り当てるか、独立系統として指定してください。系統は変更していません。".into());
             }
             let route = candidate
                 .routes
@@ -1124,12 +1216,15 @@ impl WorldEditor {
                 .find(|r| r.id == id && r.owner == self.company)
                 .ok_or("編集する路線が見つかりません。")?;
             if (previous.start != start || previous.tracks != tracks)
-                && candidate
-                    .services
-                    .iter()
-                    .any(|service| service.owner == self.company)
+                && candidate.services.iter().any(|service| {
+                    service.owner == self.company
+                        && !candidate
+                            .service_route_bindings
+                            .iter()
+                            .any(|row| row.service_id == service.id)
+                })
             {
-                return Err("既存系統との路線関連付けをまだ判定できないため、系統がある会社の路線経路は変更できません。系統は変更していません。".into());
+                return Err("路線との関連が未確認の系統があります。先に系統の路線を割り当てるか、独立系統として指定してください。系統は変更していません。".into());
             }
             let route = candidate
                 .routes
@@ -1155,8 +1250,52 @@ impl WorldEditor {
         tracks: Vec<TrackId>,
         stops: Vec<u32>,
     ) -> Result<WorldDraft, String> {
+        self.save_service_with_source_route(service_id, name, start, tracks, stops, None)
+    }
+    pub fn save_service_with_source_route(
+        &mut self,
+        service_id: Option<ServiceId>,
+        name: String,
+        start: StationId,
+        tracks: Vec<TrackId>,
+        stops: Vec<u32>,
+        source_route_id: Option<RouteId>,
+    ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
+        // Rebinding and path replacement are one outer transaction. The temporary
+        // independent row exists only in this discarded-on-failure clone.
+        if source_route_id.is_some() {
+            if let Some(id) = service_id {
+                candidate
+                    .world
+                    .set_service_route_binding(
+                        candidate.company,
+                        id,
+                        rosenfu_core::world::ServiceRouteBindingKind::Independent,
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         candidate.save_service_unchecked(service_id, name, start, tracks, stops)?;
+        if let Some(route_id) = source_route_id {
+            let id = service_id.unwrap_or_else(|| {
+                candidate
+                    .world
+                    .snapshot()
+                    .services
+                    .last()
+                    .expect("created service")
+                    .id
+            });
+            candidate
+                .world
+                .set_service_route_binding(
+                    candidate.company,
+                    id,
+                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
+                )
+                .map_err(|e| e.to_string())?;
+        }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -2646,6 +2785,68 @@ mod tests {
         assert_eq!(restored.load(&path).unwrap(), before);
     }
     #[test]
+    fn explicit_bindings_allow_unrelated_routes_and_protect_assigned_routes() {
+        use rosenfu_core::world::ServiceRouteBindingKind;
+        let mut editor = WorldEditor::new();
+        let a = editor
+            .add_station("A".into(), 35.0, 139.0)
+            .unwrap()
+            .stations[0]
+            .id;
+        let b = editor
+            .add_station("B".into(), 35.0, 139.1)
+            .unwrap()
+            .stations[1]
+            .id;
+        let c = editor
+            .add_station("C".into(), 35.0, 139.2)
+            .unwrap()
+            .stations[2]
+            .id;
+        let ab = editor.add_track(a, b).unwrap().tracks[0].id;
+        let bc = editor.add_track(b, c).unwrap().tracks[1].id;
+        let route = editor
+            .save_route(None, "R".into(), a, vec![ab])
+            .unwrap()
+            .routes[0]
+            .id;
+        let other = editor
+            .save_route(None, "Other".into(), a, vec![ab])
+            .unwrap()
+            .routes[1]
+            .id;
+        let saved = editor
+            .save_service_with_source_route(None, "S".into(), a, vec![ab], vec![0, 1], Some(route))
+            .unwrap();
+        let id = saved.services[0].id;
+        editor
+            .save_route(Some(other), "Other".into(), b, vec![bc])
+            .unwrap();
+        let before = editor.snapshot();
+        assert!(editor
+            .save_route(Some(route), "Changed".into(), b, vec![bc])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert!(editor
+            .save_service_with_source_route(
+                None,
+                "Bad".into(),
+                b,
+                vec![bc],
+                vec![0, 1],
+                Some(route)
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        editor
+            .set_service_route_binding(id, ServiceRouteBindingKind::Independent)
+            .unwrap();
+        editor
+            .save_route(Some(route), "Changed".into(), b, vec![bc])
+            .unwrap();
+        assert_eq!(editor.snapshot().services, before.services);
+    }
+    #[test]
     fn route_path_edits_conservatively_protect_existing_services_atomically() {
         use rosenfu_core::world::RouteSegment;
         let mut editor = WorldEditor::new();
@@ -2679,7 +2880,7 @@ mod tests {
         assert!(editor
             .save_route(Some(route), "Changed".into(), a, vec![ab])
             .unwrap_err()
-            .contains("既存系統"));
+            .contains("未確認"));
         assert_eq!(editor.snapshot(), before);
         assert!(editor
             .save_planned_route(
@@ -2690,7 +2891,7 @@ mod tests {
                 vec![]
             )
             .unwrap_err()
-            .contains("既存系統"));
+            .contains("未確認"));
         assert_eq!(editor.snapshot(), before);
         // Equivalent legacy -> explicit representation and rename are safe.
         let renamed = editor

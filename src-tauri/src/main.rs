@@ -258,6 +258,17 @@ fn save_route(
         .save_route(route_id, name, start, tracks)
 }
 #[tauri::command]
+fn set_service_route_binding(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    binding: rosenfu_core::world::ServiceRouteBindingKind,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .set_service_route_binding(service_id, binding)
+}
+#[tauri::command]
 fn save_service(
     editor: State<'_, Mutex<WorldEditor>>,
     service_id: Option<ServiceId>,
@@ -265,11 +276,12 @@ fn save_service(
     start: StationId,
     tracks: Vec<TrackId>,
     stops: Vec<u32>,
+    source_route_id: Option<RouteId>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .save_service(service_id, name, start, tracks, stops)
+        .save_service_with_source_route(service_id, name, start, tracks, stops, source_route_id)
 }
 #[tauri::command]
 fn update_station_placement(
@@ -301,11 +313,12 @@ fn create_service_path(
     start: StationId,
     segments: Vec<rosenfu_core::world::RouteSegment>,
     stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+    source_route_id: Option<RouteId>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .create_service_path(name, start, segments, stops)
+        .create_service_path_with_source_route(name, start, segments, stops, source_route_id)
 }
 #[tauri::command]
 fn update_service_path(
@@ -341,11 +354,20 @@ fn replace_service_path(
     start: StationId,
     segments: Vec<rosenfu_core::world::RouteSegment>,
     stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+    source_route_id: Option<RouteId>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .replace_service_path(service_id, expected_path, name, start, segments, stops)
+        .replace_service_path_with_source_route(
+            service_id,
+            expected_path,
+            name,
+            start,
+            segments,
+            stops,
+            source_route_id,
+        )
 }
 #[tauri::command]
 fn preview_service_from_route(
@@ -527,6 +549,7 @@ fn main() {
             save_route,
             save_planned_route,
             save_service,
+            set_service_route_binding,
             save_world,
             confirm_manual_save,
             cancel_manual_save,

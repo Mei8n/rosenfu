@@ -27,7 +27,7 @@ fn station_groups_roundtrip_and_schema15_without_groups_remains_valid() {
             .unwrap();
     }
     assert_eq!(world.snapshot().station_groups.len(), 1);
-    assert_eq!(SCHEMA_VERSION, 16);
+    assert_eq!(SCHEMA_VERSION, 17);
     let encoded = encode(&world).unwrap();
     let restored = decode(&encoded).unwrap();
     assert_eq!(
@@ -36,6 +36,10 @@ fn station_groups_roundtrip_and_schema15_without_groups_remains_valid() {
     );
     let mut value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
     value["schema_version"] = 15.into();
+    value["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     value["world"]
         .as_object_mut()
         .unwrap()

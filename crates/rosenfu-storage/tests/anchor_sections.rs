@@ -28,6 +28,10 @@ fn schema_fourteen_without_boundaries_remains_readable_and_new_boundaries_roundt
         .unwrap();
     let mut legacy: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
     legacy["schema_version"] = 14.into();
+    legacy["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     let restored = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert_eq!(restored.snapshot().alignments[0].anchor_indices, None);
     let mut draft = world.snapshot().clone();
@@ -39,7 +43,7 @@ fn schema_fourteen_without_boundaries_remains_readable_and_new_boundaries_roundt
         .anchor_indices = Some(vec![0, 1, 2]);
     world.replace(draft).unwrap();
     let bytes = encode(&world).unwrap();
-    assert_eq!(SCHEMA_VERSION, 16);
+    assert_eq!(SCHEMA_VERSION, 17);
     assert_eq!(decode(&bytes).unwrap().snapshot(), world.snapshot());
     for indices in [
         vec![],

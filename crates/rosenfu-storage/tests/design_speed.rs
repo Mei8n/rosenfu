@@ -25,6 +25,10 @@ fn schema_eight_alignment_without_design_speed_loads_and_nine_roundtrips_cap() {
         .unwrap();
     let mut old: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
     old["schema_version"] = 8.into();
+    old["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     let mut restored = decode(&serde_json::to_vec(&old).unwrap()).unwrap();
     assert_eq!(
         restored.snapshot().alignments[0].effective_design_speed_kmh(),
@@ -32,7 +36,7 @@ fn schema_eight_alignment_without_design_speed_loads_and_nine_roundtrips_cap() {
     );
     restored.set_alignment_design_speed(id, 240.0).unwrap();
     let encoded = encode(&restored).unwrap();
-    assert_eq!(SCHEMA_VERSION, 16);
+    assert_eq!(SCHEMA_VERSION, 17);
     assert_eq!(decode(&encoded).unwrap(), restored);
     old["world"]["alignments"][0]["design_speed_kmh"] = 0.into();
     assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());

@@ -27,6 +27,10 @@ fn sample() -> World {
 fn old(version: u64) -> Value {
     let mut value: Value = serde_json::from_slice(&encode(&sample()).unwrap()).unwrap();
     value["schema_version"] = json!(version);
+    value["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
     for a in value["world"]["alignments"].as_array_mut().unwrap() {
         a.as_object_mut().unwrap().remove("track_type");
     }
