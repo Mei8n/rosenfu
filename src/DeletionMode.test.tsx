@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import {afterEach,expect,test,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {invoke,isTauri} from '@tauri-apps/api/core';
 import {App} from './App';
 import {emptyConstructionPlans} from './constructionPlans';
@@ -23,9 +23,10 @@ test('dedicated deletion mode highlights only selected real anchor interval, can
  const map=await start();const targets=map.querySelectorAll('[data-delete-alignment="3"]');expect(targets).toHaveLength(2);expect(targets[0].getAttribute("fill")).toBe("none");expect(targets[0].getAttribute("pointer-events")).toBe("stroke");
  fireEvent.pointerEnter(targets[1],{clientX:200,clientY:150});expect(targets[1].classList.contains('deletion-hover')).toBe(true);expect(targets[0].classList.contains('deletion-hover')).toBe(false);
  fireEvent.click(targets[1]);expect(screen.getByRole('dialog')).toBeTruthy();fireEvent.click(screen.getByRole('button',{name:'キャンセル'}));expect(invoke).not.toHaveBeenCalledWith('delete_alignment_section',expect.anything());
- fireEvent.click(targets[1]);expect(document.activeElement).toBe(screen.getByRole('button',{name:'削除する'}));fireEvent.keyDown(document.activeElement!,{key:'Enter'});await waitFor(()=>expect(map.querySelector('[data-delete-alignment]')).toBeNull());
+ fireEvent.click(targets[1]);expect(document.activeElement).toBe(screen.getByRole('button',{name:'削除する'}));await act(async()=>{fireEvent.keyDown(document.activeElement!,{key:'Enter'});});await waitFor(()=>expect(map.querySelector('[data-delete-alignment]')).toBeNull());
  expect(invoke).toHaveBeenCalledWith('delete_alignment_section',expect.objectContaining({alignmentId:'3',sectionIndex:1,constructionPlans:expect.any(Object)}));
- fireEvent.click(screen.getByRole('button',{name:'削除を元に戻す'}));await waitFor(()=>expect(map.querySelectorAll('[data-delete-alignment]')).toHaveLength(2));
+ expect(screen.queryByRole('button',{name:'削除を元に戻す'})).toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});await waitFor(()=>expect(map.querySelectorAll('[data-delete-alignment]')).toHaveLength(2));
 });
 test('individual plan anchor deletion leaves a finished singleton and supports undo',async()=>{
  const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b],draftFinished:true}});
@@ -145,7 +146,8 @@ test('built station deletion supports repeated undo and redo through backend val
  fireEvent.click(map.querySelector('[data-delete-station="4"]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
  await waitFor(()=>expect(map.querySelector('[data-delete-station]')).toBeNull());
  for(let i=0;i<2;i++){
-  await waitFor(()=>expect((screen.getByRole('button',{name:'削除を元に戻す'}) as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(()=>expect((screen.getByRole('tab',{name:'削除'}) as HTMLButtonElement).disabled).toBe(false));
+ expect(screen.queryByRole('button',{name:'削除を元に戻す'})).toBeNull();
   fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});await waitFor(()=>expect(map.querySelector('[data-delete-station]')).not.toBeNull());
   await waitFor(()=>expect((screen.getByRole('tab',{name:'削除'}) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});await waitFor(()=>expect(map.querySelector('[data-delete-station]')).toBeNull());
@@ -168,8 +170,9 @@ test('planned anchor deletion redo is discarded by a different deletion',async()
 });
 test('redo section removal revalidates backend and leaves restored world intact on rejection',async()=>{
  const map=await start();
- fireEvent.click(map.querySelector('[data-delete-section="0"]')!);fireEvent.click(screen.getByRole('button',{name:'削除する'}));
- await waitFor(()=>expect((screen.getByRole('button',{name:'削除を元に戻す'}) as HTMLButtonElement).disabled).toBe(false));
+ fireEvent.click(map.querySelector('[data-delete-section="0"]')!);await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'削除する'}));});
+ await waitFor(()=>expect((screen.getByRole('tab',{name:'削除'}) as HTMLButtonElement).disabled).toBe(false));
+ expect(screen.queryByRole('button',{name:'削除を元に戻す'})).toBeNull();
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  await waitFor(()=>expect(map.querySelectorAll('[data-delete-section]')).toHaveLength(2));
  await waitFor(()=>expect((screen.getByRole('tab',{name:'削除'}) as HTMLButtonElement).disabled).toBe(false));
@@ -197,4 +200,21 @@ test('changing a restored plan invalidates deletion redo even if the setting is 
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
  expect(map.querySelector('[data-delete-plan-path]')).not.toBeNull();
+});
+
+test.each(['built', 'planned'] as const)('%s section confirmation defaults to deletion, while Escape cancels',async kind=>{
+ const map=await start(kind==='built'?built:{...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b,c],draftFinished:true}});
+ const selector=kind==='built'?'[data-delete-section="0"]':'[data-delete-plan-section="0"]';
+ fireEvent.click(map.querySelector(selector)!);
+ expect(document.activeElement).toBe(screen.getByRole('button',{name:'削除する'}));
+ fireEvent(screen.getByRole('dialog'),new Event('cancel',{cancelable:true}));
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(map.querySelectorAll(selector)).toHaveLength(1);
+ expect(invoke).not.toHaveBeenCalledWith('delete_alignment_section',expect.anything());
+ fireEvent.click(map.querySelector(selector)!);
+ expect(document.activeElement).toBe(screen.getByRole('button',{name:'削除する'}));
+ await act(async()=>{fireEvent.keyDown(document.activeElement!,{key:'Enter'});});
+ expect(screen.queryByRole('dialog')).toBeNull();
+ if(kind==='built')expect(map.querySelector('[data-delete-section]')).toBeNull();
+ else expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(1);
 });

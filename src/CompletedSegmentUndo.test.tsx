@@ -107,3 +107,45 @@ test('atomic Undo saves explicit sampled geometry for exact Redo after reload',a
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect(map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d')).toBe(before);
 });
+
+test('fully undone second path does not block construction of the first path',async()=>{
+ const map=await start({alignments:[]});const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(100,100);click(300,100);click(300,100);
+ click(100,220);click(300,220);click(300,220);
+ expect(map.querySelectorAll('.parked-anchor')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[]});
+ await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));});
+ const call=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='build_alignment');
+ expect(call).toBeTruthy();expect((call![1] as any).points).toEqual([point(100,100),point(300,100)]);
+ expect(map.querySelectorAll('.draft-anchor,.parked-anchor')).toHaveLength(0);
+});
+
+test('loaded parked redo-only paths do not block a real active path',async()=>{
+ const a=[point(100,100),point(300,100)],b=[point(100,220),point(300,220)];
+ await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:a,draftFinished:true,parkedPaths:[{id:2,planId:1,name:'',points:[],redo:[...b].reverse(),line:[],trackType:'normal',designSpeedKmh:120,roadFollowing:false,extension:null}]}});
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('unfinished one-anchor path still blocks construction of another path',async()=>{
+ const map=await start({alignments:[]});const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(100,100);click(300,100);click(300,100);click(100,220);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('stations on an undone path block construction until the path is restored',async()=>{
+ const map=await start({alignments:[]});const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ click(100,100);click(300,100);click(300,100);click(100,220);click(300,220);click(300,220);
+ fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));click(200,220);fireEvent.click(screen.getByRole('tab',{name:'線路'}));
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+});
