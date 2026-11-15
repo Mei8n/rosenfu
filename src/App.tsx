@@ -272,7 +272,9 @@ export function App() {
   const [deleteTarget,setDeleteTarget]=useState<DeleteTarget|null>(null);
   const [deleteHover,setDeleteHover]=useState<{target:DeleteTarget;x:number;y:number}|null>(null);
   useEffect(()=>{setDeleteHover(null);},[activeTool,camera,world,draftPoints,parkedPaths,plannedStations]);
-  const [trackDeleteUndo,setTrackDeleteUndo]=useState<{kind:"built";world:World;plans:string}|{kind:"plan";before:ConstructionPlans;after:string;world:World|null}|null>(null);
+  type DeleteHistory={kind:"built";world:World;plans:string;command:string;args:Record<string,unknown>}|{kind:"plan";before:ConstructionPlans;after:string;world:World|null};
+  const [trackDeleteUndo,setTrackDeleteUndo]=useState<DeleteHistory|null>(null);
+  const [trackDeleteRedo,setTrackDeleteRedo]=useState<{entry:DeleteHistory;world:World|null;plans:string}|null>(null);
 
   const stationNamesVisible=displaySettings.settings.stationNamesVisible;
   const setStationNamesVisible=(value:boolean)=>displaySettings.update({stationNamesVisible:value});
@@ -543,6 +545,7 @@ export function App() {
     if(!enabled||unapplied||!selectedTrackExists||selectedTrackReferences)return;
     if(selectedPlanPath!==null){
       const id=selectedPlanPath,before=constructionPlans;
+      setTrackDeleteRedo(null);
       const after:ConstructionPlans=id===activePathId?{...before,draftPoints:[],draftEditedGeometry:undefined,redoPoints:[],draftExtension:null,draftDestination:undefined,draftRedoDestination:undefined,draftFinished:false}:{...before,parkedPaths:before.parkedPaths.filter(p=>p.id!==id)};
       const saved=savedPlanFingerprint;
       restoreConstructionPlans(after);setSavedPlanFingerprint(saved);
@@ -551,19 +554,35 @@ export function App() {
     }
     void perform(async()=>{
       const snapshot=await invoke<World>("delete_alignment",{alignmentId,constructionPlans});
-      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint});
+      setWorld(snapshot);setDirty(true);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint,command:"delete_alignment",args:{alignmentId,constructionPlans}});
       setAlignmentId("");setTrackDeleteConfirm(false);
     });
   }
   const canUndoTrackDelete=trackDeleteUndo?.kind==="built"
     ?trackDeleteUndo.world===world&&trackDeleteUndo.plans===planFingerprint
     :trackDeleteUndo?.world===world&&trackDeleteUndo?.after===planFingerprint;
+  const canRedoTrackDelete=!!trackDeleteRedo&&trackDeleteRedo.world===world&&trackDeleteRedo.plans===planFingerprint;
+  useEffect(()=>{if(trackDeleteRedo&&!canRedoTrackDelete)setTrackDeleteRedo(null);},[trackDeleteRedo,canRedoTrackDelete]);
   function undoTrackDelete(){
     if(!enabled||!trackDeleteUndo||!canUndoTrackDelete)return;
-    if(trackDeleteUndo.kind==="plan"){
-      const saved=savedPlanFingerprint;restoreConstructionPlans(trackDeleteUndo.before);setSavedPlanFingerprint(saved);setTrackDeleteUndo(null);return;
+    const entry=trackDeleteUndo;
+    if(entry.kind==="plan"){
+      const saved=savedPlanFingerprint;restoreConstructionPlans(entry.before);setSavedPlanFingerprint(saved);
+      setTrackDeleteRedo({entry,world,plans:JSON.stringify(entry.before)});setTrackDeleteUndo(null);return;
     }
-    void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteUndo(null);});
+    void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteRedo({entry,world:snapshot,plans:planFingerprint});setTrackDeleteUndo(null);});
+  }
+  function redoTrackDelete(){
+    if(!enabled||!trackDeleteRedo||!canRedoTrackDelete)return;
+    const entry=trackDeleteRedo.entry;
+    if(entry.kind==="plan"){
+      const saved=savedPlanFingerprint;restoreConstructionPlans(JSON.parse(entry.after) as ConstructionPlans);setSavedPlanFingerprint(saved);
+      setTrackDeleteUndo(entry);setTrackDeleteRedo(null);return;
+    }
+    void perform(async()=>{
+      const snapshot=await invoke<World>(entry.command,entry.args);
+      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({...entry,world:snapshot});setTrackDeleteRedo(null);
+    });
   }
   function deletionLabel(target:DeleteTarget){
     if(target.kind==="station")return world?.stations.find(station=>station.id===target.stationId)?.name??"駅";
@@ -605,6 +624,7 @@ export function App() {
   function deletePlannedTarget(target:PlannedDeleteTarget){
     try{
       const before=constructionPlans,after=removePlannedTarget(before,target,extensionPrevious),saved=savedPlanFingerprint;
+      setTrackDeleteRedo(null);
       restoreConstructionPlans(after);setSavedPlanFingerprint(saved);setStationUndo([]);setStationRedo([]);
       setTrackDeleteUndo({kind:"plan",before,after:JSON.stringify(after),world});setDeleteTarget(null);setSelectedPlanPath(null);
     }catch(error){setError(detail(error));}
@@ -617,7 +637,7 @@ export function App() {
     }
     void perform(async()=>{
       const snapshot=await invoke<World>(target.kind==="station"?"delete_station":"delete_alignment_section",target.kind==="station"?{stationId:target.stationId,constructionPlans}:{alignmentId:target.alignmentId,sectionIndex:target.sectionIndex,constructionPlans});
-      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint});
+      setWorld(snapshot);setDirty(true);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint,command:target.kind==="station"?"delete_station":"delete_alignment_section",args:target.kind==="station"?{stationId:target.stationId,constructionPlans}:{alignmentId:target.alignmentId,sectionIndex:target.sectionIndex,constructionPlans}});
       setDeleteTarget(null);setAlignmentId("");setSelected(null);setStationUndo([]);setStationRedo([]);
     });
   }
@@ -1083,7 +1103,7 @@ export function App() {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==="z") {
         event.preventDefault();if(event.repeat || busyRef.current)return;
         if(anchorGesture.current){cancelAnchorGesture();return;}
-        if(activeTool==="delete"){if(!event.shiftKey)undoTrackDelete();return;}
+        if(activeTool==="delete"){if(event.shiftKey)redoTrackDelete();else undoTrackDelete();return;}
         if(activeTool==="tracks" && (event.shiftKey?anchorRedo.length:anchorUndo.length)){undoAnchor(event.shiftKey);return;}
         if(referenceCopy.active && activeTool==="tracks"){if(event.shiftKey)referenceCopy.redoPick();else referenceCopy.undo();}
         else if(activeTool==="tracks" && (draftPoints.length || redoPoints.length)){if(event.shiftKey)redoPoint();else undoPoint();}
