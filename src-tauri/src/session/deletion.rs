@@ -844,6 +844,34 @@ mod tests {
             .world
             .place_station_on_alignment(dependent.company, "E駅".into(), right, 0.5, 20., 12.)
             .unwrap();
+        let retained_stations = dependent.snapshot();
+        let without_bridge = dependent
+            .clone()
+            .delete_alignment_section(left, 1, plans())
+            .unwrap();
+        assert_eq!(without_bridge.stations, retained_stations.stations);
+        assert!(without_bridge.alignment_connections.is_empty());
+        assert_eq!(
+            without_bridge
+                .station_placements
+                .iter()
+                .find(|p| p.station_id == station_e),
+            retained_stations
+                .station_placements
+                .iter()
+                .find(|p| p.station_id == station_e)
+        );
+        let mut blocked = dependent.clone();
+        assert!(blocked.delete_alignment_section(right, 0, plans()).is_err());
+        assert_eq!(blocked.snapshot(), retained_stations);
+        let mut overlap = editor.clone();
+        overlap
+            .world
+            .place_station_on_alignment(overlap.company, "橋区間駅".into(), left, 0.7, 20., 12.)
+            .unwrap();
+        let before_overlap = overlap.snapshot();
+        assert!(overlap.delete_alignment_section(left, 1, plans()).is_err());
+        assert_eq!(overlap.snapshot(), before_overlap);
         let segment = rosenfu_core::world::RouteSegment::ConnectedAlignments {
             from: station_a,
             to: station_e,
