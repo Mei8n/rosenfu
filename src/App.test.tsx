@@ -309,6 +309,7 @@ test("camera changes do not edit world IDs/coordinates and legacy reload restore
   expect(vi.mocked(invoke).mock.calls).toHaveLength(count);
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
+  fireEvent.click(screen.getByRole("button", { name: "読込を続ける" }));
   await screen.findByText("保存したワールドを読み込みました。");
   expect((screen.getByLabelText("中心緯度") as HTMLInputElement).value).toBe(DEFAULT_CAMERA.latitude.toFixed(5));
   expect((screen.getByLabelText("中心経度") as HTMLInputElement).value).toBe(DEFAULT_CAMERA.longitude.toFixed(5));
