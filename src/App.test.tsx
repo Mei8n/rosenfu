@@ -66,9 +66,12 @@ test("station map placement requires a previously built alignment", async () => 
   expect(invoke).not.toHaveBeenCalledWith("add_station", expect.anything());
 });
 
-test("coordinate entry supports keyboard-accessible placement and preserves state on failure", async () => {
+test.each([false,true])("coordinate entry preserves state on add_station failure (interleaved autosave_status=%s)", async (interleaveStatus) => {
   desktop(); renderStationEditor(); await screen.findByText(/test-version/);
-  vi.mocked(invoke).mockRejectedValueOnce(new Error("invalid station"));
+  const original=vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command,args)=>command==="add_station"?Promise.reject(new Error("invalid station")):original(command,args));
+  // An unrelated failing read must not consume the station failure fixture.
+  if(interleaveStatus)await expect(invoke("autosave_status")).rejects.toThrow("unexpected command: autosave_status");
   fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   expect((await screen.findByRole("alert")).querySelector("span")).toHaveProperty("textContent", "処理できませんでした: invalid station");
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
