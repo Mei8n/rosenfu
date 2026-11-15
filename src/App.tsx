@@ -218,6 +218,10 @@ export function App() {
   const [worldEpoch,setWorldEpoch]=useState(0);
   const [restoredAutosaveEpoch,setRestoredAutosaveEpoch]=useState(-1);
   const [mainTab,setMainTab]=useState<WorkspaceTab>("construction");
+  const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|null>(null);
+  const routeMapSelect=useRef<((id:string)=>void)|null>(null);
+  function cancelRouteMapPick(){routeMapSelect.current=null;setRouteMapPick(null);}
+  useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch]);
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
   const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "inactive">("tracks");
   function chooseMainTab(tab:WorkspaceTab){setError("");setMainTab(tab);setPanelCollapsed(false);setActiveTool(tab==="construction"?"tracks":tab==="stations"?"station-management":tab==="settings"?"company":tab==="routes"?"routes":tab==="services"?"services":"inactive");changeMapMode(tab==="construction"?"draw":"move");}
@@ -682,6 +686,10 @@ export function App() {
   }
   function selectStation(id: string) {
     if (busyRef.current) return;
+    if (mainTab === "routes" && routeMapSelect.current) {
+      if (!enabled || !stationsById.has(id)) return;
+      const select=routeMapSelect.current;cancelRouteMapPick();select(id);return;
+    }
     if (stationSettingsDirty && id !== selected) { setPendingStation({ id }); return; }
     if (id === selected) { setMainTab("stations"); setActiveTool("station-management"); setPanelCollapsed(false); return; }
     setMainTab("stations"); setActiveTool("station-management");
@@ -1163,6 +1171,7 @@ export function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget)return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
       if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && (event.key === "+" || event.key === "-" || event.code === "NumpadAdd" || event.code === "NumpadSubtract")) {
@@ -1591,7 +1600,7 @@ export function App() {
             {world?.tracks.length ? <ul className="track-list">{world.tracks.map((track) => <li key={track.id}><span>{stationsById.get(track.from)?.name ?? track.from} ↔ {stationsById.get(track.to)?.name ?? track.to} (ID {track.id})</span><button className="secondary danger" disabled={!enabled || unapplied || !!trackReferences(track.id)} onClick={() => setPendingDelete({ kind: "track", id: track.id })}>線路 {track.id} を削除</button>{trackReferences(track.id) && <small>削除不可: {trackReferences(track.id)}</small>}</li>)}</ul> : <p className="field-hint">駅を2つ配置すると接続できます。</p>}</details>
             <div className="section-number">03 / ROUTE</div>
             <h3>路線を定義する</h3><p className="muted">線路設備とは独立した、順序付きの経路です。停車駅やダイヤは設定しません。</p>
-            <RouteCandidatePreview resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={!routeDirty} onSave={applyPlannedRoute} onApply={(start, tracks) => {
+            <RouteCandidatePreview mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={!routeDirty} onSave={applyPlannedRoute} onApply={(start, tracks) => {
               resetRoute(); setRouteStart(start); setRouteTracks(tracks); setRouteDirty(true);
               setRouteHint("候補を新規路線の下書きへ取り込みました。路線名と経路を確認して適用してください。");
             }}/>

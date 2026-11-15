@@ -7,6 +7,8 @@ export type Candidate = { stations: string[]; segments: Segment[]; track_only: b
 export type Candidates = { status: "no_path" | "unique" | "ambiguous" | "incomplete"; candidates: Candidate[]; truncated: boolean };
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };
 type Props = {
+  mapPickTarget?: "start" | "end" | "via" | null;
+  onMapPick?: (target: "start" | "end" | "via" | null, select?: (id: string) => void) => void;
   stations: { id: string; name: string }[];
   worldVersion: unknown;
   resetKey?: unknown;
@@ -18,11 +20,12 @@ type Props = {
 };
 
 /** Candidate planner; optional persistence callback saves physical path and membership separately. */
-export function RouteCandidatePreview({ stations, worldVersion, resetKey, onDirty, enabled, canApply, onApply, onSave }: Props) {
+export function RouteCandidatePreview({ mapPickTarget, onMapPick, stations, worldVersion, resetKey, onDirty, enabled, canApply, onApply, onSave }: Props) {
   const [name, setName] = useState("新路線");
   const [saving, setSaving] = useState(false);
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
+  const [via,setVia]=useState<string[]>([]);
   const [result, setResult] = useState<Candidates | null>(null);
   const [chosen, setChosen] = useState<number | null>(null);
   const [membership, setMembership] = useState<Membership | null>(null);
@@ -38,7 +41,7 @@ export function RouteCandidatePreview({ stations, worldVersion, resetKey, onDirt
     pending.current = false;
     setStale(false); setLoading(false); setResult(null); setChosen(null); setMembership(null); setError("");
   }
-  function discard() { clear(); setStart("");setEnd("");setName("新路線"); }
+  function discard() { onMapPick?.(null); clear(); setStart("");setEnd("");setVia([]);setName("新路線"); }
   useEffect(() => { discard(); }, [resetKey]);
   useEffect(() => {
     generation.current++; pending.current=false; setLoading(false);
@@ -46,18 +49,30 @@ export function RouteCandidatePreview({ stations, worldVersion, resetKey, onDirt
     setStale(true);
     return () => { generation.current++; };
   }, [worldVersion]);
-  useEffect(()=>{onDirty?.(!!start || !!end || !!result || name!=="新路線");},[start,end,result,name,onDirty]);
+  useEffect(()=>{onDirty?.(!!start || !!end || !!via.length || !!result || name!=="新路線");},[start,end,via,result,name,onDirty]);
   async function validate(candidate: Candidate, excluded: string[], token: number) {
     const preview = await invoke<Membership>("preview_route_membership", { start: candidate.stations[0], segments: candidate.segments, excludedStations: excluded });
     if (token === generation.current) setMembership(preview);
   }
+  function pickEndpoint(target: "start" | "end") {
+    if (mapPickTarget === target) { onMapPick?.(null); return; }
+    onMapPick?.(target, id => { clear(); if (target === "start") setStart(id); else setEnd(id); });
+  }
+  function pickVia() {
+    if (mapPickTarget === "via") { onMapPick?.(null); return; }
+    onMapPick?.("via", id => {
+      if (id === start || id === end || via.includes(id)) {setError("同じ駅は重複して指定できません。");return;}
+      clear();setVia(items=>[...items,id]);
+    });
+  }
   async function search() {
-    if (!enabled || pending.current || !names.has(start) || !names.has(end) || start === end) return;
+    onMapPick?.(null);
+    if (!enabled || pending.current || !names.has(start) || !names.has(end) || start === end || via.some(id=>!names.has(id)||id===start||id===end)) return;
     clear();
     pending.current = true; setLoading(true);
     const token = generation.current;
     try {
-      const response = await invoke<Candidates>("preview_route_candidates", { start, end });
+      const response = await invoke<Candidates>("preview_route_candidates", { start, end, ...(via.length ? {viaStationIds:via} : {}) });
       if (token !== generation.current) return;
       setResult(response);
       // Incomplete or ambiguous searches always require an explicit selection.
@@ -87,11 +102,16 @@ export function RouteCandidatePreview({ stations, worldVersion, resetKey, onDirt
     <p className="field-hint">{onSave ? "所属駅の除外は設備削除・列車の通過指定とは別です。新規路線へ適用後、ワールドを保存してください。" : "候補と所属駅のプレビューです。駅の除外は設備の削除・列車の通過指定ではなく、まだ保存されません。"}</p>
     <fieldset disabled={!enabled}>
       <label htmlFor="candidate-start">候補の起点</label>
-      <select id="candidate-start" value={start} onChange={event => { clear(); setStart(event.target.value); }}><option value="">駅を選択</option>{stations.map(station => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
+      {onMapPick && <button type="button" className="secondary" aria-pressed={mapPickTarget === "start"} onClick={() => pickEndpoint("start")}>地図で起点を選択</button>}
+      <select id="candidate-start" value={start} onChange={event => { onMapPick?.(null); clear(); setStart(event.target.value); }}><option value="">駅を選択</option>{stations.map(station => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
       <label htmlFor="candidate-end">候補の終点</label>
-      <select id="candidate-end" value={end} onChange={event => { clear(); setEnd(event.target.value); }}><option value="">駅を選択</option>{stations.map(station => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
-      <button type="button" disabled={!enabled || loading || !names.has(start) || !names.has(end) || start === end} onClick={() => void search()}>経路候補を検索</button>
-      <button type="button" className="secondary" disabled={!result && !loading && !error && !start && !end && name==="新路線"} onClick={discard}>候補を閉じる</button>
+      {onMapPick && <button type="button" className="secondary" aria-pressed={mapPickTarget === "end"} onClick={() => pickEndpoint("end")}>地図で終点を選択</button>}
+      <select id="candidate-end" value={end} onChange={event => { onMapPick?.(null); clear(); setEnd(event.target.value); }}><option value="">駅を選択</option>{stations.map(station => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
+      {onMapPick && <><button type="button" className="secondary" aria-pressed={mapPickTarget === "via"} onClick={pickVia}>地図で経由駅を追加</button>
+      <ol aria-label="経由駅の順序">{via.map((id,index)=><li key={id}>{stationName(id)}<button type="button" className="secondary" aria-label={`経由駅 ${stationName(id)} を上へ`} disabled={index===0} onClick={()=>{onMapPick(null);clear();setVia(items=>{const next=[...items];[next[index-1],next[index]]=[next[index],next[index-1]];return next;});}}>↑</button><button type="button" className="secondary" aria-label={`経由駅 ${stationName(id)} を除外`} onClick={()=>{onMapPick(null);clear();setVia(items=>items.filter(item=>item!==id));}}>×</button></li>)}</ol></>}
+      {mapPickTarget && <p role="status">{mapPickTarget === "start" ? "起点" : mapPickTarget === "end" ? "終点" : "経由駅"}を地図で選択</p>}
+      <button type="button" disabled={!enabled || loading || via.some(id=>!names.has(id)||id===start||id===end) || !names.has(start) || !names.has(end) || start === end} onClick={() => void search()}>経路候補を検索</button>
+      <button type="button" className="secondary" disabled={!result && !loading && !error && !start && !end && !via.length && name==="新路線"} onClick={discard}>候補を閉じる</button>
     </fieldset>
     {stale && result && <p role="status">ワールドが変更されました。候補は保持していますが、適用前に経路候補を再検索してください。</p>}
     {loading && <p role="status">経路を確認中…</p>}
