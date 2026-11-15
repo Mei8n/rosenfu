@@ -97,6 +97,40 @@ impl WorldEditor {
                     line.infrastructure = infrastructure;
                     candidate.world.replace(draft).map_err(|e| e.to_string())?;
                 }
+                let line = candidate
+                    .world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == selection.alignment_id)
+                    .expect("validated selection");
+                let unchanged_height = match line.vertical_profile {
+                    Some(profile) => {
+                        profile.is_flat()
+                            && (profile.start_height_m - target_level.height_m()).abs() < 1e-9
+                    }
+                    None => indices.iter().all(|i| {
+                        line.section_infrastructure(*i)
+                            .is_some_and(|s| s.level == target_level)
+                    }),
+                };
+                if unchanged_height {
+                    let mut draft = candidate.snapshot();
+                    let line = draft
+                        .alignments
+                        .iter_mut()
+                        .find(|a| a.id == selection.alignment_id)
+                        .unwrap();
+                    if line.vertical_profile.is_some() {
+                        let mut sections = line.effective_infrastructure();
+                        for index in &indices {
+                            sections[*index].level = target_level;
+                        }
+                        line.infrastructure = sections;
+                        candidate.world.replace(draft).map_err(|e| e.to_string())?;
+                    }
+                    continue;
+                }
                 candidate
                     .world
                     .redevelop_alignment_section_height(
@@ -539,6 +573,31 @@ mod tests {
         let id = snapshot.alignments[0].id;
         (editor, id)
     }
+    #[test]
+    fn selecting_current_height_does_not_split_short_track_or_reject_station() {
+        use rosenfu_core::world::InfrastructureLevel;
+        let (mut editor, id) = setup();
+        editor
+            .place_station_on_alignment("station".into(), id, 0.5, 20., 10.)
+            .unwrap();
+        let before = editor.snapshot();
+        let after = editor
+            .update_alignment_section_infrastructure(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1],
+                }],
+                before.alignments.clone(),
+                None,
+                Some(InfrastructureLevel::Ground),
+                plans(),
+            )
+            .unwrap();
+        assert_eq!(before.alignments, after.alignments);
+        assert_eq!(before.station_placements, after.station_placements);
+        assert_eq!(before.next_id, after.next_id);
+    }
+
     #[test]
     fn selected_height_redevelopment_is_one_undo_and_short_run_is_atomic() {
         use rosenfu_core::world::InfrastructureLevel;

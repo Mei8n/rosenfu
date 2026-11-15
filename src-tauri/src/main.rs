@@ -156,6 +156,18 @@ fn build_alignment_with_stations(
         }])
 }
 #[tauri::command]
+fn preview_construction_plan(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignments: Vec<session::PlannedAlignment>,
+    stations: Option<Vec<session::PlannedBuiltStation>>,
+) -> Result<WorldDraft, String> {
+    let snapshot = editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .clone();
+    snapshot.preview_construction_plan(alignments, stations.unwrap_or_default())
+}
+#[tauri::command]
 fn build_plan(
     editor: State<'_, Mutex<WorldEditor>>,
     alignments: Vec<session::PlannedAlignment>,
@@ -549,6 +561,7 @@ fn main() {
             build_alignment,
             build_alignment_with_stations,
             build_plan,
+            preview_construction_plan,
             update_station_placement,
             place_station_on_alignment,
             rename_station,
