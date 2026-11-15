@@ -482,3 +482,109 @@ fn saved_path_edit_rejects_legacy_service_and_distinguishes_revisits() {
         .is_err());
     assert_eq!(world.snapshot(), &before);
 }
+
+#[test]
+fn replacement_allocates_fresh_keys_and_rejects_stale_or_invalid_edits_atomically() {
+    let (mut w, c, a, s, segments) = sample();
+    let id = w
+        .add_service_path(
+            c,
+            "Local".into(),
+            s[0],
+            segments.clone(),
+            all(&w, s[0], segments),
+        )
+        .unwrap();
+    let before = w.snapshot().clone();
+    let old = before.service_paths[0].clone();
+    let replacement = vec![RouteSegment::Alignment {
+        alignment_id: a,
+        from: s[2],
+        to: s[0],
+    }];
+    let preview = w
+        .preview_service_path_replacement(c, id, s[2], replacement.clone())
+        .unwrap();
+    assert_eq!(preview.legs[0].key, old.next_leg_key);
+    assert!(preview.requires_stop_selection);
+    let stops = preview
+        .occurrences
+        .iter()
+        .map(|o| o.reference.clone())
+        .collect::<Vec<_>>();
+    // Old references must not silently retarget the newly generated path.
+    assert!(w
+        .replace_service_path(
+            c,
+            id,
+            old.clone(),
+            "Reverse".into(),
+            s[2],
+            replacement.clone(),
+            old.stops.clone()
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+    assert!(w
+        .replace_service_path(
+            c,
+            id,
+            old.clone(),
+            "Reverse".into(),
+            s[2],
+            replacement.clone(),
+            vec![]
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+    assert!(w
+        .replace_service_path(
+            CompanyId::try_from("999".to_string()).unwrap(),
+            id,
+            old.clone(),
+            "Reverse".into(),
+            s[2],
+            replacement.clone(),
+            stops.clone()
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+    w.replace_service_path(
+        c,
+        id,
+        old.clone(),
+        "Reverse".into(),
+        s[2],
+        replacement.clone(),
+        stops.clone(),
+    )
+    .unwrap();
+    let after = w.snapshot().clone();
+    let mut expected = before.clone();
+    expected.services[0].name = "Reverse".into();
+    expected.services[0].start = s[2];
+    expected.service_paths[0] = ServicePath {
+        service_id: id,
+        next_leg_key: old.next_leg_key + 1,
+        legs: preview.legs,
+        stops: stops.clone(),
+    };
+    assert_eq!(after, expected);
+    assert_eq!(World::new(after.clone()).unwrap(), w);
+    assert!(w
+        .replace_service_path(c, id, old, "Stale".into(), s[2], replacement.clone(), stops)
+        .is_err());
+    assert_eq!(w.snapshot(), &after);
+    // Exhausted counters must fail in preview and commit, without wraparound.
+    let mut exhausted = after.clone();
+    exhausted.service_paths[0].next_leg_key = u64::MAX;
+    let path = exhausted.service_paths[0].clone();
+    let mut w = World::new(exhausted.clone()).unwrap();
+    assert!(w
+        .preview_service_path_replacement(c, id, s[2], replacement.clone())
+        .is_err());
+    assert!(w
+        .replace_service_path(c, id, path, "Overflow".into(), s[2], replacement, vec![])
+        .is_err());
+    assert_eq!(w.snapshot(), &exhausted);
+}

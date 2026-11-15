@@ -310,6 +310,99 @@ impl World {
         self.data = candidate;
         Ok(())
     }
+    /// Preview a replacement with fresh keys. Retired leg identities are never reused.
+    pub fn preview_service_path_replacement(
+        &self,
+        owner: CompanyId,
+        id: ServiceId,
+        start: StationId,
+        segments: Vec<RouteSegment>,
+    ) -> Result<ServicePathPreview, WorldError> {
+        if !self
+            .data
+            .services
+            .iter()
+            .any(|s| s.id == id && s.owner == owner)
+        {
+            return Err(WorldError::MissingReference("owned service"));
+        }
+        let path = self
+            .data
+            .service_paths
+            .iter()
+            .find(|p| p.service_id == id)
+            .ok_or(WorldError::InvalidServicePath)?;
+        if segments.is_empty() || segments.len() > 256 {
+            return Err(WorldError::InvalidServicePath);
+        }
+        // Reserve the next counter as well as all leg keys before constructing anything.
+        path.next_leg_key
+            .checked_add(segments.len() as u64)
+            .ok_or(WorldError::InvalidServicePath)?;
+        let legs = segments
+            .into_iter()
+            .enumerate()
+            .map(|(i, segment)| ServiceLeg {
+                key: path.next_leg_key + i as u64,
+                segment,
+            })
+            .collect::<Vec<_>>();
+        let occurrences = resolve(&self.data, start, &legs)?;
+        Ok(ServicePathPreview {
+            legs,
+            occurrences,
+            requires_stop_selection: true,
+        })
+    }
+
+    /// Explicit atomic replacement. The caller must reselect stops from a fresh
+    /// preview and supply the saved path it edited; concurrent edits are rejected.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_service_path(
+        &mut self,
+        owner: CompanyId,
+        id: ServiceId,
+        expected_path: ServicePath,
+        name: String,
+        start: StationId,
+        segments: Vec<RouteSegment>,
+        stops: Vec<StationOccurrenceRef>,
+    ) -> Result<(), WorldError> {
+        if self.data.service_paths.iter().find(|p| p.service_id == id) != Some(&expected_path) {
+            return Err(WorldError::ServicePathEditUnsupported);
+        }
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 80 {
+            return Err(WorldError::EmptyName("service (1–80 characters)"));
+        }
+        let preview = self.preview_service_path_replacement(owner, id, start, segments)?;
+        let next_leg_key = expected_path
+            .next_leg_key
+            .checked_add(preview.legs.len() as u64)
+            .ok_or(WorldError::InvalidServicePath)?;
+        let mut candidate = self.data.clone();
+        let service = candidate
+            .services
+            .iter_mut()
+            .find(|s| s.id == id && s.owner == owner)
+            .ok_or(WorldError::MissingReference("owned service"))?;
+        service.name = name.to_owned();
+        service.start = start;
+        let path = candidate
+            .service_paths
+            .iter_mut()
+            .find(|p| p.service_id == id)
+            .ok_or(WorldError::InvalidServicePath)?;
+        *path = ServicePath {
+            service_id: id,
+            next_leg_key,
+            legs: preview.legs,
+            stops,
+        };
+        candidate.validate()?;
+        self.data = candidate;
+        Ok(())
+    }
     pub fn service_path_occurrences(
         &self,
         id: ServiceId,

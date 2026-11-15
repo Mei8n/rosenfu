@@ -320,6 +320,34 @@ fn update_service_path(
         .update_service_path(service_id, name, stops)
 }
 #[tauri::command]
+fn preview_service_path_replacement(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    start: StationId,
+    segments: Vec<rosenfu_core::world::RouteSegment>,
+) -> Result<rosenfu_core::world::ServicePathPreview, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_service_path_replacement(service_id, start, segments)
+}
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn replace_service_path(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    expected_path: rosenfu_core::world::ServicePath,
+    name: String,
+    start: StationId,
+    segments: Vec<rosenfu_core::world::RouteSegment>,
+    stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .replace_service_path(service_id, expected_path, name, start, segments, stops)
+}
+#[tauri::command]
 fn preview_service_from_route(
     editor: State<'_, Mutex<WorldEditor>>,
     route_id: RouteId,
@@ -474,6 +502,8 @@ fn main() {
             preview_service_path,
             create_service_path,
             update_service_path,
+            preview_service_path_replacement,
+            replace_service_path,
             preview_service_from_route,
             preview_route_candidates,
             preview_route_membership,

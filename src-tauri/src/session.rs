@@ -145,6 +145,42 @@ impl WorldEditor {
         *self = candidate;
         Ok(self.snapshot())
     }
+    pub fn preview_service_path_replacement(
+        &self,
+        service_id: ServiceId,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+    ) -> Result<rosenfu_core::world::ServicePathPreview, String> {
+        self.world
+            .preview_service_path_replacement(self.company, service_id, start, segments)
+            .map_err(|e| e.to_string())
+    }
+    pub fn replace_service_path(
+        &mut self,
+        service_id: ServiceId,
+        expected_path: rosenfu_core::world::ServicePath,
+        name: String,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+        stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+    ) -> Result<WorldDraft, String> {
+        let mut candidate = self.clone();
+        candidate
+            .world
+            .replace_service_path(
+                candidate.company,
+                service_id,
+                expected_path,
+                name,
+                start,
+                segments,
+                stops,
+            )
+            .map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
     fn create_service_path_unchecked(
         &mut self,
         name: String,
@@ -2764,6 +2800,38 @@ mod tests {
             .update_service_path(id, "Local".into(), stops)
             .unwrap();
         assert_eq!(editor.snapshot(), created);
+        let reverse = vec![
+            RouteSegment::Track { track_id: bc },
+            RouteSegment::Track { track_id: ab },
+        ];
+        let expected = created.service_paths[0].clone();
+        let preview = editor
+            .preview_service_path_replacement(id, c, reverse.clone())
+            .unwrap();
+        let stops = preview
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect::<Vec<_>>();
+        let replaced = editor
+            .replace_service_path(
+                id,
+                expected.clone(),
+                "Reverse".into(),
+                c,
+                reverse.clone(),
+                stops.clone(),
+            )
+            .unwrap();
+        assert_eq!(replaced.services[0].id, id);
+        assert_eq!(replaced.services[0].start, c);
+        assert_eq!(replaced.next_id, created.next_id);
+        assert!(editor
+            .replace_service_path(id, expected, "Stale".into(), c, reverse, stops)
+            .is_err());
+        assert_eq!(editor.snapshot(), replaced);
+        editor.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), replaced);
     }
     #[test]
     fn reference_geometry_and_provenance_are_atomic_and_roundtrip() {
