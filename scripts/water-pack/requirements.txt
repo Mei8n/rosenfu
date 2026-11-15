@@ -1,0 +1,2 @@
+# Optional for .osm.pbf input; GeoJSON and unit tests use Python's standard library.
+osmium==4.3.2
