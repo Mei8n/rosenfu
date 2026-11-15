@@ -6,6 +6,7 @@ const decode=(b:Uint8Array)=>decodeOpenFreeMapRoadTile(b,14552,6451,'20261101_08
 describe('OpenFreeMap road adapter',()=>{
  it('keeps service unlike TW crossing filter and uses honest tile provenance',async()=>{const s=await decode(fixture());expect(s.roads).toHaveLength(1);expect(s.bundle.graph.nodes[0].osmId).toMatch(/^ofm:/);expect(s.bundle.roadWays![s.roads[0].id].highway).toBe('service');expect(s.coverageVerified).toBe(false);expect(s.bundle.source.sourceDate).toBeNull();});
  it('preserves bridges and tunnels separately',async()=>{expect((await decode(fixture('minor','bridge'))).roads[0].bridge).toBe('yes');expect((await decode(fixture('service','tunnel'))).roads[0].tunnel).toBe('yes');});
+ it('keeps structural roads as observations but does not permit ground following',async()=>{for(const kind of ['bridge','tunnel','ford']){const s=await decode(fixture('service',kind));expect(s.bundle.roadWays![s.roads[0].id].structureUnsupported).toBe(true);}});
  it('excludes rail and paths from motor-road crossing geometry',async()=>{expect((await decode(fixture('rail'))).roads).toHaveLength(0);expect((await decode(fixture('path'))).roads).toHaveLength(0);});
  it('does not turn absent layer or malformed data into empty road coverage',async()=>{await expect(decode(new Uint8Array())).rejects.toThrow('未取得');await expect(decode(new Uint8Array([255]))).rejects.toThrow();});
  it('rejects arbitrary provider URLs',()=>{expect(()=>parseRoadTileTemplate({tiles:['https://evil.example/{z}/{x}/{y}.pbf'],maxzoom:14})).toThrow();});

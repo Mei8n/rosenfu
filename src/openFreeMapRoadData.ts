@@ -25,7 +25,7 @@ export async function decodeOpenFreeMapRoadTile(bytes:Uint8Array,x:number,y:numb
  if(nodes.length+points.length>20000)throw Error('道路頂点数が上限を超えています。');nodes.push(...points);
  // OpenMapTiles omits default ground structural tags; unsupported values stay unknown.
  roads.push({id,points:points.map(({latitude,longitude})=>({latitude,longitude})),layer:rawLayer,level:null,bridge,tunnel,coverage:[bounds]});
- roadWays[id]={highway:String(p.class)==='minor'?'residential':String(p.class),access:str('access'),motorVehicle:null,structureUnsupported:!supportedLayer||brunnel!==null&&!['bridge','tunnel'].includes(brunnel)};
+ roadWays[id]={highway:String(p.class)==='minor'?'residential':String(p.class),access:str('access'),motorVehicle:null,structureUnsupported:!supportedLayer||(nLayer!==null&&nLayer!==0)||brunnel!==null};
  for(let k=0;k<points.length-1;k++){const a=points[k],b=points[k+1];if(a.longitude===b.longitude&&a.latitude===b.latitude)continue;edges.push({id:`${id}/${k}`,osmWayId:id,segmentIndex:k,from:a.osmId,to:b.osmId,mode:'road',layer:supportedLayer?nLayer:null,level:null,bridge:bridge===null?null:bridge==='yes',tunnel:tunnel===null?null:tunnel==='yes'});}
  }}
  const source=`${OFM_METADATA}/${revision}/14/${x}/${y}.pbf`;const graph=validateReferenceGraph({format:'rosenfu-reference-graph',version:1,dataset:{id:`ofm-tiles/${revision}/14/${x}/${y}`,revision,source,license:'ODbL-1.0',bounds:extent},nodes,edges});
