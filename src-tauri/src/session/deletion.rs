@@ -76,6 +76,9 @@ impl WorldEditor {
                 .iter_mut()
                 .find(|a| a.id == selection.alignment_id)
                 .ok_or("選択した線路がありません。")?;
+            if alignment.vertical_profile.is_some() {
+                return Err("勾配区間の変更には縦断の再計算が必要です。".into());
+            }
             let mut infrastructure = alignment.effective_infrastructure();
             for index in selection.section_indices {
                 if let Some(count) = track_count {
@@ -205,6 +208,9 @@ impl WorldEditor {
             .find(|a| a.id == id && a.owner == candidate.company)
             .cloned()
             .ok_or("削除する自社線路が見つかりません。")?;
+        if original.vertical_profile.is_some() {
+            return Err("勾配区間の部分撤去には縦断の再計算が必要です。".into());
+        }
         let boundaries = original
             .anchor_indices
             .clone()
@@ -494,7 +500,7 @@ mod tests {
                 }],
                 before.alignments.clone(),
                 Some(4),
-                Some(InfrastructureLevel::Elevated),
+                None,
                 plans(),
             )
             .unwrap();
@@ -504,7 +510,7 @@ mod tests {
                 SectionInfrastructure::default(),
                 SectionInfrastructure {
                     track_count: 4,
-                    level: InfrastructureLevel::Elevated
+                    level: InfrastructureLevel::Ground
                 },
                 SectionInfrastructure::default()
             ]
@@ -535,7 +541,7 @@ mod tests {
                 }],
                 before.alignments,
                 Some(2),
-                Some(InfrastructureLevel::Underground),
+                None,
                 plans(),
             )
             .unwrap();

@@ -411,6 +411,7 @@ pub use alignment::{
     StationPlacement, TrackType,
 };
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,3 +576,9 @@ pub use station_groups::StationGroup;
 
 mod service_route_bindings;
 pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
+
+mod track_topology;
+pub use track_topology::{TrackLanePort, TrackMovement, TrackPointResource};
+
+mod vertical_profile;
+pub use vertical_profile::{VerticalProfile, PROVISIONAL_LEVEL_SPACING_M};

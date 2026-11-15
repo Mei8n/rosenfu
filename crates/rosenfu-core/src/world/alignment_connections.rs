@@ -44,7 +44,15 @@ impl WorldDraft {
             }
             let (a, point, ai) = ends[0];
             let (b, other, bi) = ends[1];
-            if a.owner != b.owner || a.track_type != b.track_type || point != other {
+            // Connections require equal actual elevation, not merely equal map coordinates.
+            if a.owner != b.owner
+                || a.track_type != b.track_type
+                || point != other
+                || (a.endpoint_height_m(connection.a.endpoint)
+                    - b.endpoint_height_m(connection.b.endpoint))
+                .abs()
+                    > 1e-6
+            {
                 return Err(invalid);
             }
             // Speed caps need not match: each original alignment keeps its own cap.
