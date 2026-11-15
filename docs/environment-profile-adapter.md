@@ -1,19 +1,26 @@
-# 環境判定と区間別Hermiteの接続 checkpoint
+# 環境判定と区間別Hermiteの統合 checkpoint
 
-基点は `feat/built-anchor-height-edit` の `219d805567b3871f150be0bd1d8b173246b47644`。
-道路実装側の独立した環境判定モジュールを持ち込み、`assess_profile_alignment_environment` を公開する。
-これはAPI接続検証用であり、取得UI/保存/着工コマンド全体を統合した版ではない。
+道路取得側checkpointと `feat/built-anchor-height-edit` の区間別Hermiteモデルを専用branchで統合。
+mainや本人PCへの反映は行わない。
 
-各アンカー区間の長さで正規化位置を求め、`is_flat_over_position(from,to)` と
-`height_at_position_m` で平坦かつ高さ0mを確認する。`section_profiles` があれば
-`vertical_profile=None` でも検査を省略しない。同じ始終高さでも非ゼロ接線なら平坦ではない。
-両profileがない場合だけ区間のInfrastructureLevelを参照する。高さ倍率・費用は追加しない。
+## 判定
 
-道路側へ統合するときはsession/environment.rsのassessmentを
-`rosenfu_core::world::assess_profile_alignment_environment(a, data)` に置換する。
-道路側のWorldDraft.environment/保存/候補検証経路も同時に保持する必要がある。
-このcheckpointにはそれらのアプリ接続を追加していない。
+- section_profilesを優先し、なければglobal profile、両者がなければ各区間InfrastructureLevelの実高さを使う。
+- Hermiteの導関数極値で単調区間に分け、高さ0m/-12mの交点を二分法で求める。中点サンプリングだけで短い上下動を見落とさない。
+- 水面上の高さ0mへの接触・通過を拒否する。地上の平坦区間のみ踏切対象。カテゴリ表示が実高さと違う場合も実高さを優先。
+- 水域のうち実高さが-12m以下の部分は距離上限対象外。それ以外の連続水面区間は30kmちょうどを許可し、超過を拒否。高さ境界で分割しても、元線分距離×分割比を保持する。
+- 明示的な接続をすべて辿り、分岐の任意の一本だけを選ばない。同じ線路を反復して距離を増やさない。部分水域輪環の末尾→先頭も検査する。
+- 探索100000状態、stack/経路4096の上限。上限到達は未知として拒否する（複雑な合法グラフを拒否する場合はある）。
 
-水域の距離・地上禁止判定はまだ構造レベルによるもの。斜面途中の実高さ別水域判定、
-3-port分岐の全経路検査、縦断編集/分岐/着工の全変更経路への適用は未統合。
-したがって、このAPI checkpointだけをもって勾配版の水域建設安全性を検証済みとしてはならない。
+## アプリ接続
+
+session/environment.rsのassessmentは共通の実高さ判定を使用する。環境付きpreview/build、旧着工コマンド、延伸、アンカー高さ編集、区間高さ変更の確定前に検査する。
+環境未取得で形状や接続を新設/変更する旧コマンドも拒否。接続だけ追加した場合も両端を再検証する。
+previewはcloneで実行し、拒否時は元world、保存データ、履歴を変更しない。踏切は現在geometryと保存済snapshotから導出する。
+
+## 道路配信
+
+Overpassの406根因は未確定。描画タイルを道路不存在の証明に使わない。
+scripts/road-pack はoperatorが出典範囲を確認したOSM XMLから無簡略化セルとmanifestを作る独立実装。
+roadPackRepositoryはbuildで固定したmanifest SHAと全必要セルSHAを検証する読込側。
+配信先・実地域パックの用意とアプリの供給切替は別途検証する。完全性は当該OSM snapshotの採用道路種別についてのもので、現実の全道路を保証しない。

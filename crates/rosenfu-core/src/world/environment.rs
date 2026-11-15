@@ -334,14 +334,61 @@ pub fn assess_environment(
     assess_environment_sections(
         points,
         &vec![level; points.len().saturating_sub(1)],
-        &vec![flat_ground; points.len().saturating_sub(1)],
+        &vec![flat_ground && level == InfrastructureLevel::Ground; points.len().saturating_sub(1)],
+        None,
         data,
     )
+}
+fn water_cuts(a: GeoPoint, b: GeoPoint, data: &EnvironmentSnapshot) -> Vec<f64> {
+    let mut cuts = vec![0.0, 1.0];
+    for polygon in &data.water {
+        // Validity boundaries can divide water even when geometry spans the refresh.
+        for bnd in polygon.coverage.iter().flatten() {
+            let corners = [
+                GeoPoint {
+                    longitude: bnd.west,
+                    latitude: bnd.south,
+                },
+                GeoPoint {
+                    longitude: bnd.east,
+                    latitude: bnd.south,
+                },
+                GeoPoint {
+                    longitude: bnd.east,
+                    latitude: bnd.north,
+                },
+                GeoPoint {
+                    longitude: bnd.west,
+                    latitude: bnd.north,
+                },
+                GeoPoint {
+                    longitude: bnd.west,
+                    latitude: bnd.south,
+                },
+            ];
+            for edge in corners.windows(2) {
+                if let Some((t, _)) = intersection(a, b, edge[0], edge[1]) {
+                    cuts.push(t);
+                }
+            }
+        }
+        for ring in &polygon.rings {
+            for edge in ring.windows(2) {
+                if let Some((t, _)) = intersection(a, b, edge[0], edge[1]) {
+                    cuts.push(t);
+                }
+            }
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
+    cuts
 }
 fn assess_environment_sections(
     points: &[GeoPoint],
     levels: &[InfrastructureLevel],
     flat_ground: &[bool],
+    segment_lengths: Option<&[f64]>,
     data: &EnvironmentSnapshot,
 ) -> EnvironmentAssessment {
     let mut result = EnvironmentAssessment {
@@ -360,51 +407,11 @@ fn assess_environment_sections(
         let (a, b) = (pair[0], pair[1]);
         result.roads_ready &= coverage(a, b, &data.road_coverage);
         result.water_ready &= coverage(a, b, &data.water_coverage);
-        let mut cuts = vec![0.0, 1.0];
-        for polygon in &data.water {
-            // Validity boundaries can divide water even when geometry spans the refresh.
-            for bnd in polygon.coverage.iter().flatten() {
-                let corners = [
-                    GeoPoint {
-                        longitude: bnd.west,
-                        latitude: bnd.south,
-                    },
-                    GeoPoint {
-                        longitude: bnd.east,
-                        latitude: bnd.south,
-                    },
-                    GeoPoint {
-                        longitude: bnd.east,
-                        latitude: bnd.north,
-                    },
-                    GeoPoint {
-                        longitude: bnd.west,
-                        latitude: bnd.north,
-                    },
-                    GeoPoint {
-                        longitude: bnd.west,
-                        latitude: bnd.south,
-                    },
-                ];
-                for edge in corners.windows(2) {
-                    if let Some((t, _)) = intersection(a, b, edge[0], edge[1]) {
-                        cuts.push(t);
-                    }
-                }
-            }
-            for ring in &polygon.rings {
-                for edge in ring.windows(2) {
-                    if let Some((t, _)) = intersection(a, b, edge[0], edge[1]) {
-                        cuts.push(t);
-                    }
-                }
-            }
-        }
-        cuts.sort_by(f64::total_cmp);
-        cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
+        let cuts = water_cuts(a, b, data);
         for span in cuts.windows(2) {
             if water_contains(mix(a, b, (span[0] + span[1]) / 2.0), &data.water) {
-                let length = metres(a, b) * (span[1] - span[0]);
+                let length = segment_lengths.map_or_else(|| metres(a, b), |lengths| lengths[i])
+                    * (span[1] - span[0]);
                 run += length;
                 if matches!(
                     level,
@@ -426,7 +433,7 @@ fn assess_environment_sections(
                 limited_run = 0.0;
             }
         }
-        if level != InfrastructureLevel::Ground || !flat_ground.get(i).copied().unwrap_or(false) {
+        if !flat_ground.get(i).copied().unwrap_or(false) {
             continue;
         }
         for road in &data.roads {
@@ -496,176 +503,12 @@ pub fn assess_alignment_environment(
                 .level;
         }
     }
-    assess_environment_sections(&alignment.points, &levels, &flat_ground, data)
+    assess_environment_sections(&alignment.points, &levels, &flat_ground, None, data)
 }
 
-/// Profile-enabled integration seam. Section profiles take precedence even when
-/// the global profile is None; endpoint equality alone never proves flatness.
-pub fn assess_profile_alignment_environment(
-    alignment: &Alignment,
-    data: &EnvironmentSnapshot,
-) -> EnvironmentAssessment {
-    let lengths = alignment.section_lengths_m();
-    let total = alignment.length_m();
-    let mut cursor = 0.0;
-    let ground: Vec<_> = lengths
-        .iter()
-        .enumerate()
-        .map(|(i, length)| {
-            let from = cursor / total;
-            cursor += length;
-            let to = (cursor / total).min(1.0);
-            if alignment.section_profiles.is_empty() && alignment.vertical_profile.is_none() {
-                return alignment
-                    .section_infrastructure(i)
-                    .is_some_and(|s| s.level == InfrastructureLevel::Ground);
-            }
-            alignment.is_flat_over_position(from, to)
-                && [from, (from + to) / 2.0, to].into_iter().all(|position| {
-                    alignment
-                        .height_at_position_m(position)
-                        .is_some_and(|height| height.is_finite() && height.abs() <= 1e-6)
-                })
-        })
-        .collect();
-    assess_alignment_environment(alignment, &ground, data)
-}
-
-/// Check a physical non-branching chain, so splitting a water crossing into separately
-/// built alignments cannot evade the continuous 30 km limit.
-pub fn validate_connected_water(
-    world: &WorldDraft,
-    changed: &[AlignmentId],
-    data: &EnvironmentSnapshot,
-) -> Result<(), WorldError> {
-    let mut visited: BTreeSet<AlignmentId> = BTreeSet::new();
-    for seed in &world.alignments {
-        if visited.contains(&seed.id) {
-            continue;
-        }
-        let mut component = BTreeSet::new();
-        let mut pending = vec![seed.id];
-        while let Some(id) = pending.pop() {
-            if !component.insert(id) {
-                continue;
-            }
-            for c in &world.alignment_connections {
-                if c.a.alignment_id == id {
-                    pending.push(c.b.alignment_id);
-                }
-                if c.b.alignment_id == id {
-                    pending.push(c.a.alignment_id);
-                }
-            }
-        }
-        visited.extend(component.iter().copied());
-        if !changed.iter().any(|id| component.contains(id)) {
-            continue;
-        }
-        // This model supports endpoint chains/rings. Ambiguous branches must not
-        // silently select one outgoing edge and omit another water run.
-        for id in &component {
-            for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
-                if world
-                    .alignment_connections
-                    .iter()
-                    .filter(|c| {
-                        (c.a.alignment_id == *id && c.a.endpoint == endpoint)
-                            || (c.b.alignment_id == *id && c.b.endpoint == endpoint)
-                    })
-                    .count()
-                    > 1
-                {
-                    return Err(WorldError::InvalidEnvironment);
-                }
-            }
-        }
-        let link = |id, endpoint| {
-            world.alignment_connections.iter().find_map(|c| {
-                if c.a.alignment_id == id && c.a.endpoint == endpoint {
-                    Some(c.b)
-                } else if c.b.alignment_id == id && c.b.endpoint == endpoint {
-                    Some(c.a)
-                } else {
-                    None
-                }
-            })
-        };
-        let mut start = (seed.id, AlignmentEndpoint::Start);
-        for id in &component {
-            for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
-                if link(*id, endpoint).is_none() {
-                    start = (*id, endpoint);
-                }
-            }
-        }
-        let mut id = start.0;
-        let mut entry = start.1;
-        let mut seen = BTreeSet::new();
-        let mut points = vec![];
-        let mut levels = vec![];
-        let mut closed = false;
-        loop {
-            if !seen.insert(id) {
-                closed = (id, entry) == start;
-                break;
-            }
-            let a = world
-                .alignments
-                .iter()
-                .find(|a| a.id == id)
-                .ok_or(WorldError::InvalidEnvironment)?;
-            let anchors = a
-                .anchor_indices
-                .clone()
-                .unwrap_or_else(|| vec![0, a.points.len() - 1]);
-            let mut attrs = vec![];
-            for (i, pair) in anchors.windows(2).enumerate() {
-                attrs.extend(std::iter::repeat_n(
-                    a.section_infrastructure(i).unwrap_or_default().level,
-                    pair[1] - pair[0],
-                ));
-            }
-            let mut line = a.points.clone();
-            if entry == AlignmentEndpoint::End {
-                line.reverse();
-                attrs.reverse();
-            }
-            if points.is_empty() {
-                points.extend(line);
-            } else {
-                points.extend(line.into_iter().skip(1));
-            }
-            levels.extend(attrs);
-            let exit = if entry == AlignmentEndpoint::Start {
-                AlignmentEndpoint::End
-            } else {
-                AlignmentEndpoint::Start
-            };
-            let Some(next) = link(id, exit) else {
-                break;
-            };
-            id = next.alignment_id;
-            entry = next.endpoint;
-        }
-        if seen != component {
-            return Err(WorldError::InvalidEnvironment);
-        }
-        // Traverse a ring's join as well. Only rings longer than the limit need
-        // doubling: a short fully-wet ring must not be counted twice.
-        let length: f64 = points.windows(2).map(|p| metres(p[0], p[1])).sum();
-        if closed && length > 30000.0 + 1e-6 {
-            points.extend(points.clone().into_iter().skip(1));
-            levels.extend(levels.clone());
-        }
-        let assessment =
-            assess_environment_sections(&points, &levels, &vec![false; levels.len()], data);
-        if !assessment.water_ready || assessment.ground_water || assessment.water_limit_exceeded {
-            return Err(WorldError::InvalidEnvironment);
-        }
-    }
-    Ok(())
-}
+#[path = "environment_physical.rs"]
+mod physical;
+pub use physical::{assess_profile_alignment_environment, validate_connected_water};
 
 pub fn same_crossing_point(a: GeoPoint, b: GeoPoint) -> bool {
     metres(a, b) < 0.5

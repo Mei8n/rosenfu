@@ -1,3 +1,4 @@
+import './testConstructionEnvironment';
 // @vitest-environment jsdom
 import React from 'react';
 import {act,cleanup,fireEvent,render,within} from '@testing-library/react';

@@ -1,3 +1,4 @@
+import './testConstructionEnvironment';
 // @vitest-environment jsdom
 import React from "react";
 import styles from "./style.css?raw";

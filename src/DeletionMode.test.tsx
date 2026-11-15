@@ -1,3 +1,4 @@
+import './testConstructionEnvironment';
 // @vitest-environment jsdom
 import {afterEach,expect,test,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';

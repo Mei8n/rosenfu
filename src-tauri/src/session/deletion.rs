@@ -108,6 +108,7 @@ impl WorldEditor {
         changed.section_profiles = profiles;
         let mut candidate = self.clone();
         candidate.world.replace(after).map_err(|e| e.to_string())?;
+        candidate.check_environment_changes(self.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
@@ -257,6 +258,7 @@ impl WorldEditor {
                     )
                     .map_err(|e| e.to_string())?;
             }
+            candidate.check_environment_changes(self.world.snapshot())?;
             rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
             let after = candidate.snapshot();
             candidate.deleted_alignment = Some((before, after.clone()));
@@ -286,7 +288,9 @@ impl WorldEditor {
         }
         let mut candidate = self.clone();
         candidate.world.replace(after).map_err(|e| e.to_string())?;
+        candidate.check_environment_changes(self.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        candidate.check_environment_changes(&before)?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
         *self = candidate;
@@ -675,7 +679,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({"version":1,"plans":[{"id":1,"name":"計画"}],"parkedPaths":[],"activePathId":1,"activePlanId":1,"draftPoints":[],"redoPoints":[],"draftExtension":null,"trackType":"normal","designSpeedKmh":120,"roadFollowing":false,"plannedStations":[],"draftFinished":false})).unwrap()
     }
     fn setup() -> (WorldEditor, AlignmentId) {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let points = (0..7)
             .map(|i| GeoPoint {
                 latitude: 35.,
@@ -986,7 +990,10 @@ mod tests {
         let path = temp.path().join("infra.json");
         editor.save(&path).unwrap();
         assert_eq!(
-            WorldEditor::new().load(&path).unwrap().alignments,
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap()
+                .alignments,
             after.alignments
         );
     }
@@ -1185,7 +1192,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("batch.json");
         editor.save(&path).unwrap();
-        assert!(WorldEditor::new()
+        assert!(WorldEditor::new_with_test_environment()
             .load(&path)
             .unwrap()
             .alignments
@@ -1252,14 +1259,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("section.json");
         editor.save(&path).unwrap();
-        let mut reloaded = WorldEditor::new();
+        let mut reloaded = WorldEditor::new_with_test_environment();
         let loaded = reloaded.load(&path).unwrap();
         assert_eq!(loaded.alignments, after.alignments);
         reloaded.delete_alignment_section(id, 1, plans()).unwrap();
         assert_eq!(reloaded.snapshot().alignments[0].points.len(), 3);
         reloaded.delete_alignment_section(id, 0, plans()).unwrap();
         assert!(reloaded.snapshot().alignments.is_empty());
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let snapshot = editor
             .build_alignment(
                 "legacy".into(),
@@ -1350,7 +1357,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("world.json");
             editor.save(&path).unwrap();
-            let mut loaded = WorldEditor::new();
+            let mut loaded = WorldEditor::new_with_test_environment();
             let loaded = loaded.load(&path).unwrap();
             assert_eq!(loaded.stations, after.stations);
             for (actual, expected) in loaded
@@ -1593,7 +1600,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("curve.json");
         editor.save(&path).unwrap();
-        let mut loaded = WorldEditor::new();
+        let mut loaded = WorldEditor::new_with_test_environment();
         let restored = loaded.load(&path).unwrap();
         assert_eq!(restored.alignment_connections, after.alignment_connections);
         assert_eq!(restored.alignments, after.alignments);
@@ -1635,7 +1642,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("group-section.json");
         editor.save(&path).unwrap();
-        let mut loaded = WorldEditor::new();
+        let mut loaded = WorldEditor::new_with_test_environment();
         let restored = loaded.load(&path).unwrap();
         assert_eq!(restored.station_groups, after.station_groups);
         assert_eq!(restored.stations, after.stations);
@@ -1702,7 +1709,7 @@ mod tests {
     #[test]
     fn split_remove_gap_reconnect_preserves_owners_endpoints_and_deletion_guards() {
         use rosenfu_core::world::AlignmentEndpoint;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let points: Vec<_> = (0..5)
             .map(|i| GeoPoint {
                 latitude: 35.,
@@ -1855,7 +1862,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("reconnected.json");
         editor.save(&path).unwrap();
-        let mut loaded = WorldEditor::new();
+        let mut loaded = WorldEditor::new_with_test_environment();
         assert_eq!(
             loaded.load(&path).unwrap().alignment_connections,
             joined.alignment_connections
@@ -1876,7 +1883,9 @@ mod tests {
             let deletion_save = temp.path().join(format!("deleted-{section}.json"));
             let mut saved = isolated.clone();
             saved.save(&deletion_save).unwrap();
-            let reopened = WorldEditor::new().load(&deletion_save).unwrap();
+            let reopened = WorldEditor::new_with_test_environment()
+                .load(&deletion_save)
+                .unwrap();
             assert_eq!(reopened.alignment_connections, after.alignment_connections);
             assert_eq!(reopened.alignments, after.alignments);
             assert_eq!(isolated.undo_alignment_deletion().unwrap(), before);
