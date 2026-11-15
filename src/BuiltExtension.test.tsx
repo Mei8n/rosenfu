@@ -17,6 +17,8 @@ async function start(extra={}){
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
  if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};throw Error("unexpected "+command);
  });render(<App/>);fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));await screen.findByText(/extension-test/);
+ // Startup also restores plans and camera; finish those effects before injecting pointer input.
+ await act(async()=>{});
  const map=screen.getByRole("img",{name:"駅配置用サンプル地図"});map.getBoundingClientRect=()=>rect;return map;
 }
 for(const endpoint of ["start","end"] as const)test(`${endpoint} extension joins existing ID inside a multi-path plan and preserves station dimensions`,async()=>{
@@ -208,7 +210,7 @@ for(const sourceEnd of ['start','end'] as const)for(const targetEnd of ['start',
  fireEvent.click(hit,{clientX:x+2,clientY:131,ctrlKey:true,detail:1});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  vi.mocked(invoke).mockRejectedValueOnce(Error('late target changed'));

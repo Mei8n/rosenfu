@@ -3058,6 +3058,38 @@ mod tests {
         }
     }
     #[test]
+    fn overlapping_planned_station_commit_is_atomic() {
+        let mut editor = WorldEditor::new();
+        let mut base = planned_path(0.0);
+        base.stations.clear();
+        let before = editor.build_plan(vec![base]).unwrap();
+        let id = before.alignments[0].id;
+        let result = editor
+            .build_construction_plan(vec![], vec![built_station(id, 0.5), built_station(id, 0.5)]);
+        assert!(result.unwrap_err().contains("StationFootprintOverlap"));
+        assert_eq!(editor.snapshot(), before);
+        let mut new_path = planned_path(0.1);
+        new_path.stations = vec![
+            PlannedStation {
+                name: "A".into(),
+                position: 0.5,
+                length_m: 100.,
+                width_m: 12.,
+            },
+            PlannedStation {
+                name: "B".into(),
+                position: 0.5,
+                length_m: 100.,
+                width_m: 12.,
+            },
+        ];
+        assert!(editor
+            .build_plan(vec![new_path])
+            .unwrap_err()
+            .contains("StationFootprintOverlap"));
+        assert_eq!(editor.snapshot(), before);
+    }
+    #[test]
     fn station_only_plan_builds_multiple_stations_and_mixed_plan_is_atomic() {
         let mut editor = WorldEditor::new();
         let mut base = planned_path(0.0);

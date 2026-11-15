@@ -364,6 +364,17 @@ impl World {
         let half = length_m / a.length_m() / 2.0;
         let position = position.clamp(half, 1.0 - half);
         let point = a.point_at(position);
+        // Guard only duplicate occupation along this alignment. A different
+        // alignment may intentionally carry another platform of a shared station.
+        // Keep legacy snapshot loading and existing station resizing unchanged.
+        let total = a.length_m();
+        if self.data.station_placements.iter().any(|placement| {
+            placement.alignment_id == alignment_id
+                && (placement.position - position).abs() * total
+                    < (placement.length_m + length_m) / 2.0 - 1e-7
+        }) {
+            return Err(WorldError::StationFootprintOverlap);
+        }
         self.insert(|data, id| {
             data.stations.push(Station {
                 id: StationId(id),

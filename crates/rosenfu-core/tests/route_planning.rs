@@ -228,20 +228,33 @@ fn coincident_groups_disconnect_both_boundaries_without_affecting_unique_runs() 
         let stations: Vec<_> = positions
             .iter()
             .map(|&position| {
+                // Construct a legacy coincident-placement fixture. New station
+                // placement rejects overlaps, but old snapshots remain valid.
+                let point = world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == alignment)
+                    .unwrap()
+                    .point_at(position);
                 world
-                    .place_station_on_alignment(
-                        company,
-                        "station".into(),
-                        alignment,
-                        position,
-                        100.0,
-                        10.0,
-                    )
+                    .add_station(company, "station".into(), point.latitude, point.longitude)
                     .unwrap()
             })
             .collect();
         // Neither save order nor traversal direction may change connectivity.
         let mut draft = world.snapshot().clone();
+        draft.station_placements = stations
+            .iter()
+            .zip(&positions)
+            .map(|(&station_id, &position)| StationPlacement {
+                station_id,
+                alignment_id: alignment,
+                position,
+                length_m: 100.0,
+                width_m: 10.0,
+            })
+            .collect();
         draft.station_placements.reverse();
         world.replace(draft).unwrap();
         let before = world.snapshot().clone();

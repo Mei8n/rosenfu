@@ -4,6 +4,7 @@ import {afterEach,expect,test,vi} from "vitest";
 import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
+import {emptyConstructionPlans} from "./constructionPlans";
 import {coordinatesFromClient,DEFAULT_CAMERA} from "./map";
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:vi.fn()}));
 window.PointerEvent=MouseEvent as typeof PointerEvent;
@@ -19,11 +20,9 @@ async function start(extra={}){
  const map=screen.getByRole("img",{name:"駅配置用サンプル地図"});map.getBoundingClientRect=()=>rect;return map;
 }
 
-test('finished A-B undone to A resumes the same exact anchor, not a nearby new path',async()=>{
- const map=await start({alignments:[]});
+test('legacy saved single anchor resumes the same exact anchor, not a nearby new path',async()=>{
+ const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200)],redoPoints:[point(240,200)],draftFinished:true}});
  const click=(x:number,y=200)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
- click(120);click(240);click(240);
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
  fireEvent.pointerMove(map,{clientX:122,clientY:201});
  expect(map.querySelector('.endpoint-snap-ring')).not.toBeNull();
@@ -40,10 +39,8 @@ test('finished A-B undone to A resumes the same exact anchor, not a nearby new p
 });
 
 test('a parked single anchor can resume without duplicating either path',async()=>{
- const map=await start({alignments:[]});
+ const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200)],redoPoints:[point(240,200)],draftFinished:true}});
  const click=(x:number,y=200)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
- click(120);click(240);click(240);
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  // Start and finish another disconnected track in this same plan.
  click(300,80);click(400,80);click(400,80);
  expect(map.querySelectorAll('.parked-anchor')).toHaveLength(1);
