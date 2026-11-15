@@ -24,6 +24,36 @@ impl TrackType {
         }
     }
 }
+/// Categorical construction level, not metres of elevation or a gradient profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InfrastructureLevel {
+    #[default]
+    Ground,
+    Elevated,
+    Underground,
+}
+/// Physical infrastructure attributes of one anchor-to-anchor section.
+/// Track count is not a simulated capacity, directional assignment, or lane topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SectionInfrastructure {
+    pub track_count: u8,
+    pub level: InfrastructureLevel,
+}
+impl Default for SectionInfrastructure {
+    fn default() -> Self {
+        Self {
+            track_count: 1,
+            level: InfrastructureLevel::Ground,
+        }
+    }
+}
+impl SectionInfrastructure {
+    pub fn is_valid(self) -> bool {
+        matches!(self.track_count, 1 | 2 | 4)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Alignment {
@@ -34,6 +64,10 @@ pub struct Alignment {
     /// Original construction anchor boundaries in the sampled line. Legacy: one section.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor_indices: Option<Vec<usize>>,
+    /// Empty is the compact encoding of single-track ground infrastructure throughout.
+    /// Otherwise exactly one item per anchor interval, in geometry order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub infrastructure: Vec<SectionInfrastructure>,
     pub track_type: TrackType,
     /// None preserves legacy saves and resolves to the track-type default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,6 +90,23 @@ fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
     6_371_000.0 * x.hypot(y)
 }
 impl Alignment {
+    pub fn section_count(&self) -> usize {
+        self.anchor_indices
+            .as_ref()
+            .map_or(1, |indices| indices.len().saturating_sub(1))
+    }
+    pub fn section_infrastructure(&self, index: usize) -> Option<SectionInfrastructure> {
+        (index < self.section_count())
+            .then(|| self.infrastructure.get(index).copied().unwrap_or_default())
+    }
+    pub fn effective_infrastructure(&self) -> Vec<SectionInfrastructure> {
+        if self.infrastructure.is_empty() {
+            vec![SectionInfrastructure::default(); self.section_count()]
+        } else {
+            self.infrastructure.clone()
+        }
+    }
+
     pub fn effective_design_speed_kmh(&self) -> f64 {
         self.design_speed_kmh
             .unwrap_or_else(|| self.track_type.default_design_speed_kmh())
@@ -89,6 +140,11 @@ impl WorldDraft {
                     || indices.last().copied() != a.points.len().checked_sub(1)
                     || indices.windows(2).any(|pair| pair[0] >= pair[1])
             }) {
+                return Err(WorldError::InvalidAlignment);
+            }
+            if (!a.infrastructure.is_empty() && a.infrastructure.len() != a.section_count())
+                || a.infrastructure.iter().any(|item| !item.is_valid())
+            {
                 return Err(WorldError::InvalidAlignment);
             }
             let speed = a.effective_design_speed_kmh();
@@ -235,6 +291,19 @@ impl World {
             .anchor_indices
             .clone()
             .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
+        if !alignment.infrastructure.is_empty() {
+            let inherited = match endpoint {
+                AlignmentEndpoint::Start => alignment.infrastructure[0],
+                AlignmentEndpoint::End => *alignment
+                    .infrastructure
+                    .last()
+                    .ok_or(WorldError::InvalidAlignment)?,
+            };
+            match endpoint {
+                AlignmentEndpoint::Start => alignment.infrastructure.insert(0, inherited),
+                AlignmentEndpoint::End => alignment.infrastructure.push(inherited),
+            }
+        }
         let old_point_count = alignment.points.len();
         let added_point_count = points.len() - 1;
         match endpoint {
@@ -313,6 +382,7 @@ impl World {
                 name,
                 points,
                 anchor_indices: None,
+                infrastructure: Vec::new(),
                 track_type,
                 design_speed_kmh: None,
             })
