@@ -33,6 +33,9 @@ struct Asset {
     bytes: usize,
     expanded_bytes: usize,
     files: usize,
+    first_cell: String,
+    last_cell: String,
+    cell_count: usize,
 }
 #[derive(Clone, Deserialize)]
 struct Catalog {
@@ -250,10 +253,24 @@ impl RoadDelivery {
         }
         let catalog = state.catalog.as_ref().ok_or("道路catalogなし")?;
         let prefix = path.rsplit_once('/').ok_or("道路path不正")?.0;
-        let asset = catalog
+        let parts: Vec<_> = catalog
             .assets
             .iter()
-            .find(|a| a.manifest == format!("{prefix}/manifest.json"))
+            .filter(|a| a.manifest == format!("{prefix}/manifest.json"))
+            .cloned()
+            .collect();
+        let key = path
+            .rsplit('/')
+            .next()
+            .ok_or("道路path不正")?
+            .strip_suffix(".json")
+            .ok_or("道路path不正")?;
+        let asset = parts
+            .iter()
+            .filter(|a| {
+                key == "manifest" || (key >= a.first_cell.as_str() && key <= a.last_cell.as_str())
+            })
+            .min_by(|a, b| a.first_cell.cmp(&b.first_cell))
             .ok_or("道路未提供範囲です")?
             .clone();
         if let Some(position) = state.archives.iter().position(|a| a.asset == asset) {
@@ -269,7 +286,7 @@ impl RoadDelivery {
             return result;
         }
         let bytes = self.blob(&asset.name, &asset.sha256, asset.bytes, &check, fetch)?;
-        let mut verified = verify_archive(bytes, &asset, &check)?;
+        let mut verified = verify_archive(bytes, &asset, &parts, &check)?;
         #[cfg(test)]
         {
             state.validation_count += 1;
@@ -390,7 +407,7 @@ fn keep_archive(state: &mut State, archive: VerifiedArchive, limit: usize) -> Re
 fn validate_catalog(c: &Catalog) -> Result<()> {
     ensure(
         c.format == "rosenfu-road-release"
-            && c.version == 1
+            && c.version == 2
             && c.publishable
             && valid_hash(&c.index_sha256)
             && !c.assets.is_empty()
@@ -398,7 +415,6 @@ fn validate_catalog(c: &Catalog) -> Result<()> {
         "道路catalog契約不一致",
     )?;
     let mut names = std::collections::HashSet::new();
-    let mut paths = std::collections::HashSet::new();
     for a in &c.assets {
         ensure(
             safe_path(&a.manifest)
@@ -409,16 +425,30 @@ fn validate_catalog(c: &Catalog) -> Result<()> {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
                 && names.insert(&a.name)
-                && paths.insert(&a.manifest)
                 && valid_hash(&a.sha256)
                 && valid_hash(&a.manifest_sha256)
                 && a.bytes > 0
                 && a.bytes <= ZIP_MAX
                 && a.expanded_bytes <= EXPANDED_MAX
-                && a.files > 0
-                && a.files <= 2501,
+                && a.cell_count > 0
+                && a.cell_count <= 2500
+                && a.files == a.cell_count + 1
+                && grid(&a.first_cell)
+                && grid(&a.last_cell)
+                && a.first_cell <= a.last_cell,
             "道路asset不正",
         )?;
+    }
+    let mut sorted: Vec<_> = c.assets.iter().collect();
+    sorted.sort_by(|a, b| (&a.manifest, &a.first_cell).cmp(&(&b.manifest, &b.first_cell)));
+    for pair in sorted.windows(2) {
+        if pair[0].manifest == pair[1].manifest {
+            ensure(
+                pair[0].last_cell < pair[1].first_cell
+                    && pair[0].manifest_sha256 == pair[1].manifest_sha256,
+                "道路part重複/hash不一致",
+            )?;
+        }
     }
     Ok(())
 }
@@ -432,20 +462,70 @@ fn validate_index(bytes: &[u8], c: &Catalog) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for r in regions {
         for s in r["shards"].as_array().ok_or("道路shards不正")? {
-            let a = c
+            let parts: Vec<_> = c
                 .assets
                 .iter()
-                .find(|a| s["manifest"] == a.manifest)
-                .ok_or("道路catalog/index不一致")?;
-            ensure(s["sha256"] == a.manifest_sha256, "道路manifest hash不一致")?;
-            ensure(seen.insert(a.manifest.as_str()), "道路index重複shard")?;
+                .filter(|a| s["manifest"] == a.manifest)
+                .collect();
+            ensure(!parts.is_empty(), "道路catalog/index不一致")?;
+            for a in &parts {
+                ensure(s["sha256"] == a.manifest_sha256, "道路manifest hash不一致")?;
+            }
+            ensure(
+                s["cells"].as_u64() == Some(parts.iter().map(|a| a.cell_count as u64).sum()),
+                "道路part cell数不一致",
+            )?;
+            ensure(
+                seen.insert(parts[0].manifest.as_str()),
+                "道路index重複shard",
+            )?;
         }
     }
-    ensure(seen.len() == c.assets.len(), "道路asset数不一致")
+    ensure(
+        c.assets.iter().all(|a| seen.contains(a.manifest.as_str())),
+        "道路asset数不一致",
+    )
 }
+fn validate_part_coverage(
+    cells: &serde_json::Map<String, serde_json::Value>,
+    parts: &[Asset],
+    requested: &Asset,
+) -> Result<()> {
+    ensure(
+        !cells.is_empty() && cells.len() <= 2500 && !parts.is_empty(),
+        "道路part cells不正",
+    )?;
+    let mut sorted: Vec<_> = parts.iter().collect();
+    sorted.sort_by(|a, b| a.first_cell.cmp(&b.first_cell));
+    let mut last: Option<&str> = None;
+    let mut total = 0usize;
+    for p in sorted {
+        ensure(
+            p.manifest == requested.manifest
+                && p.manifest_sha256 == requested.manifest_sha256
+                && cells.contains_key(&p.first_cell)
+                && cells.contains_key(&p.last_cell)
+                && last.is_none_or(|v| v < p.first_cell.as_str()),
+            "道路part境界重複/欠落",
+        )?;
+        let count = cells
+            .keys()
+            .filter(|k| *k >= &p.first_cell && *k <= &p.last_cell)
+            .count();
+        ensure(
+            count == p.cell_count && count > 0 && p.files == count + 1,
+            "道路part範囲count不一致",
+        )?;
+        total += count;
+        last = Some(&p.last_cell);
+    }
+    ensure(total == cells.len(), "道路part coverage欠落")
+}
+
 fn verify_archive(
     bytes: Vec<u8>,
     asset: &Asset,
+    parts: &[Asset],
     check: &impl Fn() -> Result<()>,
 ) -> Result<VerifiedArchive> {
     ensure(
@@ -468,7 +548,7 @@ fn verify_archive(
     let value: serde_json::Value =
         serde_json::from_slice(&manifest).map_err(|_| "道路manifest形式不正")?;
     let cells = value["cells"].as_object().ok_or("道路cells不正")?;
-    ensure(cells.len() + 1 == asset.files, "道路cell数不一致")?;
+    validate_part_coverage(cells, parts, asset)?;
     let prefix = asset
         .manifest
         .rsplit_once('/')
@@ -490,10 +570,12 @@ fn verify_archive(
             size <= FILE_MAX as u64 && valid_hash(sha),
             "道路cell制限超過",
         )?;
-        expected.insert(
-            format!("{prefix}/{key}.json"),
-            (size as usize, sha.to_owned()),
-        );
+        if key >= &asset.first_cell && key <= &asset.last_cell {
+            expected.insert(
+                format!("{prefix}/{key}.json"),
+                (size as usize, sha.to_owned()),
+            );
+        }
     }
     let entries = expected.clone();
     let mut total = 0usize;
@@ -541,7 +623,7 @@ fn validate_zip(
     wanted: &str,
     check: &impl Fn() -> Result<()>,
 ) -> Result<Vec<u8>> {
-    verify_archive(bytes.to_vec(), asset, check)?.read(wanted, check)
+    verify_archive(bytes.to_vec(), asset, std::slice::from_ref(asset), check)?.read(wanted, check)
 }
 
 #[cfg(test)]
@@ -574,13 +656,16 @@ mod tests {
             bytes: bytes.len(),
             expanded_bytes: manifest.len() + cell.len(),
             files: 2,
+            first_cell: "6500_1500".into(),
+            last_cell: "6500_1500".into(),
+            cell_count: 1,
         };
         (a, bytes, manifest, cell.to_vec())
     }
     fn server_fixture() -> (Release, HashMap<String, Vec<u8>>) {
         let (a, zip, _, _) = fixture(None);
-        let index=serde_json::to_vec(&json!({"format":"rosenfu-road-pack-index","version":1,"coverage_verified":false,"regions":[{"shards":[{"manifest":a.manifest,"sha256":a.manifest_sha256}]}]})).unwrap();
-        let catalog=serde_json::to_vec(&json!({"format":"rosenfu-road-release","version":1,"publishable":true,"coverage_verified":false,"index_sha256":hash(&index),"assets":[{"name":a.name,"manifest":a.manifest,"manifest_sha256":a.manifest_sha256,"sha256":a.sha256,"bytes":a.bytes,"expanded_bytes":a.expanded_bytes,"files":a.files}]})).unwrap();
+        let index=serde_json::to_vec(&json!({"format":"rosenfu-road-pack-index","version":1,"coverage_verified":false,"regions":[{"shards":[{"manifest":a.manifest,"sha256":a.manifest_sha256,"cells":a.cell_count}]}]})).unwrap();
+        let catalog=serde_json::to_vec(&json!({"format":"rosenfu-road-release","version":2,"publishable":true,"coverage_verified":false,"index_sha256":hash(&index),"assets":[{"name":a.name,"manifest":a.manifest,"manifest_sha256":a.manifest_sha256,"sha256":a.sha256,"bytes":a.bytes,"expanded_bytes":a.expanded_bytes,"files":a.files,"first_cell":a.first_cell,"last_cell":a.last_cell,"cell_count":a.cell_count}]})).unwrap();
         (
             Release {
                 tag: "data-road-test".into(),
@@ -592,6 +677,107 @@ mod tests {
                 (a.name, zip),
             ]),
         )
+    }
+    fn split_fixture() -> (Vec<Asset>, Vec<Vec<u8>>, Vec<u8>) {
+        let mut cells = serde_json::Map::new();
+        for i in 0..3 {
+            let data = format!("{{\"ways\":[],\"test\":{i}}}");
+            cells.insert(format!("6500_{}",1500+i),json!({"file":format!("6500_{}.json",1500+i),"bytes":data.len(),"sha256":hash(data.as_bytes())}));
+        }
+        let manifest = serde_json::to_vec(&json!({"cells":cells})).unwrap();
+        let path = "packs/test/130_30/manifest.json";
+        let mut assets = Vec::new();
+        let mut archives = Vec::new();
+        for (part, (lo, hi)) in [(0, 0), (1, 2)].into_iter().enumerate() {
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            let opts = SimpleFileOptions::default();
+            zip.start_file(path, opts).unwrap();
+            zip.write_all(&manifest).unwrap();
+            let mut size = manifest.len();
+            for i in lo..=hi {
+                let data = format!("{{\"ways\":[],\"test\":{i}}}");
+                zip.start_file(format!("packs/test/130_30/6500_{}.json", 1500 + i), opts)
+                    .unwrap();
+                zip.write_all(data.as_bytes()).unwrap();
+                size += data.len();
+            }
+            let bytes = zip.finish().unwrap().into_inner();
+            assets.push(Asset {
+                name: format!("test-130_30-p{part:03}.zip"),
+                manifest: path.into(),
+                manifest_sha256: hash(&manifest),
+                sha256: hash(&bytes),
+                bytes: bytes.len(),
+                expanded_bytes: size,
+                files: hi - lo + 2,
+                first_cell: format!("6500_{}", 1500 + lo),
+                last_cell: format!("6500_{}", 1500 + hi),
+                cell_count: hi - lo + 1,
+            });
+            archives.push(bytes);
+        }
+        (assets, archives, manifest)
+    }
+    #[test]
+    fn split_archives_validate_exact_ranges() {
+        let (parts, archives, _) = split_fixture();
+        let mut a = verify_archive(archives[0].clone(), &parts[0], &parts, &|| Ok(())).unwrap();
+        assert!(a
+            .read("packs/test/130_30/6500_1500.json", &|| Ok(()))
+            .is_ok());
+        assert!(a
+            .read("packs/test/130_30/6500_1502.json", &|| Ok(()))
+            .is_err());
+        let mut b = verify_archive(archives[1].clone(), &parts[1], &parts, &|| Ok(())).unwrap();
+        assert_eq!(
+            b.read("packs/test/130_30/6500_1502.json", &|| Ok(()))
+                .unwrap(),
+            b"{\"ways\":[],\"test\":2}"
+        );
+    }
+    #[test]
+    fn part_gaps_overlaps_and_fake_boundaries_rejected() {
+        let (parts, archives, _) = split_fixture();
+        assert!(verify_archive(archives[0].clone(), &parts[0], &parts[..1], &|| Ok(())).is_err());
+        let mut bad = parts.clone();
+        bad[1].first_cell = parts[0].first_cell.clone();
+        assert!(verify_archive(archives[0].clone(), &bad[0], &bad, &|| Ok(())).is_err());
+        let mut bad = parts.clone();
+        bad[1].last_cell = "6500_9999".into();
+        assert!(verify_archive(archives[0].clone(), &bad[0], &bad, &|| Ok(())).is_err());
+    }
+    #[test]
+    fn split_requested_cell_downloads_only_its_part() {
+        let (parts, archives, _) = split_fixture();
+        let index=serde_json::to_vec(&json!({"format":"rosenfu-road-pack-index","version":1,"regions":[{"shards":[{"manifest":parts[0].manifest,"sha256":parts[0].manifest_sha256,"cells":3}]}]})).unwrap();
+        let entries:Vec<_>=parts.iter().map(|a|json!({"name":a.name,"manifest":a.manifest,"manifest_sha256":a.manifest_sha256,"sha256":a.sha256,"bytes":a.bytes,"expanded_bytes":a.expanded_bytes,"files":a.files,"first_cell":a.first_cell,"last_cell":a.last_cell,"cell_count":a.cell_count})).collect();
+        let catalog=serde_json::to_vec(&json!({"format":"rosenfu-road-release","version":2,"publishable":true,"index_sha256":hash(&index),"assets":entries})).unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let d = RoadDelivery::new(
+            t.path().to_owned(),
+            Some(Release {
+                tag: "data-road-test".into(),
+                catalog_sha256: hash(&catalog),
+            }),
+        )
+        .unwrap();
+        let data = HashMap::from([
+            ("catalog.json".to_owned(), catalog),
+            ("index.json".into(), index),
+            (parts[0].name.clone(), archives[0].clone()),
+            (parts[1].name.clone(), archives[1].clone()),
+        ]);
+        let called = Mutex::new(Vec::new());
+        d.read_with("packs/test/130_30/6500_1502.json", &|url, _, _| {
+            let name = url.rsplit('/').next().unwrap();
+            called.lock().unwrap().push(name.to_owned());
+            Ok(data[name].clone())
+        })
+        .unwrap();
+        let called = called.lock().unwrap();
+        assert_eq!(called.len(), 3);
+        assert!(!called.contains(&parts[0].name));
+        assert!(called.contains(&parts[1].name));
     }
     #[test]
     fn valid_zip_cell_and_manifest() {
@@ -737,24 +923,29 @@ mod tests {
         let mut state = State::default();
         keep_archive(
             &mut state,
-            verify_archive(b.clone(), &a, &|| Ok(())).unwrap(),
+            verify_archive(b.clone(), &a, std::slice::from_ref(&a), &|| Ok(())).unwrap(),
             a.bytes,
         )
         .unwrap();
         keep_archive(
             &mut state,
-            verify_archive(b.clone(), &a, &|| Ok(())).unwrap(),
+            verify_archive(b.clone(), &a, std::slice::from_ref(&a), &|| Ok(())).unwrap(),
             a.bytes,
         )
         .unwrap();
         assert_eq!(state.archives.len(), 1);
-        assert!(keep_archive(&mut state, verify_archive(b, &a, &|| Ok(())).unwrap(), 1).is_err());
+        assert!(keep_archive(
+            &mut state,
+            verify_archive(b, &a, std::slice::from_ref(&a), &|| Ok(())).unwrap(),
+            1
+        )
+        .is_err());
         assert_eq!(state.archives.len(), 1);
         let (_, b, _, _) = fixture(None);
         for _ in 0..8 {
             keep_archive(
                 &mut state,
-                verify_archive(b.clone(), &a, &|| Ok(())).unwrap(),
+                verify_archive(b.clone(), &a, std::slice::from_ref(&a), &|| Ok(())).unwrap(),
                 MEMORY_MAX,
             )
             .unwrap();

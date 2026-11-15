@@ -58,3 +58,25 @@ first full manifest validation and less than 1 ms total for the same twelve cell
 A separate worst-cell sample (twelve largest cells by uncompressed bytes) took
 146,574 microseconds total after a 3,034 ms initial validation. These are local
 network-free measurements, not release-network latency or user-PC promises.
+
+## Catalog v2 transport parts
+
+Dense Kanto one-degree shards exceeded the 256 MiB expansion budget. Transport
+catalog v2 therefore splits a shard into parts while leaving the source index and
+manifest hashes unchanged. Each asset carries `first_cell`, `last_cell` (inclusive
+lexical cell-key range), and `cell_count`. Every part contains the complete same
+manifest plus only its selected cells. The producer targets 32 MiB expanded per part;
+native hard limits remain 64 MiB compressed / 256 MiB expanded.
+
+The catalog must have unique asset names and non-overlapping ranges with matching
+manifest hashes. The source index cell count must equal the sum of the parts. On
+first archive validation, every range endpoint must exist in the manifest, each
+part's count must match the actual cells in its range, and the ranges together must
+cover all manifest cells exactly once. Actual ZIP entries must exactly match the
+selected part. The requested cell determines which part is downloaded; a manifest
+request selects the first part. Missing parts are errors, never empty roads.
+
+The catalog version changes from 1 to 2; old transport catalogs are rejected. No
+world/save schema changes. No active published road release uses v1. A release's
+SHA-pinned catalog is immutable, and a changed release constructs a new service;
+verified bytes from another descriptor cannot be selected accidentally.
