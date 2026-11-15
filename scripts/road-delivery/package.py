@@ -62,7 +62,7 @@ def package(root, output):
                 require(isinstance(path, str) and re.fullmatch(r'packs/' + re.escape(name) + r'/-?\d+_-?\d+/manifest\.json', path), 'manifest path')
                 require(path not in seen and len(seen) < MAX_ASSETS, 'duplicate or asset limit')
                 seen.add(path)
-                require(shutil.disk_usage(stage).free >= MIN_FREE + MAX_COMPRESSED, 'insufficient output disk')
+                require(shutil.disk_usage(stage).free >= MIN_FREE + MAX_EXPANDED + 16 * 1024 * 1024, 'insufficient output disk')
                 directory = root / Path(path).parent
                 require(not directory.is_symlink(), 'symlink directory')
                 data = read(root / path)

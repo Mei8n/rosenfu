@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 import package
 
@@ -56,6 +57,13 @@ class Packaging(unittest.TestCase):
         try:
             with self.assertRaises(ValueError): package.package(self.root, self.output)
         finally: package.MAX_EXPANDED = old
+
+    def test_disk_reserve_covers_precheck_compression_growth(self):
+        usage = package.shutil.disk_usage(self.root)
+        fake = type(usage)(usage.total, usage.used, package.MIN_FREE + package.MAX_COMPRESSED + 1)
+        with patch.object(package.shutil, 'disk_usage', return_value=fake):
+            with self.assertRaises(ValueError): package.package(self.root, self.output)
+        self.assertFalse(self.output.exists())
 
     def test_total_budget(self):
         old = package.MAX_TOTAL_COMPRESSED
