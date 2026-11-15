@@ -642,3 +642,36 @@ fn internal_count_boundaries_have_bidirectional_y_paths_and_exact_lane_joins() {
         }
     }
 }
+
+#[test]
+fn insufficient_y_approach_is_rejected_before_connection_and_preserves_snapshot() {
+    let (mut w, c, a, b) = pair(1, 2, AlignmentEndpoint::End, AlignmentEndpoint::Start);
+    let mut draft = w.snapshot().clone();
+    // Last double-track section is too short for a one-spacing approach.
+    let line = draft
+        .alignments
+        .iter_mut()
+        .find(|l| l.id == b.alignment_id)
+        .unwrap();
+    let end = line.points[1];
+    line.points.insert(1, point(139.10001));
+    line.anchor_indices = Some(vec![0, 1, 2]);
+    line.infrastructure = vec![
+        SectionInfrastructure {
+            track_count: 2,
+            level: InfrastructureLevel::Ground
+        };
+        2
+    ];
+    assert_eq!(line.points[2], end);
+    w = World::new(draft).unwrap();
+    let before = w.snapshot().clone();
+    assert_eq!(
+        w.connect_alignment_endpoints(c, a, b),
+        Err(WorldError::InsufficientTurnoutSpace)
+    );
+    assert_eq!(w.snapshot(), &before);
+    assert!(WorldError::InsufficientTurnoutSpace
+        .to_string()
+        .contains("必要な空間"));
+}

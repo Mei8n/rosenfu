@@ -543,6 +543,15 @@ impl WorldEditor {
         let has_junction = alignments.iter().any(|path| path.junction_source.is_some());
         let before_junction = self.snapshot();
         let mut candidate = self.clone();
+        // Track only pieces created by this transaction. This permits several
+        // planned splits of one observed source without accepting external edits.
+        let mut split_sources: std::collections::BTreeMap<
+            AlignmentId,
+            (
+                rosenfu_core::world::Alignment,
+                Vec<rosenfu_core::world::Alignment>,
+            ),
+        > = std::collections::BTreeMap::new();
         // Place these before any extensions. Extending an alignment remaps its
         // existing placements, preserving the planned station's physical location.
         for station in stations {
@@ -571,21 +580,73 @@ impl WorldEditor {
                 if alignment.extension.is_some() || !source.is_valid() {
                     return Err("分岐元の指定が不正です。".into());
                 }
-                let original = candidate
-                    .world
-                    .snapshot()
-                    .alignments
-                    .iter()
-                    .find(|a| a.id == source.alignment_id)
-                    .ok_or("分岐元の線路がありません。")?;
-                if original != &source.expected_alignment {
-                    return Err("分岐元の線路が変更されています。計画を作り直してください。".into());
-                }
-                let a = original.points[source.segment_index];
-                let b = original.points[source.segment_index + 1];
+                let expected = &source.expected_alignment;
+                let a = expected.points[source.segment_index];
+                let b = expected.points[source.segment_index + 1];
                 let point = GeoPoint {
                     latitude: a.latitude + (b.latitude - a.latitude) * source.fraction,
                     longitude: a.longitude + (b.longitude - a.longitude) * source.fraction,
+                };
+                let (source_id, segment_index, fraction) = if let Some((base, pieces)) =
+                    split_sources.get(&source.alignment_id)
+                {
+                    if base != expected
+                        || pieces.iter().any(|piece| {
+                            candidate
+                                .world
+                                .snapshot()
+                                .alignments
+                                .iter()
+                                .find(|a| a.id == piece.id)
+                                != Some(piece)
+                        })
+                    {
+                        return Err(
+                            "分岐元の線路が変更されています。計画を作り直してください。".into()
+                        );
+                    }
+                    let mut found = None;
+                    for piece in pieces {
+                        for (index, pair) in piece.points.windows(2).enumerate() {
+                            let dx = pair[1].longitude - pair[0].longitude;
+                            let dy = pair[1].latitude - pair[0].latitude;
+                            let t = ((point.longitude - pair[0].longitude) * dx
+                                + (point.latitude - pair[0].latitude) * dy)
+                                / (dx * dx + dy * dy);
+                            if (0.0..=1.0).contains(&t)
+                                && (pair[0].longitude + dx * t - point.longitude).abs() < 1e-10
+                                && (pair[0].latitude + dy * t - point.latitude).abs() < 1e-10
+                                && !(index == 0 && t < 1e-9)
+                                && !(index + 2 == piece.points.len() && t > 1.0 - 1e-9)
+                            {
+                                found = Some((piece.id, index, t));
+                                break;
+                            }
+                        }
+                        if found.is_some() {
+                            break;
+                        }
+                    }
+                    found
+                        .ok_or("同じ分岐点への重複分岐、または変更された線路には分岐できません。")?
+                } else {
+                    let original = candidate
+                        .world
+                        .snapshot()
+                        .alignments
+                        .iter()
+                        .find(|a| a.id == source.alignment_id)
+                        .ok_or("分岐元の線路がありません。")?;
+                    if original != expected {
+                        return Err(
+                            "分岐元の線路が変更されています。計画を作り直してください。".into()
+                        );
+                    }
+                    split_sources.insert(
+                        source.alignment_id,
+                        (expected.clone(), vec![original.clone()]),
+                    );
+                    (source.alignment_id, source.segment_index, source.fraction)
                 };
                 let first = alignment
                     .points
@@ -601,9 +662,9 @@ impl WorldEditor {
                     .world
                     .split_alignment_at_position(
                         candidate.company,
-                        source.alignment_id,
-                        source.segment_index,
-                        source.fraction,
+                        source_id,
+                        segment_index,
+                        fraction,
                     )
                     .map_err(|e| format!("この位置では分岐できません: {e}"))?;
                 let start_height = candidate
@@ -611,22 +672,18 @@ impl WorldEditor {
                     .snapshot()
                     .alignments
                     .iter()
-                    .find(|a| a.id == source.alignment_id)
+                    .find(|a| a.id == source_id)
                     .ok_or("分岐元がありません。")?
                     .endpoint_height_m(rosenfu_core::world::AlignmentEndpoint::End);
                 if let Some(destination) = &mut alignment.destination {
-                    if destination.alignment_id == source.alignment_id
+                    if destination.alignment_id == source_id
                         && destination.endpoint == rosenfu_core::world::AlignmentEndpoint::End
                     {
                         destination.alignment_id = suffix_id;
                     }
                 }
                 alignment.extension = Some(PlannedAlignmentExtension {
-                    alignment_id: if source.reverse {
-                        suffix_id
-                    } else {
-                        source.alignment_id
-                    },
+                    alignment_id: if source.reverse { suffix_id } else { source_id },
                     endpoint: if source.reverse {
                         rosenfu_core::world::AlignmentEndpoint::Start
                     } else {
@@ -634,6 +691,22 @@ impl WorldEditor {
                     },
                 });
                 candidate.build_sloped_plan(alignment, start_height)?;
+                let (_, pieces) = split_sources
+                    .get_mut(&source.alignment_id)
+                    .expect("registered source");
+                pieces.retain(|p| p.id != source_id);
+                for id in [source_id, suffix_id] {
+                    pieces.push(
+                        candidate
+                            .world
+                            .snapshot()
+                            .alignments
+                            .iter()
+                            .find(|a| a.id == id)
+                            .expect("split piece")
+                            .clone(),
+                    );
+                }
                 continue;
             }
             let start_height = if let Some(extension) = &alignment.extension {
@@ -3611,6 +3684,54 @@ mod tests {
         let before = editor.snapshot();
         assert!(editor.build_plan(vec![short]).is_err());
         assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
+    fn multiple_junctions_from_one_observed_source_commit_and_undo_together() {
+        use rosenfu_core::world::ConstructionJunctionSource;
+        for fractions in [[0.25, 0.75], [0.75, 0.25]] {
+            let mut editor = WorldEditor::new();
+            let mut flat = planned_path(0.);
+            flat.stations.clear();
+            let built = editor.build_plan(vec![flat]).unwrap();
+            let original = built.alignments[0].clone();
+            let paths = fractions
+                .into_iter()
+                .map(|fraction| {
+                    let mut branch = planned_path(0.);
+                    branch.stations.clear();
+                    let x = 139.0 + 0.01 * fraction;
+                    branch.points = vec![
+                        GeoPoint {
+                            latitude: 35.,
+                            longitude: x,
+                        },
+                        GeoPoint {
+                            latitude: 35.,
+                            longitude: x + 0.0005,
+                        },
+                        GeoPoint {
+                            latitude: 35.01,
+                            longitude: x + 0.001,
+                        },
+                    ];
+                    branch.junction_source = Some(ConstructionJunctionSource {
+                        alignment_id: original.id,
+                        expected_alignment: original.clone(),
+                        segment_index: 0,
+                        fraction,
+                        reverse: false,
+                    });
+                    branch
+                })
+                .collect();
+            let after = editor.build_plan(paths).unwrap();
+            assert_eq!(after.alignments.len(), 5);
+            assert_eq!(after.alignment_connections.len(), 4);
+            let saved = serde_json::to_string(&after).unwrap();
+            assert!(World::new(serde_json::from_str(&saved).unwrap()).is_ok());
+            assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        }
     }
 
     #[test]

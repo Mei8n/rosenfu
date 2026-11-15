@@ -90,7 +90,7 @@ impl World {
                     a.point_at((t + epsilon).min(1.0)),
                 );
                 let norm = x.hypot(y);
-                if norm <= 1e-9 || lead <= 1e-9 {
+                if norm <= 1e-9 || lead < TRACK_LANE_SPACING_M {
                     return None;
                 }
                 let count = a
@@ -112,7 +112,7 @@ impl World {
             let (Some((a, b, from_position)), Some((d, c, to_position))) =
                 (approach(movement.from), approach(movement.to))
             else {
-                return Err(WorldError::InvalidAlignmentConnection);
+                return Err(WorldError::InsufficientTurnoutSpace);
             };
             let points: Vec<_> = (0..=24)
                 .map(|i| {
@@ -227,7 +227,7 @@ impl World {
                         }
                     }
                     if low >= high {
-                        return Err(WorldError::InvalidAlignmentConnection);
+                        return Err(WorldError::InsufficientTurnoutSpace);
                     }
                     let lateral = ((f64::from(count) - 1.0) / 2.0 - f64::from(lane_index))
                         * TRACK_LANE_SPACING_M;
@@ -317,7 +317,7 @@ impl World {
                     .fold(length, f64::min)
                     .max(0.0);
                 let lead = 30.0_f64.min((hi - lo) * length / 4.0).min(free / 2.0);
-                if lead <= 1e-9 {
+                if lead < TRACK_LANE_SPACING_M {
                     return None;
                 }
                 let t = boundary + if start { lead / length } else { -lead / length };
@@ -345,7 +345,7 @@ impl World {
             let (Some((p0, p1, from_position)), Some((p3, p2, to_position))) =
                 (approach(movement.from), approach(movement.to))
             else {
-                return Err(WorldError::InvalidAlignmentConnection);
+                return Err(WorldError::InsufficientTurnoutSpace);
             };
             let points: Vec<_> = (0..=24)
                 .map(|i| {

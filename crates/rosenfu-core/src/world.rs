@@ -179,6 +179,7 @@ pub enum WorldError {
     InvalidViewState,
     InvalidAlignment,
     InvalidAlignmentConnection,
+    InsufficientTurnoutSpace,
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
@@ -201,6 +202,9 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::InsufficientTurnoutSpace) {
+            return write!(f, "分岐・単複線の合流に必要な空間がありません。接続位置をホームから離すか、前後の区間を長くしてください。");
+        }
         if matches!(self, Self::InvalidServiceRouteBinding) {
             return write!(f, "既存系統の経路が割り当てた路線に含まれなくなるため変更できません。路線と系統は変更していません。");
         }
@@ -381,6 +385,11 @@ impl WorldDraft {
                 return Err(WorldError::InvalidRoutePath);
             }
         }
+        // All references and platform footprints are valid by this point. Check
+        // derived turnout geometry before any candidate snapshot is committed.
+        let geometry_world = World { data: self.clone() };
+        geometry_world.track_movement_geometries()?;
+        geometry_world.internal_track_movement_geometries()?;
         self.validate_service_paths()?;
         self.validate_service_route_bindings()?;
         for service in &self.services {
