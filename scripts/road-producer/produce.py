@@ -4,6 +4,7 @@ import hashlib
 import json
 import io
 import zipfile
+import stat
 from pathlib import Path
 import re
 import shutil
@@ -68,6 +69,16 @@ def produce(region,output):
         package.package(raw,work/'release')
         (work/'release').rename(output)
 
+def read_member(archive,name,size,sha):
+    require(type(size) is int and 0<=size<=package.MAX_FILE and isinstance(sha,str) and SHA.fullmatch(sha),'member metadata')
+    info=archive.getinfo(name)
+    require(not info.is_dir() and stat.S_ISREG(info.external_attr>>16) and not info.flag_bits&1,'non-regular member')
+    require(info.file_size==size,'member size')
+    with archive.open(info) as stream:
+        content=stream.read(size+1)
+    require(len(content)==size and package.digest(content)==sha,'member integrity')
+    return content
+
 def combine(inputs,output,regions):
     """Merge complete authenticated per-region packages without expanding archives."""
     config=source_catalog();expected={r['name']:r for r in config['regions']}
@@ -99,17 +110,19 @@ def combine(inputs,output,regions):
                 data=package.read(root/a['name'],package.MAX_COMPRESSED)
                 require(len(data)==a['bytes'] and package.digest(data)==a['sha256'],'asset integrity')
                 with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                    info=archive.getinfo(a['manifest'])
-                    require(info.file_size==shard['bytes'] and info.file_size<=package.MAX_FILE,'manifest size')
-                    manifest=archive.read(info)
-                    require(package.digest(manifest)==shard['sha256'],'manifest integrity')
+                    manifest=read_member(archive,a['manifest'],shard['bytes'],shard['sha256'])
                     cells=json.loads(manifest)['cells'];keys=sorted(cells)
                     require(len(keys)==shard['cells'] and a['first_cell'] in cells and a['last_cell'] in cells,'range endpoints')
                     first,last=keys.index(a['first_cell']),keys.index(a['last_cell'])
                     require(last>=first and last-first+1==a['cell_count'],'range size')
+                    for key in keys:
+                        require(re.fullmatch(r'-?\d+_-?\d+',key) and cells[key]['file']==key+'.json','cell path')
                     expected_files={a['manifest']}|{a['manifest'].rsplit('/',1)[0]+'/'+cells[k]['file'] for k in keys[first:last+1]}
                     require(len(archive.infolist())==a['files'] and set(archive.namelist())==expected_files,'part files')
                     require(sum(i.file_size for i in archive.infolist())==a['expanded_bytes'],'expanded size')
+                    for key in keys[first:last+1]:
+                        cell=cells[key]
+                        read_member(archive,a['manifest'].rsplit('/',1)[0]+'/'+cell['file'],cell['bytes'],cell['sha256'])
                     ranges.setdefault(a['manifest'],[]).append((first,last))
                 total+=len(data);require(total<=package.MAX_TOTAL_COMPRESSED and len(assets)<package.MAX_ASSETS,'combined release budget')
                 require(shutil.disk_usage(stage).free>=package.MIN_FREE+len(data),'combined disk reserve')

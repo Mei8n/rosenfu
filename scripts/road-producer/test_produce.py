@@ -1,4 +1,5 @@
 import io
+import zipfile
 import json
 from pathlib import Path
 import tempfile
@@ -43,6 +44,29 @@ class Producer(unittest.TestCase):
     def test_v1_is_not_accepted(self):
         d=self.fixture();path=d/'catalog.json';cat=json.loads(path.read_bytes());cat['version']=1;path.write_bytes(produce.encoded(cat))
         with self.assertRaisesRegex(ValueError,'package contract'):self.combine(['kanto'])
+    def mutate_zip(self,mode):
+        d=self.fixture();cp=d/'catalog.json';cat=json.loads(cp.read_bytes());a=cat['assets'][0];p=d/a['name']
+        with zipfile.ZipFile(p) as z: entries=[(i,z.read(i)) for i in z.infolist()]
+        with zipfile.ZipFile(p,'w') as z:
+            for info,data in entries:
+                if not info.filename.endswith('manifest.json'):
+                    if mode=='content':data=data.replace(b'ways',b'oops')
+                    if mode=='symlink':info.external_attr=0o120777<<16
+                    if mode=='size':data+=b' '
+                z.writestr(info,data)
+        blob=p.read_bytes();a.update(bytes=len(blob),sha256=produce.package.digest(blob))
+        if mode=='size':a['expanded_bytes']+=1
+        cp.write_bytes(produce.encoded(cat))
+    def test_cell_rehashed_archive_cannot_hide_tampering(self):
+        self.mutate_zip('content')
+        with self.assertRaisesRegex(ValueError,'member integrity'):self.combine(['kanto'])
+        self.assertFalse((self.root/'out').exists())
+    def test_symlink_member_rejected(self):
+        self.mutate_zip('symlink')
+        with self.assertRaisesRegex(ValueError,'non-regular'):self.combine(['kanto'])
+    def test_cell_size_rejected(self):
+        self.mutate_zip('size')
+        with self.assertRaisesRegex(ValueError,'member size'):self.combine(['kanto'])
     def test_source_identity_conflict(self):
         d=self.fixture();self.mutate_index(d,lambda i:i['regions'][0]['source'].update(sha256='f'*64))
         with self.assertRaisesRegex(ValueError,'source identity'):self.combine(['kanto'])
