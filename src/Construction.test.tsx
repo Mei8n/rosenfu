@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act,cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { App } from "./App";
 import { project, DEFAULT_CAMERA } from "./map";
@@ -23,6 +23,8 @@ async function start(snapshot: unknown = empty) {
     throw Error("unexpected "+command);
   });
   render(<App/>); fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"})); await screen.findByText(/construction-test/);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));
+ await act(async()=>{});
   const map=screen.getByRole("img",{name:"駅配置用サンプル地図"});
   map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
   return map;

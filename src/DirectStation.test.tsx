@@ -15,6 +15,8 @@ async function start(){
  if(command==="save_world")return {saved:true};
  throw Error("unexpected "+command);
  });render(<App/>);await screen.findByText(/direct-test/);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));
+ await act(async()=>{});
  const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});
  map.getBoundingClientRect=()=>({left:0,top:0,right:500,bottom:300,x:0,y:0,width:500,height:300,toJSON:()=>({})});
  fireEvent.click(map,{clientX:180,clientY:150});fireEvent.click(map,{clientX:320,clientY:150});

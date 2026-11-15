@@ -19,7 +19,7 @@ export function SaveSlots({slots,current,loading,error,busy,canSave,onRefresh,on
    const active=current===slot.id,time=savedTime(slot.updated_at);
    return <li className={`save-slot-card${active?" is-current":""}`} key={slot.id}>
     <div className="save-slot-heading"><strong>{slot.name}</strong>{active&&<span className="save-slot-current">現在のワールド</span>}</div>
-    {time&&<time dateTime={time.toISOString()}>保存日時 {time.toLocaleString("ja-JP")}</time>}
+    {time&&<time dateTime={time.toISOString()}>更新日時 {time.toLocaleString("ja-JP")}</time>}
     {!slot.loadable&&<small>{slot.error||"この保存は読み込めません"}</small>}
     <div className="save-slot-card-actions"><button type="button" aria-label={slot.name+(active?"（現在）":"")} aria-current={active?"true":undefined} disabled={busy||loading||!slot.loadable} onClick={()=>onLoad(slot.id)}>読み込む</button></div>
    </li>;
