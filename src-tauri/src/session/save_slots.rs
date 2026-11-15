@@ -257,4 +257,30 @@ mod tests {
         editor.load_slot_autosave(root).unwrap();
         assert_eq!(editor.snapshot().companies[0].name, "auto B");
     }
+    #[test]
+    fn same_name_saves_do_not_collide_and_switch_clears_only_old_world_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut editor = WorldEditor::new();
+        editor.create_new_world("A".into()).unwrap();
+        editor
+            .save_world_as_slot(root, "same".into(), None, None)
+            .unwrap();
+        let a = editor.active_slot_id.clone().unwrap();
+        editor.deleted_alignment = Some((editor.snapshot(), editor.snapshot()));
+        editor
+            .save_world_as_slot(root, "same".into(), None, None)
+            .unwrap();
+        assert!(editor.deleted_alignment.is_some());
+        assert_eq!(editor.list_save_slots(root).unwrap().slots.len(), 2);
+        assert_ne!(editor.active_slot_id.as_ref(), Some(&a));
+        assert!(editor.load_save_slot(root, "slot-missing".into()).is_err());
+        assert!(editor.deleted_alignment.is_some());
+        editor.load_save_slot(root, a).unwrap();
+        assert!(editor.deleted_alignment.is_none());
+        assert!(editor.undo_alignment_deletion().is_err());
+        editor.deleted_alignment = Some((editor.snapshot(), editor.snapshot()));
+        editor.create_new_world("B".into()).unwrap();
+        assert!(editor.deleted_alignment.is_none());
+    }
 }
