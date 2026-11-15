@@ -16,6 +16,7 @@ fn world() -> (World, AlignmentId) {
 }
 fn road() -> RoadWay {
     RoadWay {
+        classification: None,
         id: "way/1".into(),
         coverage: None,
         points: vec![point(0., -0.01), point(0., 0.01)],
@@ -450,4 +451,64 @@ fn broadphase_preserves_boundary_crossings_and_advisory_status() {
     let elevated = assessment(alignment, s);
     assert!(!elevated.unknown_road_height);
     assert!(elevated.crossings.is_empty());
+}
+
+#[test]
+fn road_classification_is_preserved_and_conflicting_kinds_are_rejected() {
+    let (mut world, _) = world();
+    let mut s = snapshot();
+    s.roads[0].classification = Some(RoadClassification {
+        class: "path".into(),
+        subclass: Some("steps".into()),
+        access: Some("private".into()),
+    });
+    world.add_road_snapshot(s.clone()).unwrap();
+    let loaded = World::new(
+        serde_json::from_str(&serde_json::to_string(world.snapshot()).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(loaded, world);
+    let before = world.clone();
+    s.road_coverage[0].west += 0.001;
+    s.roads[0].classification.as_mut().unwrap().class = "minor".into();
+    assert!(world.add_road_snapshot(s.clone()).is_err());
+    assert_eq!(world, before);
+    s.roads[0].classification = None;
+    assert!(world.add_road_snapshot(s).is_err());
+    assert_eq!(world, before);
+}
+
+#[test]
+fn classification_values_are_bounded_without_silent_coercion() {
+    for value in [
+        "".to_string(),
+        " ".into(),
+        "x".repeat(101),
+        "path\nsteps".into(),
+        "道".repeat(34),
+    ] {
+        for field in 0..3 {
+            let mut s = snapshot();
+            let mut c = RoadClassification {
+                class: "path".into(),
+                subclass: None,
+                access: None,
+            };
+            match field {
+                0 => c.class = value.clone(),
+                1 => c.subclass = Some(value.clone()),
+                _ => c.access = Some(value.clone()),
+            };
+            s.roads[0].classification = Some(c);
+            assert!(s.validate().is_err());
+        }
+    }
+    let s = snapshot();
+    assert!(s.validate().is_ok());
+    let json = serde_json::to_value(&s.roads[0]).unwrap();
+    assert!(json.get("classification").is_none());
+    let mut json = json;
+    json["classification"] =
+        serde_json::json!({"class":"path","subclass":null,"access":null,"vehicular":true});
+    assert!(serde_json::from_value::<RoadWay>(json).is_err());
 }

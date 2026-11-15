@@ -630,5 +630,6 @@ mod height_redevelopment;
 
 mod roads;
 pub use roads::{
-    assess_road_crossings, AutomaticCrossing, CoverageBounds, RoadAssessment, RoadSnapshot, RoadWay,
+    assess_road_crossings, AutomaticCrossing, CoverageBounds, RoadAssessment, RoadClassification,
+    RoadSnapshot, RoadWay,
 };

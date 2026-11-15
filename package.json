@@ -12,7 +12,9 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "@mapbox/vector-tile": "3.0.0",
+    "pbf": "5.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

@@ -47,3 +47,11 @@ test('rejects empty and nested tile snapshots instead of claiming coverage',asyn
  expect(constructionRoadAttachment({...source,tileSnapshots:[]},null).reason).toContain('不正');
  expect(constructionRoadAttachment({...source,tileSnapshots:[{...source,tileSnapshots:[]}]},null).roads).toEqual([]);
 });
+test('classification conflicts and invalid metadata preserve previous roads without blocking normal build',async()=>{
+ const original=await fixture();const source={...original,roads:original.roads.map(r=>({...r,classification:{class:'path',subclass:'steps',access:null}}))};
+ expect(savedRoadSnapshot(source).roads[0].classification?.subclass).toBe('steps');
+ const changed={...source,roads:source.roads.map(r=>({...r,classification:{...r.classification,class:'minor'}}))};
+ expect(constructionRoadAttachment(changed,{road_snapshots:[{...savedRoadSnapshot(source),road_coverage:[]}]}).reason).toContain('矛盾');
+ const invalid={...source,roads:source.roads.map(r=>({...r,classification:{...r.classification,subclass:'あ'.repeat(40)}}))};
+ expect(constructionRoadAttachment(invalid,null).reason).toContain('未対応');
+});

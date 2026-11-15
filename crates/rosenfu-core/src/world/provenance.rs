@@ -22,6 +22,7 @@ pub struct SourceRecord {
 pub enum ProvenanceMethod {
     OsmSegmentCopyV1,
     OsmWaySliceV1,
+    OfmTileSliceV1,
     RailGraphRouteV1,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +39,9 @@ pub struct AlignmentProvenanceInput {
     pub source_key: String,
     pub method: ProvenanceMethod,
     pub osm_way_id: String,
+    /// Tile-local fragment identity, never an OSM way identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tile_fragment_id: Option<String>,
     pub mode: ReferenceMode,
     pub start_segment_index: u64,
     pub start_fraction: f64,
@@ -161,7 +165,7 @@ impl SourceRecord {
             && self.source_date.as_ref().is_none_or(|s| safe_text(s, 64))
             && self.license == "ODbL-1.0"
             && self.attribution == "© OpenStreetMap contributors"
-            && matches!(self.conversion_format_version, 1 | 2)
+            && matches!(self.conversion_format_version, 1 | 2 | 3)
     }
     fn bytes(&self) -> usize {
         self.key.len()
@@ -176,18 +180,67 @@ impl SourceRecord {
             + 256
     }
 }
+fn valid_tile_fragment_suffix(suffix: &str) -> bool {
+    let parts: Vec<_> = suffix.split(':').collect();
+    if parts.len() != 5 {
+        return false;
+    }
+    let numbers: Option<Vec<u64>> = parts
+        .iter()
+        .map(|part| {
+            if part.is_empty()
+                || !part.bytes().all(|b| b.is_ascii_digit())
+                || (part.len() > 1 && part.starts_with('0'))
+            {
+                return None;
+            }
+            part.parse().ok()
+        })
+        .collect();
+    numbers.is_some_and(|n| {
+        n[0] == 14
+            && n[1] < (1 << 14)
+            && n[2] < (1 << 14)
+            && n[3] < 10_000
+            && n[4] <= 9_007_199_254_740_991
+    })
+}
+
 impl AlignmentProvenanceInput {
     pub(super) fn matches_source(&self, source: &SourceRecord) -> bool {
-        self.source_key == source.key
-            && source.conversion_format_version
-                == if self.method == ProvenanceMethod::RailGraphRouteV1 {
-                    2
-                } else {
-                    1
-                }
+        let version = match self.method {
+            ProvenanceMethod::RailGraphRouteV1 => 2,
+            ProvenanceMethod::OfmTileSliceV1 => 3,
+            _ => 1,
+        };
+        if self.source_key != source.key || source.conversion_format_version != version {
+            return false;
+        }
+        if self.method != ProvenanceMethod::OfmTileSliceV1 {
+            return !source.dataset_id.starts_with("ofm-tiles/");
+        }
+        let revision = &source.revision;
+        !revision.is_empty()
+            && revision.len() <= 64
+            && revision
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            && self.tile_fragment_id.as_ref().is_some_and(|id| {
+                id.strip_prefix(&format!("ofm:{revision}:"))
+                    .is_some_and(|suffix| {
+                        let parts: Vec<_> = suffix.split(':').collect();
+                        valid_tile_fragment_suffix(suffix)
+                            && (source.dataset_id == format!("ofm-tiles/{revision}")
+                                || source.dataset_id
+                                    == format!("ofm-tiles/{revision}/14/{}/{}", parts[1], parts[2]))
+                    })
+            })
     }
 
     pub(super) fn valid(&self) -> bool {
+        if self.method != ProvenanceMethod::OfmTileSliceV1 && self.tile_fragment_id.is_some() {
+            return false;
+        }
         if self.method == ProvenanceMethod::RailGraphRouteV1 {
             return self.osm_way_id.is_empty()
                 && self.mode == ReferenceMode::Rail
@@ -210,10 +263,20 @@ impl AlignmentProvenanceInput {
             return false;
         }
         let id = &self.osm_way_id;
-        !id.is_empty()
-            && id.len() <= 20
-            && id.as_bytes()[0] != b'0'
-            && id.bytes().all(|b| b.is_ascii_digit())
+        let identity_valid = if self.method == ProvenanceMethod::OfmTileSliceV1 {
+            id.is_empty()
+                && self.mode == ReferenceMode::Road
+                && self
+                    .tile_fragment_id
+                    .as_ref()
+                    .is_some_and(|id| safe_text(id, 512))
+        } else {
+            !id.is_empty()
+                && id.len() <= 20
+                && id.as_bytes()[0] != b'0'
+                && id.bytes().all(|b| b.is_ascii_digit())
+        };
+        identity_valid
             && self.start_segment_index <= 9_007_199_254_740_991
             && self.end_segment_index <= 9_007_199_254_740_991
             && self.start_fraction.is_finite()
@@ -301,6 +364,7 @@ impl WorldDraft {
             ranges.push((p.start_point_index, p.end_point_index));
             bytes += p.source.source_key.len()
                 + p.source.osm_way_id.len()
+                + p.source.tile_fragment_id.as_ref().map_or(0, String::len)
                 + 256
                 + p.source.network_path.len() * 64;
         }

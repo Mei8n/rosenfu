@@ -9,9 +9,28 @@ pub struct CoverageBounds {
     pub east: f64,
     pub north: f64,
 }
+/// Supplier classification retained verbatim; not proof of vehicular access.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoadClassification {
+    pub class: String,
+    pub subclass: Option<String>,
+    pub access: Option<String>,
+}
+impl RoadClassification {
+    fn valid(&self) -> bool {
+        std::iter::once(&self.class)
+            .chain(self.subclass.iter())
+            .chain(self.access.iter())
+            .all(|s| !s.trim().is_empty() && s.len() <= 100 && !s.chars().any(char::is_control))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoadWay {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification: Option<RoadClassification>,
     /// Spatial validity of this version; None uses whole-snapshot coverage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage: Option<Vec<CoverageBounds>>,
@@ -97,7 +116,8 @@ impl RoadSnapshot {
         let mut ids = BTreeSet::new();
         for r in &self.roads {
             count += r.points.len();
-            if r.id.is_empty()
+            if r.classification.as_ref().is_some_and(|c| !c.valid())
+                || r.id.is_empty()
                 || r.id.len() > 100
                 || !ids.insert(&r.id)
                 || r.points.len() < 2
@@ -548,7 +568,8 @@ pub(super) fn validate_road_snapshots(snapshots: &[RoadSnapshot]) -> Result<(), 
                 return Err(WorldError::InvalidRoadSnapshot);
             }
             if let Some(old) = roads.insert(&road.id, road) {
-                if old.points != road.points
+                if old.classification != road.classification
+                    || old.points != road.points
                     || old.layer != road.layer
                     || old.level != road.level
                     || old.bridge != road.bridge

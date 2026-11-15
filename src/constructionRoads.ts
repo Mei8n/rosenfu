@@ -27,7 +27,7 @@ export function savedRoadSnapshot(snapshot:RoadSnapshot):SavedRoadSnapshot {
  return {revision:source.sourceDate??(snapshot.bundle.graph.dataset.id.startsWith('ofm-tiles/')?snapshot.bundle.graph.dataset.revision:''),source:source.source,source_url:source.source,source_sha256:sourceSha256,attribution:source.attribution,license:source.license,coverage_verified:(snapshot as RoadSnapshot & {coverageVerified?:boolean}).coverageVerified??knownTokyo,road_coverage:[{...snapshot.bounds}],roads:snapshot.roads};
 }
 const sameVersion=(a:SavedRoadSnapshot,b:SavedRoadSnapshot)=>a.revision===b.revision&&a.source===b.source&&a.source_url===b.source_url&&a.source_sha256===b.source_sha256&&a.attribution===b.attribution&&a.license===b.license;
-const shape=(r:RoadWay)=>JSON.stringify([r.points,r.layer,r.level,r.bridge,r.tunnel]);
+const shape=(r:RoadWay)=>JSON.stringify([r.points,r.layer,r.level,r.bridge,r.tunnel,r.classification?[r.classification.class,r.classification.subclass,r.classification.access]:null]);
 /** Advisory snapshots must never turn optional road loading into a construction
  * blocker. Keep old facts on conflict; avoid repeated copies and reserve save room. */
 function singleRoadAttachment(snapshot:RoadSnapshot|undefined,world:{road_snapshots?:SavedRoadSnapshot[]}|null):{roads:SavedRoadSnapshot[];reason:string} {
@@ -37,7 +37,7 @@ function singleRoadAttachment(snapshot:RoadSnapshot|undefined,world:{road_snapsh
  if(existing.some(s=>sameVersion(s,incoming)&&(!incoming.coverage_verified||s.coverage_verified)&&s.road_coverage.some(b=>contains(b,snapshot.bounds))))return {roads:[],reason:'保存済み道路参照を使用（実際の交差・高さは建設後に再判定）'};
  const prior=new Map(existing.flatMap(s=>s.roads.map(r=>[r.id,r] as const)));
  if(incoming.roads.some(r=>prior.has(r.id)&&shape(prior.get(r.id)!)!==shape(r)))return {roads:[],reason:'道路未確認：保存済み道路形状と矛盾するため、新規参照の追加を見送り'};
- if(incoming.roads.some(r=>[r.layer,r.level,r.bridge,r.tunnel].some(t=>t!==null&&t.length>100)))return {roads:[],reason:'道路未確認：未対応の道路属性（通常建設は可能）'};
+ if(incoming.roads.some(r=>[r.layer,r.level,r.bridge,r.tunnel].some(t=>t!==null&&t.length>100)||r.classification&&[r.classification.class,r.classification.subclass,r.classification.access].some((t,i)=>t===null?i===0:typeof t!=='string'||!t.trim()||new TextEncoder().encode(t).length>100||/[\p{Cc}]/u.test(t))))return {roads:[],reason:'道路未確認：未対応の道路属性（通常建設は可能）'};
  if(existing.length>=512||new TextEncoder().encode(JSON.stringify({...world,road_snapshots:[...existing,incoming]})).length>15*1024*1024)return {roads:[],reason:'道路未確認：保存容量を保護するため、新規参照の追加を見送り'};
  return {roads:[incoming],reason:incoming.coverage_verified?'取得済み範囲で道路交差を確認可能。実際の交差・高さは建設後に判定':'道路未確認：道路形状は取得済みだが、出典の範囲保証は未検証'};
 }

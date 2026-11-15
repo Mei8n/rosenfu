@@ -30,3 +30,7 @@ test.each(["sample","gsi","osm"] as const)("derived geometry keeps visible OSM a
  rerender(<MapCredits background={background} reference={null} graphVisible={false} derivedOsmVisible={false}/>);
  expect(screen.queryAllByRole("link",{name:"© OpenStreetMap contributors"})).toHaveLength(background==="osm"?1:0);
 });
+test('tile-derived data keeps provider credits visible even with reference display disabled',()=>{
+ render(<MapCredits background="osm" reference={null} graphVisible={false} openFreeMapVisible/>);
+ for(const name of ['OpenFreeMap','© OpenMapTiles','© OpenStreetMap contributors'])expect(screen.getByRole('link',{name}).closest('details')).toBeNull();
+});

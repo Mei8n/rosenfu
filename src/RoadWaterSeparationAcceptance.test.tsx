@@ -29,8 +29,8 @@ test('unavailable road reference does not disable ordinary construction or claim
  provider.load.mockRejectedValue(Error('outside road cells'));
  const map=await start();fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
  await waitFor(()=>expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).toContain('outside road cells'));
- expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).toContain('水域建設判定は未実装');
- expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).toContain('建設時の道路参照から踏切を判定');
+ expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).not.toContain('東京36セル');
+ expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).not.toContain('水域確認済み');
  expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).not.toContain('踏切自動作成・水域建設判定は未実装');
  fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:320,clientY:130});

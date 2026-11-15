@@ -5,6 +5,8 @@ import {afterEach,beforeEach,expect,test,vi} from 'vitest';
 import {useAutomaticRail} from './useAutomaticRail';
 import {App} from './App';
 import {invoke} from '@tauri-apps/api/core';
+// These are rail interaction tests; road transport has separate acceptance tests.
+vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'unavailable test roads',load:async()=>{throw Error('road fixture unavailable');}})}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
 import type {RailRequest,RailResponse} from './realRailProvider';
 const source={key:'a'.repeat(64)+':'+ 'b'.repeat(64),dataset_id:'trainsworld-realgraph-jp',revision:'2026-11-13',graph_sha256:'a'.repeat(64),source_sha256:'b'.repeat(64),source:'https://data.anita.garden/trainworld/2026-11-13/realgraph/jp.rgr',source_date:null,license:'ODbL-1.0',attribution:'© OpenStreetMap contributors',conversion_format_version:2};

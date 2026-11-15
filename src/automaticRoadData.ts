@@ -1,5 +1,6 @@
 // Road reference metadata only; not a completed environmental construction assessment.
-export type RoadWay={coverage?:GraphBounds[];id:string;points:{latitude:number;longitude:number}[];layer:string|null;level:string|null;bridge:string|null;tunnel:string|null};
+export type RoadClassification={class:string;subclass:string|null;access:string|null};
+export type RoadWay={classification?:RoadClassification;coverage?:GraphBounds[];id:string;points:{latitude:number;longitude:number}[];layer:string|null;level:string|null;bridge:string|null;tunnel:string|null};
 import {validateReferenceGraph, type GraphBounds, type GraphNode, type GraphEdge} from './referenceGraph';
 import type {ReferenceGraphBundle, RoadWayMetadata} from './referenceGraphBundle';
 

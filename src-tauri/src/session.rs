@@ -3623,6 +3623,7 @@ mod tests {
             conversion_format_version: if network { 2 } else { 1 },
         };
         let provenance = AlignmentProvenanceInput {
+            tile_fragment_id: None,
             network_path: if network {
                 vec![rosenfu_core::world::RailGraphSpan {
                     region: "jp".into(),
@@ -4535,6 +4536,7 @@ mod tests {
             conversion_format_version: 1,
         };
         let provenance = AlignmentProvenanceInput {
+            tile_fragment_id: None,
             network_path: vec![],
             source_key: key,
             method: ProvenanceMethod::OsmSegmentCopyV1,
@@ -5435,6 +5437,7 @@ mod road_snapshot_transaction_tests {
                 north: 35.1,
             }],
             roads: vec![RoadWay {
+                classification: None,
                 id: "way/1".into(),
                 coverage: None,
                 points: vec![point(0.0, -0.01), point(0.0, 0.01)],

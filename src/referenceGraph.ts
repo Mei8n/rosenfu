@@ -62,18 +62,28 @@ export function validateReferenceGraph(input: unknown): ReferenceGraphPack {
   if (bounds.west >= bounds.east || bounds.south >= bounds.north || bounds.east - bounds.west > 180) throw Error("Invalid or unsupported regional bounds");
   const dataset = { id: text(d.id), revision: text(d.revision), source: text(d.source, 1000), license: text(d.license, 1000), bounds };
   if (!Array.isArray(r.nodes) || r.nodes.length > GRAPH_LIMITS.nodes || !Array.isArray(r.edges) || r.edges.length > GRAPH_LIMITS.edges) throw Error("Graph count limit exceeded");
+  const tileIds = dataset.id.startsWith("ofm-tiles/") && /^https:\/\/tiles\.openfreemap\.org\/planet(?:\/|$)/.test(dataset.source);
+  const graphId = (value: unknown, point: boolean): string => {
+    if (!tileIds) return osmId(value);
+    if (typeof value !== "string" || value.length > 180) throw Error("Invalid tile identifier");
+    const parts = value.split(":");
+    if (parts.length !== (point ? 8 : 7) || parts[0] !== "ofm" || parts[1] !== dataset.revision || !/^[A-Za-z0-9_]{1,64}$/.test(parts[1]) || parts[2] !== "14" || parts.slice(3).some(v => !/^(0|[1-9]\d*)$/.test(v) || !Number.isSafeInteger(Number(v))) || Number(parts[3]) > 16383 || Number(parts[4]) > 16383 || Number(parts[5]) >= 10000) throw Error("Invalid tile identifier");
+    const prefix = `ofm-tiles/${parts[1]}`;
+    if (dataset.id !== prefix && dataset.id !== `${prefix}/14/${parts[3]}/${parts[4]}`) throw Error("Tile identifier dataset mismatch");
+    return value;
+  };
   const byId = new Map<string, GraphNode>();
   const nodes = r.nodes.map(raw => {
     const n = exact(raw, ["osmId", "longitude", "latitude"]);
-    const node = { osmId: osmId(n.osmId), longitude: number(n.longitude, -180, 180), latitude: number(n.latitude, -LAT_LIMIT, LAT_LIMIT) };
+    const node = { osmId: graphId(n.osmId, true), longitude: number(n.longitude, -180, 180), latitude: number(n.latitude, -LAT_LIMIT, LAT_LIMIT) };
     if (!inside(node, bounds) || byId.has(node.osmId)) throw Error("Duplicate or out-of-region graph node");
     byId.set(node.osmId, node); return node;
   });
   const ids = new Set<string>(), segments = new Set<string>();
   const edges: GraphEdge[] = r.edges.map(raw => {
     const e = exact(raw, ["id", "osmWayId", "segmentIndex", "from", "to", "mode", "layer", "level", "bridge", "tunnel"]);
-    const id = text(e.id), way = osmId(e.osmWayId), index = number(e.segmentIndex, 0, Number.MAX_SAFE_INTEGER);
-    const from = osmId(e.from), to = osmId(e.to), a = byId.get(from), z = byId.get(to);
+    const id = text(e.id), way = graphId(e.osmWayId, false), index = number(e.segmentIndex, 0, Number.MAX_SAFE_INTEGER);
+    const from = graphId(e.from, true), to = graphId(e.to, true), a = byId.get(from), z = byId.get(to);
     if (!Number.isInteger(index) || !a || !z || from === to || (a.longitude === z.longitude && a.latitude === z.latitude)) throw Error("Invalid graph segment");
     const metres = scale({ longitude: a.longitude, latitude: (a.latitude + z.latitude) / 2 });
     if (Math.hypot((z.longitude - a.longitude) * metres.x, (z.latitude - a.latitude) * metres.y) < GRAPH_LIMITS.minimumSegmentM) throw Error("Graph segment is below the supported 1 cm minimum");

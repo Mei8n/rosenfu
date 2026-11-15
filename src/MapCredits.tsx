@@ -1,10 +1,11 @@
 import {MAP_PROVIDERS, type MapProvider} from "./mapProviders";
 /** Essential provider attribution stays visible, including standard OSM tile policy. */
-export function MapCredits({background,reference,graphVisible,derivedOsmVisible=false}:{background:MapProvider|"sample";reference:{source:string;license:string}|null;graphVisible:boolean;derivedOsmVisible?:boolean}) {
+export function MapCredits({background,reference,graphVisible,derivedOsmVisible=false,openFreeMapVisible=false}:{background:MapProvider|"sample";reference:{source:string;license:string}|null;graphVisible:boolean;derivedOsmVisible?:boolean;openFreeMapVisible?:boolean}) {
  const provider=background==="sample"?null:MAP_PROVIDERS[background];
- const referenceOsm=!!reference||graphVisible||derivedOsmVisible;
+ const referenceOsm=!!reference||graphVisible||derivedOsmVisible||openFreeMapVisible;
  return <div className="map-credits" aria-label="地図の出典">
   <div className="map-credits-visible">
+   {openFreeMapVisible&&<><a href="https://openfreemap.org/" target="_blank" rel="noopener noreferrer">OpenFreeMap</a><a href="https://openmaptiles.org/" target="_blank" rel="noopener noreferrer">© OpenMapTiles</a></>}
    {provider&&<a href={provider.attributionUrl} target="_blank" rel="noopener noreferrer">{provider.attribution}</a>}
    {referenceOsm&&background!=="osm"&&<a href={MAP_PROVIDERS.osm.attributionUrl} target="_blank" rel="noopener noreferrer">{MAP_PROVIDERS.osm.attribution}</a>}
   </div>
