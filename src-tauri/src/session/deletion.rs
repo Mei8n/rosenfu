@@ -41,6 +41,8 @@ impl WorldEditor {
             .ok_or("高さを取得できません。")?;
         let target = level.height_m();
         if (current.0 - target).abs() < 1e-8 {
+            // No world mutation and no new history entry. The caller must retain
+            // its existing Undo/Redo marker when the returned snapshot is equal.
             return Ok(self.snapshot());
         }
         let endpoint = if anchor_index == 0 {
@@ -801,6 +803,18 @@ mod tests {
             )
             .is_err());
         assert_eq!(editor.snapshot(), after);
+        let previous_undo = editor.deleted_alignment.clone();
+        let unchanged = editor
+            .update_alignment_anchor_height(
+                id,
+                2,
+                InfrastructureLevel::Ground,
+                after.alignments[0].clone(),
+                plans(),
+            )
+            .unwrap();
+        assert_eq!(unchanged, after);
+        assert_eq!(editor.deleted_alignment, previous_undo);
         assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
         let (mut short, id) = setup();
         let initial = short.snapshot();
