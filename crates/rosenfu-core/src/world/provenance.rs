@@ -41,14 +41,94 @@ pub struct AlignmentProvenanceInput {
     pub end_segment_index: u64,
     pub end_fraction: f64,
 }
+/// Explicit lineage for a geometric subset. The original OSM segment range is
+/// retained unchanged; we do not guess correspondence to missing raw way nodes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvenanceGeometrySlice {
+    pub original_points: Vec<GeoPoint>,
+    pub from_position: f64,
+    pub to_position: f64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlignmentProvenance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_slice: Option<ProvenanceGeometrySlice>,
     pub alignment_id: AlignmentId,
     pub source: AlignmentProvenanceInput,
     /// Inclusive point range in the current alignment; outside this range is not attributed.
     pub start_point_index: usize,
     pub end_point_index: usize,
+}
+fn geometry_positions(points: &[GeoPoint]) -> (Vec<f64>, f64) {
+    let mut positions = vec![0.];
+    let mut length = 0.;
+    for pair in points.windows(2) {
+        length += super::alignment::distance(pair[0], pair[1]);
+        positions.push(length);
+    }
+    if length > 0. {
+        for p in &mut positions {
+            *p /= length;
+        }
+    }
+    (positions, length)
+}
+fn geometry_point(points: &[GeoPoint], positions: &[f64], t: f64) -> GeoPoint {
+    for i in 0..points.len() - 1 {
+        if t <= positions[i + 1] {
+            let width = positions[i + 1] - positions[i];
+            let f = if width > 0. {
+                (t - positions[i]) / width
+            } else {
+                0.
+            };
+            return GeoPoint {
+                latitude: points[i].latitude + (points[i + 1].latitude - points[i].latitude) * f,
+                longitude: points[i].longitude
+                    + (points[i + 1].longitude - points[i].longitude) * f,
+            };
+        }
+    }
+    *points.last().expect("validated source points")
+}
+fn slice_matches(slice: &ProvenanceGeometrySlice, current: &[GeoPoint]) -> bool {
+    let (source_positions, source_length) = geometry_positions(&slice.original_points);
+    let (current_positions, current_length) = geometry_positions(current);
+    if source_length <= 0. || current_length <= 0. {
+        return false;
+    }
+    let width = slice.to_position - slice.from_position;
+    // Local planar geodesic approximation introduces tiny subdivision error.
+    let tolerance = 0.01 + source_length * 1e-6;
+    if (current_length - source_length * width).abs() > tolerance {
+        return false;
+    }
+    for (point, t) in current.iter().zip(&current_positions) {
+        let expected = geometry_point(
+            &slice.original_points,
+            &source_positions,
+            slice.from_position + width * t,
+        );
+        if super::alignment::distance(*point, expected) > tolerance {
+            return false;
+        }
+    }
+    // Also check source vertices: endpoint-only matching cannot validate bends.
+    for (point, t) in slice.original_points.iter().zip(&source_positions) {
+        if *t > slice.from_position && *t < slice.to_position {
+            let actual = geometry_point(
+                current,
+                &current_positions,
+                (t - slice.from_position) / width,
+            );
+            if super::alignment::distance(*point, actual) > tolerance {
+                return false;
+            }
+        }
+    }
+    true
 }
 fn safe_text(s: &str, max: usize) -> bool {
     !s.trim().is_empty() && s.len()<=max && !s.chars().any(|c|c.is_control() || matches!(c as u32,0x00ad|0x061c|0x180e|0x200b..=0x200f|0x202a..=0x202e|0x2060..=0x206f|0xfeff|0xfff9..=0xfffb|0xe0001|0xe0020..=0xe007f))
@@ -134,6 +214,35 @@ impl WorldDraft {
                 || !p.source.valid()
             {
                 return Err(WorldError::InvalidProvenance);
+            }
+            if let Some(slice) = &p.derived_slice {
+                if !(2..=4096).contains(&slice.original_points.len())
+                    || !slice.from_position.is_finite()
+                    || !slice.to_position.is_finite()
+                    || slice.from_position < 0.0
+                    || slice.to_position > 1.0
+                    || slice.from_position >= slice.to_position
+                    || slice.original_points.iter().any(|point| {
+                        !point.latitude.is_finite()
+                            || !point.longitude.is_finite()
+                            || point.latitude.abs() > 85.0
+                            || point.longitude.abs() > 180.0
+                    })
+                {
+                    return Err(WorldError::InvalidProvenance);
+                }
+                let alignment = self
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == p.alignment_id)
+                    .expect("validated source alignment");
+                if !slice_matches(
+                    slice,
+                    &alignment.points[p.start_point_index..=p.end_point_index],
+                ) {
+                    return Err(WorldError::InvalidProvenance);
+                }
+                bytes += slice.original_points.len() * 16 + 32;
             }
             let ranges = spans.entry(p.alignment_id).or_default();
             if ranges
@@ -292,6 +401,7 @@ impl World {
                 design_speed_kmh: None,
             });
             data.alignment_provenance.push(AlignmentProvenance {
+                derived_slice: None,
                 alignment_id: AlignmentId(id),
                 source: provenance,
                 start_point_index: 0,
@@ -360,6 +470,7 @@ impl World {
             .data
             .alignment_provenance
             .push(AlignmentProvenance {
+                derived_slice: None,
                 alignment_id: id,
                 source,
                 start_point_index,

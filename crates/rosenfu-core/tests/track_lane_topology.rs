@@ -707,3 +707,186 @@ fn consecutive_internal_y_trims_leave_each_middle_section_visible() {
                 < lane.points.last().unwrap().longitude)
     );
 }
+
+#[test]
+fn partial_height_redevelopment_keeps_outside_profile_and_rejects_short_run_atomically() {
+    let mut w = World::default();
+    let p = w.add_player("p".into()).unwrap();
+    let c = w.add_company(p, "c".into()).unwrap();
+    let id = w
+        .build_alignment_ramp(
+            c,
+            "original".into(),
+            (0..4).map(|i| point(139. + i as f64 * 0.01)).collect(),
+            TrackType::Normal,
+            InfrastructureLevel::Ground,
+            InfrastructureLevel::Elevated,
+        )
+        .unwrap();
+    let mut draft = w.snapshot().clone();
+    draft.alignments[0].anchor_indices = Some(vec![0, 1, 2, 3]);
+    draft.alignments[0].infrastructure = vec![SectionInfrastructure::default(); 3];
+    w = World::new(draft).unwrap();
+    let original = w.snapshot().alignments[0].clone();
+    let spans = w
+        .redevelop_alignment_section_height(c, id, 1, 1, InfrastructureLevel::Elevated2)
+        .unwrap();
+    let after = w.snapshot();
+    assert_eq!(after.alignments.len(), 5);
+    let plateau = after.alignments.iter().find(|a| a.id == spans[1]).unwrap();
+    assert!((plateau.height_at_position_m(0.5).unwrap() - 12.).abs() < 1e-9);
+    let left = after.alignments.iter().find(|a| a.id == id).unwrap();
+    for i in 0..11 {
+        let t = i as f64 / 10.;
+        assert!(
+            (left.height_at_position_m(t).unwrap()
+                - original.height_at_position_m(t / 3.).unwrap())
+            .abs()
+                < 1e-6
+        );
+    }
+    let right = after
+        .alignments
+        .iter()
+        .find(|a| a.points.last() == original.points.last() && a.id != id)
+        .unwrap();
+    for i in 0..11 {
+        let t = i as f64 / 10.;
+        assert!(
+            (right.height_at_position_m(t).unwrap()
+                - original.height_at_position_m((2. + t) / 3.).unwrap())
+            .abs()
+                < 1e-6
+        );
+    }
+    assert!(World::new(after.clone()).is_ok());
+    let saved = serde_json::to_string(after).unwrap();
+    let restored = World::new(serde_json::from_str(&saved).unwrap()).unwrap();
+    assert_eq!(
+        restored.snapshot().alignment_connections,
+        w.snapshot().alignment_connections
+    );
+    for (a, b) in restored
+        .snapshot()
+        .alignments
+        .iter()
+        .zip(&w.snapshot().alignments)
+    {
+        assert_eq!(a.id, b.id);
+        for t in [0., 0.5, 1.] {
+            assert!(
+                (a.height_at_position_m(t).unwrap() - b.height_at_position_m(t).unwrap()).abs()
+                    < 1e-9
+            );
+        }
+    }
+    let before = w.snapshot().clone();
+    assert!(w
+        .redevelop_alignment_section_height(c, spans[0], 0, 0, InfrastructureLevel::Underground3)
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+}
+
+#[test]
+fn height_redevelopment_preserves_stations_route_and_service_references() {
+    let mut w = World::default();
+    let p = w.add_player("p".into()).unwrap();
+    let c = w.add_company(p, "c".into()).unwrap();
+    let a = w
+        .build_alignment(
+            c,
+            "A".into(),
+            vec![point(139.), point(139.01), point(139.02), point(139.03)],
+        )
+        .unwrap();
+    let mut draft = w.snapshot().clone();
+    draft.alignments[0].anchor_indices = Some(vec![0, 1, 2, 3]);
+    w.replace(draft).unwrap();
+    let s = w
+        .place_station_on_alignment(c, "S".into(), a, 0.1, 20., 10.)
+        .unwrap();
+    let t = w
+        .place_station_on_alignment(c, "T".into(), a, 0.9, 20., 10.)
+        .unwrap();
+    let segments = w
+        .route_candidates(s, t)
+        .unwrap()
+        .candidates
+        .remove(0)
+        .segments;
+    let r = w
+        .add_planned_route(c, "R".into(), s, segments.clone(), vec![s, t])
+        .unwrap();
+    let preview = w.preview_service_path(s, segments.clone()).unwrap();
+    let service = w
+        .add_service_path(
+            c,
+            "service".into(),
+            s,
+            segments,
+            preview
+                .occurrences
+                .iter()
+                .map(|o| o.reference.clone())
+                .collect(),
+        )
+        .unwrap();
+    w.set_service_route_binding(c, service, ServiceRouteBindingKind::Route { route_id: r })
+        .unwrap();
+    let before = w.snapshot().clone();
+    w.redevelop_alignment_section_height(c, a, 1, 1, InfrastructureLevel::Elevated)
+        .unwrap();
+    assert_eq!(w.snapshot().stations, before.stations);
+    assert_eq!(w.snapshot().services, before.services);
+    assert_eq!(
+        w.snapshot().service_paths[0].stops,
+        before.service_paths[0].stops
+    );
+    assert_eq!(
+        w.snapshot().service_paths[0].legs[0].key,
+        before.service_paths[0].legs[0].key
+    );
+    assert_eq!(w.snapshot().route_paths[0].member_stations, vec![s, t]);
+    assert_eq!(
+        w.route_candidates(s, t).unwrap().candidates[0].stations,
+        vec![s, t]
+    );
+    let after = w.snapshot().clone();
+    assert_eq!(
+        w.redevelop_alignment_section_height(c, a, 0, 0, InfrastructureLevel::Elevated),
+        Err(WorldError::HeightRedevelopmentStation)
+    );
+    assert_eq!(w.snapshot(), &after);
+}
+
+#[test]
+fn redevelopment_respects_all_track_type_gradient_limits() {
+    for track_type in [TrackType::Normal, TrackType::HighSpeed, TrackType::Tram] {
+        let mut w = World::default();
+        let p = w.add_player("p".into()).unwrap();
+        let c = w.add_company(p, "c".into()).unwrap();
+        let id = w
+            .build_alignment_ramp(
+                c,
+                "source".into(),
+                vec![point(139.), point(139.02)],
+                track_type,
+                InfrastructureLevel::Ground,
+                InfrastructureLevel::Ground,
+            )
+            .unwrap();
+        let spans = w
+            .redevelop_alignment_section_height(c, id, 0, 0, InfrastructureLevel::Elevated)
+            .unwrap();
+        for id in spans {
+            let a = w.snapshot().alignments.iter().find(|a| a.id == id).unwrap();
+            assert!(
+                a.vertical_profile
+                    .unwrap()
+                    .maximum_gradient_per_mille(a.length_m())
+                    <= track_type.maximum_construction_gradient_per_mille() + 1e-9
+            );
+        }
+        assert!(World::new(w.snapshot().clone()).is_ok());
+    }
+}

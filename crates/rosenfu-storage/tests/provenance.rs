@@ -37,6 +37,7 @@ fn provenance_world() -> World {
         conversion_format_version: 1,
     });
     draft.alignment_provenance.push(AlignmentProvenance {
+        derived_slice: None,
         alignment_id: a,
         start_point_index: 0,
         end_point_index: 1,

@@ -1,8 +1,8 @@
 # 保存仕様
 
-## 現行形式：schema 19
+## 現行候補形式：schema 20
 
-暫定アルファ JSON は `format: "rosenfu-world"` と `schema_version: 19` を持つ。schema 19 で書き込み、18 は系統色未設定として読み込む。1〜17 は非対応を明示して拒否する。旧 Track モデルの自動移行を撤去したため、データは新しいワールドで作成し直す。読込処理は旧データを変更・削除しない。
+PR #120 の候補は `format: "rosenfu-world"` と `schema_version: 20` を読み書きする。旧1〜19と未来の形式は、ワールドの復元前に非対応として拒否する。18読込・19保存の旧方針は廃止。自動移行や旧版との往復互換はない。本人のアルファ期の互換破棄承認に基づき、新規ワールドを作成する。これは旧ファイルの削除許可ではなく、読込失敗・通常保存拒否では本体と既存バックアップを変更しない。
 
 設備は Alignment と端点接続。すべての路線・系統に RoutePath / ServicePath が必要で、旧 Track、Route.tracks、OperatingService.tracks/stops は非対応。旧データを現形式番号に書き換えただけの偽装も拒否する。
 
@@ -61,11 +61,11 @@ cargo test --locked -p rosenfu-storage
 
 オートセーブ復元後の通常保存では、正常な既存manualを従来どおり.bakへ保存する。破損／容量超過manualのみ明示的復元に基づく修復保存を許し、既存.bakを保持する。未知の将来スキーマや読み取り権限エラーは破損と見なして上書きしない。
 
-## schema 10: 未着工計画
+## 導入履歴：schema 10の未着工計画（現在の互換範囲ではない）
 
 `world.construction_plans` に型付きの計画を保存します。旧schema 1〜9にはこのフィールドがなく、空の計画として復元します。型不正は読込前に拒否し、途中の線形は着工時に検証します。計画も16 MiB上限・既存バックアップ・競合検出の対象です。
 
-## schema 11: 既設線上の計画駅
+## 導入履歴：schema 11の既設線上の計画駅（現在の互換範囲ではない）
 
 計画駅の対象を `pathId`（未着工経路）または `alignmentId`（既設線）で区別し、既設線対象は `planId` で所属計画を指定します。schema 10以前の省略されたplanIdは経路の所属から解決します。
 
@@ -86,5 +86,8 @@ Current-format storage tests cover independent labels/files/backups, incomplete
 creation visibility, invalid IDs and directory symlink rejection. Full session,
 UI and real-device acceptance remain separate verification gates.
 
-### 系統色（schema 19）
-`service_appearances` は系統IDと `#RRGGBB` 色の明示的メタデータ。不在は従来の表示色を維持する。18の入力にこのフィールドが混入した場合は拒否する。19を18専用の旧アプリでは開けない。複製は新しい系統IDを割り当て、物理経路・停車・binding・色をコピーする。複製後の編集は独立。
+### schema 20 の拡張メタデータ
+
+`service_appearances` は系統ID、`#RRGGBB` 色、丸/四角/ひし形、任意記号を保持する。記号は名前の先頭文字から初期化し、本人編集後は名称変更で上書きしない。複製は新しい系統IDへ経路・停車・binding・色・形・記号をコピーし、その後は独立する。
+
+`service_route_bindings` の `routes` は複数の明示的関連路線を保持する。形状からの暗黙推測ではない。線形区間の線路数・7段階の高さ・縦断と分岐の追加もこの候補形式で扱う。モデルの保存対応、最終統合CI、GUI受入は別判定とする。

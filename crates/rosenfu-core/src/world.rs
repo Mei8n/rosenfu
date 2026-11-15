@@ -183,6 +183,8 @@ pub enum WorldError {
     InvalidAlignment,
     InvalidAlignmentConnection,
     InsufficientTurnoutSpace,
+    HeightRedevelopmentSpace,
+    HeightRedevelopmentStation,
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
@@ -206,6 +208,12 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::HeightRedevelopmentSpace) {
+            return write!(f,"選択区間内に入口・出口の勾配と平坦部を収められません。区間を長く選択してください。選択外の高さは変更していません。");
+        }
+        if matches!(self, Self::HeightRedevelopmentStation) {
+            return write!(f,"選択区間にホームがあります。駅の高さを勝手に変更しないため、この高さ変更はできません。");
+        }
         if matches!(self, Self::InsufficientTurnoutSpace) {
             return write!(f, "分岐・単複線の合流に必要な空間がありません。接続位置をホームから離すか、前後の区間を長くしてください。");
         }
@@ -577,7 +585,8 @@ pub use service_paths::{
 
 mod provenance;
 pub use provenance::{
-    AlignmentProvenance, AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
+    AlignmentProvenance, AlignmentProvenanceInput, ProvenanceGeometrySlice, ProvenanceMethod,
+    ReferenceMode, SourceRecord,
 };
 
 mod construction_plans;
@@ -607,3 +616,5 @@ pub use turnout_geometry::{
     InternalTrackMovementGeometry, TrackLaneGeometry, TrackMovementGeometry, TrackRenderGeometry,
     TurnoutMovementProperties, TRACK_LANE_SPACING_M, TURNOUT_GAME_LATERAL_ACCELERATION_MPS2,
 };
+
+mod height_redevelopment;
