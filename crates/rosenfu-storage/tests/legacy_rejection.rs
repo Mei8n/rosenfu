@@ -95,3 +95,63 @@ fn current_requires_all_authoritative_path_arrays() {
         }
     }
 }
+
+#[test]
+fn explicit_legacy_replacement_preserves_exact_source_and_existing_backup() {
+    use rosenfu_storage::{file_version, replace_legacy_world_if_version, SaveOutcome};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.json");
+    let old = include_bytes!("fixtures/schema-1-world.json");
+    fs::write(&path, old).unwrap();
+    fs::write(backup_path(&path), b"existing rolling backup").unwrap();
+    let approved = file_version(&path).unwrap();
+    let world = World::default();
+    let (outcome, version) = replace_legacy_world_if_version(&path, &world, &approved).unwrap();
+    let SaveOutcome::Updated { backup } = outcome else {
+        panic!("missing legacy backup")
+    };
+    assert_eq!(fs::read(&backup).unwrap(), old);
+    assert_eq!(
+        fs::read(backup_path(&path)).unwrap(),
+        b"existing rolling backup"
+    );
+    assert_eq!(load_world(&path).unwrap(), world);
+    assert_eq!(file_version(&path).unwrap(), version);
+    assert!(replace_legacy_world_if_version(&path, &world, &approved).is_err());
+    assert_eq!(fs::read(backup).unwrap(), old);
+}
+
+#[test]
+fn explicit_legacy_replacement_rejects_stale_future_corrupt_and_backup_failure() {
+    use rosenfu_storage::{file_version, replace_legacy_world_if_version};
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.json");
+    let old = include_bytes!("fixtures/schema-1-world.json");
+    fs::write(&path, old).unwrap();
+    let approved = file_version(&path).unwrap();
+    let world = World::default();
+    for bad in [
+        b"not json".to_vec(),
+        br#"{"format":"rosenfu-world","schema_version":999,"world":{}}"#.to_vec(),
+        encode(&world).unwrap(),
+    ] {
+        fs::write(&path, &bad).unwrap();
+        assert!(replace_legacy_world_if_version(&path, &world, &approved).is_err());
+        let current = file_version(&path).unwrap();
+        assert!(replace_legacy_world_if_version(&path, &world, &current).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bad);
+    }
+    fs::write(&path, old).unwrap();
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".legacy-{:x}.bak", Sha256::digest(old)));
+    let backup = std::path::PathBuf::from(name);
+    fs::create_dir(&backup).unwrap();
+    assert!(replace_legacy_world_if_version(&path, &world, &approved).is_err());
+    assert_eq!(fs::read(&path).unwrap(), old);
+    fs::remove_dir(&backup).unwrap();
+    fs::write(&backup, b"unrelated bytes").unwrap();
+    assert!(replace_legacy_world_if_version(&path, &world, &approved).is_err());
+    assert_eq!(fs::read(&path).unwrap(), old);
+    assert_eq!(fs::read(backup).unwrap(), b"unrelated bytes");
+}
