@@ -30,3 +30,20 @@ test('construction bounds use all paths and never truncate long plans',()=>{
  const actual=constructionRoadBounds([{line:[{longitude:139,latitude:35},{longitude:140,latitude:35}]}],bounds);
  expect(actual.west).toBeLessThan(139);expect(actual.east).toBeGreaterThan(140);expect(actual.south).toBeLessThan(actual.north);
 });
+test('saves tile identities independently across changed viewports without invented OSM dates',async()=>{
+ const original=await fixture();
+ const tile=(key:string)=>({...original,coverageVerified:false,bundle:{...original.bundle,graph:{...original.bundle.graph,dataset:{...original.bundle.graph.dataset,id:`ofm-tiles/${key}`,revision:'tile-version-42'}},source:{...original.bundle.source,source:`https://tiles.openfreemap.org/planet/version/14/${key}.pbf`,sourceDate:null}},roads:original.roads.map(r=>({...r,id:`ofm:${key}:1`}))});
+ const a=tile('1/2'),b=tile('2/2');
+ const first=constructionRoadAttachment({...original,tileSnapshots:[a]},null);
+ expect(first.roads).toHaveLength(1);expect(first.roads[0].revision).toBe('tile-version-42');expect(first.roads[0].coverage_verified).toBe(false);
+ const second=constructionRoadAttachment({...original,tileSnapshots:[a,b]},{road_snapshots:first.roads});
+ expect(second.roads).toHaveLength(1);expect(second.roads[0].source_url).toBe(b.bundle.source.source);
+ const changed={...a,bundle:{...a.bundle,sourceSha256:'b'.repeat(64)}};
+ const conflict=constructionRoadAttachment({...original,tileSnapshots:[changed,b]},{road_snapshots:first.roads});
+ expect(conflict.roads).toHaveLength(1);expect(conflict.reason).toContain('版');
+});
+test('rejects empty and nested tile snapshots instead of claiming coverage',async()=>{
+ const source=await fixture();
+ expect(constructionRoadAttachment({...source,tileSnapshots:[]},null).reason).toContain('不正');
+ expect(constructionRoadAttachment({...source,tileSnapshots:[{...source,tileSnapshots:[]}]},null).roads).toEqual([]);
+});

@@ -24,14 +24,14 @@ export function constructionRoadBounds(paths:readonly {line:GeoPoint[]}[],fallba
 export function savedRoadSnapshot(snapshot:RoadSnapshot):SavedRoadSnapshot {
  const {source,sourceSha256}=snapshot.bundle;
  const knownTokyo=ROAD_PACK_RELEASE?.manifestSha256===TOKYO_MANIFEST&&source.source===TOKYO_SOURCE&&sourceSha256===TOKYO_SHA&&source.sourceDate==='2026-11-14T21:20:41Z'&&contains({west:139.68,south:35.6,east:139.8,north:35.72},snapshot.bounds);
- return {revision:source.sourceDate??'',source:source.source,source_url:source.source,source_sha256:sourceSha256,attribution:source.attribution,license:source.license,coverage_verified:(snapshot as RoadSnapshot & {coverageVerified?:boolean}).coverageVerified??knownTokyo,road_coverage:[{...snapshot.bounds}],roads:snapshot.roads};
+ return {revision:source.sourceDate??(snapshot.bundle.graph.dataset.id.startsWith('ofm-tiles/')?snapshot.bundle.graph.dataset.revision:''),source:source.source,source_url:source.source,source_sha256:sourceSha256,attribution:source.attribution,license:source.license,coverage_verified:(snapshot as RoadSnapshot & {coverageVerified?:boolean}).coverageVerified??knownTokyo,road_coverage:[{...snapshot.bounds}],roads:snapshot.roads};
 }
 const sameVersion=(a:SavedRoadSnapshot,b:SavedRoadSnapshot)=>a.revision===b.revision&&a.source===b.source&&a.source_url===b.source_url&&a.source_sha256===b.source_sha256&&a.attribution===b.attribution&&a.license===b.license;
 const shape=(r:RoadWay)=>JSON.stringify([r.points,r.layer,r.level,r.bridge,r.tunnel]);
 /** Advisory snapshots must never turn optional road loading into a construction
  * blocker. Keep old facts on conflict; avoid repeated copies and reserve save room. */
-export function constructionRoadAttachment(snapshot:RoadSnapshot|undefined,world:{road_snapshots?:SavedRoadSnapshot[]}|null):{roads:SavedRoadSnapshot[];reason:string} {
- if(!snapshot||!snapshot.bundle.source.sourceDate)return {roads:[],reason:'道路未確認：必要範囲の参照データ未取得（通常建設は可能）'};
+function singleRoadAttachment(snapshot:RoadSnapshot|undefined,world:{road_snapshots?:SavedRoadSnapshot[]}|null):{roads:SavedRoadSnapshot[];reason:string} {
+ if(!snapshot||(!snapshot.bundle.source.sourceDate&&!snapshot.bundle.graph.dataset.id.startsWith('ofm-tiles/')))return {roads:[],reason:'道路未確認：必要範囲の参照データ未取得（通常建設は可能）'};
  const incoming=savedRoadSnapshot(snapshot),existing=world?.road_snapshots??[];
  if(existing.some(s=>s.source===incoming.source&&!sameVersion(s,incoming)))return {roads:[],reason:'道路未確認：保存済み出典と版が異なるため、既存データを保持'};
  if(existing.some(s=>sameVersion(s,incoming)&&(!incoming.coverage_verified||s.coverage_verified)&&s.road_coverage.some(b=>contains(b,snapshot.bounds))))return {roads:[],reason:'保存済み道路参照を使用（実際の交差・高さは建設後に再判定）'};
@@ -40,4 +40,17 @@ export function constructionRoadAttachment(snapshot:RoadSnapshot|undefined,world
  if(incoming.roads.some(r=>[r.layer,r.level,r.bridge,r.tunnel].some(t=>t!==null&&t.length>100)))return {roads:[],reason:'道路未確認：未対応の道路属性（通常建設は可能）'};
  if(existing.length>=512||new TextEncoder().encode(JSON.stringify({...world,road_snapshots:[...existing,incoming]})).length>15*1024*1024)return {roads:[],reason:'道路未確認：保存容量を保護するため、新規参照の追加を見送り'};
  return {roads:[incoming],reason:incoming.coverage_verified?'取得済み範囲で道路交差を確認可能。実際の交差・高さは建設後に判定':'道路未確認：道路形状は取得済みだが、出典の範囲保証は未検証'};
+}
+
+/** Tile provenance is preserved separately: a changed viewport must not turn
+ * previously saved tiles into a conflicting synthetic aggregate source. */
+export function constructionRoadAttachment(snapshot:RoadSnapshot|undefined,world:{road_snapshots?:SavedRoadSnapshot[]}|null):{roads:SavedRoadSnapshot[];reason:string} {
+ if(!snapshot?.tileSnapshots)return singleRoadAttachment(snapshot,world);
+ if(snapshot.tileSnapshots.length===0||snapshot.tileSnapshots.length>64||snapshot.tileSnapshots.some(tile=>tile.tileSnapshots!==undefined))return {roads:[],reason:'道路未確認：タイル参照構成が不正です'};
+ const roads:SavedRoadSnapshot[]=[],reasons=new Set<string>();
+ for(const tile of snapshot.tileSnapshots){
+  const result=singleRoadAttachment({...tile,coverageVerified:false},{...world,road_snapshots:[...(world?.road_snapshots??[]),...roads]});
+  roads.push(...result.roads);reasons.add(result.reason);
+ }
+ return {roads,reason:[...reasons].join(' / ')};
 }
