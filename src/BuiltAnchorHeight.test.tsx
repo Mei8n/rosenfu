@@ -28,10 +28,21 @@ test('built anchor update passes exact snapshot, preserves failed selection and 
  fireEvent.click(screen.getByRole('tab',{name:'選択'}));
  fireEvent.click(screen.getByRole('button',{name:'建設済みアンカー 2 の高さを変更'}));
  const toolbar=screen.getByRole('group',{name:'建設済みアンカーの高さ'});
+ fireEvent.click(within(toolbar).getByRole('button',{name:LEVEL_LABELS.ground}));
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='update_alignment_anchor_height')).toBe(false);
  fireEvent.click(within(toolbar).getByRole('button',{name:LEVEL_LABELS.elevated}));await screen.findByText(/勾配制限/);
  expect(screen.getByRole('group',{name:'建設済みアンカーの高さ'})).toBeTruthy();
  expect(invoke).toHaveBeenCalledWith('update_alignment_anchor_height',expect.objectContaining({alignmentId:'3',anchorIndex:1,level:'elevated',expectedAlignment:line,constructionPlans:expect.any(Object)}));
  reject=false;fireEvent.click(within(toolbar).getByRole('button',{name:LEVEL_LABELS.elevated}));await waitFor(()=>expect(screen.queryByRole('group',{name:'建設済みアンカーの高さ'})).toBeNull());
+ fireEvent.click(screen.getByRole('button',{name:'建設済みアンカー 2 の高さを変更'}));
+ const calls=vi.mocked(invoke).mock.calls.filter(([command])=>command==='update_alignment_anchor_height').length;
+ fireEvent.click(within(screen.getByRole('group',{name:'建設済みアンカーの高さ'})).getByRole('button',{name:LEVEL_LABELS.elevated}));
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='update_alignment_anchor_height')).toHaveLength(calls);
+ // Even if a server returns an unchanged world for a different requested level,
+ // retain the last real operation's Undo and the current selection.
+ fireEvent.click(within(screen.getByRole('group',{name:'建設済みアンカーの高さ'})).getByRole('button',{name:LEVEL_LABELS.ground}));
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='update_alignment_anchor_height')).toHaveLength(calls+1));await act(async()=>{});
+ expect(screen.getByRole('group',{name:'建設済みアンカーの高さ'})).toBeTruthy();
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});await waitFor(()=>expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion'));await act(async()=>{});
  fireEvent.click(screen.getByRole('button',{name:'建設済みアンカー 2 の高さを変更'}));expect(screen.getByText('建設済み · 高さ 0 m')).toBeTruthy();
 });

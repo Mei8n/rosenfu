@@ -24,3 +24,9 @@ export function BuiltAnchorHeightHandles({lines,owner,camera,scale,onSelect}:{li
  return <circle key={`${line.id}-${index}`} data-built-height-anchor={index} data-built-height-alignment={line.id} cx={p.x} cy={p.y} r={5/scale} fill="white" stroke="#566d63" strokeWidth={1.5/scale} role="button" tabIndex={0} aria-label={`建設済みアンカー ${index+1} の高さを変更`} onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onSelect({alignment:line,anchorIndex:index});}} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();onSelect({alignment:line,anchorIndex:index});}}}/>;
  }))}</g>;
 }
+
+/** Snapshot equality ignores JSON object key order, not array order or values. */
+export function equalWorldSnapshots(a:unknown,b:unknown):boolean{
+ const serialize=(value:unknown)=>JSON.stringify(value,(_,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
+ return serialize(a)===serialize(b);
+}

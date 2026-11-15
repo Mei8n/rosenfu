@@ -1,4 +1,4 @@
-import {BuiltAnchorHeightHandles,BuiltAnchorHeightToolbar,type BuiltHeightSelection} from './BuiltAnchorHeight';
+import {equalWorldSnapshots,builtAnchorHeight,BuiltAnchorHeightHandles,BuiltAnchorHeightToolbar,type BuiltHeightSelection} from './BuiltAnchorHeight';
 import {useConstructionPreview} from './useConstructionPreview';
 import {anchorHeights,changeAnchorHeight} from './anchorHeights';
 import {TrackGeometryLayer,useTrackRenderGeometry} from './TrackRenderGeometry';
@@ -715,8 +715,10 @@ export function App() {
   function updateBuiltAnchorHeight(level:SectionInfrastructure["level"]){
     if(!enabled||unapplied||!builtHeightSelection)return;
     const {alignment,anchorIndex}=builtHeightSelection;
+    const targetHeight=({ground:0,elevated:6,elevated_2:12,elevated_3:18,underground:-6,underground_2:-12,underground_3:-18} as const)[level];
+    if(Math.abs(builtAnchorHeight(alignment,anchorIndex)-targetHeight)<1e-6)return;
     const args={alignmentId:alignment.id,anchorIndex,level,expectedAlignment:alignment,constructionPlans};
-    void perform(async()=>{const snapshot=await invoke<World>("update_alignment_anchor_height",args);setWorld(snapshot);setDirty(true);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint,command:"update_alignment_anchor_height",args});setBuiltHeightSelection(null);});
+    void perform(async()=>{const snapshot=await invoke<World>("update_alignment_anchor_height",args);if(equalWorldSnapshots(snapshot,world))return;setWorld(snapshot);setDirty(true);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint,command:"update_alignment_anchor_height",args});setBuiltHeightSelection(null);});
   }
   const rangeCount=rangeSelection.reduce((sum,row)=>sum+row.sectionIndices.length,0);
   const selectedInfrastructure=rangeSelection.flatMap(row=>row.sectionIndices.map(index=>alignments.find(line=>line.id===row.alignmentId)?.infrastructure?.[index]??DEFAULT_INFRASTRUCTURE));
