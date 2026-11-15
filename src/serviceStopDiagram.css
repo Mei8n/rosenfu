@@ -1,0 +1,21 @@
+/* Shared station sequence for ordinary/rapid services; only recorded stops are shown. */
+.service-stop-diagram { list-style:none; margin:10px 0; padding:0!important; }
+.service-stop-diagram .stop-row { margin:0; padding:0; }
+.service-stop-diagram .stop-row label { display:grid; grid-template-columns:24px minmax(0,1fr) auto; align-items:center; position:relative; min-height:29px; gap:8px; margin:0; cursor:pointer; font-size:12px; }
+.service-stop-diagram .stop-rail { position:absolute; width:4px; background:var(--accent,#dc8952); left:10px; top:0; bottom:0; pointer-events:none; }
+.service-stop-diagram .stop-row:first-child .stop-rail { top:50%; }
+.service-stop-diagram .stop-row:last-child .stop-rail { bottom:50%; }
+.service-stop-diagram .stop-row input.stop-marker { appearance:none; position:relative; grid-column:1; margin:0 auto; padding:0; width:12px; height:12px; min-width:0; border:1px solid var(--muted,#999); border-radius:50%; background:var(--surface,#fff); opacity:1; cursor:pointer; z-index:1; }
+.service-stop-diagram .stop-row input.stop-marker:checked { width:20px; height:11px; border:2px solid var(--ink,#333); border-radius:4px; background:var(--surface,#fff); }
+.service-stop-diagram .stop-row:first-child input:checked,.service-stop-diagram .stop-row:last-child input:checked { height:17px; }
+.service-stop-diagram .stop-row input.stop-marker:focus-visible { outline:2px solid #267bc7; outline-offset:3px; }
+.service-stop-diagram .stop-row input.stop-marker:disabled { cursor:default; }
+.service-stop-diagram .stop-name { min-width:0; overflow-wrap:anywhere; }
+.service-stop-diagram .passing .stop-name,.service-stop-diagram .passing .stop-status { color:var(--muted,#929292); }
+.service-stop-diagram .stop-status { font-size:10px; color:var(--muted,#777); }
+.service-stop-diagram .stop-separator { display:none; }
+.service-stop-editor h4 { font-size:13px; margin:8px 0; }
+.service-stop-editor .stop-actions { display:flex; gap:6px; margin-top:8px; }
+.service-stop-editor .stop-actions button { min-height:28px; font-size:11px; }
+.service-stop-editor .service-name-field { margin:0; }
+.service-stop-editor .service-name-field input { font-size:13px; }
