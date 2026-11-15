@@ -77,9 +77,10 @@ OSMに構造タグがない通常道路はsurfaceという参照モデル上の�
 ### 統合上の留意点
 
 - この作業基点にはまだvertical_profileが存在しない。
-  `assess_alignment_environment(alignment, flat_ground, data)` のflat_groundを、
+  `assess_alignment_environment(alignment, ground_sections, data)` のアンカー区間別フラグを、
   スロープ統合時に「平坦かつ実高さ0m」の判定から供給すること。
-  session/environment.rsのassessment関数が接続箇所。現在は既存の区間構造を参照。
+  session/environment.rsのassessment関数が接続箇所。一律trueを使わず、現基点では各区間の地上レベルを確認する。
+  区間別Hermite対応は別ブランチ `fix/environment-profile-adapter` に独立させる。
 - 計画がある場合は線形に沿う0.02度セルを最大128領域、逐次取得する。
   画面外の長大計画も対象。取得/保存上限を超える計画、欠損、失敗は着工不可。
 - 高さ/線路数編集は取得済み環境に対して再検証する。新しいスロープや分岐APIにも
@@ -108,3 +109,23 @@ OSMに構造タグがない通常道路はsurfaceという参照モデル上の�
 輪環は始点を跨ぐ連続水域も調べる。全周30km以下を二重計上せず、陸地や深い地下区間で距離を区切る。
 現基点の端点モデルは非分岐チェーン/輪環のみ。曖昧な複数接続を勝手に一経路へ絞らず拒否する。
 将来の分岐モデル統合では分岐経路の判定を別途接続する必要がある。
+
+### 2026-11-15 取得経路の再調査
+
+固定Overpassに0.001度四方の1回のPOSTを実施し、HTTP406を再現した。応答はserver: envoy、
+HTML本文はnginxの406。ブラウザ外でも失敗するためCSP/CORSだけを原因にしない。
+CSPには固定interpreter URLが許可されているが、WebViewからの実取得は未確認。
+認証変更・別公開サーバー巡回・User-Agent偽装は行っていない。提供元側の拒否条件は確定できていない。
+
+TrainsWorldは設計参考に限定し、コード/公開packを流用していない。
+[OpenFreeMap](https://openfreemap.org/) は商用利用と公共インスタンスを案内するが、
+[利用条件](https://openfreemap.org/tos/) では自動収集を制限し、オフライン取得は1回3000tileまたは50MB、
+最大4並列、アプリを識別するUser-Agentが条件。無制限なゲーム用データ抽出の許可とは解釈しない。
+帰属はOpenMapTilesとOpenStreetMapが必要。表示用z14のtransportationに道路が含まれても、
+欠けたlayer/地物を建設可の根拠にする完全性manifestは確認できていない。
+[スキーマ](https://raw.githubusercontent.com/openmaptiles/openmaptiles/master/layers/transportation/transportation.yaml)
+のlevelはsteps/footway向けの実験属性であり、元道路の全構造タグと等価ではない。
+そのため現取得器を黙ってOpenFreeMapへ切り替えていない。
+配布用には、利用条件と出典が明確なOSM等の原データから、元属性・非簡略形状・
+明示的な完全/欠損coverage・revisionを持つ範囲別packを自前配信する方式が候補。
+ホスト/更新運用/水域の完全性データは未用意であり、現在の取得失敗は未解決。

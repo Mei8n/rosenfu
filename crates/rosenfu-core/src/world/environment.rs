@@ -334,14 +334,14 @@ pub fn assess_environment(
     assess_environment_sections(
         points,
         &vec![level; points.len().saturating_sub(1)],
-        flat_ground,
+        &vec![flat_ground; points.len().saturating_sub(1)],
         data,
     )
 }
 fn assess_environment_sections(
     points: &[GeoPoint],
     levels: &[InfrastructureLevel],
-    flat_ground: bool,
+    flat_ground: &[bool],
     data: &EnvironmentSnapshot,
 ) -> EnvironmentAssessment {
     let mut result = EnvironmentAssessment {
@@ -426,7 +426,7 @@ fn assess_environment_sections(
                 limited_run = 0.0;
             }
         }
-        if level != InfrastructureLevel::Ground || !flat_ground {
+        if level != InfrastructureLevel::Ground || !flat_ground.get(i).copied().unwrap_or(false) {
             continue;
         }
         for road in &data.roads {
@@ -474,10 +474,11 @@ fn assess_environment_sections(
 }
 
 /// Uses full geometry across anchor boundaries, retaining continuous water runs.
-/// The caller supplies flat_ground from the physical vertical profile when present.
+/// One flat-and-ground flag per anchor interval, derived from the physical profile.
+/// A missing flag is unknown, so it cannot create a ground crossing.
 pub fn assess_alignment_environment(
     alignment: &Alignment,
-    flat_ground: bool,
+    flat_ground_sections: &[bool],
     data: &EnvironmentSnapshot,
 ) -> EnvironmentAssessment {
     let anchors = alignment
@@ -485,7 +486,9 @@ pub fn assess_alignment_environment(
         .clone()
         .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
     let mut levels = vec![InfrastructureLevel::Ground; alignment.points.len() - 1];
+    let mut flat_ground = vec![false; levels.len()];
     for (i, pair) in anchors.windows(2).enumerate() {
+        flat_ground[pair[0]..pair[1]].fill(flat_ground_sections.get(i).copied().unwrap_or(false));
         for level in &mut levels[pair[0]..pair[1]] {
             *level = alignment
                 .section_infrastructure(i)
@@ -493,7 +496,7 @@ pub fn assess_alignment_environment(
                 .level;
         }
     }
-    assess_environment_sections(&alignment.points, &levels, flat_ground, data)
+    assess_environment_sections(&alignment.points, &levels, &flat_ground, data)
 }
 
 /// Check a physical non-branching chain, so splitting a water crossing into separately
@@ -623,7 +626,8 @@ pub fn validate_connected_water(
             points.extend(points.clone().into_iter().skip(1));
             levels.extend(levels.clone());
         }
-        let assessment = assess_environment_sections(&points, &levels, false, data);
+        let assessment =
+            assess_environment_sections(&points, &levels, &vec![false; levels.len()], data);
         if !assessment.water_ready || assessment.ground_water || assessment.water_limit_exceeded {
             return Err(WorldError::InvalidEnvironment);
         }

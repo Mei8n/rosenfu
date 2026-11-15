@@ -280,7 +280,12 @@ test('reconnected split pieces render a shared D coordinate and report its conne
  const left={...line,points:[point(100,130),point(180,130),point(250,130)],anchor_indices:[0,1,2]};
  const right={...line,id:'4',points:[point(250,130),point(330,130)],anchor_indices:[0,1]};
  const map=await start({alignments:[left,right],alignment_connections:[{a:{alignment_id:'3',endpoint:'end'},b:{alignment_id:'4',endpoint:'start'}}]});
- const leftPath=map.querySelector('[data-alignment-id="3"] .alignment-path')!.getAttribute('d')!;
+ // Infrastructure rendering has one path per anchor interval. Check the physical
+ // chain and its final endpoint, not the first interval's intermediate endpoint.
+ const leftPaths=[...map.querySelectorAll('[data-alignment-id="3"] g[data-track-count] .alignment-path')].map(path=>path.getAttribute('d')!);
+ expect(leftPaths).toHaveLength(2);
+ expect(leftPaths[0].split(' ').at(-1)!.slice(1)).toBe(leftPaths[1].split(' ')[0].slice(1));
+ const leftPath=leftPaths.at(-1)!;
  const rightPath=map.querySelector('[data-alignment-id="4"] .alignment-path')!.getAttribute('d')!;
  expect(leftPath.split(' ').at(-1)!.slice(1)).toBe(rightPath.split(' ')[0].slice(1));
  fireEvent.pointerMove(map,{clientX:250,clientY:130});

@@ -11,9 +11,20 @@ pub struct ConstructionEnvironmentPreview {
     pub buildable: bool,
 }
 fn assessment(a: &Alignment, data: &EnvironmentSnapshot) -> EnvironmentAssessment {
-    // This baseline has no vertical profile field. Ramp integration must supply false
-    // for non-flat profiles and test the actual height before allowing ground crossings.
-    assess_alignment_environment(a, true, data)
+    // This model cannot deserialize vertical profiles. Its only height source is
+    // the per-anchor infrastructure; an adapter for profile-enabled models must
+    // derive each interval from the physical height/flatness APIs.
+    let sections = a
+        .anchor_indices
+        .as_ref()
+        .map_or(1, |indices| indices.len() - 1);
+    let ground: Vec<_> = (0..sections)
+        .map(|i| {
+            a.section_infrastructure(i)
+                .is_some_and(|s| s.level == rosenfu_core::world::InfrastructureLevel::Ground)
+        })
+        .collect();
+    assess_alignment_environment(a, &ground, data)
 }
 fn merge(
     old: Option<&EnvironmentSnapshot>,
