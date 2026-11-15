@@ -1,6 +1,78 @@
 use super::*;
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AlignmentSectionSelection {
+    pub alignment_id: AlignmentId,
+    pub section_indices: Vec<usize>,
+}
+
 impl WorldEditor {
+    /// Batch removal is atomic and forms one undo entry.
+    /// Indices refer to the supplied, exact original alignment snapshots.
+    pub fn delete_alignment_sections(
+        &mut self,
+        selections: Vec<AlignmentSectionSelection>,
+        expected_alignments: Vec<rosenfu_core::world::Alignment>,
+        plans: rosenfu_core::world::ConstructionPlans,
+    ) -> Result<WorldDraft, String> {
+        if selections.is_empty() || selections.len() > 4096 {
+            return Err("削除する区間を選択してください。".into());
+        }
+        let mut candidate = self.clone();
+        let mut before = self.snapshot();
+        before.construction_plans = Some(plans.clone());
+        candidate
+            .world
+            .replace(before.clone())
+            .map_err(|e| e.to_string())?;
+        let mut seen = std::collections::BTreeSet::new();
+        if expected_alignments.len() != selections.len() {
+            return Err("選択した線路の情報が一致しません。選択し直してください。".into());
+        }
+        for selection in &selections {
+            let id = selection.alignment_id;
+            if !seen.insert(id) || selection.section_indices.is_empty() {
+                return Err("選択した区間が重複しているか空です。".into());
+            }
+            let current = before
+                .alignments
+                .iter()
+                .find(|a| a.id == id && a.owner == self.company)
+                .ok_or("選択した自社線路がありません。")?;
+            let expected = expected_alignments
+                .iter()
+                .filter(|a| a.id == id)
+                .collect::<Vec<_>>();
+            if expected.len() != 1 || expected[0] != current {
+                return Err("選択した線路が変更されています。選択し直してください。".into());
+            }
+            let count = current.anchor_indices.as_ref().map_or(1, |a| a.len() - 1);
+            let unique = selection
+                .section_indices
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique.len() != selection.section_indices.len() || unique.iter().any(|i| *i >= count)
+            {
+                return Err("選択した区間が不正です。".into());
+            }
+        }
+        for selection in selections {
+            // Removing from the end keeps the original prefix ID and lower indices stable.
+            let mut indices = selection.section_indices;
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            for index in indices {
+                candidate.delete_alignment_section(selection.alignment_id, index, plans.clone())?;
+            }
+        }
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        let after = candidate.snapshot();
+        candidate.deleted_alignment = Some((before, after.clone()));
+        *self = candidate;
+        Ok(after)
+    }
+
     pub(super) fn set_anchor_indices(
         &mut self,
         id: AlignmentId,
@@ -298,6 +370,83 @@ mod tests {
         let id = snapshot.alignments[0].id;
         (editor, id)
     }
+    #[test]
+    fn batch_sections_are_one_atomic_undo_and_save_roundtrip() {
+        let (mut editor, id) = setup();
+        let mut before = editor.snapshot();
+        before.construction_plans = Some(plans());
+        let after = editor
+            .delete_alignment_sections(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![0, 2],
+                }],
+                before.alignments.clone(),
+                plans(),
+            )
+            .unwrap();
+        assert_eq!(after.alignments.len(), 1);
+        assert_eq!(
+            after.alignments[0].points,
+            before.alignments[0].points[2..=4]
+        );
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        let after = editor
+            .delete_alignment_sections(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![2, 0, 1],
+                }],
+                before.alignments.clone(),
+                plans(),
+            )
+            .unwrap();
+        assert!(after.alignments.is_empty());
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("batch.json");
+        editor.save(&path).unwrap();
+        assert!(WorldEditor::new()
+            .load(&path)
+            .unwrap()
+            .alignments
+            .is_empty());
+    }
+
+    #[test]
+    fn batch_rejects_stale_duplicate_invalid_and_partial_failure_without_mutation() {
+        let (mut editor, id) = setup();
+        editor
+            .place_station_on_alignment("駅".into(), id, 0.5, 40., 12.)
+            .unwrap();
+        let before = editor.snapshot();
+        for indices in [vec![1, 2], vec![0, 0], vec![99], vec![]] {
+            assert!(editor
+                .delete_alignment_sections(
+                    vec![AlignmentSectionSelection {
+                        alignment_id: id,
+                        section_indices: indices
+                    }],
+                    before.alignments.clone(),
+                    plans()
+                )
+                .is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+        let mut stale = before.alignments.clone();
+        stale[0].name = "古い選択".into();
+        assert!(editor
+            .delete_alignment_sections(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![2]
+                }],
+                stale,
+                plans()
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+
     #[test]
     fn section_deletion_splits_exact_geometry_and_undo_restores_ids() {
         let (mut editor, id) = setup();

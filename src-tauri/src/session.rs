@@ -1,6 +1,7 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
+pub use deletion::AlignmentSectionSelection;
 #[path = "session/save_slots.rs"]
 mod save_slots;
 use rosenfu_core::world::{

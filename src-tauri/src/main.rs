@@ -191,6 +191,18 @@ fn delete_alignment_section(
         .delete_alignment_section(alignment_id, section_index, construction_plans)
 }
 #[tauri::command]
+fn delete_alignment_sections(
+    editor: State<'_, Mutex<WorldEditor>>,
+    selections: Vec<session::AlignmentSectionSelection>,
+    expected_alignments: Vec<rosenfu_core::world::Alignment>,
+    construction_plans: rosenfu_core::world::ConstructionPlans,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .delete_alignment_sections(selections, expected_alignments, construction_plans)
+}
+#[tauri::command]
 fn undo_alignment_deletion(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
     editor
         .lock()
@@ -485,6 +497,7 @@ fn main() {
             delete_station,
             delete_alignment,
             delete_alignment_section,
+            delete_alignment_sections,
             undo_alignment_deletion,
             rename_company,
             save_planned_route,
