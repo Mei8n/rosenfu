@@ -224,6 +224,11 @@ export function App() {
   const [draftEditedGeometry,setDraftEditedGeometry]=useState<EditedGeometry|undefined>();
   type AnchorEdit={kind?:"point";id:number;before:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];destination?:Extension;redoDestination?:Extension};after:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];destination?:Extension;redoDestination?:Extension}};
   const [anchorUndo,setAnchorUndo]=useState<AnchorEdit[]>([]),[anchorRedo,setAnchorRedo]=useState<AnchorEdit[]>([]);
+  // Keep session-only edit history with its path while another plan is selected.
+  const parkedAnchorHistory=useRef(new Map<number,{undo:AnchorEdit[];redo:AnchorEdit[]}>());
+  function parkAnchorHistory(){
+    parkedAnchorHistory.current.set(activePathId,{undo:anchorUndo.filter(edit=>edit.id===activePathId),redo:anchorRedo.filter(edit=>edit.id===activePathId)});
+  }
   type AnchorGesture={pointerId:number;id:number;index:number;startX:number;startY:number;points:GeoPoint[];line:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];destination?:Extension;redoDestination?:Extension;previous?:GeoPoint;preview:EditedGeometry|null;error:string|null;snapped:boolean};
   const anchorGesture=useRef<AnchorGesture|null>(null);
   const [anchorPreview,setAnchorPreview]=useState<AnchorGesture|null>(null);
@@ -333,8 +338,12 @@ export function App() {
   function parkCurrentPlan(): PlannedPath | null {
     return draftPoints.length || redoPoints.length ? {id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,editedGeometry:draftEditedGeometry,designSpeedKmh,trackType,roadFollowing,extension:draftExtension,destination:draftDestination,redoDestination:draftRedoDestination} : null;
   }
-  function newPath() {
-    const current=parkCurrentPlan();
+  function newPath(discardEmptyRedo=false) {
+    // A new drawing replaces a fully undone path; switching plans still preserves its Redo.
+    const discard=discardEmptyRedo&&!draftPoints.length;
+    const current=discard?null:parkCurrentPlan();
+    if(discard)discardPlanStations(activePathId);
+    if(current)parkAnchorHistory();
     setParkedPaths(paths=>current?[...paths,current]:paths);
     setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);changeMapMode(activeTool==="stations"?"place":"draw");
   }
@@ -346,8 +355,10 @@ export function App() {
     if(!enabled || referenceCopy.active)return;
     const target=parkedPaths.find(path=>path.id===id);if(!target||target.reference)return;
     const current=parkCurrentPlan();
+    if(current)parkAnchorHistory();
+    const history=parkedAnchorHistory.current.get(id);parkedAnchorHistory.current.delete(id);
     setParkedPaths(paths=>[...paths.filter(path=>path.id!==id),...(current?[current]:[])]);
-    setAnchorUndo([]);setAnchorRedo([]);setActivePlanId(target.planId);setDraftFinished(!resume||!!target.destination);setActivePathId(target.id);setDraftExtension(target.extension);setDraftDestination(target.destination);setDraftRedoDestination(target.redoDestination);setDraftPoints(target.points);setDraftEditedGeometry(target.editedGeometry);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
+    setAnchorUndo(history?.undo??[]);setAnchorRedo(history?.redo??[]);setActivePlanId(target.planId);setDraftFinished(!resume||!!target.destination);setActivePathId(target.id);setDraftExtension(target.extension);setDraftDestination(target.destination);setDraftRedoDestination(target.redoDestination);setDraftPoints(target.points);setDraftEditedGeometry(target.editedGeometry);setRedoPoints(target.redo);setTrackType(target.trackType);setDesignSpeedKmh(target.designSpeedKmh);setRoadFollowing(target.roadFollowing);setHoverPoint(null);changeMapMode(activeTool==="stations"?"place":"draw");
   }
   function choosePlan(id:number){
     if(id===activePlanId)return;
@@ -362,6 +373,7 @@ export function App() {
   }
   function clearCurrentPlan(){
     const ids=new Set([activePathId,...parkedPaths.filter(path=>path.planId===activePlanId).map(path=>path.id)]);
+    ids.forEach(id=>parkedAnchorHistory.current.delete(id));
     ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
     setDraftFinished(false);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);
   }
@@ -499,6 +511,7 @@ export function App() {
   const autosave=useAutosave({ready:status==="ready",dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired&&!saveReplacement,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined,compact=false){
+    parkedAnchorHistory.current.clear();
     const original=value??emptyConstructionPlans(),restored=compact?compactEmptyPlans(original):original,ids=nextConstructionIds(restored);
     setPlans(restored.plans);setParkedPaths(restored.parkedPaths);setActivePathId(restored.activePathId);setActivePlanId(restored.activePlanId);
     setDraftPoints(restored.draftPoints);setDraftEditedGeometry(restored.draftEditedGeometry);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints(restored.redoPoints);setDraftExtension(restored.draftExtension);setDraftDestination(restored.draftDestination);setDraftRedoDestination(restored.draftRedoDestination);setDraftFinished(restored.draftFinished);
@@ -744,7 +757,7 @@ export function App() {
   }
   function applyAnchorEdit(id:number,value:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];destination?:Extension;redoDestination?:Extension}){
     if(id===activePathId){setDraftDestination(value.destination);setDraftRedoDestination(value.redoDestination);setDraftPoints(value.points);setDraftEditedGeometry(value.geometry);setRedoPoints(value.redo);setHoverPoint(null);}
-    else setParkedPaths(paths=>paths.map(path=>path.id===id?{...path,destination:value.destination,redoDestination:value.redoDestination,points:value.points,editedGeometry:value.geometry,line:plannedGeometry(value.points,value.geometry,extensionPrevious(path.extension)).points,redo:value.redo}:path));
+    else {parkedAnchorHistory.current.delete(id);setParkedPaths(paths=>paths.map(path=>path.id===id?{...path,destination:value.destination,redoDestination:value.redoDestination,points:value.points,editedGeometry:value.geometry,line:plannedGeometry(value.points,value.geometry,extensionPrevious(path.extension)).points,redo:value.redo}:path));}
   }
   function undoAnchor(redo:boolean){
     const history=redo?anchorRedo:anchorUndo,entry=history.at(-1);if(!entry)return;
@@ -922,14 +935,14 @@ export function App() {
         if(target?.kind==="built"){
           if(target.alignment.owner!==world?.companies[0]?.id){setError("他社の線路は延伸できません。");return;}
           if(occupiedEndpoint(world?.alignment_connections??[],{alignmentId:target.alignment.id,endpoint:target.endpoint})){setError("この端点は接続済みです");return;}
-          if(draftFinished)newPath();
+          if(draftFinished)newPath(true);
           setDraftDestination(undefined);setDraftRedoDestination(undefined);setDraftExtension({alignmentId:target.alignment.id,endpoint:target.endpoint});
           setTrackType(target.alignment.track_type??"normal");setDesignSpeedKmh(target.alignment.design_speed_kmh??defaultDesignSpeed(target.alignment.track_type??"normal"));setRoadFollowing(false);
           setDraftPoints([target.point]);setRedoPoints([]);setHoverPoint(null);setDraftFinished(false);
           setNotice("建設済み線路の"+(target.endpoint==="start"?"始点":"終点")+"から延伸を計画しています。着工まで既存線路は変更されません。");return;
         }
         setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);
-        if(draftFinished){newPath();setDraftPoints([coordinates]);return;}
+        if(draftFinished){newPath(true);setDraftPoints([coordinates]);return;}
       }
       if(snappedEndpoint(coordinates,rect.width,rect.height)){
         if(draftPoints.length>=2&&!draftInvalid){setDraftFinished(true);setHoverPoint(null);}
@@ -1305,7 +1318,7 @@ export function App() {
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
             <div className="map-surface">
-            {deleteTarget&&<DeletionDialog label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
+            {deleteTarget&&<DeletionDialog defaultDelete={deleteTarget.kind==='built-section'} label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
             {activeTool==="delete"&&deleteHover&&!dragging&&<div className="construction-tooltip deletion-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,deleteHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,deleteHover.y+18))}}>{deletionLabel(deleteHover.target)}を{deleteHover.target.kind==="built-section"||deleteHover.target.kind==="station"?"撤去":"削除"}</div>}
             {activeTool==="stations"&&<fieldset className="construction-toolbar station-toolbar" disabled={!enabled} aria-label="駅設置設定"><PlatformLengthInput id="platform-length" label="駅の長さ" value={platformLength} onChange={setPlatformLength} compact/></fieldset>}
             {activeTool==="stations"&&mapMode==="place"&&!dragging&&cursorPosition&&stationCursor&&stationSelection?.error&&<div className="construction-tooltip station-placement-error" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{stationSelection.error}</div>}
@@ -1424,9 +1437,9 @@ export function App() {
           <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3><p>この試作は1つのローカル保存先を使います。セーブ一覧・複数スロットは未実装です。</p><button disabled={!enabled||saveBlocked} onClick={save}>ワールドを保存</button><button className="secondary" disabled={!enabled} onClick={()=>requestLoad("manual")}>ワールドを読み込む</button><h4>オートセーブ</h4><p>ワールドと未着工計画を専用ファイルに自動保存します。未適用の編集フォーム・未確定の参照候補は対象外。手動保存を上書きしません。最新1件のみ保持します。</p><p role="status">{autosave.message}</p>{autosave.permission==="blocked"&&<button className="secondary" disabled={!enabled} onClick={autosave.allowReplacement}>このワールドで自動保存を開始（以前の自動保存を置き換える）</button>}{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
           <section className="shared-plan" aria-label="建設計画">
-            <div className="plan-heading"><label htmlFor="construction-plan-name">計画</label><input id="construction-plan-name" aria-label="計画名（任意）" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled||referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/><button type="button" className="secondary" aria-label="別の線路計画を追加" title="新しい計画" disabled={!enabled||referenceCopy.active||!planHasContent} onClick={newIndependentPlan}>＋</button></div>
-            {plans.length>1&&<div className="plan-switcher" role="group" aria-label="計画を選択">{plans.map(plan=><button key={plan.id} className="secondary" aria-pressed={plan.id===activePlanId} disabled={!enabled||referenceCopy.active} onClick={()=>choosePlan(plan.id)}>{plan.name.trim()||`計画 ${plan.id}`}{plan.id!==activePlanId&&<span className="sr-only"> を編集</span>}</button>)}</div>}
-            <div className="plan-totals"><span>{currentPaths.length}経路 · {currentStations.length}駅</span><span title="費用計算は未実装です">建設費 — / 維持費 —</span></div>
+            <div className="plan-heading"><label htmlFor="construction-plan-name">計画</label><input id="construction-plan-name" aria-label="計画名（任意）" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled||referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/><button type="button" className="secondary" aria-label="別の線路計画を追加" title="新しい計画" disabled={!enabled||referenceCopy.active||!(currentPaths.some(path=>path.points.length>0)||currentStations.length>0)} onClick={newIndependentPlan}>＋</button></div>
+            {(plans.length>1||currentPaths.some(path=>path.points.length>0)||currentStations.length>0)&&<div className="plan-switcher" role="group" aria-label="計画を選択">{plans.map(plan=><button key={plan.id} className="secondary" aria-pressed={plan.id===activePlanId} disabled={!enabled||referenceCopy.active} onClick={()=>choosePlan(plan.id)}>{plan.name.trim()||`計画 ${plan.id}`}{plan.id!==activePlanId&&<span className="sr-only"> を編集</span>}</button>)}</div>}
+            <div className="plan-totals"><span>{currentPaths.filter(path=>path.points.length>0).length}経路 · {currentStations.length}駅</span><span title="費用計算は未実装です">建設費 — / 維持費 —</span></div>
             <details className="plan-breakdown" open={currentStations.some(item=>!item.valid)||undefined}><summary>内訳</summary><p className="muted">建設費・維持費は未計算</p><div role="group" aria-label="計画内の経路" hidden>{currentPaths.map(path=><button key={path.id} className="secondary" disabled={!enabled||referenceCopy.active||path.id===activePathId||!!path.reference} aria-pressed={path.id===activePathId} onClick={()=>selectPath(path.id)}>経路 {path.id}{path.reference?"（実在形状）":""}</button>)}</div><ul aria-label="計画中の駅">{currentStations.map(({station,valid})=><li key={station.id}>{station.name}{!valid&&<span role="status"> 線路に収まらないため着工不可</span>}<button type="button" className="secondary" aria-label={`計画駅 ${station.name} を削除`} disabled={!enabled} onClick={()=>{setPlannedStations(items=>items.filter(item=>item.id!==station.id));setStationUndo(items=>items.filter(item=>item.planned?.id!==station.id));setStationRedo(items=>items.filter(item=>item.planned?.id!==station.id));}}>×</button></li>)}</ul></details>
             {deletePlanConfirm&&<PlanDeleteDialog name={planName.trim()||`計画 ${activePlanId}`} onCancel={()=>setDeletePlanConfirm(false)} onDelete={deleteCurrentPlan}/>}
             <div className="plan-actions"><button className="secondary" disabled={!enabled||referenceCopy.active} onClick={()=>setDeletePlanConfirm(true)}>計画を削除</button><button className="secondary" disabled={!enabled||referenceCopy.active||!planHasContent} onClick={clearCurrentPlan}>下書きを消去</button><button disabled={!enabled||referenceCopy.active||!planBuildable} onClick={commitAlignment}>計画を着工</button></div>

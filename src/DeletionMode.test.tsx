@@ -23,7 +23,7 @@ test('dedicated deletion mode highlights only selected real anchor interval, can
  const map=await start();const targets=map.querySelectorAll('[data-delete-alignment="3"]');expect(targets).toHaveLength(2);expect(targets[0].getAttribute("fill")).toBe("none");expect(targets[0].getAttribute("pointer-events")).toBe("stroke");
  fireEvent.pointerEnter(targets[1],{clientX:200,clientY:150});expect(targets[1].classList.contains('deletion-hover')).toBe(true);expect(targets[0].classList.contains('deletion-hover')).toBe(false);
  fireEvent.click(targets[1]);expect(screen.getByRole('dialog')).toBeTruthy();fireEvent.click(screen.getByRole('button',{name:'キャンセル'}));expect(invoke).not.toHaveBeenCalledWith('delete_alignment_section',expect.anything());
- fireEvent.click(targets[1]);fireEvent.click(screen.getByRole('button',{name:'削除する'}));await waitFor(()=>expect(map.querySelector('[data-delete-alignment]')).toBeNull());
+ fireEvent.click(targets[1]);expect(document.activeElement).toBe(screen.getByRole('button',{name:'削除する'}));fireEvent.keyDown(document.activeElement!,{key:'Enter'});await waitFor(()=>expect(map.querySelector('[data-delete-alignment]')).toBeNull());
  expect(invoke).toHaveBeenCalledWith('delete_alignment_section',expect.objectContaining({alignmentId:'3',sectionIndex:1,constructionPlans:expect.any(Object)}));
  fireEvent.click(screen.getByRole('button',{name:'削除を元に戻す'}));await waitFor(()=>expect(map.querySelectorAll('[data-delete-alignment]')).toHaveLength(2));
 });
