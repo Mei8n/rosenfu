@@ -346,71 +346,108 @@ fn preview_route_membership(
         .map_err(|_| "world state unavailable")?
         .preview_route_membership(start, segments, excluded_stations)
 }
-fn save_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn save_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
-        .join("prototype")
-        .join("world.rosenfu.json"))
-}
-fn autosave_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(save_path(app)?.with_file_name("world.autosave.rosenfu.json"))
+        .join("prototype"))
 }
 #[derive(serde::Serialize)]
 struct AutosaveStatus {
     available: bool,
 }
-#[tauri::command]
-fn autosave_status(
-    app: tauri::AppHandle,
-    editor: State<'_, Mutex<WorldEditor>>,
-) -> Result<AutosaveStatus, String> {
-    let available = editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .autosave_status(&autosave_path(&app)?)?;
-    Ok(AutosaveStatus { available })
+#[derive(serde::Serialize)]
+struct SaveResult {
+    saved: bool,
 }
 #[tauri::command]
-fn allow_autosave_replacement(
+fn list_save_slots(
     app: tauri::AppHandle,
     editor: State<'_, Mutex<WorldEditor>>,
-) -> Result<(), String> {
+) -> Result<session::SaveSlotList, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .allow_autosave_replacement(&autosave_path(&app)?)
+        .list_save_slots(&save_root(&app)?)
 }
 #[tauri::command]
-fn autosave_world(
-    app: tauri::AppHandle,
-    construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
-    view_state: Option<rosenfu_core::world::ViewState>,
-    editor: State<'_, Mutex<WorldEditor>>,
-) -> Result<SaveResult, String> {
-    let path = autosave_path(&app)?;
-    std::fs::create_dir_all(path.parent().ok_or("invalid autosave path")?)
-        .map_err(|e| e.to_string())?;
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .save_with_view(&path, construction_plans, view_state, true)?;
-    Ok(SaveResult { saved: true })
-}
-#[tauri::command]
-fn load_autosave(
-    app: tauri::AppHandle,
+fn create_new_world(
+    company_name: String,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .load_autosave(&autosave_path(&app)?, &save_path(&app)?)
+        .create_new_world(company_name)
 }
-#[derive(serde::Serialize)]
-struct SaveResult {
-    saved: bool,
+#[tauri::command]
+fn load_save_slot(
+    app: tauri::AppHandle,
+    slot_id: String,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .load_save_slot(&save_root(&app)?, slot_id)
+}
+#[tauri::command]
+fn save_world_as(
+    app: tauri::AppHandle,
+    name: String,
+    construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
+    view_state: Option<rosenfu_core::world::ViewState>,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<session::ManualSaveResult, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .save_world_as_slot(&save_root(&app)?, name, construction_plans, view_state)
+}
+#[tauri::command]
+fn autosave_status(
+    app: tauri::AppHandle,
+    slot_id: String,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<AutosaveStatus, String> {
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.require_active_slot(&slot_id)?;
+    let available = editor.slot_autosave_status(&save_root(&app)?)?;
+    Ok(AutosaveStatus { available })
+}
+#[tauri::command]
+fn allow_autosave_replacement(
+    app: tauri::AppHandle,
+    slot_id: String,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<(), String> {
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.require_active_slot(&slot_id)?;
+    let path = editor.active_autosave_path(&save_root(&app)?)?;
+    editor.allow_autosave_replacement(&path)
+}
+#[tauri::command]
+fn autosave_world(
+    app: tauri::AppHandle,
+    slot_id: String,
+    construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
+    view_state: Option<rosenfu_core::world::ViewState>,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<SaveResult, String> {
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.autosave_active_slot(&save_root(&app)?, &slot_id, construction_plans, view_state)?;
+    Ok(SaveResult { saved: true })
+}
+#[tauri::command]
+fn load_autosave(
+    app: tauri::AppHandle,
+    slot_id: String,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<WorldDraft, String> {
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.require_active_slot(&slot_id)?;
+    editor.load_slot_autosave(&save_root(&app)?)
 }
 #[tauri::command]
 fn save_world(
@@ -419,13 +456,10 @@ fn save_world(
     view_state: Option<rosenfu_core::world::ViewState>,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<session::ManualSaveResult, String> {
-    let path = save_path(&app)?;
-    std::fs::create_dir_all(path.parent().ok_or("invalid save path")?)
-        .map_err(|e| e.to_string())?;
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .request_manual_save(&path, construction_plans, view_state)
+        .save_active_slot(&save_root(&app)?, construction_plans, view_state)
 }
 #[tauri::command]
 fn confirm_manual_save(
@@ -435,10 +469,9 @@ fn confirm_manual_save(
     view_state: Option<rosenfu_core::world::ViewState>,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<session::ManualSaveResult, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .confirm_manual_save(&save_path(&app)?, &token, construction_plans, view_state)
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    let path = editor.active_save_path(&save_root(&app)?)?;
+    editor.confirm_manual_save(&path, &token, construction_plans, view_state)
 }
 #[tauri::command]
 fn cancel_manual_save(token: String, editor: State<'_, Mutex<WorldEditor>>) -> Result<(), String> {
@@ -448,6 +481,7 @@ fn cancel_manual_save(token: String, editor: State<'_, Mutex<WorldEditor>>) -> R
         .cancel_manual_save(&token);
     Ok(())
 }
+// Compatibility command for the previous fixed-file entry point. Never overwrite it.
 #[tauri::command]
 fn load_world(
     app: tauri::AppHandle,
@@ -456,7 +490,7 @@ fn load_world(
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .load(&save_path(&app)?)
+        .load_save_slot(&save_root(&app)?, "legacy".into())
 }
 fn main() {
     tauri::Builder::default()
@@ -486,6 +520,10 @@ fn main() {
             rename_company,
             save_planned_route,
             set_service_route_binding,
+            list_save_slots,
+            create_new_world,
+            load_save_slot,
+            save_world_as,
             save_world,
             confirm_manual_save,
             cancel_manual_save,

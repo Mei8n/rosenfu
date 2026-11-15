@@ -1,9 +1,12 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
+#[path = "session/save_slots.rs"]
+mod save_slots;
 use rosenfu_core::world::{
     AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, World, WorldDraft,
 };
+pub use save_slots::SaveSlotList;
 use std::path::{Path, PathBuf};
 
 // Prototype edit extent, not a national boundary or map-coverage guarantee.
@@ -97,6 +100,7 @@ pub struct WorldEditor {
     world: World,
     company: CompanyId,
     loaded_path: Option<PathBuf>,
+    active_slot_id: Option<String>,
     company_setup_required: bool,
     manual_version: Option<rosenfu_storage::FileVersion>,
     manual_repair_allowed: bool,
@@ -325,6 +329,7 @@ impl WorldEditor {
             world,
             company,
             loaded_path: None,
+            active_slot_id: None,
             company_setup_required: true,
             manual_version: None,
             manual_repair_allowed: false,
@@ -1398,6 +1403,7 @@ impl WorldEditor {
         self.company_setup_required = false;
         self.pending_manual_replacement = None;
         self.loaded_path = Some(path.to_owned());
+        self.active_slot_id = None;
         self.manual_version = Some(version);
         self.manual_repair_allowed = false;
         self.autosave_version = None;
