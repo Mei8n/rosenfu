@@ -43,4 +43,7 @@ test('App replaces schematic lanes with native shared geometry and preserves hit
  if(command==='engine_info')return {name:'Rosenfu',version:'turnout-test'};if(command==='world_snapshot')return world;if(command==='list_save_slots')return {active_slot_id:null,slots:[]};if(command==='preview_track_render_geometry')return {lanes:[{alignment_id:'3',section_index:0,lane_index:0,points:a.points},{alignment_id:'4',section_index:0,lane_index:0,points:b.points}],movements:[{movement:{from,to,point:{}},points},{movement:{from:to,to:from,point:{}},points:[...points].reverse()}]};throw Error(command);
  });render(<App/>);await screen.findByText(/turnout-test/);await waitFor(()=>expect(document.querySelectorAll('[data-track-movement]')).toHaveLength(1));expect(document.querySelectorAll('.alignment-hit')).toHaveLength(2);expect(document.querySelectorAll('[data-physical-alignment]')).toHaveLength(2);
  expect(invoke).toHaveBeenCalledWith('preview_track_render_geometry',{world});
+ const physical=document.querySelector('.physical-track-geometry')!,overlay=document.querySelector('.route-assignment-overlays')!;
+ expect(physical.compareDocumentPosition(overlay)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ expect(overlay.getAttribute('pointer-events')).toBe('none');
 });
