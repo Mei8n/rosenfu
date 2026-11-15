@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {buildTileRoadPath as build} from './ofmDerivedTilePath';
+import {buildTileRoadPath as build,coveredSourceSegments} from './ofmDerivedTilePath';
 import type {TileRoadLine} from './ofmBoundaryContinuations';
 const seam=139.76806640625;
 const line=(id:string,x:number,offset=0):TileRoadLine=>({id,revision:'v',z:14,x,y:6451,class:'minor',coordinates:[[seam-.0005,35.684+offset],[seam+.0005,35.684+offset]]});
@@ -19,4 +19,10 @@ describe('derived tile path',()=>{
  it('rejects different heights and ambiguous parallel lines',()=>{expect(()=>build([{...line('a',14552),layer:1},line('b',14553)],start,end)).toThrow();expect(()=>build([line('a',14552),line('b',14553),line('c',14553,.000002)],start,end)).toThrow();});
  it('rejects mixed revision and invalid pick',()=>{expect(()=>build([line('a',14552),{...line('b',14553),revision:'other'}],start,end)).toThrow('mixed-revision');expect(()=>build([line('a',14552),line('b',14553)],{...start,fraction:NaN},end)).toThrow('invalid-pick');});
  it('keeps zero offset straight without curvature artifacts',()=>{const r=build([line('a',14552),line('b',14553)],start,end);expect(r.points.every(p=>p[1]===35.684)).toBe(true);expect(r.joins[0].maxCorrectionMeters).toBe(0);});
+});
+
+ describe('covered source segment count',()=>{
+ it('counts fractional crossings in both directions',()=>{expect(coveredSourceSegments(.9,1.1)).toBe(2);expect(coveredSourceSegments(1.1,.9)).toBe(2);});
+ it('excludes zero-length integer endpoint segments',()=>{expect(coveredSourceSegments(0,1)).toBe(1);expect(coveredSourceSegments(1,0)).toBe(1);expect(coveredSourceSegments(1,1)).toBe(0);expect(coveredSourceSegments(1,2)).toBe(1);});
+ it('counts the strict 256 boundary',()=>{expect(coveredSourceSegments(.9,256)).toBe(256);expect(coveredSourceSegments(256,.9)).toBe(256);expect(coveredSourceSegments(.9,256.1)).toBe(257);expect(coveredSourceSegments(256.1,.9)).toBe(257);});
 });

@@ -4,6 +4,7 @@ export type TilePathPick={fragmentId:string;segmentIndex:number;fraction:number}
 export type TilePathSpan={fragmentId:string;revision:string;rawCoordinates:P[];attributes:Pick<TileRoadLine,'class'|'subclass'|'access'|'brunnel'|'layer'|'level'|'oneway'>;from:number;to:number};
 export type TilePathJoin={rule:'ofm_overlap_blend_v1';aId:string;bId:string;axis:0|1;fromAxis:number;toAxis:number;maxCorrectionMeters:number;points:P[];aRange:[number,number];bRange:[number,number]};
 export type DerivedTilePath={points:P[];orderedSpans:TilePathSpan[];joins:TilePathJoin[];geometryDerived:true;segmentLimit:256};
+export const coveredSourceSegments=(from:number,to:number)=>from===to?0:Math.ceil(Math.max(from,to))-Math.floor(Math.min(from,to));
 const fail=(reason:string):never=>{throw Error(reason);};
 const lat=(y:number)=>Math.atan(Math.sinh(Math.PI*(1-2*y/16384)))*180/Math.PI;
 const at=(l:TileRoadLine,pos:number):P=>{const i=Math.min(Math.floor(pos),l.coordinates.length-2),t=pos-i,a=l.coordinates[i],b=l.coordinates[i+1];return [a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];};
@@ -67,10 +68,10 @@ export function buildTileRoadPath(lines:readonly TileRoadLine[],start:TilePathPi
   if(before&&Math.sign(before.bRange[1]-before.bRange[0])!==direction)fail('overlapping-joins-or-pick');
   if(after&&Math.sign(after.aRange[1]-after.aRange[0])!==direction)fail('overlapping-joins-or-pick');
   const spanFrom=before?before.bRange[0]:from,spanTo=after?after.aRange[1]:to;
-  if(Math.abs(spanTo-spanFrom)>256)fail('source-segment-limit');
+  if(coveredSourceSegments(spanFrom,spanTo)>256)fail('source-segment-limit');
   spans.push({fragmentId:l.id,revision:l.revision,rawCoordinates:l.coordinates.map(p=>[...p]),attributes:{class:l.class,subclass:l.subclass,access:l.access,brunnel:l.brunnel,layer:l.layer,level:l.level,oneway:l.oneway},from:spanFrom,to:spanTo});
   append(slice(l,from,to));if(after)append(after.points);
  }
- if(spans.reduce((n,s)=>n+Math.ceil(Math.abs(s.to-s.from)),0)>256)fail('source-segment-limit');
+ if(spans.reduce((n,s)=>n+coveredSourceSegments(s.from,s.to),0)>256)fail('source-segment-limit');
  return {points,orderedSpans:spans,joins,geometryDerived:true,segmentLimit:256};
 }
