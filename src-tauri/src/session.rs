@@ -1,4 +1,7 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
+#[path = "session/environment.rs"]
+mod environment;
+pub use environment::ConstructionEnvironmentPreview;
 #[path = "session/deletion.rs"]
 mod deletion;
 pub use deletion::AlignmentSectionSelection;
@@ -412,6 +415,7 @@ impl WorldEditor {
             provenance,
             track_type,
         )?;
+        candidate.check_environment_changes(self.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -480,6 +484,7 @@ impl WorldEditor {
                 }
                 _ => e.to_string(),
             })?;
+        candidate.check_environment_changes(self.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -500,6 +505,7 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.build_alignment_typed_unchecked(name, points, track_type)?;
+        candidate.check_environment_changes(self.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -971,6 +977,7 @@ impl WorldEditor {
                 )?;
             }
         }
+        candidate.check_environment_changes(self.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         if has_junction {
             candidate.deleted_alignment = Some((before_junction, candidate.snapshot()));
@@ -1882,7 +1889,7 @@ impl WorldEditor {
 mod tests {
     use super::*;
     fn fresh_company(name: &str) -> WorldEditor {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor.rename_company(name.into()).unwrap();
         editor
     }
@@ -1892,7 +1899,7 @@ mod tests {
         result.replacement_required.unwrap().token
     }
     pub(super) fn alignment_fixture() -> (WorldEditor, AlignmentId, [StationId; 3]) {
-        let mut e = WorldEditor::new();
+        let mut e = WorldEditor::new_with_test_environment();
         let a = e
             .world
             .build_alignment(
@@ -2034,7 +2041,7 @@ mod tests {
         assert_eq!(two.snapshot(), before);
         assert_eq!(std::fs::read(&path).unwrap(), disk);
         // A loaded session never gets a replacement offer when another writer updates it.
-        let mut loaded = WorldEditor::new();
+        let mut loaded = WorldEditor::new_with_test_environment();
         loaded.load(&path).unwrap();
         one.rename_company("changed".into()).unwrap();
         one.save(&path).unwrap();
@@ -2054,7 +2061,7 @@ mod tests {
     fn new_manual_save_rejects_setup_corrupt_and_future_schema_without_touching_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.json");
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         assert!(editor.request_manual_save(&path, None, None).is_err());
         assert!(!path.exists());
         editor.rename_company("New".into()).unwrap();
@@ -2080,11 +2087,11 @@ mod tests {
             longitude: 139.8,
             zoom: 17.25,
         };
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor
             .save_with_view(&manual, None, Some(view), false)
             .unwrap();
-        let mut restored = WorldEditor::new();
+        let mut restored = WorldEditor::new_with_test_environment();
         assert_eq!(restored.load(&manual).unwrap().view_state, Some(view));
         let bytes = std::fs::read(&manual).unwrap();
         let before = editor.snapshot();
@@ -2135,12 +2142,12 @@ mod tests {
     fn plan_save_conflict_does_not_apply_new_draft_or_replace_disk() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.json");
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor
             .save_with_plans(&path, Some(draft_plans()), false)
             .unwrap();
         let before = editor.snapshot();
-        let mut other = WorldEditor::new();
+        let mut other = WorldEditor::new_with_test_environment();
         other.load(&path).unwrap();
         other.rename_company("External writer".into()).unwrap();
         other.save(&path).unwrap();
@@ -2156,11 +2163,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manual = dir.path().join("world.json");
         let auto = dir.path().join("auto.json");
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor
             .save_with_plans(&manual, Some(draft_plans()), false)
             .unwrap();
-        let mut restored = WorldEditor::new();
+        let mut restored = WorldEditor::new_with_test_environment();
         assert_eq!(
             restored.load(&manual).unwrap().construction_plans,
             Some(draft_plans())
@@ -2200,8 +2207,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let auto = dir.path().join("auto.json");
         let manual = dir.path().join("manual.json");
-        WorldEditor::new().autosave(&auto).unwrap();
-        let mut restored = WorldEditor::new();
+        WorldEditor::new_with_test_environment()
+            .autosave(&auto)
+            .unwrap();
+        let mut restored = WorldEditor::new_with_test_environment();
         restored.load_autosave(&auto, &manual).unwrap();
         assert!(restored.autosave_status(&auto).unwrap());
         restored.rename_company("After restore".into()).unwrap();
@@ -2219,12 +2228,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manual = dir.path().join("manual.json");
         let auto = dir.path().join("auto.json");
-        let mut original = WorldEditor::new();
+        let mut original = WorldEditor::new_with_test_environment();
         original.save(&manual).unwrap();
         let old = std::fs::read(&manual).unwrap();
         original.rename_company("Recovered".into()).unwrap();
         original.autosave(&auto).unwrap();
-        let mut restored = WorldEditor::new();
+        let mut restored = WorldEditor::new_with_test_environment();
         restored.load_autosave(&auto, &manual).unwrap();
         assert!(!restored.manual_repair_allowed);
         restored.save(&manual).unwrap();
@@ -2243,7 +2252,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manual = dir.path().join("manual.json");
         let auto = dir.path().join("auto.json");
-        WorldEditor::new().autosave(&auto).unwrap();
+        WorldEditor::new_with_test_environment()
+            .autosave(&auto)
+            .unwrap();
         let bytes = std::fs::read_to_string(&auto).unwrap();
         let newer = bytes.replace(
             &format!("\"schema_version\": {}", rosenfu_storage::SCHEMA_VERSION),
@@ -2251,7 +2262,7 @@ mod tests {
         );
         assert_ne!(bytes, newer);
         std::fs::write(&manual, &newer).unwrap();
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let before = editor.snapshot();
         assert!(editor.load_autosave(&auto, &manual).is_err());
         assert_eq!(editor.snapshot(), before);
@@ -2263,7 +2274,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manual = dir.path().join("manual.json");
         let auto = dir.path().join("auto.json");
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor.save(&manual).unwrap();
         let before = editor.snapshot();
         assert!(editor.load(&auto).is_err());
@@ -2281,7 +2292,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let auto = dir.path().join("auto.json");
         std::fs::write(&auto, b"broken old save").unwrap();
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         assert!(editor.autosave_status(&auto).unwrap());
         editor.allow_autosave_replacement(&auto).unwrap();
         std::fs::write(&auto, b"later save").unwrap();
@@ -2299,9 +2310,9 @@ mod tests {
     fn save_conflicts_and_external_deletion_do_not_replace_session_or_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("manual.json");
-        let mut first = WorldEditor::new();
+        let mut first = WorldEditor::new_with_test_environment();
         first.save(&path).unwrap();
-        let mut second = WorldEditor::new();
+        let mut second = WorldEditor::new_with_test_environment();
         second.load(&path).unwrap();
         second.rename_company("Other writer".into()).unwrap();
         second.save(&path).unwrap();
@@ -2318,9 +2329,9 @@ mod tests {
     fn autosave_replacement_requires_fresh_observation_and_survives_no_conflict() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auto.json");
-        let mut first = WorldEditor::new();
+        let mut first = WorldEditor::new_with_test_environment();
         first.autosave(&path).unwrap();
-        let mut second = WorldEditor::new();
+        let mut second = WorldEditor::new_with_test_environment();
         assert!(second.autosave(&path).is_err());
         assert!(second.allow_autosave_replacement(&path).is_err());
         assert!(second.autosave_status(&path).unwrap());
@@ -2346,13 +2357,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manual = dir.path().join("manual.json");
         let auto = dir.path().join("auto.json");
-        WorldEditor::new().autosave(&auto).unwrap();
+        WorldEditor::new_with_test_environment()
+            .autosave(&auto)
+            .unwrap();
         for bytes in [
             b"broken JSON".to_vec(),
             vec![b'x'; rosenfu_storage::MAX_SAVE_BYTES + 1],
         ] {
             std::fs::write(&manual, &bytes).unwrap();
-            let mut restored = WorldEditor::new();
+            let mut restored = WorldEditor::new_with_test_environment();
             restored.load_autosave(&auto, &manual).unwrap();
             assert_eq!(std::fs::read(&manual).unwrap(), bytes);
             restored.save(&manual).unwrap();
@@ -2364,7 +2377,7 @@ mod tests {
     }
     #[test]
     fn alignment_deletion_is_atomic_reversible_and_saved() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor
             .build_alignment(
                 "A".into(),
@@ -2392,7 +2405,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("deleted.json");
         editor.save(&path).unwrap();
-        let mut restored = WorldEditor::new();
+        let mut restored = WorldEditor::new_with_test_environment();
         assert!(restored.load(&path).unwrap().alignments.is_empty());
         editor.add_station("S".into(), 35.0, 139.0).unwrap();
         let edited = editor.snapshot();
@@ -2401,7 +2414,7 @@ mod tests {
     }
     #[test]
     fn alignment_deletion_refuses_stations_and_plan_references() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor
             .build_alignment(
                 "A".into(),
@@ -2434,7 +2447,7 @@ mod tests {
     }
     #[test]
     fn oversized_edits_preserve_world_and_setup_state() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut huge = editor.snapshot();
         huge.players[0].name = "x".repeat(rosenfu_storage::MAX_SAVE_BYTES);
         editor.world.replace(huge).unwrap();
@@ -2464,11 +2477,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manual = dir.path().join("world.json");
         let auto = dir.path().join("world.autosave.json");
-        let mut original = WorldEditor::new();
+        let mut original = WorldEditor::new_with_test_environment();
         original.rename_company("手動保存の会社".into()).unwrap();
         original.save(&manual).unwrap();
         let manual_bytes = std::fs::read(&manual).unwrap();
-        let mut fresh = WorldEditor::new();
+        let mut fresh = WorldEditor::new_with_test_environment();
         fresh.rename_company("新しい会社".into()).unwrap();
         fresh.autosave(&auto).unwrap();
         assert!(fresh.loaded_path.is_none());
@@ -2494,7 +2507,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manual = dir.path().join("world.json");
         let auto = dir.path().join("world.autosave.json");
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor.rename_company("保存済み".into()).unwrap();
         editor.save(&manual).unwrap();
         let manual_bytes = std::fs::read(&manual).unwrap();
@@ -2504,7 +2517,7 @@ mod tests {
         editor.autosave(&auto).unwrap();
         let expected = editor.snapshot();
         let auto_bytes = std::fs::read(&auto).unwrap();
-        let mut restored = WorldEditor::new();
+        let mut restored = WorldEditor::new_with_test_environment();
         assert_eq!(restored.load_autosave(&auto, &manual).unwrap(), expected);
         assert!(!restored.company_setup_required());
         assert_eq!(restored.loaded_path.as_deref(), Some(manual.as_path()));
@@ -2531,7 +2544,7 @@ mod tests {
     }
     #[test]
     fn company_setup_tracks_successful_rename_or_load_only() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         assert!(editor.company_setup_required());
         assert!(editor.rename_company(" ".into()).is_err());
         assert!(editor.company_setup_required());
@@ -2540,7 +2553,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("setup.json");
         editor.save(&path).unwrap();
-        let mut fresh = WorldEditor::new();
+        let mut fresh = WorldEditor::new_with_test_environment();
         assert!(fresh.load(&dir.path().join("missing.json")).is_err());
         assert!(fresh.company_setup_required());
         fresh.load(&path).unwrap();
@@ -2571,7 +2584,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.json");
         e.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), renamed);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            renamed
+        );
     }
     #[test]
     fn invalid_company_or_route_edit_does_not_change_world() {
@@ -2611,7 +2629,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.json");
         e.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), before);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            before
+        );
     }
     #[test]
     fn self_loop_duplicate_and_missing_station_do_not_mutate_or_allocate() {
@@ -2632,11 +2655,11 @@ mod tests {
     fn place_save_and_reload_preserve_stations_and_next_id() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.json");
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor.add_station("中央".into(), 35.675, 139.75).unwrap();
         editor.save(&path).unwrap();
         let expected = editor.snapshot();
-        let mut restored = WorldEditor::new();
+        let mut restored = WorldEditor::new_with_test_environment();
         assert_eq!(restored.load(&path).unwrap(), expected);
         restored.add_station("東".into(), 35.675, 139.8).unwrap();
         restored.save(&path).unwrap();
@@ -2650,7 +2673,7 @@ mod tests {
     }
     #[test]
     fn invalid_placement_and_load_leave_current_world_unchanged() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let before = editor.snapshot();
         assert!(editor.add_station(" ".into(), 35.67, 139.75).is_err());
         assert!(editor.add_station("外".into(), 0.0, 0.0).is_err());
@@ -2674,14 +2697,14 @@ mod tests {
         let c = outside.add_company(p, "Company".into()).unwrap();
         outside.add_station(c, "Outside".into(), 0.0, 0.0).unwrap();
         rosenfu_storage::create_world(&path, &outside).unwrap();
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let before = editor.snapshot();
         assert!(editor.load(&path).is_err());
         assert_eq!(editor.snapshot(), before);
     }
     #[test]
     fn distant_regions_roundtrip_without_changing_world_coordinates_or_schema() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         for (name, lat, lon) in [
             ("札幌", 43.0687, 141.3508),
             ("大阪", 34.7025, 135.4959),
@@ -2695,7 +2718,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("regions.json");
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), expected);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            expected
+        );
         for (lat, lon) in [
             (19.99, 130.0),
             (46.01, 130.0),
@@ -2739,7 +2767,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("w.json");
         e.save(&path).unwrap();
-        let loaded = WorldEditor::new().load(&path).unwrap();
+        let loaded = WorldEditor::new_with_test_environment()
+            .load(&path)
+            .unwrap();
         assert_eq!(loaded.services, services.services);
         assert_eq!(loaded.service_paths, services.service_paths);
     }
@@ -2800,7 +2830,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.json");
         e.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), deleted);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            deleted
+        );
     }
     #[test]
     fn referenced_deletions_and_invalid_station_edits_are_atomic() {
@@ -2828,10 +2863,10 @@ mod tests {
     fn fresh_session_cannot_overwrite_existing_save() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.json");
-        let mut first = WorldEditor::new();
+        let mut first = WorldEditor::new_with_test_environment();
         first.save(&path).unwrap();
         let original = std::fs::read(&path).unwrap();
-        let mut other = WorldEditor::new();
+        let mut other = WorldEditor::new_with_test_environment();
         assert!(other.save(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(!rosenfu_storage::backup_path(&path).exists());
@@ -2839,7 +2874,7 @@ mod tests {
     #[test]
     fn planned_routes_persist_membership_and_reject_legacy_overwrite_and_deletion() {
         use rosenfu_core::world::RouteSegment;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let a = editor
             .world
             .build_alignment(
@@ -2909,7 +2944,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("planned.json");
         editor.save(&path).unwrap();
-        let mut restored = WorldEditor::new();
+        let mut restored = WorldEditor::new_with_test_environment();
         assert_eq!(restored.load(&path).unwrap(), before);
     }
     #[test]
@@ -3056,7 +3091,7 @@ mod tests {
     #[test]
     fn new_service_paths_reject_old_edit_and_deletion_and_roundtrip() {
         use rosenfu_core::world::{RouteSegment, StationOccurrenceRef};
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let a = editor
             .world
             .build_alignment(
@@ -3117,7 +3152,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("new-path.json");
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            editor.snapshot()
+        );
         let before = editor.snapshot();
         assert!(editor.delete_alignment(a).is_err());
         assert_eq!(editor.snapshot(), before);
@@ -3160,7 +3200,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("edited-service.json");
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), updated);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            updated
+        );
         editor
             .update_service_path(id, "Local".into(), stops)
             .unwrap();
@@ -3193,14 +3238,19 @@ mod tests {
             .is_err());
         assert_eq!(editor.snapshot(), replaced);
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), replaced);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            replaced
+        );
     }
     #[test]
     fn reference_geometry_and_provenance_are_atomic_and_roundtrip() {
         use rosenfu_core::world::{
             AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
         };
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let gh = "a".repeat(64);
         let sh = "b".repeat(64);
         let key = format!("{gh}:{sh}");
@@ -3272,7 +3322,7 @@ mod tests {
                 .unwrap()
         );
         // Use a fresh editor for the original single-path compatibility checks.
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let before = editor.snapshot();
         let mut bad = source.clone();
         bad.source_date = Some("x".repeat(65));
@@ -3322,7 +3372,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provenance.json");
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            editor.snapshot()
+        );
         // Reference-followed extension shares the original alignment and is atomic
         // with later paths, planned stations, provenance, and allocation state.
         let id = editor.snapshot().alignments[0].id;
@@ -3367,7 +3422,12 @@ mod tests {
             before.alignment_provenance.len() + 1
         );
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            editor.snapshot()
+        );
         // Oversized serializable world must not gain partial geometry/metadata/IDs.
         let mut huge = editor.snapshot();
         huge.companies[0].name = "x".repeat(rosenfu_storage::MAX_SAVE_BYTES);
@@ -3381,7 +3441,7 @@ mod tests {
     #[test]
     fn selected_track_types_roundtrip_through_editor_save_and_load() {
         use rosenfu_core::world::TrackType;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let points = vec![
             GeoPoint {
                 latitude: 35.0,
@@ -3401,7 +3461,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("typed.json");
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            editor.snapshot()
+        );
         let before = editor.snapshot();
         assert!(editor
             .build_alignment_typed("Bad".into(), vec![], TrackType::Tram)
@@ -3433,7 +3498,7 @@ mod tests {
     #[test]
     fn planned_alignment_and_stations_publish_together_and_roundtrip() {
         use rosenfu_core::world::TrackType;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let snapshot = editor
             .build_alignment_with_stations(
                 "計画線".into(),
@@ -3454,13 +3519,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("planned-stations.json");
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), snapshot);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            snapshot
+        );
     }
 
     #[test]
     fn later_invalid_planned_station_does_not_publish_or_consume_ids() {
         use rosenfu_core::world::TrackType;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let before = editor.snapshot();
         for invalid in [
             PlannedStation {
@@ -3498,7 +3568,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let expected = WorldEditor::new()
+        let expected = WorldEditor::new_with_test_environment()
             .build_alignment_with_stations(
                 "計画線".into(),
                 planned_alignment_points(),
@@ -3513,7 +3583,7 @@ mod tests {
     #[test]
     fn invalid_alignment_and_unsaveable_batch_are_atomic() {
         use rosenfu_core::world::TrackType;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let before = editor.snapshot();
         assert!(editor
             .build_alignment_with_stations(
@@ -3544,14 +3614,14 @@ mod tests {
     #[test]
     fn empty_station_batch_matches_existing_alignment_command() {
         use rosenfu_core::world::TrackType;
-        let expected = WorldEditor::new()
+        let expected = WorldEditor::new_with_test_environment()
             .build_alignment_typed(
                 "計画線".into(),
                 planned_alignment_points(),
                 TrackType::Normal,
             )
             .unwrap();
-        let actual = WorldEditor::new()
+        let actual = WorldEditor::new_with_test_environment()
             .build_alignment_with_stations(
                 "計画線".into(),
                 planned_alignment_points(),
@@ -3573,7 +3643,7 @@ mod tests {
     }
     #[test]
     fn crossing_station_group_rename_delete_save_and_undo_preserve_platform_ids() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         for (lat, lon) in [(0.0, 0.01), (0.01, 0.0), (0.01, 0.01)] {
             editor
                 .build_plan(vec![PlannedAlignment {
@@ -3624,7 +3694,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("groups.json");
         editor.save(&path).unwrap();
-        let mut loaded = WorldEditor::new();
+        let mut loaded = WorldEditor::new_with_test_environment();
         assert_eq!(
             loaded.load(&path).unwrap().station_groups,
             restored.station_groups
@@ -3636,7 +3706,7 @@ mod tests {
     }
     #[test]
     fn overlapping_planned_station_commit_is_atomic() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut base = planned_path(0.0);
         base.stations.clear();
         let before = editor.build_plan(vec![base]).unwrap();
@@ -3668,7 +3738,7 @@ mod tests {
     }
     #[test]
     fn station_only_plan_builds_multiple_stations_and_mixed_plan_is_atomic() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut base = planned_path(0.0);
         base.stations.clear();
         let before = editor.build_plan(vec![base]).unwrap();
@@ -3703,7 +3773,7 @@ mod tests {
     }
     #[test]
     fn station_planned_on_existing_line_keeps_location_when_same_plan_extends_start() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut base = planned_path(0.0);
         base.stations.clear();
         let before = editor.build_plan(vec![base]).unwrap();
@@ -3749,7 +3819,7 @@ mod tests {
     #[test]
     fn construction_infrastructure_is_physical_and_invalid_batch_is_atomic() {
         use rosenfu_core::world::{InfrastructureLevel, SectionInfrastructure};
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut path = planned_path(0.);
         path.infrastructure = SectionInfrastructure {
             track_count: 4,
@@ -3781,7 +3851,7 @@ mod tests {
     #[test]
     fn sloped_plan_and_rising_extension_are_atomic_and_preserve_old_track() {
         use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel};
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut flat = planned_path(0.);
         flat.stations.clear();
         let built = editor.build_plan(vec![flat]).unwrap();
@@ -3834,7 +3904,7 @@ mod tests {
     #[test]
     fn per_anchor_heights_preview_build_flat_platform_and_repeated_split() {
         use rosenfu_core::world::InfrastructureLevel;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let request = || {
             let mut path = planned_path(0.);
             path.stations.clear();
@@ -3932,7 +4002,7 @@ mod tests {
         use rosenfu_core::world::{
             AlignmentEndpoint, ConstructionJunctionSource, InfrastructureLevel, TrackType,
         };
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let make = |a, b| {
             vec![
                 GeoPoint {
@@ -4007,7 +4077,7 @@ mod tests {
     #[test]
     fn preview_and_build_share_destination_height_grade_and_tangent_validation() {
         use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel};
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut source = planned_path(0.);
         source.stations.clear();
         source.design_speed_kmh = Some(160.);
@@ -4068,7 +4138,7 @@ mod tests {
         let span = after.alignments.last().unwrap();
         assert_eq!(span.endpoint_height_m(AlignmentEndpoint::End), 6.);
         assert_eq!(span.effective_design_speed_kmh(), 160.);
-        let mut second = WorldEditor::new();
+        let mut second = WorldEditor::new_with_test_environment();
         second.world = World::new(before.clone()).unwrap();
         second.company = editor.company;
         let invalid = || {
@@ -4094,7 +4164,7 @@ mod tests {
         use rosenfu_core::world::{
             AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
         };
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let gh = "a".repeat(64);
         let sh = "b".repeat(64);
         let key = format!("{gh}:{sh}");
@@ -4179,7 +4249,7 @@ mod tests {
     #[test]
     fn ambiguous_repeated_geometry_split_batch_is_atomic() {
         use rosenfu_core::world::ConstructionJunctionSource;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut flat = planned_path(0.);
         flat.stations.clear();
         flat.points = [139.0, 139.01, 139.02, 139.01, 139.03]
@@ -4231,7 +4301,7 @@ mod tests {
     fn multiple_junctions_from_one_observed_source_commit_and_undo_together() {
         use rosenfu_core::world::ConstructionJunctionSource;
         for fractions in [[0.25, 0.75], [0.75, 0.25]] {
-            let mut editor = WorldEditor::new();
+            let mut editor = WorldEditor::new_with_test_environment();
             let mut flat = planned_path(0.);
             flat.stations.clear();
             let built = editor.build_plan(vec![flat]).unwrap();
@@ -4278,7 +4348,7 @@ mod tests {
     #[test]
     fn arbitrary_position_junction_commit_undo_and_stale_source_are_atomic() {
         use rosenfu_core::world::ConstructionJunctionSource;
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut flat = planned_path(0.);
         flat.stations.clear();
         let built = editor.build_plan(vec![flat]).unwrap();
@@ -4332,7 +4402,7 @@ mod tests {
     #[test]
     fn reverse_interior_turnout_uses_suffix_as_stem() {
         use rosenfu_core::world::{AlignmentEndpoint, ConstructionJunctionSource};
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut flat = planned_path(0.);
         flat.stations.clear();
         let built = editor.build_plan(vec![flat]).unwrap();
@@ -4375,7 +4445,7 @@ mod tests {
         use rosenfu_core::world::{
             AlignmentEndpoint, ConstructionJunctionSource, InfrastructureLevel,
         };
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut ramp = planned_path(0.);
         ramp.stations.clear();
         ramp.start_level = Some(InfrastructureLevel::Ground);
@@ -4445,7 +4515,7 @@ mod tests {
 
     #[test]
     fn independent_paths_build_together_and_preserve_existing_world() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let before = editor.build_plan(vec![planned_path(0.0)]).unwrap();
         let result = editor
             .build_plan(vec![planned_path(0.1), planned_path(0.2)])
@@ -4460,12 +4530,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("multi-path.json");
         editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), result);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&path)
+                .unwrap(),
+            result
+        );
     }
 
     #[test]
     fn later_path_failure_rolls_back_entire_plan_and_ids() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         editor.build_plan(vec![planned_path(0.0)]).unwrap();
         let before = editor.snapshot();
         let mut control = editor.clone();
@@ -4500,13 +4575,15 @@ mod tests {
         });
         let alignment: PlannedAlignment = serde_json::from_value(payload).unwrap();
         assert!(alignment.reference.is_none());
-        assert!(WorldEditor::new().build_plan(vec![alignment]).is_ok());
+        assert!(WorldEditor::new_with_test_environment()
+            .build_plan(vec![alignment])
+            .is_ok());
     }
     #[test]
     fn extension_batch_is_atomic_and_preserves_old_station_locations() {
         use rosenfu_core::world::AlignmentEndpoint;
         for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
-            let mut editor = WorldEditor::new();
+            let mut editor = WorldEditor::new_with_test_environment();
             let before = editor.build_plan(vec![planned_path(0.0)]).unwrap();
             let old = &before.alignments[0];
             let anchor = if endpoint == AlignmentEndpoint::Start {
@@ -4572,14 +4649,19 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("extension.rosenfu");
             editor.save(&path).unwrap();
-            assert_eq!(WorldEditor::new().load(&path).unwrap(), after);
+            assert_eq!(
+                WorldEditor::new_with_test_environment()
+                    .load(&path)
+                    .unwrap(),
+                after
+            );
         }
     }
     #[test]
     fn in_service_extension_roundtrips_and_batch_failure_is_atomic() {
         use rosenfu_core::world::{AlignmentEndpoint, RouteSegment};
         for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
-            let mut editor = WorldEditor::new();
+            let mut editor = WorldEditor::new_with_test_environment();
             let initial = editor.build_plan(vec![planned_path(0.0)]).unwrap();
             let a = initial.alignments[0].id;
             editor
@@ -4659,7 +4741,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("service-extension.rosenfu");
             editor.save(&path).unwrap();
-            let mut loaded = WorldEditor::new();
+            let mut loaded = WorldEditor::new_with_test_environment();
             let mut restored = loaded.load(&path).unwrap();
             // JSON floating-point parsing may differ by one ULP; geometry and
             // references remain exact, while ratios must preserve metre positions.
@@ -4683,7 +4765,7 @@ mod tests {
     }
     #[test]
     fn planned_design_speed_validates_atomically_and_extension_inherits() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let mut path = planned_path(0.0);
         path.design_speed_kmh = Some(95.0);
         let built = editor.build_plan(vec![path]).unwrap();
@@ -4746,7 +4828,7 @@ mod endpoint_join_tests {
     fn endpoint_join_is_atomic_in_all_orientations_and_survives_save() {
         for source_end in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
             for target_end in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
-                let mut editor = WorldEditor::new();
+                let mut editor = WorldEditor::new_with_test_environment();
                 let mut a_points = vec![p(139.0), p(139.01)];
                 let mut b_points = vec![p(139.02), p(139.03)];
                 if source_end == AlignmentEndpoint::Start {
@@ -4850,13 +4932,18 @@ mod endpoint_join_tests {
                 let dir = tempfile::tempdir().unwrap();
                 let file = dir.path().join("joined.rosenfu");
                 editor.save(&file).unwrap();
-                assert_eq!(WorldEditor::new().load(&file).unwrap(), after);
+                assert_eq!(
+                    WorldEditor::new_with_test_environment()
+                        .load(&file)
+                        .unwrap(),
+                    after
+                );
             }
         }
     }
     #[test]
     fn moved_or_missing_target_cannot_publish_the_extension() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let a = editor
             .world
             .build_alignment(editor.company, "A".into(), vec![p(139.), p(139.01)])
@@ -4894,7 +4981,7 @@ mod endpoint_join_tests {
     }
     #[test]
     fn close_same_alignment_gap_atomically_and_restore_saved_ring() {
-        let mut editor = WorldEditor::new();
+        let mut editor = WorldEditor::new_with_test_environment();
         let point = |degrees: f64| GeoPoint {
             latitude: 35. + degrees.to_radians().sin() * 0.01,
             longitude: 139. + degrees.to_radians().cos() * 0.01,
@@ -4952,10 +5039,39 @@ mod endpoint_join_tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ring.rosenfu");
         editor.save(&file).unwrap();
-        assert_eq!(WorldEditor::new().load(&file).unwrap(), after);
+        assert_eq!(
+            WorldEditor::new_with_test_environment()
+                .load(&file)
+                .unwrap(),
+            after
+        );
     }
 }
 
 #[cfg(test)]
 #[path = "session_binding_review_tests.rs"]
 mod binding_review_tests;
+
+#[cfg(test)]
+impl WorldEditor {
+    // Existing editor tests use an explicit synthetic empty-map fixture. Production
+    // new worlds keep environment=None and every construction command rejects it.
+    fn new_with_test_environment() -> Self {
+        let mut editor = Self::new();
+        let mut draft = editor.snapshot();
+        let bounds = rosenfu_core::world::CoverageBounds {
+            west: -180.,
+            east: 180.,
+            south: -85.,
+            north: 85.,
+        };
+        draft.environment = Some(rosenfu_core::world::EnvironmentSnapshot {
+            revision: "test-only-empty-map".into(),
+            road_coverage: vec![bounds],
+            water_coverage: vec![bounds],
+            ..Default::default()
+        });
+        editor.world.replace(draft).unwrap();
+        editor
+    }
+}

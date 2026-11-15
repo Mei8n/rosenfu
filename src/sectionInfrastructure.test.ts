@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {infrastructureSections,endpointInfrastructure,schematicTrackPaths,LEVEL_LABELS} from './sectionInfrastructure';
-import {removeConstructionPlan,emptyConstructionPlans} from './constructionPlans';
+import {removeConstructionPlan,emptyConstructionPlans,constructionPlanFingerprint} from './constructionPlans';
 describe('physical section infrastructure',()=>{
  const points=[{latitude:35,longitude:139},{latitude:35,longitude:139.01},{latitude:35,longitude:139.02}];
  it('maps each interval without replacing geometry and preserves seven levels',()=>{
@@ -17,4 +17,12 @@ describe('physical section infrastructure',()=>{
   base.parkedPaths=[{id:2,planId:2,name:'b',points,line:points,redo:[],extension:null,trackType:'normal',designSpeedKmh:120,roadFollowing:false,infrastructure:{track_count:4,level:'underground_3'}}];
   expect(removeConstructionPlan(base,1).infrastructure).toEqual({track_count:4,level:'underground_3'});
  });
+});
+
+it('normalizes struct key order and default infrastructure for clean saves',()=>{
+ const empty=emptyConstructionPlans();
+ expect(constructionPlanFingerprint({...empty,infrastructure:{track_count:1,level:'ground'}})).toBe(constructionPlanFingerprint(empty));
+ const changed={...empty,infrastructure:{track_count:2 as const,level:'elevated' as const}};
+ expect(constructionPlanFingerprint({infrastructure:changed.infrastructure,...empty})).toBe(constructionPlanFingerprint(changed));
+ expect(constructionPlanFingerprint(changed)).not.toBe(constructionPlanFingerprint(empty));
 });
