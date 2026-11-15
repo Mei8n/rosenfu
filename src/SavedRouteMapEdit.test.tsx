@@ -9,7 +9,7 @@ afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 const stations=[{id:'3',owner:'2',name:'東',latitude:35.675,longitude:139.75},{id:'4',owner:'2',name:'西',latitude:35.675,longitude:139.76}];
 const route={id:'r',owner:'2',name:'既存路線',start:'3',tracks:['t']};
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations,tracks:[{id:'t',owner:'2',from:'3',to:'4'}],routes:[route],services:[]};
-const path={stations:['4','3'],segments:[{kind:'track',track_id:'t'}],track_only:true};
+const path={stations:['4','3'],segments:[{kind:'alignment',alignment_id:'a',from:'4',to:'3'}]};
 async function setup(fail=false){
  vi.mocked(invoke).mockImplementation(async(command)=>{
   if(command==='engine_info')return {name:'Rosenfu',version:'saved-route-map-test'};

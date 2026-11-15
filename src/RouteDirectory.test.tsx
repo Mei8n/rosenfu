@@ -11,7 +11,7 @@ const world={routes:[route],tracks:[],alignments:[{id:'l',points}],station_place
 test('route distance follows physical geometry and missing geometry is unknown',()=>{
  expect(routeLength(route,world)).toBeCloseTo(alignmentLength(points)*.8);
  expect(routeLength(route,{...world,alignments:[]})).toBeNull();
- expect(routeLength({...route,tracks:['t']},{...world,route_paths:[],station_placements:[],tracks:[{id:'t',from:'a',to:'b'}]})).toBeNull();
+ expect(routeLength(route,{...world,route_paths:[]})).toBeNull();
 });
 test('directory exposes real distance, no fabricated simulation metrics and edit/new actions',()=>{
  const choose=vi.fn();render(<RouteDirectory world={world} selected={null} enabled onChoose={choose}/>);

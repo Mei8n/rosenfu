@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type {EndpointConnection} from "./destinationJoin";
-export type Segment = { kind: "track"; track_id: string } | { kind: "alignment"; alignment_id: string; from: string; to: string } | {kind:"connected_alignments";from:string;to:string;connections:EndpointConnection[]};
-export type Candidate = { stations: string[]; segments: Segment[]; track_only: boolean };
+export type Segment = { kind: "alignment"; alignment_id: string; from: string; to: string } | {kind:"connected_alignments";from:string;to:string;connections:EndpointConnection[]};
+export type Candidate = { stations: string[]; segments: Segment[] };
 export type Candidates = { shortest_candidate_index?: number | null; status: "no_path" | "unique" | "ambiguous" | "incomplete"; candidates: Candidate[]; truncated: boolean };
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };
 type Props = {
@@ -18,12 +18,11 @@ type Props = {
   onDirty?: (dirty: boolean) => void;
   enabled: boolean;
   canApply: boolean;
-  onApply: (start: string, tracks: string[]) => void;
   onSave?: (name: string, membership: Membership) => Promise<void>;
 };
 
 /** Candidate planner; optional persistence callback saves physical path and membership separately. */
-export function RouteCandidatePreview({ editRoute, onCancelEdit, startSequenceKey, mapPickTarget, onMapPick, stations, worldVersion, resetKey, onDirty, enabled, canApply, onApply, onSave }: Props) {
+export function RouteCandidatePreview({ editRoute, onCancelEdit, startSequenceKey, mapPickTarget, onMapPick, stations, worldVersion, resetKey, onDirty, enabled, canApply, onSave }: Props) {
   const [name, setName] = useState("新路線");
   const [saving, setSaving] = useState(false);
   const [start, setStart] = useState("");
@@ -115,8 +114,6 @@ export function RouteCandidatePreview({ editRoute, onCancelEdit, startSequenceKe
     finally { if (token === generation.current) { pending.current = false; setLoading(false); } }
   }
   const candidate = chosen === null ? null : result?.candidates[chosen];
-  const importable = membership && membership.path.track_only && membership.excluded_stations.length === 0
-    && membership.path.segments.every(segment => segment.kind === "track");
   return <section className="route-candidate-preview" aria-label="起終点から経路候補">
     <h4>{editRoute ? `経路を選び直す: ${editRoute.name}` : "起終点から経路候補"}</h4>
     {onCancelEdit && <button type="button" className="secondary" disabled={saving} onClick={()=>{discard();onCancelEdit();}}>経路変更を取り消す</button>}
@@ -145,7 +142,7 @@ export function RouteCandidatePreview({ editRoute, onCancelEdit, startSequenceKe
         : <p role="status">経路候補が見つかりました。</p>}
       <p className="field-hint">候補順は距離順ではありません。</p>
       <fieldset disabled={!enabled || loading}><legend>経路候補</legend>
-        {result.candidates.map((item, index) => <label key={index} className="candidate-choice"><input type="radio" name="route-candidate" checked={chosen === index} onChange={() => void selectCandidate(index)}/>{`候補 ${index + 1}: ${item.stations.map(stationName).join(" → ")}`}<small>{item.track_only ? "駅間接続のみ" : "建設線形を含む"}</small></label>)}
+        {result.candidates.map((item, index) => <label key={index} className="candidate-choice"><input type="radio" name="route-candidate" checked={chosen === index} onChange={() => void selectCandidate(index)}/>{`候補 ${index + 1}: ${item.stations.map(stationName).join(" → ")}`}</label>)}
       </fieldset>
     </>}
     {candidate && membership && <>
@@ -153,7 +150,7 @@ export function RouteCandidatePreview({ editRoute, onCancelEdit, startSequenceKe
         if (!enabled || stale || pending.current || saving || !canApply || !name.trim()) return;
         pending.current=true;setSaving(true);setError("");
         try { await onSave(name.trim(),membership); discard(); } catch(cause) { setError(String(cause)); } finally {pending.current=false;setSaving(false);}
-      }}>{editRoute ? "路線の経路を更新" : "候補を新規路線へ適用"}</button>{!canApply && <p>先に手動路線の下書きを適用または破棄してください。</p>}</>}
+      }}>{editRoute ? "路線の経路を更新" : "候補を新規路線へ適用"}</button>{!canApply && <p>先に編集中の下書きを適用または破棄してください。</p>}</>}
       <fieldset disabled={!enabled || loading}><legend>候補の所属駅（未保存）</legend>
         {membership.path.stations.map((id, index, all) => <label key={id} className="candidate-choice"><input type="checkbox" checked={membership.member_stations.includes(id)} disabled={index === 0 || index === all.length - 1} onChange={event => {
           const excluded = event.target.checked ? membership.excluded_stations.filter(item => item !== id) : [...membership.excluded_stations, id];
@@ -161,16 +158,7 @@ export function RouteCandidatePreview({ editRoute, onCancelEdit, startSequenceKe
         }}/>{stationName(id)}{index === 0 ? "（起点）" : index === all.length - 1 ? "（終点）" : ""}</label>)}
       </fieldset>
       <p>所属駅: {membership.member_stations.map(stationName).join(" → ")}</p>
-      {!onSave && !importable && <p className="field-hint">建設線形を含む経路、または駅を除外した所属一覧の保存は未対応です。この候補はプレビューのみです。</p>}
-      {importable && !editRoute && <>
-        <button type="button" disabled={!enabled || stale || loading || !canApply} onClick={() => {
-          if (!enabled || stale || pending.current || !canApply) return;
-          onApply(membership.path.stations[0], membership.path.segments.flatMap(segment => segment.kind === "track" ? [segment.track_id] : []));
-          discard();
-        }}>新規路線の手動下書きへ使う</button>
-        {!canApply && <p className="field-hint">先に編集中の路線下書きを適用または破棄してください。</p>}
-        <p className="field-hint">取り込みだけでは保存されません。下の路線名と経路を確認し「路線を適用」を押してください。</p>
-      </>}
+      {!onSave && <p className="field-hint">この候補はプレビューのみです。</p>}
     </>}
   </section>;
 }
