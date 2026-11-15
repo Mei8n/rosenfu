@@ -192,19 +192,25 @@ def build(path, bounds, revision, source_url, license_name, license_url, attribu
         selection = 'Explicit water-area/waterway-line/coastline GeoJSON observations'
     if digest_file(path) != original_hash:
         raise ValueError('Input changed during extraction')
-    collector.items.sort(key=lambda item: (item['id'], item['kind']))
-    data = dict(format='rosenfu-water-evidence', version=1, revision=revision, bounds=list(bounds), geographic_completeness='unknown', coverage=[], observations=collector.items, source_issues=collector.issues)
-    payload = encoded(data)
-    if len(payload) > MAX_BYTES:
-        raise ValueError('Pack payload exceeds 5 MiB')
-    counts = {kind: sum(o['kind'] == kind for o in collector.items) for kind in ('water-area', 'waterway-line', 'coastline')}
-    manifest = dict(format='rosenfu-water-evidence-manifest', version=1, revision=revision, bounds=list(bounds), geographic_completeness='unknown', coverage=[], source=dict(url=source_url, file_sha256=original_hash, header=collector.source_header, bytes=path.stat().st_size, license=license_name, license_url=license_url, attribution=attribution, selection=selection), payload=dict(file='evidence.json', sha256=hashlib.sha256(payload).hexdigest(), bytes=len(payload), counts=counts), limitations=['No absence-of-water or dry-land certification', 'Full geometry preserved; bounds select by bounding-box overlap only', 'Waterway widths and coastline water-side polygons are unresolved', 'Source completeness, date and classification are not independently guaranteed'])
-    manifest_bytes = encoded(manifest)
+    source = dict(url=source_url, file_sha256=original_hash, header=collector.source_header, bytes=path.stat().st_size, license=license_name, license_url=license_url, attribution=attribution, selection=selection)
+    manifest_bytes, payload, manifest = pack_bytes(collector, revision, source)
     # Existing paths are never overwritten; manifest is written last as the commit marker.
     output.mkdir(parents=True, exist_ok=False)
     (output/'evidence.json').write_bytes(payload)
     (output/'manifest.json').write_bytes(manifest_bytes)
-    return dict(manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(), payload_sha256=manifest['payload']['sha256'], counts=counts, source_issues=len(collector.issues), geographic_completeness='unknown')
+    return dict(manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(), payload_sha256=manifest['payload']['sha256'], counts=manifest['payload']['counts'], source_issues=len(collector.issues), geographic_completeness='unknown')
+
+
+def pack_bytes(collector, revision, source):
+    collector.items.sort(key=lambda item: (item['id'], item['kind']))
+    data = dict(format='rosenfu-water-evidence', version=1, revision=revision, bounds=list(collector.bounds), geographic_completeness='unknown', coverage=[], observations=collector.items, source_issues=collector.issues)
+    payload = encoded(data)
+    if len(payload) > MAX_BYTES:
+        raise ValueError('Pack payload exceeds 5 MiB')
+    counts = {kind: sum(o['kind'] == kind for o in collector.items) for kind in ('water-area', 'waterway-line', 'coastline')}
+    manifest = dict(format='rosenfu-water-evidence-manifest', version=1, revision=revision, bounds=list(collector.bounds), geographic_completeness='unknown', coverage=[], source=source, payload=dict(file='evidence.json', sha256=hashlib.sha256(payload).hexdigest(), bytes=len(payload), counts=counts), limitations=['No absence-of-water or dry-land certification', 'Full geometry preserved; bounds select by bounding-box overlap only', 'Waterway widths and coastline water-side polygons are unresolved', 'Source completeness, date and classification are not independently guaranteed'])
+    manifest_bytes = encoded(manifest)
+    return manifest_bytes, payload, manifest
 
 
 if __name__ == '__main__':

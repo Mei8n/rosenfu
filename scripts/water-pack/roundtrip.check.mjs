@@ -29,3 +29,35 @@ test('Python builder and TypeScript reader share Unicode, holes, line and unknow
   assert.ok(pack.observations.some(o=>o.id===id));assert.equal(pack.observations.length,2);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
+
+test('grid catalog leaves and clipped marine polygons preserve the reader contract',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'rosenfu-water-grid-marine-'));
+ try{
+  const scripts=dirname(fileURLToPath(import.meta.url));
+  const script=`import sys,json
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from grid import build_grid
+from marine import build_marine
+from test_marine import MarineTests
+root=Path(sys.argv[2]); source=root/'source.json'
+source.write_text(json.dumps(dict(type='FeatureCollection',features=[])))
+build_grid(source,[[134,34,134.1,34.1],[135,34,135.1,34.1]],'fixture','https://source.test','test','https://license.test','test',root/'grid')
+MarineTests().fixture(root/'sea.shp')
+print(json.dumps(build_marine(root/'sea.shp',[134.02,34.02,134.1,34.1],'fixture','https://source.test',root/'marine')))
+`;
+  const run=spawnSync(process.platform==='win32'?'python':'python3',['-c',script,scripts,root],{encoding:'utf8'});
+  assert.equal(run.status,0,run.stderr);
+  const catalog=JSON.parse(readFileSync(join(root,'grid/catalog.json')));
+  assert.deepEqual(catalog.coverage,[]);
+  for(const entry of catalog.cells){
+   const directory=join(root,'grid',entry.directory);
+   const pack=await readWaterEvidencePack(readFileSync(join(directory,'manifest.json')),entry.manifest_sha256,readFileSync(join(directory,'evidence.json')));
+   assert.equal(pack.status,'incomplete');assert.deepEqual(pack.coverage,[]);assert.equal(pack.water.length,0);
+  }
+  const report=JSON.parse(run.stdout),directory=join(root,'marine');
+  const pack=await readWaterEvidencePack(readFileSync(join(directory,'manifest.json')),report.manifest_sha256,readFileSync(join(directory,'evidence.json')));
+  assert.equal(pack.status,'incomplete');assert.deepEqual(pack.coverage,[]);
+  assert.equal(pack.water.length,1);assert.equal(pack.water[0].rings.length,2);
+ }finally{rmSync(root,{recursive:true,force:true});}
+});

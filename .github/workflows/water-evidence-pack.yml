@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -r scripts/water-pack/requirements.txt
+      - run: python -m pip install -r scripts/water-pack/requirements.txt -r scripts/water-pack/requirements-marine.txt
       - run: python -B -m unittest discover -s scripts/water-pack -p 'test_*.py' -v
       - uses: actions/setup-node@v4
         with:

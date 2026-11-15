@@ -98,3 +98,76 @@ On 2026-11-15 UTC, an existing, unmodified Geofabrik Shikoku PBF was reused:
 The full source and generated probe remain in the cloud workspace, not the code
 repository. Rebuild using the identical source hash and command above. Synthetic
 GeoJSON and PBF tests run without downloading geographic data in CI.
+
+## Multi-cell batch (one source pass)
+
+`grid.py` reads one regional PBF/GeoJSON once and distributes full observations to
+explicit bounds in a JSON array. It emits the same pinned leaf packs plus a final
+`catalog.json`. Pin the catalog SHA-256 externally, then use each entry's manifest
+pin with the existing reader. There is no application catalog loader yet. Missing
+cells/files, source issues, and valid empty cells cannot grant dry-land coverage.
+
+```sh
+python scripts/water-pack/grid.py shikoku-261114.osm.pbf \
+  --cells cells.json --revision 2026-11-14T21:20:41Z \
+  --source-url https://download.geofabrik.de/asia/japan/shikoku-261114.osm.pbf \
+  --license ODbL-1.0 --license-url https://opendatacommons.org/licenses/odbl/1-0/ \
+  --attribution '© OpenStreetMap contributors; extracted by Rosenfu' \
+  --output new-water-grid
+```
+
+Each batch permits <=256 explicit cells (each <=0.2 degrees per axis), <=768 MiB
+input, <=100,000 emitted observation copies, <=1,000,000 emitted coordinates and
+<=128 MiB serialized output. Each leaf also retains the stricter original limits.
+The PBF location index still consumes memory. This is a bounded regional building
+block, **not completed nationwide generation**. National source partitions, source
+revision consistency, extract borders, job scheduling, resumability and a trusted
+catalog loader remain unimplemented. Split large jobs; do not raise limits blindly.
+All source issues are copied into every cell because their location may be unknown.
+Boundary-touching observations may occur in multiple cells: deduplicate with source
+snapshot + kind + ID; do not sum lengths/areas from cell copies.
+
+Live Shikoku validation: four Takamatsu cells, 395 emitted observation copies and
+9,395 coordinates; all four read successfully as incomplete, coverage empty. Bounds:
+`[[134.02,34.32,134.05,34.345],[134.05,34.32,134.08,34.345],
+[134.02,34.345,134.05,34.37],[134.05,34.345,134.08,34.37]]`.
+Catalog SHA-256: `289c22ae85dc6bd56250c688e98d15698f1ed2024512b4d44a19dac7857f5a15`.
+Cloud artifact: `/workspace/shared/rosenfu-water-pack-artifacts/takamatsu-grid-v1`.
+
+## Marine polygon adapter (synthetic validation only)
+
+`marine.py` is **only for an operator-verified OSM-derived water-polygons dataset**
+with verified ODbL rights and source date. It fixes the OSM license/attribution and
+must NOT be used with GSI, MLIT or arbitrary Shapefiles. Source URL and revision are
+operator claims; the tool cannot authenticate the actual source dataset. Install
+`requirements-marine.txt` in your own environment. Provide local, already extracted
+`.shp/.shx/.dbf/.prj` files from the unsimplified WGS84 split water-polygons dataset:
+
+```sh
+python scripts/water-pack/marine.py water_polygons.shp \
+  --bounds 134.02 34.32 134.08 34.37 --revision VERIFIED_SOURCE_REVISION \
+  --source-url https://osmdata.openstreetmap.de/download/water-polygons-split-4326.zip \
+  --output new-marine-evidence
+```
+
+The adapter accepts 2D EPSG:4326 polygons, validates rings before conversion,
+rejects pyshp's orphan-hole promotion, invalid shapes, open rings and antimeridian
+segments, then intersects with the small requested rectangle. It preserves interior
+islands and source polygon overlaps. It does not simplify, buffer, repair, union,
+construct oceans from lines, or claim the dataset includes inland water. Clip edges
+are artificial selection boundaries, not observed coasts. The geometry engine and
+clipping operation are recorded. Exact bytes may vary across geometry-engine
+versions; use the newly reported hash, not a presumed cross-platform hash.
+
+Source bytes are limited to 8 GiB across four components, PRJ to 1 MiB, selected
+source records to 10,000, points per source record to 100,000, and output to the
+original pack limits. `source.file_sha256` here hashes the canonical component
+inventory; the inventory also contains each actual file's hash. It is **not** the
+ZIP's hash or the SHP's hash. Inputs are hashed before and after processing.
+
+Synthetic tests cover island holes, clip boundaries, projection mismatch, orphan
+holes, invalid polygons and empty results, including Python-to-TypeScript readback.
+The real worldwide marine ZIP connection timed out on 2026-11-15; no real marine
+archive was downloaded or transformed. Global processing and marine/inland fusion
+remain unverified. The resulting pack still has `coverage=[]`, even for an apparently
+all-ocean rectangle. Absence of a marine polygon is never proof of dry land.
