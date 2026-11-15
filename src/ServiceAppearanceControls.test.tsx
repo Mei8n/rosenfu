@@ -41,3 +41,45 @@ test('comparison ignores hex case but compare-and-set retains raw persisted colo
  expect(screen.queryByRole('alert')).toBeNull();
  expect((screen.getByRole('button',{name:'系統を複製'}) as HTMLButtonElement).disabled).toBe(false);
 });
+
+test('reference swatches, picker and HEX share one draft and apply by Enter',async()=>{
+ const p={...props(),color:'#112233'};const view=render(<ServiceAppearanceControls {...p}/>);
+ expect(screen.getAllByRole('button',{name:/系統色候補/})).toHaveLength(16);
+ fireEvent.click(screen.getByRole('button',{name:'系統色候補 青 #1f6fd1'}));
+ expect((screen.getByLabelText('系統色 HEX') as HTMLInputElement).value).toBe('#1f6fd1');
+ expect((screen.getByLabelText('系統色') as HTMLInputElement).value).toBe('#1f6fd1');
+ fireEvent.change(screen.getByLabelText('系統色 HEX'),{target:{value:'#AB12EF'}});
+ expect((screen.getByLabelText('系統色') as HTMLInputElement).value).toBe('#ab12ef');
+ fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Enter'});
+ await waitFor(()=>expect(p.onSave).toHaveBeenCalledWith('#ab12ef','#112233'));
+ view.rerender(<ServiceAppearanceControls {...p} color="#AB12EF"/>);
+ expect(screen.queryByRole('alert')).toBeNull();
+ expect((screen.getByRole('button',{name:'系統を複製'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'系統を複製'}));
+ await waitFor(()=>expect(p.onDuplicate).toHaveBeenCalledOnce());
+});
+
+test('invalid HEX cannot apply and Escape restores persisted picker and text',()=>{
+ const p={...props(),color:'#112233'};render(<ServiceAppearanceControls {...p}/>);
+ fireEvent.change(screen.getByLabelText('系統色 HEX'),{target:{value:'#12xx'}});
+ expect(screen.getByLabelText('系統色 HEX').getAttribute('aria-invalid')).toBe('true');
+ expect((screen.getByRole('button',{name:'色を適用'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Enter'});expect(p.onSave).not.toHaveBeenCalled();
+ expect((screen.getByRole('button',{name:'系統を複製'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Escape'});
+ expect((screen.getByLabelText('系統色 HEX') as HTMLInputElement).value).toBe('#112233');
+ expect((screen.getByLabelText('系統色') as HTMLInputElement).value).toBe('#112233');
+ fireEvent.change(screen.getByLabelText('系統色'),{target:{value:'#d7263d'}});
+ expect((screen.getByLabelText('系統色 HEX') as HTMLInputElement).value).toBe('#d7263d');
+ expect(screen.getByRole('button',{name:'系統色候補 赤 #d7263d'}).getAttribute('aria-pressed')).toBe('true');
+});
+
+test('HEX draft survives external changes and conflict prevents keyboard apply',()=>{
+ const p={...props(),color:'#112233'};const view=render(<ServiceAppearanceControls {...p}/>);
+ fireEvent.change(screen.getByLabelText('系統色 HEX'),{target:{value:'#aabbcc'}});
+ view.rerender(<ServiceAppearanceControls {...p} color="#334455"/>);
+ expect(screen.getByRole('alert').textContent).toContain('保存済みの色');
+ fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Enter'});expect(p.onSave).not.toHaveBeenCalled();
+ fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Escape'});
+ expect((screen.getByLabelText('系統色 HEX') as HTMLInputElement).value).toBe('#334455');
+});
