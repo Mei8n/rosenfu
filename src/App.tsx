@@ -40,9 +40,10 @@ import {ReferenceGraphControls} from "./ReferenceGraphControls";
 import {ReferenceGraphLayer} from "./ReferenceGraphLayer";
 import {indexGraphDisplay,queryGraphDisplay} from "./referenceGraphDisplay";
 import type {ReferenceGraphBundle} from "./referenceGraphBundle";
+import {ServicePathEditor} from "./ServicePathEditor";
 import {ServicePathCreator} from "./ServicePathCreator";
 import type {CreateServicePath} from "./ServicePathCreator";
-import {resolveServicePath,referenceKey} from "./servicePaths";
+import {resolveServicePath} from "./servicePaths";
 import type {ServicePath} from "./servicePaths";
 import { ServiceFromRoutePreview } from "./ServiceFromRoutePreview";
 import { useDisplaySettings } from "./useDisplaySettings";
@@ -477,7 +478,7 @@ export function App() {
   }, []);
   useEffect(() => { smoothZoom.cancel(); changeMapMode(activeTool === "tracks" ? "draw" : activeTool==="stations"?"place":"move"); setHoverPoint(null); setPanelCollapsed(false); }, [activeTool]);
   const selectedServicePath=world?.service_paths?.find(path=>path.service_id===serviceId);
-  const selectedServiceOccurrences=(()=>{if(!world||!selectedServicePath)return [];try{return resolveServicePath(serviceStart,selectedServicePath.legs,world);}catch{return [];}})();
+
   const selectedRoutePath = world?.route_paths?.find(path => path.route_id === routeId);
   const companyDirty = !!world && companyName !== (world.companies[0]?.name ?? "");
   const selectedStation = world?.stations.find((station) => station.id === selected);
@@ -1620,7 +1621,8 @@ export function App() {
             <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => chooseService(null)}>新規系統</button>{world?.services.map((service) => <button key={service.id} className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id)}>系統編集: {service.name}</button>)}</div>
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
-            {selectedServicePath&&<section aria-label="保存済み新形式系統"><h4>新形式系統: {serviceName}</h4><p>経路・停車は安定参照で保存。既存系統の更新は未対応です。旧編集は使用できません。</p><ol>{selectedServiceOccurrences.map((o,i)=><li key={referenceKey(o.reference)}>{i+1}. {stationsById.get(o.station_id)?.name??o.station_id} / {selectedServicePath.stops.some(stop=>referenceKey(stop)===referenceKey(o.reference))?"停車":"通過"}</li>)}</ol><p>区間: {selectedServicePath.legs.map(l=>l.segment.kind==="track"?`接続線路 ${l.segment.track_id}`:`${l.segment.kind==="alignment"?"建設線形 "+l.segment.alignment_id:"接続経路"} (${l.segment.from} → ${l.segment.to})`).join(" / ")}</p></section>}
+            {selectedServicePath&&world&&<ServicePathCreator key={`replace-${serviceId}-${pathDraftEpoch}`} routes={world.routes} routePaths={world.route_paths??[]} stations={world.stations} world={world} enabled={enabled} canStart={!serviceDirty} onDirty={setPathServiceDirty} replaceService={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,path:selectedServicePath}} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("同じ系統IDで経路と停車設定を更新しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/>}
+            {selectedServicePath&&world&&<ServicePathEditor key={serviceId!} service={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,start:serviceStart}} path={selectedServicePath} world={world} stations={world.stations} enabled={enabled&&!pathServiceDirty} onDirty={setServiceDirty} onSave={async(name,stops)=>{if(!enabled||busyRef.current)throw Error("処理中です");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("update_service_path",{serviceId,name,stops});setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("系統名と停車設定を適用しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/> }
             <form onSubmit={submitService}><fieldset disabled={!enabled||!!selectedServicePath||pathServiceDirty}>
               <label htmlFor="service-name">系統名</label><input id="service-name" value={serviceName} maxLength={80} onChange={(event) => { setServiceName(event.target.value); setServiceDirty(true); }} />
               <label htmlFor="service-start" className="track-to-label">系統の起点</label><select id="service-start" value={serviceStart} onChange={(event) => updateServicePath(event.target.value, [])}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
