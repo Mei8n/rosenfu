@@ -54,3 +54,8 @@ test.each(['線路','駅設置','削除'])('middle pan does not place or delete 
  expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','list_save_slots']);
  if(mode==='削除')expect(map.classList.contains('map-delete-mode')).toBe(true);
 });
+test.each(['keyboard','wheel'])('zoom cancels in-flight rectangle before camera changes: %s',async kind=>{
+ const map=await start();fireEvent.pointerDown(map,{clientX:100,clientY:140,button:0});fireEvent.pointerMove(map,{clientX:150,clientY:160});expect(map.querySelector('.selection-box')).not.toBeNull();
+ if(kind==='keyboard')fireEvent.keyDown(document.body,{key:'+'});else fireEvent.wheel(map,{clientX:250,clientY:150,deltaY:-100});
+ expect(map.querySelector('.selection-box')).toBeNull();fireEvent.pointerUp(map,{clientX:150,clientY:160});expect(map.querySelector('[data-selected-section]')).toBeNull();expect(screen.getByRole('button',{name:'選択区間を撤去'}).hasAttribute('disabled')).toBe(true);
+});

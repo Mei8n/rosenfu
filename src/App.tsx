@@ -192,10 +192,11 @@ export function App() {
   }, [pixelRatio]);
   const smoothZoom=useSmoothZoom(cameraRef,renderCamera);
   function renderCamera(next: Camera) {
+    if(boxGesture.current)cancelMapGesture();
     cameraRef.current = next; setCamera(next); setCenterLatitude(next.latitude.toFixed(5)); setCenterLongitude(next.longitude.toFixed(5)); setCameraError("");
   }
   function changeCamera(next: Camera) { smoothZoom.cancel(); renderCamera(next); }
-  function zoomFromControls(delta: number) { smoothZoom.zoomBy(delta, { x: MAP_VIEWBOX.width / 2, y: MAP_VIEWBOX.height / 2 }); }
+  function zoomFromControls(delta: number) { if(boxGesture.current)cancelMapGesture();smoothZoom.zoomBy(delta, { x: MAP_VIEWBOX.width / 2, y: MAP_VIEWBOX.height / 2 }); }
   useEffect(()=>{smoothZoom.cancel();},[background]);
   function moveToCoordinates(event: FormEvent) {
     event.preventDefault();
@@ -526,6 +527,7 @@ export function App() {
       const rect=svg!.getBoundingClientRect();
       const location=coordinatesFromClient(event.clientX,event.clientY,rect,cameraRef.current);
       if(!location)return;
+      if(boxGesture.current)cancelMapGesture();
       smoothZoom.zoomBy(wheelZoomDelta(event.deltaY,event.deltaMode,rect.height),project(location.latitude,location.longitude,cameraRef.current));
     }
     svg.addEventListener("wheel", wheel, { passive: false });
