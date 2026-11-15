@@ -566,3 +566,79 @@ fn rendered_lanes_join_turnouts_exactly_with_shared_four_metre_spacing() {
     }
     assert_ne!(geometry.lanes[1].points, geometry.lanes[2].points);
 }
+
+#[test]
+fn internal_count_boundaries_have_bidirectional_y_paths_and_exact_lane_joins() {
+    for na in [1, 2, 4] {
+        for nb in [1, 2, 4] {
+            let mut w = World::default();
+            let p = w.add_player("p".into()).unwrap();
+            let c = w.add_company(p, "c".into()).unwrap();
+            let id = w
+                .build_alignment(
+                    c,
+                    "line".into(),
+                    vec![point(139.), point(139.01), point(139.02)],
+                )
+                .unwrap();
+            let mut d = w.snapshot().clone();
+            let line = &mut d.alignments[0];
+            line.anchor_indices = Some(vec![0, 1, 2]);
+            line.infrastructure = vec![
+                SectionInfrastructure {
+                    track_count: na,
+                    level: InfrastructureLevel::Ground,
+                },
+                SectionInfrastructure {
+                    track_count: nb,
+                    level: InfrastructureLevel::Elevated,
+                },
+            ];
+            // Height changes are a continuous profile, never an implicit step.
+            assert!(World::new(d.clone()).is_err());
+            d.alignments[0].vertical_profile = Some(VerticalProfile {
+                start_height_m: 0.,
+                end_height_m: 6.,
+                start_tangent_m: 0.,
+                end_tangent_m: 0.,
+            });
+            let w = World::new(d).unwrap();
+            let wiring = w.internal_lane_movements();
+            assert_eq!(wiring.len(), usize::from(na.max(nb)) * 2);
+            let geometry = w.track_render_geometry().unwrap();
+            assert_eq!(
+                geometry.internal_movements.len(),
+                if na == nb { 0 } else { wiring.len() }
+            );
+            for pair in geometry.internal_movements.chunks_exact(2) {
+                assert_eq!(
+                    pair[0].points,
+                    pair[1].points.iter().copied().rev().collect::<Vec<_>>()
+                );
+                assert_eq!(pair[0].movement.point, pair[1].movement.point);
+            }
+            for path in &geometry.internal_movements {
+                let port = path.movement.from;
+                assert_eq!(port.alignment_id, id);
+                let lane = geometry
+                    .lanes
+                    .iter()
+                    .find(|l| {
+                        l.alignment_id == id
+                            && l.section_index == port.section_index
+                            && l.lane_index == port.lane_index
+                    })
+                    .unwrap();
+                let join = if port.side == AlignmentEndpoint::Start {
+                    lane.points[0]
+                } else {
+                    *lane.points.last().unwrap()
+                };
+                assert_eq!(join, path.points[0]);
+            }
+            let saved = serde_json::to_string(w.snapshot()).unwrap();
+            let restored = World::new(serde_json::from_str(&saved).unwrap()).unwrap();
+            assert_eq!(restored.track_render_geometry().unwrap(), geometry);
+        }
+    }
+}

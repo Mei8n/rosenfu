@@ -113,3 +113,62 @@ impl World {
         result
     }
 }
+
+/// A lane at one side of an anchor-delimited section within an alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackSectionPort {
+    pub alignment_id: AlignmentId,
+    pub section_index: usize,
+    pub lane_index: u8,
+    pub side: AlignmentEndpoint,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InternalTrackPoint {
+    pub alignment_id: AlignmentId,
+    pub anchor_index: usize,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InternalTrackMovement {
+    pub from: TrackSectionPort,
+    pub to: TrackSectionPort,
+    pub point: Option<InternalTrackPoint>,
+}
+impl World {
+    /// Internal section boundaries retain the same bidirectional physical lane
+    /// correspondence as endpoint joins. They are not inferred map crossings.
+    pub fn internal_lane_movements(&self) -> Vec<InternalTrackMovement> {
+        let mut result = Vec::new();
+        for a in &self.data.alignments {
+            for boundary in 1..a.section_count() {
+                let na = a.section_infrastructure(boundary - 1).unwrap().track_count;
+                let nb = a.section_infrastructure(boundary).unwrap().track_count;
+                let width = na.max(nb);
+                let point = (na != nb).then_some(InternalTrackPoint {
+                    alignment_id: a.id,
+                    anchor_index: boundary,
+                });
+                for lane in 0..width {
+                    let from = TrackSectionPort {
+                        alignment_id: a.id,
+                        section_index: boundary - 1,
+                        lane_index: lane * na / width,
+                        side: AlignmentEndpoint::End,
+                    };
+                    let to = TrackSectionPort {
+                        alignment_id: a.id,
+                        section_index: boundary,
+                        lane_index: lane * nb / width,
+                        side: AlignmentEndpoint::Start,
+                    };
+                    result.push(InternalTrackMovement { from, to, point });
+                    result.push(InternalTrackMovement {
+                        from: to,
+                        to: from,
+                        point,
+                    });
+                }
+            }
+        }
+        result
+    }
+}

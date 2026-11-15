@@ -154,12 +154,14 @@ pub struct TrackLaneGeometry {
 }
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TrackRenderGeometry {
+    pub internal_movements: Vec<InternalTrackMovementGeometry>,
     pub lanes: Vec<TrackLaneGeometry>,
     pub movements: Vec<TrackMovementGeometry>,
 }
 impl World {
     pub fn track_render_geometry(&self) -> Result<TrackRenderGeometry, WorldError> {
         let movements = self.track_movement_geometries()?;
+        let internal_movements = self.internal_track_movement_geometries()?;
         let mut lanes = Vec::new();
         for a in &self.data.alignments {
             let length = a.length_m();
@@ -204,6 +206,26 @@ impl World {
                             _ => {}
                         }
                     }
+                    for movement in &internal_movements {
+                        let port = movement.movement.from;
+                        if port.alignment_id != a.id
+                            || port.section_index != section_index
+                            || port.lane_index != lane_index
+                        {
+                            continue;
+                        }
+                        match port.side {
+                            AlignmentEndpoint::Start if movement.from_position >= low => {
+                                low = movement.from_position;
+                                low_join = Some(movement.points[0]);
+                            }
+                            AlignmentEndpoint::End if movement.from_position <= high => {
+                                high = movement.from_position;
+                                high_join = Some(movement.points[0]);
+                            }
+                            _ => {}
+                        }
+                    }
                     if low >= high {
                         return Err(WorldError::InvalidAlignmentConnection);
                     }
@@ -242,6 +264,115 @@ impl World {
                 }
             }
         }
-        Ok(TrackRenderGeometry { lanes, movements })
+        Ok(TrackRenderGeometry {
+            lanes,
+            movements,
+            internal_movements,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InternalTrackMovementGeometry {
+    pub movement: InternalTrackMovement,
+    pub from_position: f64,
+    pub to_position: f64,
+    pub points: Vec<GeoPoint>,
+}
+impl World {
+    pub fn internal_track_movement_geometries(
+        &self,
+    ) -> Result<Vec<InternalTrackMovementGeometry>, WorldError> {
+        let mut result = Vec::new();
+        for pair in self.internal_lane_movements().chunks_exact(2) {
+            let movement = pair[0];
+            if movement.point.is_none() {
+                continue;
+            }
+            let a = self
+                .data
+                .alignments
+                .iter()
+                .find(|a| a.id == movement.from.alignment_id)
+                .expect("validated alignment");
+            let length = a.length_m();
+            let mut positions = vec![0.0];
+            let mut accumulated = 0.0;
+            for points in a.points.windows(2) {
+                accumulated += super::alignment::distance(points[0], points[1]);
+                positions.push(accumulated / length);
+            }
+            let anchors = a.anchor_indices.as_ref().expect("multiple sections");
+            let approach = |port: TrackSectionPort| {
+                let start = port.side == AlignmentEndpoint::Start;
+                let lo = positions[anchors[port.section_index]];
+                let hi = positions[anchors[port.section_index + 1]];
+                let boundary = if start { lo } else { hi };
+                let free = self
+                    .data
+                    .station_placements
+                    .iter()
+                    .filter(|p| p.alignment_id == a.id)
+                    .map(|p| (p.position - boundary).abs() * length - p.length_m / 2.0)
+                    .fold(length, f64::min)
+                    .max(0.0);
+                let lead = 30.0_f64.min((hi - lo) * length / 4.0).min(free / 2.0);
+                if lead <= 1e-9 {
+                    return None;
+                }
+                let t = boundary + if start { lead / length } else { -lead / length };
+                let epsilon = (lead / length / 10.0).min(1e-5);
+                let (x, y) = vector(a.point_at(t - epsilon), a.point_at(t + epsilon));
+                let norm = x.hypot(y);
+                if norm <= 1e-9 {
+                    return None;
+                }
+                let count = a
+                    .section_infrastructure(port.section_index)
+                    .unwrap()
+                    .track_count;
+                let lateral = ((f64::from(count) - 1.0) / 2.0 - f64::from(port.lane_index))
+                    * TRACK_LANE_SPACING_M;
+                let p = offset(a.point_at(t), -y / norm * lateral, x / norm * lateral);
+                let direction = if start { -1.0 } else { 1.0 };
+                let c = offset(
+                    p,
+                    x / norm * direction * lead * 2.0 / 3.0,
+                    y / norm * direction * lead * 2.0 / 3.0,
+                );
+                Some((p, c, t))
+            };
+            let (Some((p0, p1, from_position)), Some((p3, p2, to_position))) =
+                (approach(movement.from), approach(movement.to))
+            else {
+                return Err(WorldError::InvalidAlignmentConnection);
+            };
+            let points: Vec<_> = (0..=24)
+                .map(|i| {
+                    let t = f64::from(i) / 24.0;
+                    let u = 1.0 - t;
+                    let interp = |a: f64, b: f64, c: f64, d: f64| {
+                        u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+                    };
+                    GeoPoint {
+                        latitude: interp(p0.latitude, p1.latitude, p2.latitude, p3.latitude),
+                        longitude: interp(p0.longitude, p1.longitude, p2.longitude, p3.longitude),
+                    }
+                })
+                .collect();
+            result.push(InternalTrackMovementGeometry {
+                movement,
+                from_position,
+                to_position,
+                points: points.clone(),
+            });
+            result.push(InternalTrackMovementGeometry {
+                movement: pair[1],
+                from_position: to_position,
+                to_position: from_position,
+                points: points.into_iter().rev().collect(),
+            });
+        }
+        Ok(result)
     }
 }

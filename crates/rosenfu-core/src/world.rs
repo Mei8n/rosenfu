@@ -577,7 +577,10 @@ mod service_route_bindings;
 pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
 
 mod track_topology;
-pub use track_topology::{TrackLanePort, TrackMovement, TrackPointResource};
+pub use track_topology::{
+    InternalTrackMovement, InternalTrackPoint, TrackLanePort, TrackMovement, TrackPointResource,
+    TrackSectionPort,
+};
 
 mod vertical_profile;
 pub use vertical_profile::{VerticalProfile, LEVEL_SPACING_M};
@@ -586,5 +589,6 @@ mod junctions;
 
 mod turnout_geometry;
 pub use turnout_geometry::{
-    TrackLaneGeometry, TrackMovementGeometry, TrackRenderGeometry, TRACK_LANE_SPACING_M,
+    InternalTrackMovementGeometry, TrackLaneGeometry, TrackMovementGeometry, TrackRenderGeometry,
+    TRACK_LANE_SPACING_M,
 };
