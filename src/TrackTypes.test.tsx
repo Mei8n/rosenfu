@@ -41,7 +41,7 @@ test("track kind survives independent plans, undo, failed construction and is se
 test("tram defaults road following on, blocks unsupported drawing and construction, permits explicit off",async()=>{
  const map=await start();const kind=screen.getByRole("button",{name:"トラム"});
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
- fireEvent.click(kind);const road=screen.getByLabelText("道路に合わせる") as HTMLInputElement;expect(road.checked).toBe(true);
+ fireEvent.click(kind);const road=screen.getByRole("button",{name:"道路に合わせる"});expect(road.getAttribute("aria-pressed")).toBe("true");
  fireEvent.click(map,{clientX:300,clientY:130});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(road);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
  vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"tram"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
@@ -67,4 +67,37 @@ test('target speed accepts exact input and adjusts by 20 within existing limits'
  fireEvent.change(speed,{target:{value:'135'}});fireEvent.click(up);expect(speed.value).toBe('155');fireEvent.click(down);expect(speed.value).toBe('135');
  fireEvent.change(speed,{target:{value:'10'}});fireEvent.click(down);expect(speed.value).toBe('1');expect((down as HTMLButtonElement).disabled).toBe(true);
  fireEvent.change(speed,{target:{value:'590'}});fireEvent.click(up);expect(speed.value).toBe('600');expect((up as HTMLButtonElement).disabled).toBe(true);
+});
+
+
+test('parallel mode creates an independent sampled line with undo, redo and persisted geometry',async()=>{
+ const map=await start(built);fireEvent.click(screen.getByRole('button',{name:'線路の横に沿わせる'}));
+ const point=(longitude:number)=>project(35.67514,longitude,DEFAULT_CAMERA);
+ for(const longitude of [139.745,139.755]){const p=point(longitude);fireEvent.click(map,{clientX:p.x/2,clientY:p.y/2,detail:1});}
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ expect((panel().getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ vi.mocked(invoke).mockRejectedValueOnce(Error('retain parallel'));fireEvent.click(panel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/retain parallel/);
+ const req=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='build_alignment')?.[1] as {points:{latitude:number;longitude:number}[]};
+ expect(req.points.length).toBeGreaterThanOrEqual(2);expect(req.points.every(p=>p.latitude>35.67504)).toBe(true);
+});
+
+test('cancelling a parallel start never creates an orphan plan; tram leaves parallel mode',async()=>{
+ const map=await start(built),p=project(35.67514,139.745,DEFAULT_CAMERA);
+ fireEvent.click(screen.getByRole('button',{name:'線路の横に沿わせる'}));fireEvent.click(map,{clientX:p.x/2,clientY:p.y/2,detail:1});
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ expect(screen.getByRole('button',{name:'線路の横に沿わせる'}).getAttribute('aria-pressed')).toBe('false');
+ expect(screen.getByRole('button',{name:'道路に合わせる'}).getAttribute('aria-pressed')).toBe('true');
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ fireEvent.click(screen.getByRole('button',{name:'通常'}));fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
+ expect((panel().getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('undo of a transient parallel start leaves the existing draft untouched',async()=>{
+ const map=await start(built);fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
+ const before=map.querySelector('.confirmed-draft')?.getAttribute('d');
+ fireEvent.click(screen.getByRole('button',{name:'線路の横に沿わせる'}));const p=project(35.67514,139.745,DEFAULT_CAMERA);fireEvent.click(map,{clientX:p.x/2,clientY:p.y/2,detail:1});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);expect(map.querySelector('.confirmed-draft')?.getAttribute('d')).toBe(before);
 });

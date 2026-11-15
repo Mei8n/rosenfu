@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { App } from "./App";
 import { project, DEFAULT_CAMERA } from "./map";
@@ -49,8 +49,14 @@ test("disconnected plans remain visible and build separately without losing the 
   expect(trackPanel().getByRole("button",{name:"計画 2",pressed:true})).toBeTruthy();
   expect(map.querySelector(".draft-path:not(.parked-plan)")!.getAttribute("d")).toBe(second);
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
-  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
-  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+  // Construction restores the remaining plan asynchronously. Flush its effects,
+  // then each keyboard event's history update before dispatching the next event.
+  await act(async()=>{});
+  await act(async()=>{fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});});
+  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
+  await act(async()=>{fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});});
+  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+  expect(map.querySelector(".draft-path:not(.parked-plan)")!.getAttribute("d")).toBe(second);
 });
 test("clearing active plan does not erase parked plans and loading asks before discarding",async()=>{
   const map=await start();

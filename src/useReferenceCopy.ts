@@ -28,7 +28,7 @@ export function useReferenceCopy({bundle,enabled,canStart,name,onBuild,roadFollo
  function clear(){clearHover();generation.current++;pending.current=false;setActive(false);setPicks([]);setRedo([]);setCandidates([]);setConfirmed(false);setBusy(false);}
  // Tool tabs and ordinary world snapshots do not own this session-local plan.
  // App confirms bundle replacement/removal, and explicitly clears on successful world load.
- useEffect(()=>{clear();setMessage('');return()=>{generation.current++;cancelHover();};},[bundle,roadFollow]);
+ useEffect(()=>{clear();setMode(roadFollow?'road':'rail');setMessage('');return()=>{generation.current++;cancelHover();};},[bundle,roadFollow]);
  useEffect(()=>{if(!enabled)clearHover();},[enabled]);
  const plan=useMemo(()=>{if(!bundle||picks.length!==2)return {build:null,error:''};try{if(roadFollow)validateRoadPicks(bundle,picks);return {build:prepareReferenceCopy(bundle,picks[0],picks[1],name),error:''};}catch(e){return {build:null,error:String(e)};}},[bundle,picks,name,roadFollow]);
  function begin(){if(!enabled||!canStart||!repository)return;if(roadFollow&&!roadGraph?.edges.length){setMessage("利用できる道路がありません。検証済みローカル道路バンドルが必要です。");return;}clear();lastHover.current=-Infinity;setActive(true);if(roadFollow)setMode('road');setMessage('地図をクリックして起点候補を表示してください。');}

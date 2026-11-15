@@ -87,6 +87,10 @@ impl WorldEditor {
                 return Err("路線・系統が使用中の線路の区間削除には対応していません。".into());
             }
             let mut stripped = before.clone();
+            // Groups require every member to have a placement. This private
+            // intermediate candidate temporarily omits placements; restore the
+            // exact groups only after all retained placements are remapped.
+            stripped.station_groups.clear();
             stripped.station_placements.retain(|p| p.alignment_id != id);
             stripped
                 .alignment_connections
@@ -209,6 +213,7 @@ impl WorldEditor {
                     .iter()
                     .position(|old| old.station_id == p.station_id)
             });
+            restored.station_groups = before.station_groups.clone();
             restored.alignment_connections = before.alignment_connections.clone();
             for connection in &mut restored.alignment_connections {
                 for endpoint in [&mut connection.a, &mut connection.b] {
@@ -638,6 +643,47 @@ mod tests {
         let restored = loaded.load(&path).unwrap();
         assert_eq!(restored.alignment_connections, after.alignment_connections);
         assert_eq!(restored.alignments, after.alignments);
+        assert_eq!(restored.stations, after.stations);
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+    }
+    #[test]
+    fn grouped_station_survives_distant_section_removal_save_and_undo() {
+        let (mut editor, id) = setup();
+        editor
+            .place_station_on_alignment("交差駅".into(), id, 1.0 / 6.0, 40., 12.)
+            .unwrap();
+        let crossing = editor
+            .world
+            .build_alignment(
+                editor.company,
+                "交差線".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 34.999,
+                        longitude: 139.001,
+                    },
+                    GeoPoint {
+                        latitude: 35.001,
+                        longitude: 139.001,
+                    },
+                ],
+            )
+            .unwrap();
+        editor
+            .place_station_on_alignment("仮名".into(), crossing, 0.5, 40., 12.)
+            .unwrap();
+        let mut before = editor.snapshot();
+        assert_eq!(before.station_groups.len(), 1);
+        before.construction_plans = Some(plans());
+        let after = editor.delete_alignment_section(id, 1, plans()).unwrap();
+        assert_eq!(after.station_groups, before.station_groups);
+        assert_eq!(after.stations, before.stations);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("group-section.json");
+        editor.save(&path).unwrap();
+        let mut loaded = WorldEditor::new();
+        let restored = loaded.load(&path).unwrap();
+        assert_eq!(restored.station_groups, after.station_groups);
         assert_eq!(restored.stations, after.stations);
         assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
     }

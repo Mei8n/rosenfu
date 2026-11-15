@@ -684,12 +684,16 @@ impl WorldEditor {
             return Err("駅名は1〜80文字で入力してください。".into());
         }
         let mut candidate = self.snapshot();
-        let station = candidate
+        if !candidate
             .stations
-            .iter_mut()
-            .find(|station| station.id == station_id && station.owner == self.company)
-            .ok_or("編集する駅が見つかりません。")?;
-        station.name = name.trim().to_owned();
+            .iter()
+            .any(|station| station.id == station_id && station.owner == self.company)
+        {
+            return Err("編集する駅が見つかりません。".into());
+        }
+        candidate
+            .rename_station_group(station_id, name.trim().to_owned())
+            .map_err(|e| e.to_string())?;
         self.world
             .replace(candidate)
             .map_err(|error| error.to_string())?;
@@ -738,6 +742,7 @@ impl WorldEditor {
         candidate
             .station_placements
             .retain(|p| p.station_id != station_id);
+        candidate.remove_station_group_member(station_id);
         self.world
             .replace(candidate)
             .map_err(|error| error.to_string())?;
@@ -3056,6 +3061,65 @@ mod tests {
             length_m: 100.0,
             width_m: 12.0,
         }
+    }
+    #[test]
+    fn crossing_station_group_rename_delete_save_and_undo_preserve_platform_ids() {
+        let mut editor = WorldEditor::new();
+        for (lat, lon) in [(0.0, 0.01), (0.01, 0.0), (0.01, 0.01)] {
+            editor
+                .build_plan(vec![PlannedAlignment {
+                    anchor_indices: Some(vec![0, 1]),
+                    name: "線路".into(),
+                    points: vec![
+                        GeoPoint {
+                            latitude: 35.0 - lat,
+                            longitude: 139.0 - lon,
+                        },
+                        GeoPoint {
+                            latitude: 35.0 + lat,
+                            longitude: 139.0 + lon,
+                        },
+                    ],
+                    track_type: rosenfu_core::world::TrackType::Normal,
+                    design_speed_kmh: Some(120.),
+                    stations: vec![PlannedStation {
+                        name: "共通駅".into(),
+                        position: 0.5,
+                        length_m: 100.,
+                        width_m: 12.,
+                    }],
+                    reference: None,
+                    extension: None,
+                    destination: None,
+                }])
+                .unwrap();
+        }
+        let before = editor.snapshot();
+        let ids: Vec<_> = before.stations.iter().map(|s| s.id).collect();
+        assert_eq!(before.station_groups[0].members, ids);
+        editor.rename_station(ids[2], "中央".into()).unwrap();
+        let renamed = editor.snapshot();
+        assert!(renamed.stations.iter().all(|s| s.name == "中央"));
+        assert_eq!(renamed.station_placements, before.station_placements);
+        let plans = serde_json::from_value(serde_json::json!({"version":1,"plans":[{"id":1,"name":"計画"}],"parkedPaths":[],"activePathId":1,"activePlanId":1,"draftPoints":[],"redoPoints":[],"draftExtension":null,"trackType":"normal","designSpeedKmh":120,"roadFollowing":false,"plannedStations":[],"draftFinished":false})).unwrap();
+        let removed = editor.delete_station_with_plans(ids[0], plans).unwrap();
+        assert_eq!(removed.station_groups[0].station_id, ids[1]);
+        assert_eq!(removed.station_groups[0].members, ids[1..]);
+        let restored = editor.undo_alignment_deletion().unwrap();
+        assert_eq!(restored.stations, renamed.stations);
+        assert_eq!(restored.station_groups, renamed.station_groups);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("groups.json");
+        editor.save(&path).unwrap();
+        let mut loaded = WorldEditor::new();
+        assert_eq!(
+            loaded.load(&path).unwrap().station_groups,
+            restored.station_groups
+        );
+        editor.delete_station(ids[0]).unwrap();
+        editor.delete_station(ids[1]).unwrap();
+        assert!(editor.snapshot().station_groups.is_empty());
+        assert_eq!(editor.snapshot().stations[0].id, ids[2]);
     }
     #[test]
     fn overlapping_planned_station_commit_is_atomic() {

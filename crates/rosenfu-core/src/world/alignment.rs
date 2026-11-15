@@ -375,6 +375,25 @@ impl World {
         }) {
             return Err(WorldError::StationFootprintOverlap);
         }
+        let footprint = super::station_groups::footprint(a, position, length_m, width_m);
+        let intersecting: Vec<_> = self
+            .data
+            .station_placements
+            .iter()
+            .filter(|p| p.alignment_id != alignment_id)
+            .filter_map(|p| {
+                let alignment = self
+                    .data
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == p.alignment_id && a.owner == owner)?;
+                super::station_groups::overlaps(
+                    &footprint,
+                    &super::station_groups::footprint(alignment, p.position, p.length_m, p.width_m),
+                )
+                .then_some(p.station_id)
+            })
+            .collect();
         self.insert(|data, id| {
             data.stations.push(Station {
                 id: StationId(id),
@@ -390,6 +409,7 @@ impl World {
                 length_m,
                 width_m,
             });
+            data.join_station_group(StationId(id), &intersecting);
         })
         .map(StationId)
     }

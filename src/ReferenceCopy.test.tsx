@@ -87,3 +87,9 @@ test('reference following requires an explicit endpoint target and sends source 
  fireEvent.click(copyPanel().getByRole('button',{name:'選択中の計画に追加',hidden:true}));await waitFor(()=>expect(copyPanel().queryByRole('button',{name:'選択中の計画に追加',hidden:true})).toBeNull());fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expect.objectContaining({reference:undefined}),expect.objectContaining({extension:{alignmentId:'11',endpoint:'end'},reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})]})));
 });
+
+test('road toggle returns to rail mode instead of retaining the old road filter',()=>{
+ const props={bundle:fixture(),worldVersion:0,enabled:true,canStart:true,tool:'tracks',name:'参考線',onBuild:vi.fn(async()=>{}),roadFollow:true};
+ const hook=renderHook(p=>useReferenceCopy(p),{initialProps:props});expect(hook.result.current.mode).toBe('road');
+ hook.rerender({...props,roadFollow:false});expect(hook.result.current.mode).toBe('rail');expect(hook.result.current.active).toBe(false);
+});
