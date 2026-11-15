@@ -32,6 +32,7 @@ import {PlanDeleteDialog} from "./PlanDeleteDialog";
 import {TrackDeleteDialog} from "./TrackDeleteDialog";
 import {anchorDragPreview} from "./anchorDragPreview";
 import {plannedGeometry, type EditedGeometry} from "./editedGeometry";
+import {plannedTrackHeight} from "./plannedTrackHeight";
 import {plannedTrackSpeed} from "./plannedTrackSpeed";
 import {emptyConstructionPlans,compactEmptyPlans,removeConstructionPlan,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
 import {UserGuide} from "./UserGuide";
@@ -503,7 +504,7 @@ export function App() {
   const hoveredBuilt=builtHover?alignments.find(line=>line.id===builtHover.id):null;
   const dragDesignSpeed=anchorPreview?.id===activePathId?designSpeedKmh:parkedPaths.find(path=>path.id===anchorPreview?.id)?.designSpeedKmh;
   const dragSpeedLabels=anchorPreview?.preview&&!anchorPreview.error&&dragDesignSpeed!==undefined?anchorDragFeedback(anchorPreview.preview,anchorPreview.index,dragDesignSpeed):[];
-  const hoveredPlan = planHover?.id === activePathId ? {name:planName,line:draftLine,points:draftPoints,editedGeometry:draftEditedGeometry,reference:undefined,designSpeedKmh,extension:draftExtension,destination:draftDestination,redoDestination:draftRedoDestination} : parkedPaths.find(plan=>plan.id===planHover?.id);
+  const hoveredPlan = planHover?.id === activePathId ? {name:planName,line:draftLine,points:draftPoints,anchorLevels:draftAnchorLevels,startLevel,infrastructure,editedGeometry:draftEditedGeometry,reference:undefined,designSpeedKmh,extension:draftExtension,destination:draftDestination,redoDestination:draftRedoDestination} : parkedPaths.find(plan=>plan.id===planHover?.id);
   const hoveredExtension=hoveredPlan?.extension?alignments.find(a=>a.id===hoveredPlan.extension!.alignmentId):null;
   const hoveredPrevious=hoveredExtension?(hoveredPlan!.extension!.endpoint==="end"?hoveredExtension.points.at(-2):hoveredExtension.points[1]):undefined;
   const hoveredGeometry = hoveredPlan&&!hoveredPlan.reference ? plannedGeometry(hoveredPlan.points,hoveredPlan.editedGeometry,hoveredPrevious) : null;
@@ -1595,7 +1596,7 @@ export function App() {
               <strong>{endpointCandidateError}</strong>
             </div>}
             {activeTool==="tracks"&&mapMode==="draw"&&draftExtension&&draftPoints.length>0&&!referenceCopy.active&&<div className="extension-status" role="status">延伸元を選択済み：{alignments.find(a=>a.id===draftExtension.alignmentId)?.name||"既存線路"}の{draftExtension.endpoint==="start"?"始点":"終点"}（着工前）</div>}
-            {showPlanHover&&!endpointCandidate&&planHover&&hoveredPlan&&<div className="construction-tooltip plan-hover-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,planHover.y+18))}}><strong>{hoveredPlan.name.trim()||"線路計画"}（ホバー中）</strong>{hoveredGeometry?.error?<div>敷設不可：{hoveredGeometry.error}</div>:!cursorPreviewActive&&buildPaths.some(path=>path.id===planHover.id)&&nativeConstructionPreview?.error&&<div>この計画は敷設不可：{nativeConstructionPreview.error}</div>}<div>高さ：未設定 · {hoveredSpeed===null?"制限速度：未算定":`${hoveredSpeed} km/h（暫定）`}</div></div>}
+            {showPlanHover&&!endpointCandidate&&planHover&&hoveredPlan&&<div className="construction-tooltip plan-hover-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,planHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,planHover.y+18))}}><strong>{hoveredPlan.name.trim()||"線路計画"}</strong>{hoveredGeometry?.error?<div>敷設不可：{hoveredGeometry.error}</div>:!cursorPreviewActive&&buildPaths.some(path=>path.id===planHover.id)&&nativeConstructionPreview?.error&&<div>この計画は敷設不可：{nativeConstructionPreview.error}</div>}<div>{plannedTrackHeight(hoveredPlan,hoveredGeometry?.points??hoveredPlan.line,planHover.point)} · {hoveredSpeed===null?"制限速度：未算定":`${hoveredSpeed} km/h（暫定）`}</div></div>}
             <svg ref={svgRef} tabIndex={0} onKeyDown={event=>{
               if(activeTool!=="stations"||mapMode!=="place"||!enabled||event.ctrlKey||event.metaKey||event.altKey)return;
               if(event.key==="Enter"){event.preventDefault();if(!event.repeat){const rect=event.currentTarget.getBoundingClientRect();placePlatformAt(stationCursor??{latitude:camera.latitude,longitude:camera.longitude},rect.width,rect.height);}return;}

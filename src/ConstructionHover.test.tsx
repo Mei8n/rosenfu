@@ -73,7 +73,7 @@ test('hover only speed and highlight clear on leaving; small endpoints are visua
  const line=map.querySelector('.plan-hover-hit')!;
  fireEvent.pointerEnter(line,{clientX:220,clientY:130});
  expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain('80 km/h');
- expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain('高さ：未設定');
+ expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain('高さ 0 m');
  expect(map.querySelectorAll('.plan-hovered')).toHaveLength(0);
  expect(map.querySelector('.plan-hover-point')).toBeTruthy();
  expect(document.querySelectorAll('.construction-tooltip')).toHaveLength(1);
