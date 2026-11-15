@@ -234,7 +234,8 @@ test("background switching is display-only and outside viewport clicks never cre
   desktop(); renderStationEditor(); await screen.findByText(/test-version/);
   // Slot discovery starts the autosave status read after the world renders.
   // Establish the completed startup boundary before measuring display-only work.
-  await act(async()=>{await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));});
+  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));
+  await act(async()=>{});
   const previousCalls = vi.mocked(invoke).mock.calls.length;
   fireEvent.click(screen.getByRole("button", { name: "地理院地図（オンライン）" }));
   fireEvent.click(screen.getByRole("button", { name: "自作サンプル（オフライン）" }));
