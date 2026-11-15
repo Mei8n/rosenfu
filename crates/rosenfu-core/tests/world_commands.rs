@@ -1,3 +1,4 @@
+mod common;
 use rosenfu_core::world::{Player, PlayerId, World, WorldDraft, WorldError};
 
 #[test]
@@ -24,17 +25,19 @@ fn failed_creation_does_not_consume_id_or_mutate_world() {
 
 #[test]
 fn construction_commands_generate_consistent_references() {
-    let mut world = World::default();
-    let player = world.add_player("A".into()).unwrap();
-    let company = world.add_company(player, "Railway".into()).unwrap();
-    let a = world.add_station(company, "A".into(), 35.0, 139.0).unwrap();
-    let b = world.add_station(company, "B".into(), 35.1, 139.1).unwrap();
-    let track = world.add_track(company, a, b).unwrap();
+    let (mut world, company, alignment, stations) = common::line(2);
+    let next = world.snapshot().next_id;
     let route = world
-        .add_route(company, "Main".into(), a, vec![track])
+        .add_planned_route(
+            company,
+            "Main".into(),
+            stations[0],
+            vec![common::segment(alignment, stations[0], stations[1])],
+            stations,
+        )
         .unwrap();
-    assert_eq!(route.0, 6);
-    assert_eq!(world.snapshot().next_id, 7);
+    assert_eq!(route.0, next);
+    assert_eq!(world.snapshot().next_id, next + 1);
     assert!(world.snapshot().validate().is_ok());
 }
 

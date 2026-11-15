@@ -57,8 +57,7 @@ fn inserting_station_does_not_retarget_or_add_stops() {
         .place_station_on_alignment(c, "New".into(), a, 0.3, 100.0, 10.0)
         .unwrap();
     assert_eq!(w.snapshot().service_paths[0].stops, stops);
-    assert!(w.snapshot().services[0].tracks.is_empty());
-    assert!(w.snapshot().services[0].stops.is_empty());
+    assert_eq!(w.snapshot().service_paths[0].service_id, id);
     assert_eq!(
         w.service_path_occurrences(id)
             .unwrap()
@@ -70,12 +69,17 @@ fn inserting_station_does_not_retarget_or_add_stops() {
     assert_eq!(World::new(w.snapshot().clone()).unwrap(), w);
 }
 #[test]
-fn reverse_mixed_paths_and_revisits_have_unambiguous_boundary_references() {
+fn reverse_multi_leg_paths_and_revisits_have_unambiguous_boundary_references() {
     let (mut w, c, a, s, _) = sample();
-    let x = w.add_station(c, "X".into(), 35.0, 139.2).unwrap();
-    let t = w.add_track(c, x, s[2]).unwrap();
+    let x = w
+        .place_station_on_alignment(c, "X".into(), a, 0.98, 20., 10.)
+        .unwrap();
     let segments = vec![
-        RouteSegment::Track { track_id: t },
+        RouteSegment::Alignment {
+            alignment_id: a,
+            from: x,
+            to: s[2],
+        },
         RouteSegment::Alignment {
             alignment_id: a,
             from: s[2],
@@ -199,20 +203,25 @@ fn saved_path_changes_movement_and_referenced_deletion_are_rejected_atomically()
     assert_eq!(w.snapshot().alignments[0].id, a);
 }
 #[test]
-fn dual_sources_and_geographic_crossing_are_not_connections() {
-    let (mut w, c, _, s, segments) = sample();
+fn legacy_sources_are_rejected_and_nearby_stations_are_not_connections() {
+    let (mut w, c, a, s, segments) = sample();
     let stops = all(&w, s[0], segments.clone());
     w.add_service_path(c, "S".into(), s[0], segments, stops)
         .unwrap();
-    let t = w.add_track(c, s[0], s[2]).unwrap();
     let before = w.clone();
-    let mut draft = w.snapshot().clone();
-    draft.services[0].tracks = vec![t];
-    draft.services[0].stops = vec![0, 1];
-    assert!(w.replace(draft).is_err());
+    let mut encoded = serde_json::to_value(w.snapshot()).unwrap();
+    encoded["services"][0]["tracks"] = serde_json::json!(["999"]);
+    assert!(serde_json::from_value::<WorldDraft>(encoded).is_err());
     let x = w.add_station(c, "Nearby".into(), 35.0, 139.0).unwrap();
     assert!(w
-        .preview_service_path(x, vec![RouteSegment::Track { track_id: t }])
+        .preview_service_path(
+            x,
+            vec![RouteSegment::Alignment {
+                alignment_id: a,
+                from: s[0],
+                to: s[2]
+            }]
+        )
         .is_err());
     assert_eq!(w.snapshot().service_paths, before.snapshot().service_paths);
 }
@@ -284,17 +293,22 @@ fn geometry_changes_and_stop_reordering_are_atomic_but_route_changes_are_indepen
     assert_eq!(w.snapshot().services, before.snapshot().services);
 }
 #[test]
-fn referenced_track_endpoint_edits_are_rejected_even_if_traversal_is_equivalent() {
-    let (mut w, c, _, s, _) = sample();
-    let t = w.add_track(c, s[0], s[2]).unwrap();
-    let segments = vec![RouteSegment::Track { track_id: t }];
+fn referenced_alignment_reversal_is_rejected_even_if_traversal_is_equivalent() {
+    let (mut w, c, a, s, _) = sample();
+    let segments = vec![RouteSegment::Alignment {
+        alignment_id: a,
+        from: s[0],
+        to: s[2],
+    }];
     let stops = all(&w, s[0], segments.clone());
     w.add_service_path(c, "S".into(), s[0], segments, stops)
         .unwrap();
     let before = w.clone();
     let mut draft = w.snapshot().clone();
-    draft.tracks[0].from = s[2];
-    draft.tracks[0].to = s[0];
+    draft.alignments[0].points.reverse();
+    for p in &mut draft.station_placements {
+        p.position = 1.0 - p.position;
+    }
     assert_eq!(
         w.replace(draft),
         Err(WorldError::ServicePathEditUnsupported)
@@ -432,7 +446,7 @@ fn saved_service_stop_edit_is_atomic_and_keeps_all_stable_identity() {
 }
 
 #[test]
-fn saved_path_edit_rejects_legacy_service_and_distinguishes_revisits() {
+fn saved_path_edit_rejects_missing_service_and_distinguishes_revisits() {
     let (mut world, company, alignment, stations, mut segments) = sample();
     segments.push(RouteSegment::Alignment {
         alignment_id: alignment,
@@ -466,16 +480,7 @@ fn saved_path_edit_rejects_legacy_service_and_distinguishes_revisits() {
         stations[1]
     );
     assert_eq!(world.snapshot().service_paths[0].stops[1], all_stops[3]);
-    let track = world.add_track(company, stations[0], stations[2]).unwrap();
-    let old = world
-        .add_service(
-            company,
-            "Legacy".into(),
-            stations[0],
-            vec![track],
-            vec![0, 1],
-        )
-        .unwrap();
+    let old = ServiceId(999);
     let before = world.snapshot().clone();
     assert!(world
         .update_service_path(company, old, "Bad".into(), all_stops)

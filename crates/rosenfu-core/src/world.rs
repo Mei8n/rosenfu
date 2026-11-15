@@ -412,61 +412,47 @@ pub use alignment::{Alignment, AlignmentEndpoint, GeoPoint, StationPlacement, Tr
 mod tests {
     use super::*;
     fn sample() -> WorldDraft {
-        WorldDraft {
-            station_groups: vec![],
-            alignment_connections: vec![],
-            view_state: None,
-            construction_plans: None,
-            route_paths: vec![],
-            service_paths: vec![],
-            service_route_bindings: vec![],
-            source_records: vec![],
-            alignment_provenance: vec![],
-            next_id: 4,
-            alignments: vec![],
-            station_placements: vec![],
-            services: vec![],
-            players: vec![Player {
-                id: PlayerId(1),
-                name: "Player".into(),
+        let mut w = World::default();
+        let p = w.add_player("Player".into()).unwrap();
+        let c = w.add_company(p, "Railway".into()).unwrap();
+        let a = w
+            .build_alignment(
+                c,
+                "Line".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: 139.,
+                    },
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: 139.1,
+                    },
+                ],
+            )
+            .unwrap();
+        let stations: Vec<_> = [0.1, 0.5, 0.9]
+            .into_iter()
+            .map(|position| {
+                w.place_station_on_alignment(c, "S".into(), a, position, 20., 10.)
+                    .unwrap()
+            })
+            .collect();
+        w.add_planned_route(
+            c,
+            "R".into(),
+            stations[0],
+            vec![RouteSegment::Alignment {
+                alignment_id: a,
+                from: stations[0],
+                to: stations[2],
             }],
-            companies: vec![Company {
-                id: CompanyId(1),
-                owner: PlayerId(1),
-                name: "Railway".into(),
-            }],
-            stations: (1..=3)
-                .map(|id| Station {
-                    id: StationId(id),
-                    owner: CompanyId(1),
-                    name: format!("Station {id}"),
-                    latitude: 35.0,
-                    longitude: 139.0,
-                })
-                .collect(),
-            tracks: vec![
-                Track {
-                    id: TrackId(1),
-                    owner: CompanyId(1),
-                    from: StationId(1),
-                    to: StationId(2),
-                },
-                Track {
-                    id: TrackId(2),
-                    owner: CompanyId(1),
-                    from: StationId(3),
-                    to: StationId(2),
-                },
-            ],
-            routes: vec![Route {
-                id: RouteId(1),
-                owner: CompanyId(1),
-                name: "Main".into(),
-                start: StationId(1),
-                tracks: vec![TrackId(1), TrackId(2)],
-            }],
-        }
+            stations,
+        )
+        .unwrap();
+        w.snapshot().clone()
     }
+
     #[test]
     fn empty_and_connected_worlds_are_valid() {
         assert!(World::new(WorldDraft::default()).is_ok());
@@ -494,7 +480,9 @@ mod tests {
     fn coordinated_deletion_is_valid() {
         let mut data = sample();
         data.routes.clear();
-        data.tracks.clear();
+        data.route_paths.clear();
+        data.station_placements.clear();
+        data.alignments.clear();
         data.stations.clear();
         assert!(data.validate().is_ok());
     }
@@ -511,32 +499,49 @@ mod tests {
     fn coordinates_must_be_finite_and_in_range() {
         for latitude in [f64::NAN, f64::INFINITY, 90.01, -90.01] {
             let mut data = sample();
+            data.station_placements.clear();
+            data.route_paths.clear();
+            data.routes.clear();
             data.stations[0].latitude = latitude;
             assert_eq!(data.validate(), Err(WorldError::InvalidCoordinate));
         }
     }
     #[test]
-    fn disconnected_and_missing_route_tracks_are_rejected() {
+    fn disconnected_and_missing_route_paths_are_rejected() {
         let mut data = sample();
-        data.routes[0].tracks.reverse();
-        assert_eq!(data.validate(), Err(WorldError::DisconnectedRoute));
-        data.routes[0].tracks = vec![TrackId(99)];
-        assert_eq!(
-            data.validate(),
-            Err(WorldError::MissingReference("route.track"))
-        );
+        let RouteSegment::Alignment { ref mut from, .. } = data.route_paths[0].segments[0] else {
+            unreachable!()
+        };
+        *from = data.stations[1].id;
+        assert_eq!(data.validate(), Err(WorldError::InvalidRoutePath));
+        let mut data = sample();
+        let RouteSegment::Alignment {
+            ref mut alignment_id,
+            ..
+        } = data.route_paths[0].segments[0]
+        else {
+            unreachable!()
+        };
+        *alignment_id = AlignmentId(999);
+        assert_eq!(data.validate(), Err(WorldError::InvalidRoutePath));
     }
     #[test]
-    fn empty_names_routes_and_self_loops_are_rejected() {
+    fn empty_names_paths_and_zero_length_segments_are_rejected() {
         let mut data = sample();
-        data.stations[0].name = "  ".into();
+        data.stations[0].name = " ".into();
         assert_eq!(data.validate(), Err(WorldError::EmptyName("station")));
-        data = sample();
-        data.routes[0].tracks.clear();
-        assert_eq!(data.validate(), Err(WorldError::EmptyRoute));
-        data = sample();
-        data.tracks[0].to = data.tracks[0].from;
-        assert_eq!(data.validate(), Err(WorldError::SelfLoop));
+        let mut data = sample();
+        data.route_paths[0].segments.clear();
+        assert_eq!(data.validate(), Err(WorldError::InvalidRoutePath));
+        let mut data = sample();
+        let RouteSegment::Alignment {
+            from, ref mut to, ..
+        } = data.route_paths[0].segments[0]
+        else {
+            unreachable!()
+        };
+        *to = from;
+        assert_eq!(data.validate(), Err(WorldError::InvalidRoutePath));
     }
 }
 
