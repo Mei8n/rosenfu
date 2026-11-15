@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 18;
+pub const SCHEMA_VERSION: u64 = 19;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -31,11 +31,9 @@ impl std::fmt::Display for StorageError {
             Self::Json(e) => write!(f, "invalid save JSON: {e}"),
             Self::InvalidHeader => write!(f, "missing or invalid save header"),
             Self::InvalidFormat => write!(f, "not a Rosenfu world file"),
-            Self::UnsupportedVersion(v) => write!(
-                f,
-                "このセーブ形式（schema {v}）は非対応です。対応形式は schema {SCHEMA_VERSION} のみです。旧データは移行せず、元ファイルは変更していません。"
-            ),
-            Self::LegacyFormat => write!(f, "旧式の駅間線路・路線・系統データは非対応です。元ファイルは変更していません。新しいワールドを作成してください。"),
+            Self::UnsupportedVersion(_) | Self::LegacyFormat => {
+                write!(f, "このセーブ形式は非対応です")
+            }
             Self::FileChanged => write!(
                 f,
                 "save file changed since it was observed; reload before saving"
@@ -109,10 +107,13 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or(StorageError::InvalidHeader)?;
-    if version != SCHEMA_VERSION {
+    if version != 18 && version != SCHEMA_VERSION {
         return Err(StorageError::UnsupportedVersion(version));
     }
     let data = value.get("world").ok_or(StorageError::InvalidHeader)?;
+    if version == 18 && data.get("service_appearances").is_some() {
+        return Err(StorageError::InvalidHeader);
+    }
     if data.get("tracks").is_some()
         || ["routes", "services"].iter().any(|field| {
             data.get(*field)

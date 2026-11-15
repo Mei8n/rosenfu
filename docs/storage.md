@@ -1,8 +1,8 @@
 # 保存仕様
 
-## 現行形式：schema 18
+## 現行形式：schema 19
 
-暫定アルファ JSON は `format: "rosenfu-world"` と `schema_version: 18` を持つ。schema 18 のみ読み書きし、1〜17 は非対応を明示して拒否する。旧 Track モデルと自動移行を撤去したため、データは新しいワールドで作成し直す。読込処理は旧データを変更・削除しない。
+暫定アルファ JSON は `format: "rosenfu-world"` と `schema_version: 19` を持つ。schema 19 で書き込み、18 は系統色未設定として読み込む。1〜17 は非対応を明示して拒否する。旧 Track モデルの自動移行を撤去したため、データは新しいワールドで作成し直す。読込処理は旧データを変更・削除しない。
 
 設備は Alignment と端点接続。すべての路線・系統に RoutePath / ServicePath が必要で、旧 Track、Route.tracks、OperatingService.tracks/stops は非対応。旧データを現形式番号に書き換えただけの偽装も拒否する。
 
@@ -85,3 +85,6 @@ world can coexist with that file. Slot deletion is not exposed by this change.
 Current-format storage tests cover independent labels/files/backups, incomplete
 creation visibility, invalid IDs and directory symlink rejection. Full session,
 UI and real-device acceptance remain separate verification gates.
+
+### 系統色（schema 19）
+`service_appearances` は系統IDと `#RRGGBB` 色の明示的メタデータ。不在は従来の表示色を維持する。18の入力にこのフィールドが混入した場合は拒否する。19を18専用の旧アプリでは開けない。複製は新しい系統IDを割り当て、物理経路・停車・binding・色をコピーする。複製後の編集は独立。

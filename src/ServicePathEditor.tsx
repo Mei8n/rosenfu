@@ -4,11 +4,13 @@ import {referenceKey,resolveServicePath} from './servicePaths';
 import type {PathWorld,ServicePath,StopReference} from './servicePaths';
 export function ServicePathEditor({service,path,world,stations,enabled,onDirty,onSave}:{service:{id:string;name:string;start:string};path:ServicePath;world:PathWorld;stations:{id:string;name:string}[];enabled:boolean;onDirty:(dirty:boolean)=>void;onSave:(name:string,stops:StopReference[])=>Promise<void>}){
  const [name,setName]=useState(service.name),[stops,setStops]=useState(path.stops),[error,setError]=useState(''),[pending,setPending]=useState(false),[conflict,setConflict]=useState(false);
+ // A successful save and pending=false can arrive in the same React batch.
+ // A snapshot matching the draft is acknowledged, not an external conflict.
  const savedSignature=JSON.stringify([service.id,service.name,path]),observed=useRef(savedSignature);
  const occurrences=(()=>{try{return resolveServicePath(service.start,path.legs,world);}catch{return [];}})(),names=new Map(stations.map(s=>[s.id,s.name]));
- const changed=name!==service.name||JSON.stringify(stops)!==JSON.stringify(path.stops);
+ const changed=name!==service.name||JSON.stringify(stops.map(referenceKey))!==JSON.stringify(path.stops.map(referenceKey));
  function reset(){setName(service.name);setStops(path.stops);setError('');setConflict(false);observed.current=savedSignature;onDirty(false);}
- useEffect(()=>{if(observed.current===savedSignature)return;const previous=JSON.parse(observed.current);const wasDirty=name!==previous[1]||JSON.stringify(stops)!==JSON.stringify(previous[2].stops);if(wasDirty&&!pending){setConflict(true);setError('保存済み系統が変更されています。入力は保持しています。取り消して最新の内容を確認してください。');}else reset();},[savedSignature]);
+ useEffect(()=>{if(observed.current===savedSignature)return;const previous=JSON.parse(observed.current);const wasDirty=name!==previous[1]||JSON.stringify(stops.map(referenceKey))!==JSON.stringify(previous[2].stops.map(referenceKey));if(wasDirty&&(name.trim()!==service.name||JSON.stringify(stops.map(referenceKey))!==JSON.stringify(path.stops.map(referenceKey)))){setConflict(true);setError('保存済み系統が変更されています。入力は保持しています。取り消して最新の内容を確認してください。');}else reset();},[savedSignature]);
  useEffect(()=>{onDirty(changed);},[changed,onDirty]);
  async function save(){if(!enabled||pending||conflict||!changed||!name.trim()||!occurrences.length)return;setPending(true);setError('');try{await onSave(name.trim(),stops);onDirty(false);}catch(e){setError(String(e));}finally{setPending(false);}}
  return <section aria-label="保存済み新形式系統" className="service-stop-editor"><fieldset disabled={!enabled||pending}><label className="service-name-field">名称<input aria-label="保存済み系統名" value={name} maxLength={80} onChange={e=>setName(e.target.value)}/></label><h4>停車駅</h4>
