@@ -20,8 +20,9 @@ export function routeLength(route:Route,world:World):number|null {
  try{return segments.reduce((total,s)=>{
   if(s.kind==='alignment')return total+between(s.alignment_id,s.from,s.to);
   if(s.kind==='connected_alignments')return total+corridorSpans(s,world).reduce((sum,p)=>sum+span(p.alignmentId,p.begin,p.finish),0);
-  const t=world.tracks.find(t=>t.id===s.track_id),p=t&&placement(t.from);
-  if(!t||!p)throw Error('No geometry');return total+between(p.alignment_id,t.from,t.to);
+  // Station placement is not Track geometry: a legacy link never records
+  // which physical alignment (if any) it follows. Do not infer that relation.
+  throw Error('Legacy link has no physical geometry');
  },0);}catch{return null;}
 }
 export function RouteDirectory({world,enabled,selected,onChoose}:{world:World;enabled:boolean;selected:string|null;onChoose:(id:string|null)=>void}){

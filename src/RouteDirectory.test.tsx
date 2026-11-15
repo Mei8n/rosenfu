@@ -20,3 +20,11 @@ test('directory exposes real distance, no fabricated simulation metrics and edit
  fireEvent.click(screen.getByRole('button',{name:'編集: 本線'}));expect(choose).toHaveBeenLastCalledWith('r');
  fireEvent.click(screen.getByRole('button',{name:'新規路線'}));expect(choose).toHaveBeenLastCalledWith(null);
 });
+test('legacy station links do not inherit unrelated curved alignment geometry from endpoint placement',()=>{
+ const legacy={...route,tracks:['t']};
+ const sameEndpoints={...world,routes:[legacy],route_paths:[],tracks:[{id:'t',from:'a',to:'b'}]};
+ // Track stores only endpoint station IDs. Their placement on one curved
+ // alignment does not make that alignment the legacy link's physical path.
+ expect(routeLength(legacy,sameEndpoints)).toBeNull();
+ expect(routeLength(legacy,{...sameEndpoints,route_paths:[{route_id:'r',segments:[{kind:'track' as const,track_id:'t'}]}]})).toBeNull();
+});

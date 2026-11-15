@@ -118,9 +118,23 @@ test("persistable candidate saves excluded membership without losing physical se
 });
 test('uses only backend-certified shortest candidate and never truncated shortest',async()=>{
  const response:Candidates={status:'ambiguous',candidates:[path,{...path,segments:[{kind:'track',track_id:'9'}]}],truncated:false,shortest_candidate_index:1};
- const view=start(response);search();await screen.findByText('最短距離の経路を選択しました。');
+ const view=start(response);search();await screen.findByText('直線距離を含む推定で最短候補を選択しました（実線形での最短は未確認）。');
  expect(invoke).toHaveBeenCalledWith('preview_route_membership',{start:'1',segments:response.candidates[1].segments,excludedStations:[]});
  view.unmount();vi.mocked(invoke).mockClear();start({...response,status:'incomplete',truncated:true});search();
  await screen.findByText(/探索上限に達しました/);
  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='preview_route_membership')).toHaveLength(0);
+});
+
+test('physical winner remains an estimate when an alternative is a legacy link',async()=>{
+ const physical:Candidate={stations:['1','3'],segments:[{kind:'alignment',alignment_id:'a',from:'1',to:'3'}],track_only:false};
+ start({status:'ambiguous',candidates:[physical,path],truncated:false,shortest_candidate_index:0});search();
+ await screen.findByText(/実線形での最短は未確認/);
+ expect(screen.queryByText('最短距離の経路を選択しました。')).toBeNull();
+});
+test('complete comparison between sampled alignment candidates keeps physical shortest wording',async()=>{
+ const first:Candidate={stations:['1','3'],segments:[{kind:'alignment',alignment_id:'a',from:'1',to:'3'}],track_only:false};
+ const second:Candidate={...first,segments:[{kind:'alignment',alignment_id:'b',from:'1',to:'3'}]};
+ start({status:'ambiguous',candidates:[first,second],truncated:false,shortest_candidate_index:0});search();
+ await screen.findByText('最短距離の経路を選択しました。');
+ expect(screen.queryByText(/実線形での最短は未確認/)).toBeNull();
 });

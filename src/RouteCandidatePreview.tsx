@@ -115,6 +115,9 @@ export function RouteCandidatePreview({ editRoute, onCancelEdit, startSequenceKe
     finally { if (token === generation.current) { pending.current = false; setLoading(false); } }
   }
   const candidate = chosen === null ? null : result?.candidates[chosen];
+  // Any legacy edge makes the comparison estimated, even when the winner uses
+  // only sampled alignments: its alternatives still have unknown real geometry.
+  const estimatedComparison = result?.candidates.some(item=>item.segments.some(segment=>segment.kind==="track"));
   const importable = membership && membership.path.track_only && membership.excluded_stations.length === 0
     && membership.path.segments.every(segment => segment.kind === "track");
   return <section className="route-candidate-preview" aria-label="起終点から経路候補">
@@ -141,7 +144,7 @@ export function RouteCandidatePreview({ editRoute, onCancelEdit, startSequenceKe
     {result && <>
       {(result.status === "incomplete" || result.truncated) ? <p role="status">探索上限に達しました。候補は一部のみで、唯一の経路・接続なしとは判定できません。</p>
         : result.status === "no_path" ? <p role="status">現在の接続関係では経路が見つかりません。交差・近接だけでは線路は接続されません。</p>
-        : result.status === "ambiguous" ? <p role="status">{chosen!==null && chosen===result.shortest_candidate_index ? "最短距離の経路を選択しました。" : "複数の経路があります。使用する候補を選んでください。"}</p>
+        : result.status === "ambiguous" ? <p role="status">{chosen!==null && chosen===result.shortest_candidate_index ? (estimatedComparison ? "直線距離を含む推定で最短候補を選択しました（実線形での最短は未確認）。" : "最短距離の経路を選択しました。") : "複数の経路があります。使用する候補を選んでください。"}</p>
         : <p role="status">経路候補が見つかりました。</p>}
       <p className="field-hint">候補順は距離順ではありません。</p>
       <fieldset disabled={!enabled || loading}><legend>経路候補</legend>
