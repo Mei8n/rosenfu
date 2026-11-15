@@ -42,9 +42,9 @@ test('saved selection and unsaved new path drafts protect each other',async()=>{
 
 test('saved new-format stops edit blocks selection and saves through atomic command',async()=>{
  await start(saved);const panel=within(screen.getByRole('tabpanel',{name:'系統'}));fireEvent.click(panel.getByRole('button',{name:'系統編集: 独立系統'}));const editor=within(panel.getByRole('region',{name:'保存済み新形式系統'}));
- fireEvent.change(editor.getByLabelText('保存済み系統名'),{target:{value:'更新系統'}});fireEvent.click(editor.getByLabelText('保存済み停車 2'));fireEvent.click(panel.getByRole('button',{name:'新規系統'}));expect(panel.getByRole('button',{name:'系統下書きを破棄して切替'})).toBeTruthy();
+ fireEvent.change(editor.getByLabelText('保存済み系統名'),{target:{value:'  更新系統  '}});fireEvent.click(editor.getByLabelText('保存済み停車 2'));fireEvent.click(panel.getByRole('button',{name:'新規系統'}));expect(panel.getByRole('button',{name:'系統下書きを破棄して切替'})).toBeTruthy();
  fireEvent.click(editor.getByRole('button',{name:'保存済み系統の変更を取り消す'}));expect((editor.getByLabelText('保存済み系統名') as HTMLInputElement).value).toBe('独立系統');
- fireEvent.change(editor.getByLabelText('保存済み系統名'),{target:{value:'更新系統'}});fireEvent.click(editor.getByLabelText('保存済み停車 2'));
+ fireEvent.change(editor.getByLabelText('保存済み系統名'),{target:{value:'  更新系統  '}});fireEvent.click(editor.getByLabelText('保存済み停車 2'));
  vi.mocked(invoke).mockImplementation(async(command)=>command==='update_service_path'?{...saved,services:[{...saved.services[0],name:'更新系統'}],service_paths:[{...saved.service_paths[0],stops:preview.occurrences.map(o=>o.reference)}]}:saved);
  fireEvent.click(editor.getByRole('button',{name:'保存済み系統の変更を適用'}));await screen.findByText(/系統名と停車設定を適用しました/);
  expect(screen.queryByText(/保存済み系統が変更されています/)).toBeNull();
