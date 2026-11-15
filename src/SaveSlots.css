@@ -1,0 +1,42 @@
+.save-slot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+  margin-block: 8px 12px;
+}
+.save-slot-actions > button {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 7px 10px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.save-slot-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+.save-slot-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--edge, #c9c5bb);
+  background: var(--surface, #faf8f1);
+  display: grid;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.save-slot-card.is-current {
+  border-color: var(--accent, #b98729);
+  background: color-mix(in srgb, var(--accent, #b98729) 10%, var(--surface, #faf8f1));
+}
+.save-slot-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.save-slot-current { color: var(--ink, #332e23); font-size: 11px; }
+.save-slot-card time, .save-slot-card small { color: var(--muted, #686358); font-size: 11px; }
+.save-slot-card-actions { display: flex; justify-content: flex-end; }
+.save-slot-card-actions > button { max-width: 100%; }
+.company-setup.save-slot-dialog { width: min(600px, 100%); padding: 20px; }
+.save-slot-dialog > h2 { margin-top: 0; }

@@ -1,0 +1,23 @@
+.plan-breakdown .planned-station-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  margin-block: 6px;
+}
+.plan-breakdown .planned-station-row > input {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  width: 100%;
+}
+.plan-breakdown .planned-station-row > button {
+  grid-column: 2;
+  grid-row: 1;
+  margin: 0;
+  white-space: nowrap;
+}
+.plan-breakdown .planned-station-row > [role="status"] {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
