@@ -76,3 +76,17 @@ test('unexpected overwrite response is rejected without confirming or clearing e
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='confirm_manual_save')).toBe(false);
  expect(screen.queryByRole('dialog',{name:'保存済みのワールドを置き換えますか？'})).toBeNull();
 });
+
+test('world name dialogs disable saved-info autocomplete without preventing input or submission',async()=>{
+ await setup();
+ for(const title of ['新しいワールド','別のセーブとして保存']){
+  fireEvent.click(screen.getByRole('button',{name:title}));
+  const modal=within(screen.getByRole('dialog',{name:title}));
+  const input=modal.getByLabelText('名前') as HTMLInputElement;
+  expect(input.autocomplete).toBe('off');
+  expect(input.form?.getAttribute('autocomplete')).toBe('off');
+  fireEvent.change(input,{target:{value:'試験セーブ'}});
+  expect(input.value).toBe('試験セーブ');
+  fireEvent.click(modal.getByRole('button',{name:'キャンセル'}));
+ }
+});
