@@ -512,3 +512,6 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .construction-toolbar .follow-icon { width:27px; height:25px; padding:0; }
 .track-follow-options button[aria-pressed="true"] { background:var(--accent); }
 .map-surface .follow-icon svg { width:20px; height:20px; margin:auto; }
+.follow-icon { position:relative; }
+.follow-tip { display:none; position:absolute; left:0; top:calc(100% + 7px); width:260px; padding:6px 8px; font-weight:400; font-size:11px; line-height:1.5; text-align:left; white-space:normal; color:var(--ink); background:var(--surface); border:1px solid var(--edge); opacity:.95; pointer-events:none; z-index:10; }
+.follow-icon:hover .follow-tip,.follow-icon:focus-visible .follow-tip { display:block; }

@@ -1,3 +1,4 @@
+import {PARALLEL_RANGE_M,parallelProjection,offsetTrack,parallelSection} from "./parallelTrack";
 import {TrackFollowIcon} from "./TrackFollowIcon";
 import {twoEndedJoin} from "./twoEndedJoin";
 import {DeletionDialog} from "./DeletionDialog";
@@ -248,8 +249,12 @@ export function App() {
   const [designSpeedKmh,setDesignSpeedKmh]=useState(120);
   const [roadFollowing,setRoadFollowing]=useState(false);
   const [referencePanel,setReferencePanel]=useState(false);
+  const [parallelMode,setParallelMode]=useState(false);
+  const [parallelStart,setParallelStart]=useState<{sourceId:string;offset:number;point:GeoPoint}|null>(null);
+  function cancelParallel(){setParallelStart(null);}
+  useEffect(()=>{cancelParallel();},[activeTool,activePlanId,world]);
   const roadFollowingBlocked=roadFollowing;
-  function chooseTrackType(value:TrackType){setTrackType(value);setDesignSpeedKmh(defaultDesignSpeed(value));setRoadFollowing(value==="tram");setReferencePanel(value==="tram");setHoverPoint(null);}
+  function chooseTrackType(value:TrackType){cancelParallel();setParallelMode(false);setTrackType(value);setDesignSpeedKmh(defaultDesignSpeed(value));setRoadFollowing(value==="tram");setReferencePanel(value==="tram");setHoverPoint(null);}
   const nextPathId = useRef(2);
   const [plannedStations,setPlannedStations]=useState<PlannedStation[]>([]);
   const nextPlannedStationId=useRef(1);
@@ -771,6 +776,7 @@ export function App() {
     if(gesture){suppressMapClick.current=true;suppressSelectionClick.current=true;if(svgRef.current?.hasPointerCapture?.(gesture.pointerId))svgRef.current.releasePointerCapture(gesture.pointerId);}
   }
   function beginAnchorGesture(event:ReactPointerEvent<SVGRectElement>,id:number,index:number){
+    if(parallelMode)return;
     if(!enabled||busyRef.current||activeTool!=="tracks"||referenceCopy.active||event.button!==0||event.isPrimary===false)return;
     const path=id===activePathId?parkCurrentPlan():parkedPaths.find(p=>p.id===id);
     if(!path||path.reference||path.roadFollowing||path.points.length<2||(index===0&&path.extension))return;
@@ -835,7 +841,7 @@ export function App() {
       const rect=event.currentTarget.getBoundingClientRect(),point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
       setCursorPosition(point?{x:event.clientX-rect.left,y:event.clientY-rect.top,width:rect.width,height:rect.height}:null);
       drawingCursor.current=point?{point,width:rect.width,height:rect.height}:null;
-      setHoverPoint(point && !snappedEndpoint(point,rect.width,rect.height)?drawingPoint(point,rect.width,rect.height,event.ctrlKey):null);
+      setHoverPoint(parallelMode?point:point && !snappedEndpoint(point,rect.width,rect.height)?drawingPoint(point,rect.width,rect.height,event.ctrlKey):null);
     }
     const gesture = gestureRef.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
@@ -895,7 +901,7 @@ export function App() {
 
     return builtEnds.length?{kind:"built" as const,...builtEnds[0]}:null;
   }
-  const endpointCandidate=enabled&&activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!roadFollowingBlocked&&!dragging&&(draftFinished||!draftPoints.length)&&hoverPoint&&cursorPosition
+  const endpointCandidate=!parallelMode&&enabled&&activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!roadFollowingBlocked&&!dragging&&(draftFinished||!draftPoints.length)&&hoverPoint&&cursorPosition
     ?startTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
   const endpointCandidateAllowed=endpointCandidate?.kind!=="built"||(endpointCandidate.alignment.owner===world?.companies[0]?.id&&!occupiedEndpoint(world?.alignment_connections??[],{alignmentId:endpointCandidate.alignment.id,endpoint:endpointCandidate.endpoint}));
   const destinationCandidate=enabled&&activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!dragging&&hoverPoint&&cursorPosition?destinationTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
@@ -911,8 +917,26 @@ export function App() {
     Math.max(Math.abs(tangentGuideStart.x-viewport.x),Math.abs(tangentGuideStart.x-viewport.x-viewport.width)),
     Math.max(Math.abs(tangentGuideStart.y-viewport.y),Math.abs(tangentGuideStart.y-viewport.y-viewport.height)),
   )+32/viewport.scale:0;
-  const tangentGuide=activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!draftFinished&&!dragging&&!anchorPreview&&guideGeometry.tangent&&tangentGuideStart
+  const tangentGuide=!parallelMode&&activeTool==="tracks"&&mapMode==="draw"&&!referenceCopy.active&&!draftFinished&&!dragging&&!anchorPreview&&guideGeometry.tangent&&tangentGuideStart
     ?{start:tangentGuideStart,end:{x:tangentGuideStart.x+guideGeometry.tangent.x*guideLength,y:tangentGuideStart.y-guideGeometry.tangent.y*guideLength}}:null;
+
+  const parallelSources=alignments.filter(line=>line.owner===world?.companies[0]?.id&&line.points.length>1);
+  const parallelCandidate=parallelMode&&hoverPoint?parallelSources.map(source=>({source,projection:parallelProjection(source.points,hoverPoint)})).filter(item=>item.projection&&item.projection.distance<=PARALLEL_RANGE_M).sort((a,b)=>a.projection!.distance-b.projection!.distance)[0]:undefined;
+  const parallelSource=parallelSources.find(source=>source.id===parallelStart?.sourceId);
+  const parallelOffsetLine=parallelSource&&parallelStart?offsetTrack(parallelSource.points,parallelStart.offset):null;
+  const parallelPreview=parallelOffsetLine&&parallelStart&&hoverPoint&&(parallelProjection(parallelSource!.points,hoverPoint)?.distance??Infinity)<=PARALLEL_RANGE_M?parallelSection(parallelOffsetLine,parallelStart.point,hoverPoint):null;
+  function placeParallel(point:GeoPoint){
+    if(!parallelStart){
+      const pick=parallelSources.map(source=>({source,p:parallelProjection(source.points,point)})).filter(item=>item.p&&item.p.distance<=PARALLEL_RANGE_M&&Math.abs(item.p.offset)>=3).sort((a,b)=>a.p!.distance-b.p!.distance)[0];
+      if(!pick)return;
+      const line=offsetTrack(pick.source.points,pick.p!.offset),start=line&&parallelProjection(line,point)?.point;if(!start)return;
+      setParallelStart({sourceId:pick.source.id,offset:pick.p!.offset,point:start});return;
+    }
+    if(!parallelOffsetLine)return;
+    const target=parallelProjection(parallelSource!.points,point);if(!target||target.distance>PARALLEL_RANGE_M)return;
+    const geometry=parallelSection(parallelOffsetLine,parallelStart.point,point);if(!geometry)return;
+    newPath(true);setDraftPoints(geometry.anchors);setDraftEditedGeometry(geometry);setDraftFinished(true);setRedoPoints([]);setAnchorUndo([]);setAnchorRedo([]);setParallelStart(null);setHoverPoint(null);
+  }
 
   function mapClick(event: MouseEvent<SVGSVGElement>) {
     smoothZoom.cancel();
@@ -922,6 +946,7 @@ export function App() {
     if (!rawCoordinates) return;
     let coordinates:GeoPoint=rawCoordinates;
     if (activeTool === "tracks" && mapMode === "draw") {
+      if(parallelMode){if(event.detail<2)placeParallel(coordinates);return;}
       if(referenceCopy.active){void referenceCopy.click(coordinates);return;}
       if(roadFollowingBlocked)return;
       // A fresh click on the last anchor finishes the path, independent of
@@ -1084,6 +1109,7 @@ export function App() {
       }
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==="z") {
         event.preventDefault();if(event.repeat || busyRef.current)return;
+        if(parallelStart){if(!event.shiftKey)cancelParallel();return;}
         if(anchorGesture.current){cancelAnchorGesture();return;}
         if(activeTool==="delete"){if(!event.shiftKey)undoTrackDelete();return;}
         if(activeTool==="tracks" && (event.shiftKey?anchorRedo.length:anchorUndo.length)){undoAnchor(event.shiftKey);return;}
@@ -1092,7 +1118,7 @@ export function App() {
         else if(event.shiftKey)redoStation();else undoStation();return;
       }
       if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
-      if (event.key === "Escape") { if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
+      if (event.key === "Escape") {cancelParallel(); if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   });
@@ -1324,10 +1350,10 @@ export function App() {
             {activeTool==="delete"&&deleteHover&&!dragging&&<div className="construction-tooltip deletion-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,deleteHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,deleteHover.y+18))}}>{deletionLabel(deleteHover.target)}を{deleteHover.target.kind==="built-section"||deleteHover.target.kind==="station"?"撤去":"削除"}</div>}
             {activeTool==="stations"&&<fieldset className="construction-toolbar station-toolbar" disabled={!enabled} aria-label="駅設置設定"><PlatformLengthInput id="platform-length" label="駅の長さ" value={platformLength} onChange={setPlatformLength} compact/></fieldset>}
             {activeTool==="stations"&&mapMode==="place"&&!dragging&&cursorPosition&&stationCursor&&stationSelection?.error&&<div className="construction-tooltip station-placement-error" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{stationSelection.error}</div>}
-            {activeTool === "tracks" && <div className="construction-toolbar" role="group" aria-label="線路敷設設定">            <TrackTypeControls value={trackType} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType}/><div className="track-follow-options" role="group" aria-label="線路の追従"><button type="button" className="secondary follow-icon" aria-label="実在の路線網に合わせる" title="実在の路線網に合わせる" aria-pressed={referencePanel&&!roadFollowing} disabled={!enabled||!!draftExtension} onClick={()=>{referenceCopy.clear();referenceCopy.setMode("rail");setRoadFollowing(false);setReferencePanel(value=>!value||roadFollowing);}}><TrackFollowIcon kind="rail"/></button><button type="button" className="secondary follow-icon" aria-label="道路に合わせる" title="道路に合わせる" aria-pressed={roadFollowing} disabled={!enabled||!!draftExtension} onClick={()=>{referenceCopy.clear();setRoadFollowing(value=>!value);setReferencePanel(!roadFollowing);setHoverPoint(null);}}><TrackFollowIcon kind="road"/></button></div>
+            {activeTool === "tracks" && <div className="construction-toolbar" role="group" aria-label="線路敷設設定">            <TrackTypeControls value={trackType} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType}/><div className="track-follow-options" role="group" aria-label="線路の追従"><button type="button" className="secondary follow-icon" aria-label="実在の路線網に合わせる" title="実在の路線網に合わせる" aria-pressed={referencePanel&&!roadFollowing} disabled={!enabled||!!draftExtension} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();referenceCopy.setMode("rail");setRoadFollowing(false);setReferencePanel(value=>!value||roadFollowing);}}><TrackFollowIcon kind="rail"/></button><button type="button" className="secondary follow-icon" aria-label="道路に合わせる" title="道路に合わせる" aria-pressed={roadFollowing} disabled={!enabled||!!draftExtension} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();setRoadFollowing(value=>!value);setReferencePanel(!roadFollowing);setHoverPoint(null);}}><TrackFollowIcon kind="road"/></button><button type="button" className="secondary follow-icon" aria-label="線路の横に沿わせる" title="線路の横に沿わせる" aria-pressed={parallelMode} disabled={!enabled||!copyCanStart} onClick={()=>{cancelParallel();referenceCopy.clear();setReferencePanel(false);setRoadFollowing(false);setParallelMode(value=>!value);setHoverPoint(null);}}><TrackFollowIcon kind="parallel"/><span className="follow-tip">線路の横に沿わせる<br/>青い範囲にカーソルを合わせると、別の線路と平行に線路を描きます</span></button></div>
             <div className="target-speed-control"><label htmlFor="track-target-speed">目標最高速度</label><span className="speed-input"><button type="button" className="secondary" aria-label="目標最高速度を20 km/h下げる" disabled={!enabled||!!draftExtension||referenceCopy.active||designSpeedKmh<=1} onClick={()=>setDesignSpeedKmh(value=>Math.max(1,value-20))}>−</button><input id="track-target-speed" aria-label="線路の目標最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/><button type="button" className="secondary" aria-label="目標最高速度を20 km/h上げる" disabled={!enabled||!!draftExtension||referenceCopy.active||designSpeedKmh>=600} onClick={()=>setDesignSpeedKmh(value=>Math.min(600,value+20))}>＋</button><span>km/h</span></span></div>
 </div>}
-            {activeTool === "tracks" && mapMode==="draw" && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && (draftPoints.length>0 || roadFollowingBlocked || !!previewError) && <div className="construction-tooltip drawing-tooltip drawing-metrics" role="status" style={{left:Math.max(8,Math.min(mapSize.width-210,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-90,cursorPosition.y+18))}}>
+            {activeTool === "tracks" && mapMode==="draw" && !parallelMode && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && (draftPoints.length>0 || roadFollowingBlocked || !!previewError) && <div className="construction-tooltip drawing-tooltip drawing-metrics" role="status" style={{left:Math.max(8,Math.min(mapSize.width-210,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-90,cursorPosition.y+18))}}>
               {(roadFollowingBlocked || previewError)&&<strong>{roadFollowingBlocked?"道路追従を開始するか、道路に合わせるをOFFにしてください":`敷設不可：${previewError}`}</strong>}
               {draftPoints.length>0&&<><div>長さ {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div>{!previewError&&<div>速度上限 <span className="drawing-speed">{Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh)} km/h</span>{circleGuide&&<small>（暫定）</small>}</div>}</>}
             </div>}
@@ -1373,12 +1399,16 @@ export function App() {
               </g>)}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {referenceCopy.active&&referenceCopy.plan.build&&<path d={drawPath(referenceCopy.plan.build.points)} className="draft-path reference-copy-preview" style={referenceCopy.roadFollow?{stroke:"#298746"}:undefined} pointerEvents="none"/>}
+              {parallelMode&&activeTool==="tracks"&&parallelSources.map(source=>{const p=source.points[0],a=project(p.latitude,p.longitude,camera),b=project(p.latitude+PARALLEL_RANGE_M/111195,p.longitude,camera);return <path key={source.id} d={drawPath(source.points)} fill="none" stroke="#61afcf" strokeOpacity=".28" strokeWidth={2*Math.abs(a.y-b.y)} strokeLinecap="round" pointerEvents="none"/>;})}
+              {parallelMode&&parallelStart&&(()=>{const q=project(parallelStart.point.latitude,parallelStart.point.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
+              {parallelMode&&parallelPreview&&<path d={drawPath(parallelPreview.line)} className="draft-path candidate-draft" pointerEvents="none"/>}
+              {parallelMode&&parallelCandidate&&!parallelStart&&(()=>{const line=offsetTrack(parallelCandidate.source.points,parallelCandidate.projection!.offset),p=line&&hoverPoint&&parallelProjection(line,hoverPoint)?.point;if(!p)return null;const q=project(p.latitude,p.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
               {parkedPaths.map(plan=><g key={plan.id} className={plan.planId===activePlanId?undefined:"inactive-plan"}><path d={drawPath(plan.line)} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
 
-              {!referenceCopy.active && guideCenter && guideEdge && <circle className="curve-circle-guide" cx={guideCenter.x} cy={guideCenter.y} r={Math.hypot(guideEdge.x-guideCenter.x,guideEdge.y-guideCenter.y)} fill="none" stroke={previewError ? "#b34c4c" : "#65716b"} strokeWidth="1" opacity=".6" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
+              {!parallelMode && !referenceCopy.active && guideCenter && guideEdge && <circle className="curve-circle-guide" cx={guideCenter.x} cy={guideCenter.y} r={Math.hypot(guideEdge.x-guideCenter.x,guideEdge.y-guideCenter.y)} fill="none" stroke={previewError ? "#b34c4c" : "#65716b"} strokeWidth="1" opacity=".6" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
               {!referenceCopy.active&&draftLine.length > 1 && <path d={drawPath(draftLine)} className={"draft-path confirmed-draft"+(mapMode==="move"&&selectedPlanPath===activePathId?" track-explicit-selection":"")} pointerEvents="none" />}
-              {!referenceCopy.active&&candidateLine.length > 1 && <path d={drawPath(candidateLine)} className={"draft-path candidate-draft"+(previewError?" invalid-candidate":"")} pointerEvents="none" />}
+              {!parallelMode&&!referenceCopy.active&&candidateLine.length > 1 && <path d={drawPath(candidateLine)} className={"draft-path candidate-draft"+(previewError?" invalid-candidate":"")} pointerEvents="none" />}
               {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(activePathId);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
               {enabled&&(activeTool==="tracks"||activeTool==="inactive")&&!referenceCopy.active&&!dragging&&!anchorPreview&&!endpointCandidate&&builtHover&&hoveredBuilt&&lineFocusMarker(hoveredBuilt.points,builtHover.point,"built-hover-point")}
               {destinationCandidate&&focusMarker(destinationCandidate.point,"anchor","destination-snap-ring",!destinationError)}
