@@ -194,6 +194,7 @@ pub enum WorldError {
     ProvenanceEditUnsupported,
     ServicePathEditUnsupported,
     InvalidStationPlacement,
+    StationFootprintOverlap,
     SelfLoop,
     EmptyRoute,
     DisconnectedRoute,
