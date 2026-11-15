@@ -21,6 +21,13 @@ test('speed lives inside initially closed details and retains edited values acro
  const details=document.querySelector<HTMLDetailsElement>('.track-advanced-settings')!;
  expect(details).not.toBeNull();expect(details.open).toBe(false);
  expect(details.querySelector('summary')?.textContent).toBe('詳細設定');
+ const lower=details.closest('.construction-options-row')!;
+ expect(lower.contains(screen.getByLabelText('敷設する線路数'))).toBe(true);
+ const mode=document.querySelector('.construction-mode-row')!;
+ expect(mode.contains(screen.getByLabelText('敷設する線路数'))).toBe(false);
+ expect(mode.compareDocumentPosition(lower)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ const height=document.querySelector('.height-controls')!;
+ expect(height.compareDocumentPosition(mode)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
  const field=within(details).getByLabelText('線路の目標最高速度') as HTMLInputElement;
  expect(field.closest('details')).toBe(details);
  // jsdom does not perform native summary keyboard activation/layout; toggle its native state.
@@ -38,4 +45,9 @@ test('speed lives inside initially closed details and retains edited values acro
 test('narrow toolbar allows label and controls to wrap without widening the disclosure',()=>{
  expect(css).toMatch(/\.track-advanced-settings \{[^}]*min-width:0;[^}]*max-width:100%/);
  expect(css).toMatch(/\.track-advanced-settings \.target-speed-control \{[^}]*flex-wrap:wrap/);
+});
+
+test('explicit lower row remains full width and wraps its controls on narrow panels',()=>{
+ expect(css).toMatch(/\.construction-options-row \{[^}]*flex-wrap:wrap;[^}]*flex-basis:100%;[^}]*min-width:0;[^}]*max-width:100%/);
+ expect(css).toContain('@media (max-width:480px)');
 });

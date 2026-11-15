@@ -545,3 +545,28 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .service-badge.diamond { transform:rotate(45deg); }
 .service-badge.diamond > span { transform:rotate(-45deg); }
 .service-badge > span { max-width:100%; overflow:hidden; white-space:nowrap; }
+
+/* Explicit rows: height, placing modes, then count and the details disclosure. */
+.workbench .construction-toolbar .construction-mode-row,
+.workbench .construction-toolbar .construction-options-row {
+  display:flex; align-items:flex-start; flex-wrap:wrap; gap:6px;
+  flex-basis:100%; min-width:0; max-width:100%;
+}
+.workbench .construction-toolbar .construction-mode-row { align-items:center; }
+.workbench .construction-toolbar .construction-options-row > label {
+  display:flex; align-items:center; gap:5px; margin:0; white-space:nowrap;
+}
+.workbench .construction-toolbar .construction-options-row .track-advanced-settings {
+  flex:1 1 9em; min-width:0;
+}
+.workbench .construction-toolbar .track-advanced-settings > summary {
+  width:fit-content; padding:3px 4px; line-height:1.4;
+}
+.workbench .construction-toolbar .track-advanced-settings > summary:focus-visible {
+  outline:2px solid currentColor; outline-offset:1px;
+}
+@media (max-width:480px) {
+  .workbench .construction-toolbar .construction-mode-row { gap:4px; }
+  .workbench .construction-toolbar .construction-options-row .track-advanced-settings { flex-basis:8em; }
+  .workbench .construction-toolbar .speed-input { max-width:100%; }
+}
