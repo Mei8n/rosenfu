@@ -105,7 +105,8 @@ test("existing platform resize preserves ID and duplicate submits are blocked",a
   fireEvent.click(document.querySelector(".station-entry")!);
   fireEvent.change(screen.getByLabelText("選択駅の長さ"),{target:{value:"16"}});
   let finish!: (value:unknown)=>void;
-  vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+  const defaultInvoke=vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command,args)=>command==="update_station_placement"?new Promise(resolve=>{finish=resolve;}):defaultInvoke(command,args));
   expect(screen.queryByRole("button",{name:"ホーム寸法を適用"})).toBeNull();
   await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="update_station_placement")).toHaveLength(1));
   expect(invoke).toHaveBeenCalledWith("update_station_placement",{stationId:"4",lengthM:320,widthM:12});
