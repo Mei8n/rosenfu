@@ -1355,7 +1355,8 @@ export function App() {
   function load(source: "manual"|"auto" = loadSource) {
     setConfirmLoad(false);
     void perform(async () => {
-      const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_world",source==="auto"?{slotId:activeSlotId}:undefined);
+      if(!activeSlotId)throw Error("読み込むセーブを選択してください。");
+      const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_save_slot",{slotId:activeSlotId});
       acceptLoadedWorld(snapshot,source);await refreshSaveSlots();
       setNotice(source==="auto"?"自動保存から復元しました。手動保存データは上書きしていません。必要なら保存してください。":"保存したワールドを読み込みました。");
     });
