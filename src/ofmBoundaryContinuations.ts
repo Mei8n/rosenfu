@@ -1,6 +1,6 @@
 /** Conservative geometric continuity candidates, NOT topology or permission.
  * Never mutates/joins geometry. A caller must preserve all source provenance. */
-export type TileRoadLine={id:string;revision:string;z:14;x:number;y:number;coordinates:readonly (readonly [number,number])[];class:string;access?:string;subclass?:string;brunnel?:string;layer?:number;level?:string;oneway?:number};
+export type TileRoadLine={id:string;revision:string;z:14;x:number;y:number;coordinates:readonly (readonly [number,number])[];class:string;access?:string;subclass?:string;brunnel?:string;layer?:number;level?:string;oneway?:number|string};
 export type BoundaryContinuation={aId:string;bId:string;overlapMeters:number;maxSeparationMeters:number};
 type P=[number,number];
 const MAX_LINES=2000,MAX_POINTS=100000,MAX_PAIRS=10000,TOLERANCE=.8,BAND=10;
@@ -8,7 +8,7 @@ const classes=new Set(['primary','secondary','tertiary','minor','service']);
 const lat=(y:number)=>Math.atan(Math.sinh(Math.PI*(1-2*y/16384)))*180/Math.PI;
 const dist=(a:P,b:P)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
 const length=(p:P[])=>p.slice(1).reduce((s,q,i)=>s+dist(q,p[i]),0);
-function eligible(l:TileRoadLine){return classes.has(l.class)&&!l.brunnel&&(l.layer===undefined||l.layer===0)&&(l.level===undefined||/^[+-]?0(?:\.0+)?$/.test(l.level));}
+function eligible(l:TileRoadLine){return (l.oneway===undefined||[0,1,-1].includes(l.oneway as number))&&classes.has(l.class)&&!l.brunnel&&(l.layer===undefined||l.layer===0)&&(l.level===undefined||/^[+-]?0(?:\.0+)?$/.test(l.level));}
 function same(a:TileRoadLine,b:TileRoadLine){return a.access===b.access&&a.class===b.class&&a.subclass===b.subclass&&a.brunnel===b.brunnel&&a.layer===b.layer&&a.level===b.level&&a.oneway===b.oneway;}
 /** One monotonic boundary passage only; loops/re-entry and corner cases refused. */
 function strip(points:P[],axis:number,seam:number):P[]|undefined{
