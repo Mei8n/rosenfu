@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import {afterEach,expect,test,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {invoke,isTauri} from '@tauri-apps/api/core';
 import {App} from './App';
 import {emptyConstructionPlans} from './constructionPlans';
@@ -197,4 +197,21 @@ test('changing a restored plan invalidates deletion redo even if the setting is 
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
  expect(map.querySelector('[data-delete-plan-path]')).not.toBeNull();
+});
+
+test.each(['built', 'planned'] as const)('%s section confirmation defaults to deletion, while Escape cancels',async kind=>{
+ const map=await start(kind==='built'?built:{...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b,c],draftFinished:true}});
+ const selector=kind==='built'?'[data-delete-section="0"]':'[data-delete-plan-section="0"]';
+ fireEvent.click(map.querySelector(selector)!);
+ expect(document.activeElement).toBe(screen.getByRole('button',{name:'削除する'}));
+ fireEvent(screen.getByRole('dialog'),new Event('cancel',{cancelable:true}));
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(map.querySelectorAll(selector)).toHaveLength(1);
+ expect(invoke).not.toHaveBeenCalledWith('delete_alignment_section',expect.anything());
+ fireEvent.click(map.querySelector(selector)!);
+ expect(document.activeElement).toBe(screen.getByRole('button',{name:'削除する'}));
+ await act(async()=>{fireEvent.keyDown(document.activeElement!,{key:'Enter'});});
+ expect(screen.queryByRole('dialog')).toBeNull();
+ if(kind==='built')expect(map.querySelector('[data-delete-section]')).toBeNull();
+ else expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(1);
 });
