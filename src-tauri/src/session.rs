@@ -652,6 +652,15 @@ impl WorldEditor {
     pub fn build_plan(&mut self, alignments: Vec<PlannedAlignment>) -> Result<WorldDraft, String> {
         self.build_construction_plan(alignments, vec![])
     }
+    /// Read-only preview runs the exact construction pipeline on an isolated
+    /// editor clone; neither IDs, undo state nor saved data are changed.
+    pub fn preview_construction_plan(
+        &self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+    ) -> Result<WorldDraft, String> {
+        self.clone().build_construction_plan(alignments, stations)
+    }
     pub fn build_construction_plan(
         &mut self,
         alignments: Vec<PlannedAlignment>,
@@ -1066,6 +1075,28 @@ impl WorldEditor {
         if alignment.reference.is_some() {
             return Err("参照データを使った勾配敷設は未対応です。".into());
         }
+        let inherited_speed = if let Some(extension) = &alignment.extension {
+            let source = self
+                .world
+                .snapshot()
+                .alignments
+                .iter()
+                .find(|a| a.id == extension.alignment_id && a.owner == self.company)
+                .ok_or("延伸対象の自社線路がありません。")?;
+            if source.track_type != alignment.track_type {
+                return Err("延伸対象と線路種別が一致しません。".into());
+            }
+            let speed = source.effective_design_speed_kmh();
+            if alignment
+                .design_speed_kmh
+                .is_some_and(|v| (v - speed).abs() > 1e-9)
+            {
+                return Err("延伸では元の線路の目標最高速度を引き継ぎます。".into());
+            }
+            Some(speed)
+        } else {
+            alignment.design_speed_kmh
+        };
         let id = self.build_alignment_typed_unchecked(
             alignment.name,
             alignment.points,
@@ -1106,14 +1137,32 @@ impl WorldEditor {
         });
         let (finish_height, end_grade) =
             destination.unwrap_or((alignment.infrastructure.level.height_m(), 0.0));
+        use rosenfu_core::world::InfrastructureLevel;
+        if let Some(actual_level) = [
+            InfrastructureLevel::Ground,
+            InfrastructureLevel::Elevated,
+            InfrastructureLevel::Elevated2,
+            InfrastructureLevel::Elevated3,
+            InfrastructureLevel::Underground,
+            InfrastructureLevel::Underground2,
+            InfrastructureLevel::Underground3,
+        ]
+        .into_iter()
+        .find(|level| (level.height_m() - finish_height).abs() < 1e-9)
+        {
+            for section in &mut built.infrastructure {
+                section.level = actual_level;
+            }
+        }
         let profile = rosenfu_core::world::VerticalProfile {
             start_tangent_m: start_grade * built.length_m(),
             end_tangent_m: end_grade * built.length_m(),
             start_height_m: start_height,
             end_height_m: finish_height,
         };
-        built.vertical_profile = (!profile.is_flat()).then_some(profile);
-        if let Some(speed) = alignment.design_speed_kmh {
+        // Even a flat inherited height may differ from the selected layer label.
+        built.vertical_profile = Some(profile);
+        if let Some(speed) = inherited_speed {
             built.design_speed_kmh = Some(speed);
         }
         if !profile.is_valid(built.length_m(), built.track_type) {
@@ -3972,6 +4021,168 @@ mod tests {
         let before = editor.snapshot();
         assert!(editor.build_plan(vec![short]).is_err());
         assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
+    fn elevated_flat_junction_keeps_real_height_despite_stale_layer_label() {
+        use rosenfu_core::world::{
+            AlignmentEndpoint, ConstructionJunctionSource, InfrastructureLevel, TrackType,
+        };
+        let mut editor = WorldEditor::new();
+        let make = |a, b| {
+            vec![
+                GeoPoint {
+                    latitude: 35.,
+                    longitude: a,
+                },
+                GeoPoint {
+                    latitude: 35.,
+                    longitude: b,
+                },
+            ]
+        };
+        let source = editor
+            .world
+            .build_alignment_ramp(
+                editor.company,
+                "source".into(),
+                make(139., 139.01),
+                TrackType::Normal,
+                InfrastructureLevel::Elevated,
+                InfrastructureLevel::Elevated,
+            )
+            .unwrap();
+        let target = editor
+            .world
+            .build_alignment_ramp(
+                editor.company,
+                "target".into(),
+                make(139.02, 139.03),
+                TrackType::Normal,
+                InfrastructureLevel::Elevated,
+                InfrastructureLevel::Elevated,
+            )
+            .unwrap();
+        let original = editor
+            .snapshot()
+            .alignments
+            .iter()
+            .find(|a| a.id == source)
+            .unwrap()
+            .clone();
+        let mut path = planned_path(0.);
+        path.stations.clear();
+        path.points = make(139.005, 139.02);
+        path.design_speed_kmh = None;
+        path.junction_source = Some(ConstructionJunctionSource {
+            alignment_id: source,
+            expected_alignment: original,
+            segment_index: 0,
+            fraction: 0.5,
+            reverse: false,
+        });
+        path.destination = Some(PlannedAlignmentExtension {
+            alignment_id: target,
+            endpoint: AlignmentEndpoint::Start,
+        });
+        path.infrastructure.level = InfrastructureLevel::Ground;
+        let after = editor.build_plan(vec![path]).unwrap();
+        assert_eq!(
+            after.alignments.last().unwrap().height_at_position_m(0.5),
+            Some(6.)
+        );
+        assert!(after
+            .alignments
+            .last()
+            .unwrap()
+            .vertical_profile
+            .unwrap()
+            .is_flat());
+    }
+
+    #[test]
+    fn preview_and_build_share_destination_height_grade_and_tangent_validation() {
+        use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel};
+        let mut editor = WorldEditor::new();
+        let mut source = planned_path(0.);
+        source.stations.clear();
+        source.design_speed_kmh = Some(160.);
+        let built = editor.build_plan(vec![source]).unwrap();
+        let source_id = built.alignments[0].id;
+        let target = editor
+            .world
+            .build_alignment_ramp(
+                editor.company,
+                "target".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: 139.03,
+                    },
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: 139.04,
+                    },
+                ],
+                rosenfu_core::world::TrackType::Normal,
+                InfrastructureLevel::Elevated,
+                InfrastructureLevel::Elevated,
+            )
+            .unwrap();
+        let before = editor.snapshot();
+        let request = || {
+            let mut path = planned_path(0.);
+            path.stations.clear();
+            path.design_speed_kmh = None;
+            path.points = vec![
+                GeoPoint {
+                    latitude: 35.,
+                    longitude: 139.01,
+                },
+                GeoPoint {
+                    latitude: 35.,
+                    longitude: 139.03,
+                },
+            ];
+            path.extension = Some(PlannedAlignmentExtension {
+                alignment_id: source_id,
+                endpoint: AlignmentEndpoint::End,
+            });
+            path.destination = Some(PlannedAlignmentExtension {
+                alignment_id: target,
+                endpoint: AlignmentEndpoint::Start,
+            });
+            path.infrastructure.level = InfrastructureLevel::Underground3; // Stale UI label must not override target height.
+            path
+        };
+        let preview = editor
+            .preview_construction_plan(vec![request()], vec![])
+            .unwrap();
+        assert_eq!(editor.snapshot(), before);
+        let after = editor.build_plan(vec![request()]).unwrap();
+        assert_eq!(after, preview);
+        let span = after.alignments.last().unwrap();
+        assert_eq!(span.endpoint_height_m(AlignmentEndpoint::End), 6.);
+        assert_eq!(span.effective_design_speed_kmh(), 160.);
+        let mut second = WorldEditor::new();
+        second.world = World::new(before.clone()).unwrap();
+        second.company = editor.company;
+        let invalid = || {
+            let mut path = request();
+            path.points.insert(
+                1,
+                GeoPoint {
+                    latitude: 35.001,
+                    longitude: 139.01,
+                },
+            );
+            path
+        };
+        let error = second
+            .preview_construction_plan(vec![invalid()], vec![])
+            .unwrap_err();
+        assert_eq!(second.build_plan(vec![invalid()]).unwrap_err(), error);
+        assert_eq!(second.snapshot(), before);
     }
 
     #[test]
