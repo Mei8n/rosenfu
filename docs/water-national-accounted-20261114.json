@@ -1,0 +1,533 @@
+{
+  "attribution": "© OpenStreetMap contributors",
+  "coverage": [],
+  "execution_failures": [
+    {
+      "incomplete_artifact_directory": "national-stage-accounted-v1/tohoku",
+      "reason": "undetermined",
+      "region": "tohoku",
+      "successful_retry_directory": "national-stage-accounted-retry-v1/tohoku",
+      "worker_exit_code": -9
+    }
+  ],
+  "format": "rosenfu-water-accounted-stage-audit",
+  "geographic_completeness": "unknown",
+  "license": "ODbL-1.0",
+  "limitations": [
+    "Regional observation counts include duplicates",
+    "Tag presence is not classification or width verification",
+    "No dry-land certification; no construction snapshot",
+    "Source issues are unlocalized and retained in every query",
+    "Marine revision remains separate; marine data not regenerated"
+  ],
+  "osm_timestamp": "2026-11-14T21:20:41Z",
+  "reader_commit": "d17469a0bff4f32863f98fe3fa8363e68bceb747",
+  "source_set_sha256": "5a57533706f1d2accd30c93787df95e575eb18c91d3f36cb2466e22cf9c0304e",
+  "stages": [
+    {
+      "artifact_directory": "national-stage-accounted-v2/chubu",
+      "database": {
+        "bytes": 255750144,
+        "coordinates": 4922078,
+        "file": "stage.sqlite",
+        "observations": 275919,
+        "sha256": "4818b7dc193f57e90edd50679ae32227b26eabdafbb728072bbfedfdab80d604"
+      },
+      "elapsed_seconds": 265.45,
+      "observations_unchanged": true,
+      "region": "chubu",
+      "source_issues": [],
+      "stage_manifest_sha256": "d734728bd57856e080a5123c9f72dee61bb655b4b5075be906d2cec04eefb2f3",
+      "tag_counts": {
+        "coastline": 10573,
+        "line-width-tag-absent": 232473,
+        "line-width-tag-present": 184,
+        "water-area": 32689,
+        "water-area-covered-tag": 3,
+        "water-area-tunnel-tag": 3,
+        "waterway-line": 232657,
+        "waterway-line-covered-tag": 14,
+        "waterway-line-tunnel-tag": 67920
+      }
+    },
+    {
+      "artifact_directory": "national-stage-accounted-v1/chugoku",
+      "database": {
+        "bytes": 147275776,
+        "coordinates": 3031329,
+        "file": "stage.sqlite",
+        "observations": 147479,
+        "sha256": "48952c871a62052082f7fc6966379ac6b275a1dbacb5ec8d35313a4d0fc36215"
+      },
+      "elapsed_seconds": 100.74,
+      "observations_unchanged": true,
+      "region": "chugoku",
+      "source_issues": [
+        {
+          "id": "relation/20045092",
+          "reason": "invalid-area"
+        },
+        {
+          "id": "relation/17140040",
+          "reason": "water-area-not-assembled"
+        }
+      ],
+      "stage_manifest_sha256": "9efa9d3a7cce96970a580e97670592a45b28c07f1d9bb3b3e46cf7266976e5b0",
+      "tag_counts": {
+        "coastline": 10180,
+        "line-width-tag-absent": 112390,
+        "line-width-tag-present": 142,
+        "water-area": 24767,
+        "water-area-covered-tag": 1,
+        "water-area-tunnel-tag": 3,
+        "waterway-line": 112532,
+        "waterway-line-covered-tag": 20,
+        "waterway-line-tunnel-tag": 25894
+      }
+    },
+    {
+      "artifact_directory": "national-stage-accounted-v1/hokkaido",
+      "database": {
+        "bytes": 194387968,
+        "coordinates": 4480226,
+        "file": "stage.sqlite",
+        "observations": 111269,
+        "sha256": "9fa610a9d6204ea029ce4e3f53d5c25d0fa0afe4a6c4d5a91fc16b1a95e61df6"
+      },
+      "elapsed_seconds": 109.84,
+      "observations_unchanged": true,
+      "region": "hokkaido",
+      "source_issues": [],
+      "stage_manifest_sha256": "b46a40e0c2239fc1a993d8f2add5b2ca8d5c1c6ff994f48d4e1fcf96e7ccb8d8",
+      "tag_counts": {
+        "coastline": 7397,
+        "line-width-tag-absent": 83978,
+        "line-width-tag-present": 30,
+        "water-area": 19864,
+        "water-area-covered-tag": 2,
+        "waterway-line": 84008,
+        "waterway-line-covered-tag": 8,
+        "waterway-line-tunnel-tag": 13602
+      }
+    },
+    {
+      "artifact_directory": "national-stage-accounted-v2/kansai",
+      "database": {
+        "bytes": 147464192,
+        "coordinates": 2986621,
+        "file": "stage.sqlite",
+        "observations": 139165,
+        "sha256": "3a9b9a123e926a17cf316d510d0656e377432265d717a107e9265e959b9ac22b"
+      },
+      "elapsed_seconds": 187.9,
+      "observations_unchanged": true,
+      "region": "kansai",
+      "source_issues": [],
+      "stage_manifest_sha256": "f5c3bef30ec53051df5cb153d9a7f53c210b331cbf9bacd0e2a830c3da9fdfbc",
+      "tag_counts": {
+        "coastline": 11493,
+        "line-width-tag-absent": 97816,
+        "line-width-tag-present": 207,
+        "water-area": 29649,
+        "water-area-covered-tag": 1,
+        "water-area-tunnel-tag": 6,
+        "waterway-line": 98023,
+        "waterway-line-covered-tag": 99,
+        "waterway-line-tunnel-tag": 24526
+      }
+    },
+    {
+      "artifact_directory": "national-stage-accounted-v2/kanto",
+      "database": {
+        "bytes": 121044992,
+        "coordinates": 2400813,
+        "file": "stage.sqlite",
+        "observations": 125149,
+        "sha256": "2c01253a6cd12b8c9052519cf935d8823c04ec10b2e928a8ac68338aa334e054"
+      },
+      "elapsed_seconds": 274.13,
+      "observations_unchanged": true,
+      "region": "kanto",
+      "source_issues": [
+        {
+          "id": "relation/3784955",
+          "reason": "water-area-not-assembled"
+        },
+        {
+          "id": "relation/7858234",
+          "reason": "water-area-not-assembled"
+        }
+      ],
+      "stage_manifest_sha256": "6c2a8bce5f634a4aab2379cde246b5cb1f2494c9dbf58ef8c4672483793c7700",
+      "tag_counts": {
+        "coastline": 7724,
+        "line-width-tag-absent": 92336,
+        "line-width-tag-present": 325,
+        "water-area": 24764,
+        "water-area-covered-tag": 87,
+        "water-area-tunnel-tag": 9,
+        "waterway-line": 92661,
+        "waterway-line-covered-tag": 28,
+        "waterway-line-tunnel-tag": 28033
+      }
+    },
+    {
+      "artifact_directory": "national-stage-accounted-v2/kyushu",
+      "database": {
+        "bytes": 199512064,
+        "coordinates": 4212850,
+        "file": "stage.sqlite",
+        "observations": 195055,
+        "sha256": "a6b777408ae7bb555d337afa668df06c2b8048bb593227fce6aa015ca51a1d38"
+      },
+      "elapsed_seconds": 126.99,
+      "observations_unchanged": true,
+      "region": "kyushu",
+      "source_issues": [],
+      "stage_manifest_sha256": "51178e6da1140fbfed444cf8d4b1a4e319c6f0a96054945123fc128342c6f616",
+      "tag_counts": {
+        "coastline": 37967,
+        "line-width-tag-absent": 124205,
+        "line-width-tag-present": 95,
+        "water-area": 32788,
+        "water-area-covered-tag": 50,
+        "water-area-tunnel-tag": 18,
+        "waterway-line": 124300,
+        "waterway-line-covered-tag": 28,
+        "waterway-line-tunnel-tag": 36613
+      }
+    },
+    {
+      "artifact_directory": "national-stage-accounted-v1/shikoku",
+      "database": {
+        "bytes": 74735616,
+        "coordinates": 1599790,
+        "file": "stage.sqlite",
+        "observations": 65911,
+        "sha256": "db29f393a2d2ccd9b4b5db1538c7aa2665b173d1aed620c38f2a685495bcd4b3"
+      },
+      "elapsed_seconds": 34.05,
+      "observations_unchanged": true,
+      "region": "shikoku",
+      "source_issues": [
+        {
+          "id": "relation/8242073",
+          "reason": "water-area-not-assembled"
+        }
+      ],
+      "stage_manifest_sha256": "9988420a93e0791e1323864ab90b061c288f822b4fb3efe76307d690fb120fe3",
+      "tag_counts": {
+        "coastline": 11264,
+        "line-width-tag-absent": 41473,
+        "line-width-tag-present": 40,
+        "water-area": 13134,
+        "water-area-covered-tag": 11,
+        "water-area-tunnel-tag": 14,
+        "waterway-line": 41513,
+        "waterway-line-covered-tag": 18,
+        "waterway-line-tunnel-tag": 9327
+      }
+    },
+    {
+      "artifact_directory": "national-stage-accounted-retry-v1/tohoku",
+      "database": {
+        "bytes": 163184640,
+        "coordinates": 3718930,
+        "file": "stage.sqlite",
+        "observations": 120693,
+        "sha256": "bd18f2ae1ef1caa3a9032813434530bbf028efcfe784fca56d9047f5667a32e5"
+      },
+      "elapsed_seconds": null,
+      "observations_unchanged": true,
+      "region": "tohoku",
+      "source_issues": [],
+      "stage_manifest_sha256": "c7245282ec27058bda16af8b7ef627a231b47db7112efceb80d2618129383afd",
+      "tag_counts": {
+        "coastline": 10174,
+        "line-width-tag-absent": 89000,
+        "line-width-tag-present": 63,
+        "water-area": 21456,
+        "waterway-line": 89063,
+        "waterway-line-covered-tag": 4,
+        "waterway-line-tunnel-tag": 20355
+      }
+    }
+  ],
+  "topology_audit": {
+    "coordinate_model": "stored longitude/latitude plane; topology only, not positional accuracy",
+    "stages": [
+      {
+        "area_observations_checked": 32689,
+        "database_sha256": "2e58269280a887ea83eca06f641e52f70a53766287154268fdeb7f0a76ebb775",
+        "elapsed_seconds": 1.89,
+        "examples": [],
+        "examples_truncated": false,
+        "invalid_count": 0,
+        "region": "chubu"
+      },
+      {
+        "area_observations_checked": 24767,
+        "database_sha256": "278d40c9b337aa27415eca61d6edee00925b717cb766da930b8cfeeb1acb1268",
+        "elapsed_seconds": 1.7,
+        "examples": [],
+        "examples_truncated": false,
+        "invalid_count": 0,
+        "region": "chugoku"
+      },
+      {
+        "area_observations_checked": 19864,
+        "database_sha256": "85650be390b49d08e916fc389320330bfbb42cb651229b185397f93b30afb19f",
+        "elapsed_seconds": 1.3,
+        "examples": [],
+        "examples_truncated": false,
+        "invalid_count": 0,
+        "region": "hokkaido"
+      },
+      {
+        "area_observations_checked": 29649,
+        "database_sha256": "1047552adda997a3d8398698eb3e5c4fc533017d544ab3e47797d6333be86e53",
+        "elapsed_seconds": 1.66,
+        "examples": [],
+        "examples_truncated": false,
+        "invalid_count": 0,
+        "region": "kansai"
+      },
+      {
+        "area_observations_checked": 24764,
+        "database_sha256": "efd2572f5b54b1f9c6bf8a16d485e5ae36b9f405e9f3aa3d825b6617503b9f01",
+        "elapsed_seconds": 1.38,
+        "examples": [],
+        "examples_truncated": false,
+        "invalid_count": 0,
+        "region": "kanto"
+      },
+      {
+        "area_observations_checked": 32788,
+        "database_sha256": "6b5a0e3eae2895f9173af387bbda28a3e1972ebc3f110a754564a5cc394ac8c0",
+        "elapsed_seconds": 1.91,
+        "examples": [],
+        "examples_truncated": false,
+        "invalid_count": 0,
+        "region": "kyushu"
+      },
+      {
+        "area_observations_checked": 13134,
+        "database_sha256": "7f508602beb3a9c183fac5a9dd6f82c685b77f3a97e673c99d22d67a3133a30c",
+        "elapsed_seconds": 0.87,
+        "examples": [],
+        "examples_truncated": false,
+        "invalid_count": 0,
+        "region": "shikoku"
+      },
+      {
+        "area_observations_checked": 21456,
+        "database_sha256": "60a75acb45df9d5d751b8bdc95c72a3bafaa12984a9d7d374eb2e27c5d932d81",
+        "elapsed_seconds": 1.27,
+        "examples": [],
+        "examples_truncated": false,
+        "invalid_count": 0,
+        "region": "tohoku"
+      }
+    ],
+    "validator": "shapely 2.1.2"
+  },
+  "verified_extracts": [
+    {
+      "bounds": [
+        136.88,
+        35.16,
+        136.92,
+        35.2
+      ],
+      "cell": "cell-0000",
+      "city": "名古屋",
+      "counts": {
+        "coastline": 0,
+        "water-area": 36,
+        "waterway-line": 12
+      },
+      "manifest_sha256": "6855c28265be5d7315fe95c420e065675dba75814a58ed492df3ea252cf180fd",
+      "region": "chubu",
+      "source_issues": 0,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        132.44,
+        34.38,
+        132.48,
+        34.42
+      ],
+      "cell": "cell-0000",
+      "city": "広島",
+      "counts": {
+        "coastline": 0,
+        "water-area": 20,
+        "waterway-line": 37
+      },
+      "manifest_sha256": "0a19f59fb40a51253e1f50cba16a6b3b1f8727f48a35e3a83e40188c3354e8ea",
+      "region": "chugoku",
+      "source_issues": 2,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        141.33,
+        43.04,
+        141.37,
+        43.08
+      ],
+      "cell": "cell-0000",
+      "city": "札幌",
+      "counts": {
+        "coastline": 0,
+        "water-area": 50,
+        "waterway-line": 55
+      },
+      "manifest_sha256": "46dacfcd0456ed7e20badec1908147f41db159e2dc5494d82938d6aa88b5d692",
+      "region": "hokkaido",
+      "source_issues": 0,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        135.49,
+        34.68,
+        135.53,
+        34.72
+      ],
+      "cell": "cell-0000",
+      "city": "大阪",
+      "counts": {
+        "coastline": 0,
+        "water-area": 80,
+        "waterway-line": 50
+      },
+      "manifest_sha256": "b0e0f3598cb5e530ef7a39312f99e9e8da7e7f6a1369b0db3e7159b2888b0279",
+      "region": "kansai",
+      "source_issues": 0,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        139.74,
+        35.66,
+        139.78,
+        35.7
+      ],
+      "cell": "cell-0000",
+      "city": "東京",
+      "counts": {
+        "coastline": 0,
+        "water-area": 71,
+        "waterway-line": 53
+      },
+      "manifest_sha256": "e7a9f19f3125115bb18c9d38c126b84c24099122d4fe89a718f1f1eff9fbb9f8",
+      "region": "kanto",
+      "source_issues": 2,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        142.18,
+        27.08,
+        142.22,
+        27.12
+      ],
+      "cell": "cell-0001",
+      "city": "父島",
+      "counts": {
+        "coastline": 234,
+        "water-area": 1,
+        "waterway-line": 14
+      },
+      "manifest_sha256": "ea47c6081a457e41cb4dc89634b4e7ca06c09778fd1f9a620d89fcdbcb1ed08d",
+      "region": "kanto",
+      "source_issues": 2,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        130.38,
+        33.58,
+        130.42,
+        33.62
+      ],
+      "cell": "cell-0000",
+      "city": "福岡",
+      "counts": {
+        "coastline": 5,
+        "water-area": 29,
+        "waterway-line": 12
+      },
+      "manifest_sha256": "c0b25d4354c9c300ced3c2f1f1bb06cd22264937465e99e20465839d3a1d92a5",
+      "region": "kyushu",
+      "source_issues": 0,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        127.66,
+        26.2,
+        127.7,
+        26.24
+      ],
+      "cell": "cell-0001",
+      "city": "那覇",
+      "counts": {
+        "coastline": 20,
+        "water-area": 10,
+        "waterway-line": 39
+      },
+      "manifest_sha256": "6db24f1e39d873719d3d5db0c337c0e33597b2e0922b8574746791997b4b6a87",
+      "region": "kyushu",
+      "source_issues": 0,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        134.02,
+        34.32,
+        134.08,
+        34.37
+      ],
+      "cell": "cell-0000",
+      "city": "高松",
+      "counts": {
+        "coastline": 21,
+        "water-area": 67,
+        "waterway-line": 285
+      },
+      "manifest_sha256": "14ec5624bc4154593cf3e2159a505870c581eb43d8787c031ab35a2216fe8d2b",
+      "region": "shikoku",
+      "source_issues": 1,
+      "typescript_reader_verified": true
+    },
+    {
+      "bounds": [
+        140.86,
+        38.24,
+        140.9,
+        38.28
+      ],
+      "cell": "cell-0000",
+      "city": "仙台",
+      "counts": {
+        "coastline": 0,
+        "water-area": 12,
+        "waterway-line": 34
+      },
+      "manifest_sha256": "c21efecf5d7209ee1188b3244aa48d45af9206b7f506a61c8f3867513891d870",
+      "region": "tohoku",
+      "source_issues": 0,
+      "typescript_reader_verified": true
+    }
+  ],
+  "version": 1,
+  "consumer_verification": {
+    "reader": "src/waterEvidencePack.ts",
+    "reader_commit": "d17469a0bff4f32863f98fe3fa8363e68bceb747",
+    "checked": "all observations including IDs/tags/geometry and source issues, status incomplete, coverage empty",
+    "node": "v24.22.1"
+  }
+}
