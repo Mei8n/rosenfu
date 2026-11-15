@@ -250,6 +250,7 @@ impl WorldEditor {
             stripped.route_paths.clear();
             stripped.services.clear();
             stripped.service_paths.clear();
+            stripped.service_appearances.clear();
             stripped.service_route_bindings.clear();
             stripped.station_groups.clear();
             stripped.station_placements.retain(|p| p.alignment_id != id);
@@ -397,6 +398,7 @@ impl WorldEditor {
             restored.route_paths = before.route_paths.clone();
             restored.services = before.services.clone();
             restored.service_paths = before.service_paths.clone();
+            restored.service_appearances = before.service_appearances.clone();
             restored.service_route_bindings = before.service_route_bindings.clone();
             let placements = restored.station_placements.clone();
             let remap = |segment: &mut rosenfu_core::world::RouteSegment| -> Result<(), String> {
@@ -581,6 +583,19 @@ mod tests {
         editor
             .create_service_path("系統".into(), a, segments, stops)
             .unwrap();
+        let created = editor.snapshot();
+        let service = created.services[0].id;
+        editor
+            .set_service_route_binding(
+                service,
+                rosenfu_core::world::ServiceRouteBindingKind::Route {
+                    route_id: created.routes[0].id,
+                },
+            )
+            .unwrap();
+        editor
+            .set_service_color(service, "#ab12ef".into(), None)
+            .unwrap();
         let mut before = editor.snapshot();
         before.construction_plans = Some(plans());
         let after = editor.delete_alignment_section(id, 1, plans()).unwrap();
@@ -588,6 +603,8 @@ mod tests {
         assert_ne!(right_id, id);
         assert_eq!(after.routes, before.routes);
         assert_eq!(after.services, before.services);
+        assert_eq!(after.service_appearances, before.service_appearances);
+        assert_eq!(after.service_route_bindings, before.service_route_bindings);
         assert_eq!(after.service_paths[0].stops, before.service_paths[0].stops);
         assert_eq!(
             after.route_paths[0].segments[0],
@@ -609,6 +626,11 @@ mod tests {
         let restored = WorldEditor::new().load(&path).unwrap();
         assert_eq!(restored.route_paths, after.route_paths);
         assert_eq!(restored.service_paths, after.service_paths);
+        assert_eq!(restored.service_appearances, after.service_appearances);
+        assert_eq!(
+            restored.service_route_bindings,
+            after.service_route_bindings
+        );
     }
 
     #[test]

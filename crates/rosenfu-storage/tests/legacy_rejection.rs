@@ -7,13 +7,13 @@ use std::fs;
 
 #[test]
 fn every_old_schema_is_rejected_before_world_parsing_without_touching_files() {
-    assert_eq!(SCHEMA_VERSION, 18);
+    assert_eq!(SCHEMA_VERSION, 19);
     assert!(matches!(
         decode(include_bytes!("fixtures/schema-1-world.json")),
         Err(StorageError::UnsupportedVersion(1))
     ));
     let dir = tempfile::tempdir().unwrap();
-    for version in 1..SCHEMA_VERSION {
+    for version in 1..18 {
         let bytes = serde_json::to_vec(
             &json!({"format":"rosenfu-world", "schema_version":version, "world":"legacy contents"}),
         )
@@ -23,7 +23,7 @@ fn every_old_schema_is_rejected_before_world_parsing_without_touching_files() {
         fs::write(backup_path(&path), b"original backup").unwrap();
         let error = load_world(&path).unwrap_err();
         assert!(matches!(error, StorageError::UnsupportedVersion(v) if v == version));
-        assert!(error.to_string().contains("旧データは移行せず"));
+        assert_eq!(error.to_string(), "このセーブ形式は非対応です");
         assert!(save_world(&path, &World::default()).is_err());
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(fs::read(backup_path(&path)).unwrap(), b"original backup");

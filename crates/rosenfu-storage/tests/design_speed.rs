@@ -31,7 +31,7 @@ fn current_design_speed_roundtrips_and_invalid_cap_rejects() {
     );
     restored.set_alignment_design_speed(id, 240.0).unwrap();
     let encoded = encode(&restored).unwrap();
-    assert_eq!(SCHEMA_VERSION, 18);
+    assert_eq!(SCHEMA_VERSION, 19);
     assert_eq!(decode(&encoded).unwrap(), restored);
     old["world"]["alignments"][0]["design_speed_kmh"] = 0.into();
     assert!(decode(&serde_json::to_vec(&old).unwrap()).is_err());

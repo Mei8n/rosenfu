@@ -113,6 +113,66 @@ pub struct WorldEditor {
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
 impl WorldEditor {
+    pub fn set_service_color(
+        &mut self,
+        service_id: ServiceId,
+        color: String,
+        expected_color: Option<String>,
+    ) -> Result<WorldDraft, String> {
+        let current = self
+            .snapshot()
+            .service_appearances
+            .into_iter()
+            .find(|row| row.service_id == service_id)
+            .map(|row| row.color);
+        if current != expected_color {
+            return Err("系統色が変更されています。最新の色を確認してください。".into());
+        }
+        let mut candidate = self.clone();
+        candidate
+            .world
+            .set_service_color(candidate.company, service_id, color)
+            .map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
+    pub fn duplicate_service(
+        &mut self,
+        service_id: ServiceId,
+        expected_path: rosenfu_core::world::ServicePath,
+        expected_name: String,
+    ) -> Result<WorldDraft, String> {
+        let snapshot = self.snapshot();
+        let source = snapshot
+            .services
+            .iter()
+            .find(|s| s.id == service_id && s.owner == self.company)
+            .ok_or("複製する系統が見つかりません。")?;
+        if source.name != expected_name
+            || snapshot
+                .service_paths
+                .iter()
+                .find(|p| p.service_id == service_id)
+                != Some(&expected_path)
+        {
+            return Err(
+                "系統が変更されています。最新の内容を確認してから複製してください。".into(),
+            );
+        }
+        let name = format!(
+            "{} のコピー",
+            source.name.chars().take(74).collect::<String>()
+        );
+        let mut candidate = self.clone();
+        candidate
+            .world
+            .duplicate_service(candidate.company, service_id, name)
+            .map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
     pub fn set_service_route_binding(
         &mut self,
         service_id: ServiceId,
@@ -1472,6 +1532,120 @@ mod tests {
             .collect();
         e.create_service_path("系統".into(), start, segments, stops)
             .unwrap()
+    }
+
+    #[test]
+    fn service_metadata_duplicate_preserves_path_binding_and_has_independent_edits() {
+        let (mut e, a, s) = alignment_fixture();
+        let route = e
+            .save_planned_route(None, "R".into(), s[0], vec![span(a, s[0], s[2])], vec![])
+            .unwrap()
+            .routes[0]
+            .id;
+        let service = create_test_service(&mut e, s[0], vec![span(a, s[0], s[2])]).services[0].id;
+        e.set_service_route_binding(
+            service,
+            rosenfu_core::world::ServiceRouteBindingKind::Route { route_id: route },
+        )
+        .unwrap();
+        e.set_service_color(service, "#ab12ef".into(), None)
+            .unwrap();
+        let before = e.snapshot();
+        let path = before.service_paths[0].clone();
+        let after = e
+            .duplicate_service(service, path.clone(), "系統".into())
+            .unwrap();
+        let copy = after.services.iter().find(|s| s.id != service).unwrap();
+        assert_eq!(copy.name, "系統 のコピー");
+        let mut copied_path = after
+            .service_paths
+            .iter()
+            .find(|p| p.service_id == copy.id)
+            .unwrap()
+            .clone();
+        copied_path.service_id = service;
+        assert_eq!(copied_path, path);
+        assert_eq!(
+            after.service_route_bindings[1].binding,
+            before.service_route_bindings[0].binding
+        );
+        e.set_service_color(copy.id, "#001122".into(), Some("#AB12EF".into()))
+            .unwrap();
+        let copy_stops = vec![
+            path.stops.first().unwrap().clone(),
+            path.stops.last().unwrap().clone(),
+        ];
+        e.update_service_path(copy.id, "独立したコピー".into(), copy_stops.clone())
+            .unwrap();
+        assert_ne!(copy_stops, path.stops);
+        let edited = e.snapshot();
+        assert_eq!(
+            edited.services.iter().find(|s| s.id == service),
+            before.services.first()
+        );
+        assert_eq!(
+            edited
+                .service_paths
+                .iter()
+                .find(|p| p.service_id == service),
+            before.service_paths.first()
+        );
+        assert_eq!(
+            edited
+                .service_appearances
+                .iter()
+                .find(|p| p.service_id == service),
+            before.service_appearances.first()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata.json");
+        e.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), edited);
+    }
+    #[test]
+    fn service_metadata_duplicate_does_not_guess_unknown_binding_or_color() {
+        let (mut e, a, s) = alignment_fixture();
+        let source = create_test_service(&mut e, s[0], vec![span(a, s[0], s[2])]);
+        let service = source.services[0].id;
+        let result = e
+            .duplicate_service(
+                service,
+                source.service_paths[0].clone(),
+                source.services[0].name.clone(),
+            )
+            .unwrap();
+        assert_eq!(result.services.len(), 2);
+        assert!(result.service_route_bindings.is_empty());
+        assert!(result.service_appearances.is_empty());
+    }
+    #[test]
+    fn service_metadata_rejects_stale_invalid_and_other_owner_without_partial_updates() {
+        let (mut e, a, s) = alignment_fixture();
+        let service = create_test_service(&mut e, s[0], vec![span(a, s[0], s[2])]).services[0].id;
+        let before = e.snapshot();
+        let path = before.service_paths[0].clone();
+        assert!(e
+            .set_service_color(service, "#123456".into(), Some("#abcdef".into()))
+            .is_err());
+        assert_eq!(e.snapshot(), before);
+        assert!(e.set_service_color(service, "bad".into(), None).is_err());
+        assert_eq!(e.snapshot(), before);
+        assert!(e
+            .duplicate_service(service, path.clone(), "古い名前".into())
+            .is_err());
+        assert_eq!(e.snapshot(), before);
+        let mut stale = path.clone();
+        stale.stops.pop();
+        assert!(e.duplicate_service(service, stale, "系統".into()).is_err());
+        assert_eq!(e.snapshot(), before);
+        let company = e.company;
+        e.company = CompanyId(u64::MAX);
+        assert!(e.duplicate_service(service, path, "系統".into()).is_err());
+        assert!(e
+            .set_service_color(service, "#123456".into(), None)
+            .is_err());
+        assert_eq!(e.snapshot(), before);
+        e.company = company;
     }
 
     #[test]
