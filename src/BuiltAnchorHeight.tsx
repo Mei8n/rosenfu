@@ -6,6 +6,11 @@ import type {SectionInfrastructure} from './sectionInfrastructure';
 type Profile={start_height_m:number;end_height_m:number;start_tangent_m?:number;end_tangent_m?:number};
 export type HeightAlignment={id:string;owner:string;points:GeoPoint[];anchor_indices?:number[]|null;infrastructure?:SectionInfrastructure[];section_profiles?:Profile[];vertical_profile?:Profile|null};
 export type BuiltHeightSelection={alignment:HeightAlignment;anchorIndex:number};
+/** A delayed world-change effect must not clear a selection made from that new
+ * snapshot. Old snapshot objects are invalid even when their IDs are identical. */
+export function currentBuiltHeightSelection(selection:BuiltHeightSelection|null,lines:HeightAlignment[],selecting:boolean):BuiltHeightSelection|null{
+ return selecting&&selection&&lines.includes(selection.alignment)?selection:null;
+}
 const levels:SectionInfrastructure['level'][]=['underground_3','underground_2','underground','ground','elevated','elevated_2','elevated_3'];
 export function builtAnchorHeight(line:HeightAlignment,index:number):number{
  const indices=line.anchor_indices??[0,line.points.length-1];

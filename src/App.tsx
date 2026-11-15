@@ -1,7 +1,7 @@
 import {useAutomaticRoad} from './useAutomaticRoad';
 import {useAutomaticRail} from './useAutomaticRail';
 import {AutomaticRailControls} from './AutomaticRailControls';
-import {equalWorldSnapshots,builtAnchorHeight,BuiltAnchorHeightHandles,BuiltAnchorHeightToolbar,type BuiltHeightSelection} from './BuiltAnchorHeight';
+import {currentBuiltHeightSelection,equalWorldSnapshots,builtAnchorHeight,BuiltAnchorHeightHandles,BuiltAnchorHeightToolbar,type BuiltHeightSelection} from './BuiltAnchorHeight';
 import {useConstructionPreview} from './useConstructionPreview';
 import {anchorHeights,changeAnchorHeight} from './anchorHeights';
 import {TrackGeometryLayer,useTrackRenderGeometry} from './TrackRenderGeometry';
@@ -725,7 +725,7 @@ export function App() {
     });
   }
   useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);const selection=boxGesture.current;boxGesture.current=null;setSelectionBox(null);const svg=svgRef.current;if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);},[world,activeTool]);
-  useEffect(()=>{setBuiltHeightSelection(null);},[world,activeTool]);
+  useEffect(()=>{setBuiltHeightSelection(selection=>currentBuiltHeightSelection(selection,world?.alignments??[],activeTool==="select"));},[world,activeTool]);
   function updateBuiltAnchorHeight(level:SectionInfrastructure["level"]){
     if(!enabled||unapplied||!builtHeightSelection)return;
     const {alignment,anchorIndex}=builtHeightSelection;
