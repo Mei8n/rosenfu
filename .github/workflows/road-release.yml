@@ -1,0 +1,126 @@
+name: Road release preparation
+on:
+  pull_request:
+    paths: ['scripts/road-delivery/**', '.github/workflows/road-release.yml']
+  push:
+    branches: [feat/national-road-release-delivery]
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: 'Successful same-repository Actions run containing road-pack-staging'
+        required: true
+        type: string
+      source_sha:
+        description: 'Exact 40-character producer commit SHA'
+        required: true
+        type: string
+      prepare_draft:
+        description: 'Prepare a draft only; never publish it automatically'
+        default: false
+        type: boolean
+      release_tag:
+        description: 'Existing data-road-* tag, required for draft preparation'
+        default: ''
+        type: string
+  workflow_call:
+    inputs:
+      source_run:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      prepare_draft:
+        default: false
+        type: boolean
+      release_tag:
+        default: ''
+        type: string
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -B -m unittest discover -s scripts/road-delivery -v
+  prepare:
+    if: inputs.source_run != '' && inputs.source_run != null
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate producer identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.source_run }}
+          SHA: ${{ inputs.source_sha }}
+        run: |
+          [[ "$RUN" =~ ^[0-9]+$ && "$SHA" =~ ^[a-f0-9]{40}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" > producer.json
+          python - <<'PY'
+          import json, os
+          p=json.load(open('producer.json'))
+          assert p['repository']['full_name']==os.environ['GITHUB_REPOSITORY']
+          assert p['head_repository']['full_name']==os.environ['GITHUB_REPOSITORY']
+          assert p['head_sha']==os.environ['SHA'] and p['conclusion']=='success'
+          assert p['event'] in ('push', 'workflow_dispatch')
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: road-pack-staging
+          path: road-pack-staging
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - run: python scripts/road-delivery/package.py road-pack-staging road-release > package-report.json
+      # Temporary handoff only, not the runtime data origin. Limit retention/storage.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prepared-road-release
+          path: road-release
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+  draft:
+    if: inputs.prepare_draft && github.ref == 'refs/heads/dev/construction-review-integration'
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: prepared-road-release
+          path: road-release
+      - name: Check package and create draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$TAG" =~ ^data-road-[a-zA-Z0-9._-]+$ ]]
+          python - <<'PY'
+          import hashlib, json, pathlib
+          p=pathlib.Path('road-release'); c=json.loads((p/'catalog.json').read_text())
+          assert c['publishable'] is True, 'Unverified coverage cannot be published'
+          assert len(c['assets']) <= 998
+          assert hashlib.sha256((p/'index.json').read_bytes()).hexdigest()==c['index_sha256']
+          for a in c['assets']:
+              f=p/a['name']; assert f.parent==p and f.is_file()
+              b=f.read_bytes(); assert len(b)==a['bytes'] and hashlib.sha256(b).hexdigest()==a['sha256']
+          PY
+          gh release create "$TAG" --verify-tag --draft --title "$TAG" \
+            --notes 'OSM-derived road data under ODbL-1.0. © OpenStreetMap contributors. https://www.openstreetmap.org/copyright . Review exact coverage and download hashes before publication.' \
+            road-release/*
