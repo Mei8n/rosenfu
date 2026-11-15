@@ -25,9 +25,6 @@ impl World {
         if next >= alignment.points.len() {
             return Err(WorldError::InvalidAlignment);
         }
-        if alignment.vertical_profile.is_some() {
-            return Err(WorldError::InvalidAlignment);
-        }
         let mut anchors = alignment
             .anchor_indices
             .clone()
@@ -73,10 +70,10 @@ impl World {
         *self = candidate;
         Ok(suffix)
     }
-    /// Split a flat user-drawn alignment without removing any physical section.
+    /// Split a user-drawn alignment without removing any physical section.
     /// The prefix keeps its ID. Station IDs, service leg keys and stop references
     /// are preserved; crossing path segments become explicit connected corridors.
-    /// Ramps, provenance and a platform straddling the split are rejected for now.
+    /// Vertical profiles are clipped exactly; provenance and straddling platforms are rejected.
     pub fn split_alignment_at_anchor(
         &mut self,
         owner: CompanyId,
@@ -90,9 +87,6 @@ impl World {
             .position(|a| a.id == id && a.owner == owner)
             .ok_or(WorldError::MissingReference("junction.alignment"))?;
         let original = draft.alignments[index].clone();
-        if original.vertical_profile.is_some() {
-            return Err(WorldError::InvalidAlignment);
-        }
         if draft
             .alignment_provenance
             .iter()
@@ -123,6 +117,13 @@ impl World {
         suffix.infrastructure = original.effective_infrastructure()[anchor..].to_vec();
         let cut = prefix.length_m();
         let total = original.length_m();
+        if let Some(profile) = original.vertical_profile {
+            prefix.vertical_profile = profile.clip(0.0, cut / total);
+            suffix.vertical_profile = profile.clip(cut / total, 1.0);
+            if prefix.vertical_profile.is_none() || suffix.vertical_profile.is_none() {
+                return Err(WorldError::InvalidAlignment);
+            }
+        }
         let suffix_id = suffix.id;
         for placement in draft
             .station_placements

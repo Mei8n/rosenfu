@@ -139,6 +139,8 @@ fn different_levels_never_connect_and_changing_connected_level_is_invalid() {
 fn smooth_ramp_uses_maximum_not_average_grade_and_is_atomic() {
     for kind in [TrackType::Normal, TrackType::HighSpeed, TrackType::Tram] {
         let profile = VerticalProfile {
+            start_tangent_m: 0.0,
+            end_tangent_m: 0.0,
             start_height_m: 0.,
             end_height_m: 6.,
         };
@@ -438,4 +440,103 @@ fn exact_non_anchor_split_preserves_shape_and_rejects_platform_cut_atomically() 
             .snapshot(),
         w.snapshot()
     );
+}
+
+#[test]
+fn ramp_clip_preserves_height_and_gradient_everywhere() {
+    let p = VerticalProfile {
+        start_height_m: 0.,
+        end_height_m: 6.,
+        start_tangent_m: 0.,
+        end_tangent_m: 0.,
+    };
+    let clipped = p.clip(0.2, 0.8).unwrap();
+    for i in 0..101 {
+        let t = i as f64 / 100.;
+        assert!((clipped.height_at(t) - p.height_at(0.2 + t * 0.6)).abs() < 1e-10);
+        assert!(
+            (clipped.tangent_at(t) / (300. * 0.6) - p.tangent_at(0.2 + t * 0.6) / 300.).abs()
+                < 1e-12
+        );
+    }
+    assert!(clipped.is_valid(180., TrackType::HighSpeed));
+    assert!(!clipped.is_valid(179.999, TrackType::HighSpeed));
+    assert!(!VerticalProfile {
+        start_tangent_m: f64::NAN,
+        ..p
+    }
+    .is_valid(1000., TrackType::Normal));
+    let clipped_again = clipped.clip(0.25, 0.75).unwrap();
+    assert!((clipped_again.height_at(0.5) - p.height_at(0.5)).abs() < 1e-10);
+}
+
+#[test]
+fn ramp_split_preserves_cubic_and_connection_grade() {
+    let mut w = World::default();
+    let p = w.add_player("p".into()).unwrap();
+    let c = w.add_company(p, "c".into()).unwrap();
+    let id = w
+        .build_alignment_ramp(
+            c,
+            "ramp".into(),
+            vec![point(139.), point(139.01)],
+            TrackType::Normal,
+            InfrastructureLevel::Ground,
+            InfrastructureLevel::Elevated,
+        )
+        .unwrap();
+    let old = w.snapshot().alignments[0].clone();
+    let suffix = w.split_alignment_at_position(c, id, 0, 0.4).unwrap();
+    let left = w.snapshot().alignments.iter().find(|a| a.id == id).unwrap();
+    let right = w
+        .snapshot()
+        .alignments
+        .iter()
+        .find(|a| a.id == suffix)
+        .unwrap();
+    for i in 0..11 {
+        let t = i as f64 / 10.;
+        assert!(
+            (left.height_at_position_m(t).unwrap() - old.height_at_position_m(t * 0.4).unwrap())
+                .abs()
+                < 1e-8
+        );
+        assert!(
+            (right.height_at_position_m(t).unwrap()
+                - old.height_at_position_m(0.4 + t * 0.6).unwrap())
+            .abs()
+                < 1e-8
+        );
+    }
+    assert!(
+        (left.endpoint_inward_grade(AlignmentEndpoint::End)
+            + right.endpoint_inward_grade(AlignmentEndpoint::Start))
+        .abs()
+            < 1e-9
+    );
+    assert!(World::new(w.snapshot().clone()).is_ok());
+}
+
+#[test]
+fn single_double_y_has_distinct_curved_lane_geometry_and_exact_reverse_paths() {
+    let (mut w, c, a, b) = pair(1, 2, AlignmentEndpoint::End, AlignmentEndpoint::Start);
+    w.connect_alignment_endpoints(c, a, b).unwrap();
+    let paths = w.track_movement_geometries().unwrap();
+    assert_eq!(paths.len(), 4);
+    for pair in paths.chunks_exact(2) {
+        assert_eq!(
+            pair[0].points,
+            pair[1].points.iter().copied().rev().collect::<Vec<_>>()
+        );
+        assert!(pair[0]
+            .points
+            .iter()
+            .all(|p| p.latitude.is_finite() && p.longitude.is_finite()));
+    }
+    assert_eq!(paths[0].points[0], paths[2].points[0]);
+    assert_ne!(paths[0].points.last(), paths[2].points.last());
+    assert_ne!(paths[0].points[12].latitude, paths[2].points[12].latitude);
+    let saved = serde_json::to_string(w.snapshot()).unwrap();
+    let restored = World::new(serde_json::from_str(&saved).unwrap()).unwrap();
+    assert_eq!(paths, restored.track_movement_geometries().unwrap());
 }

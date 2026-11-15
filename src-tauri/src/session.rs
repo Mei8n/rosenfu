@@ -649,7 +649,37 @@ impl WorldEditor {
                 alignment.start_level.map(|level| level.height_m())
             };
             if let Some(start_height) = start_height {
-                if (start_height - alignment.infrastructure.level.height_m()).abs() > 1e-6 {
+                let finish_height = alignment
+                    .destination
+                    .as_ref()
+                    .and_then(|end| {
+                        candidate
+                            .world
+                            .snapshot()
+                            .alignments
+                            .iter()
+                            .find(|a| a.id == end.alignment_id)
+                            .map(|a| a.endpoint_height_m(end.endpoint))
+                    })
+                    .unwrap_or_else(|| alignment.infrastructure.level.height_m());
+                let has_endpoint_grade = alignment.extension.as_ref().is_some_and(|end| {
+                    candidate
+                        .world
+                        .snapshot()
+                        .alignments
+                        .iter()
+                        .find(|a| a.id == end.alignment_id)
+                        .is_some_and(|a| a.endpoint_inward_grade(end.endpoint).abs() > 1e-12)
+                }) || alignment.destination.as_ref().is_some_and(|end| {
+                    candidate
+                        .world
+                        .snapshot()
+                        .alignments
+                        .iter()
+                        .find(|a| a.id == end.alignment_id)
+                        .is_some_and(|a| a.endpoint_inward_grade(end.endpoint).abs() > 1e-12)
+                });
+                if (start_height - finish_height).abs() > 1e-6 || has_endpoint_grade {
                     candidate.build_sloped_plan(alignment, start_height)?;
                     continue;
                 }
@@ -850,12 +880,40 @@ impl WorldEditor {
             .ok_or("線路がありません。")?;
         built.anchor_indices = alignment.anchor_indices;
         built.infrastructure = vec![alignment.infrastructure; built.section_count()];
+        let start_grade = alignment
+            .extension
+            .as_ref()
+            .and_then(|end| {
+                self.world
+                    .snapshot()
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == end.alignment_id)
+                    .map(|a| -a.endpoint_inward_grade(end.endpoint))
+            })
+            .unwrap_or(0.0);
+        let destination = alignment.destination.as_ref().and_then(|end| {
+            self.world
+                .snapshot()
+                .alignments
+                .iter()
+                .find(|a| a.id == end.alignment_id)
+                .map(|a| {
+                    (
+                        a.endpoint_height_m(end.endpoint),
+                        a.endpoint_inward_grade(end.endpoint),
+                    )
+                })
+        });
+        let (finish_height, end_grade) =
+            destination.unwrap_or((alignment.infrastructure.level.height_m(), 0.0));
         let profile = rosenfu_core::world::VerticalProfile {
+            start_tangent_m: start_grade * built.length_m(),
+            end_tangent_m: end_grade * built.length_m(),
             start_height_m: start_height,
-            end_height_m: alignment.infrastructure.level.height_m(),
+            end_height_m: finish_height,
         };
-        built.vertical_profile =
-            (profile.start_height_m != profile.end_height_m).then_some(profile);
+        built.vertical_profile = (!profile.is_flat()).then_some(profile);
         if let Some(speed) = alignment.design_speed_kmh {
             built.design_speed_kmh = Some(speed);
         }
@@ -3646,6 +3704,55 @@ mod tests {
         assert_eq!(
             after.alignment_connections[1].a.endpoint,
             AlignmentEndpoint::Start
+        );
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+    }
+
+    #[test]
+    fn ramp_branch_inherits_exact_height_and_grade() {
+        use rosenfu_core::world::{
+            AlignmentEndpoint, ConstructionJunctionSource, InfrastructureLevel,
+        };
+        let mut editor = WorldEditor::new();
+        let mut ramp = planned_path(0.);
+        ramp.stations.clear();
+        ramp.start_level = Some(InfrastructureLevel::Ground);
+        ramp.infrastructure.level = InfrastructureLevel::Elevated;
+        let built = editor.build_plan(vec![ramp]).unwrap();
+        let original = built.alignments[0].clone();
+        let mut branch = planned_path(0.);
+        branch.stations.clear();
+        branch.junction_source = Some(ConstructionJunctionSource {
+            reverse: false,
+            alignment_id: original.id,
+            segment_index: 0,
+            fraction: 0.5,
+            expected_alignment: original.clone(),
+        });
+        branch.points = vec![
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.005,
+            },
+            GeoPoint {
+                latitude: 35.,
+                longitude: 139.006,
+            },
+            GeoPoint {
+                latitude: 35.01,
+                longitude: 139.015,
+            },
+        ];
+        let after = editor.build_plan(vec![branch]).unwrap();
+        assert_eq!(after.alignments.len(), 3);
+        let stem = &after.alignments[0];
+        let branch = &after.alignments[2];
+        assert!((branch.endpoint_height_m(AlignmentEndpoint::Start) - 3.).abs() < 1e-8);
+        assert!(
+            (branch.endpoint_inward_grade(AlignmentEndpoint::Start)
+                + stem.endpoint_inward_grade(AlignmentEndpoint::End))
+            .abs()
+                < 1e-9
         );
         assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
     }

@@ -35,21 +35,66 @@ impl TrackType {
 #[serde(deny_unknown_fields)]
 pub struct VerticalProfile {
     pub start_height_m: f64,
+    /// Metres per normalized arc-length parameter; zero gives a flat endpoint.
+    #[serde(default)]
+    pub start_tangent_m: f64,
+    #[serde(default)]
+    pub end_tangent_m: f64,
     pub end_height_m: f64,
 }
 impl VerticalProfile {
-    pub fn height_at(self, position: f64) -> f64 {
-        self.start_height_m
-            + (self.end_height_m - self.start_height_m)
-                * position
-                * position
-                * (3.0 - 2.0 * position)
+    pub fn height_at(self, t: f64) -> f64 {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        (2.0 * t3 - 3.0 * t2 + 1.0) * self.start_height_m
+            + (t3 - 2.0 * t2 + t) * self.start_tangent_m
+            + (-2.0 * t3 + 3.0 * t2) * self.end_height_m
+            + (t3 - t2) * self.end_tangent_m
+    }
+    pub fn tangent_at(self, t: f64) -> f64 {
+        (6.0 * t * t - 6.0 * t) * self.start_height_m
+            + (3.0 * t * t - 4.0 * t + 1.0) * self.start_tangent_m
+            + (-6.0 * t * t + 6.0 * t) * self.end_height_m
+            + (3.0 * t * t - 2.0 * t) * self.end_tangent_m
+    }
+    pub fn is_flat(self) -> bool {
+        self.start_height_m == self.end_height_m
+            && self.start_tangent_m == 0.0
+            && self.end_tangent_m == 0.0
+    }
+    /// Exact Hermite restriction, not a newly flattened smoothstep between cut ends.
+    pub fn clip(self, from: f64, to: f64) -> Option<Self> {
+        if !from.is_finite() || !to.is_finite() || from < 0.0 || to > 1.0 || from >= to {
+            return None;
+        }
+        Some(Self {
+            start_height_m: self.height_at(from),
+            end_height_m: self.height_at(to),
+            start_tangent_m: self.tangent_at(from) * (to - from),
+            end_tangent_m: self.tangent_at(to) * (to - from),
+        })
     }
     pub fn maximum_gradient_per_mille(self, horizontal_length_m: f64) -> f64 {
-        1500.0 * (self.end_height_m - self.start_height_m).abs() / horizontal_length_m
+        let a = 6.0 * self.start_height_m + 3.0 * self.start_tangent_m - 6.0 * self.end_height_m
+            + 3.0 * self.end_tangent_m;
+        let b = -6.0 * self.start_height_m - 4.0 * self.start_tangent_m + 6.0 * self.end_height_m
+            - 2.0 * self.end_tangent_m;
+        if !a.is_finite() || !b.is_finite() {
+            return f64::INFINITY;
+        }
+        let mut maximum = self.start_tangent_m.abs().max(self.end_tangent_m.abs());
+        if a != 0.0 {
+            let t = -b / (2.0 * a);
+            if t > 0.0 && t < 1.0 {
+                maximum = maximum.max(self.tangent_at(t).abs());
+            }
+        }
+        1000.0 * maximum / horizontal_length_m
     }
     pub fn is_valid(self, horizontal_length_m: f64, track_type: TrackType) -> bool {
-        self.start_height_m.is_finite()
+        self.start_tangent_m.is_finite()
+            && self.end_tangent_m.is_finite()
+            && self.start_height_m.is_finite()
             && self.end_height_m.is_finite()
             && horizontal_length_m.is_finite()
             && horizontal_length_m > 0.0
@@ -58,6 +103,17 @@ impl VerticalProfile {
     }
 }
 impl Alignment {
+    /// Signed grade pointing into the alignment from the specified endpoint.
+    pub fn endpoint_inward_grade(&self, endpoint: AlignmentEndpoint) -> f64 {
+        self.vertical_profile.map_or(0.0, |p| {
+            if endpoint == AlignmentEndpoint::Start {
+                p.start_tangent_m / self.length_m()
+            } else {
+                -p.end_tangent_m / self.length_m()
+            }
+        })
+    }
+
     /// Actual height along horizontal arc length, including inside a ramp.
     /// Callers must use this, not categorical level, for crossing-clearance checks.
     pub fn height_at_position_m(&self, position: f64) -> Option<f64> {
@@ -110,6 +166,8 @@ impl World {
             .find(|a| a.id == id)
             .expect("new alignment");
         alignment.vertical_profile = Some(VerticalProfile {
+            start_tangent_m: 0.0,
+            end_tangent_m: 0.0,
             start_height_m: start.height_m(),
             end_height_m: finish.height_m(),
         });

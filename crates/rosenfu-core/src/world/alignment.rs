@@ -202,8 +202,7 @@ impl WorldDraft {
                 .iter()
                 .find(|s| s.id == p.station_id)
                 .ok_or(WorldError::MissingReference("placement.station"))?;
-            if a.vertical_profile
-                .is_some_and(|profile| profile.start_height_m != profile.end_height_m)
+            if a.vertical_profile.is_some_and(|profile| !profile.is_flat())
                 || !placed.insert(p.station_id)
                 || a.owner != s.owner
                 || !p.position.is_finite()

@@ -70,6 +70,13 @@ impl WorldDraft {
             {
                 return Err(invalid);
             }
+            if (a.endpoint_inward_grade(connection.a.endpoint)
+                + b.endpoint_inward_grade(connection.b.endpoint))
+            .abs()
+                > 1e-6
+            {
+                return Err(invalid);
+            }
             // Speed caps need not match: each original alignment keeps its own cap.
             let vector = |p: GeoPoint| {
                 (
