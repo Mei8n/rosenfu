@@ -120,7 +120,7 @@ def read_geojson(path, collector):
         collector.add(feature.get('id'), props.get('evidence_kind'), feature.get('geometry', {}), props.get('source_tags', {}))
 
 
-def read_osm(path, collector):
+def read_osm(path, collector, location_index='flex_mem'):
     try:
         import osmium
     except ImportError as error:
@@ -164,7 +164,7 @@ def read_osm(path, collector):
 
     # Pyosmium assembles multipolygon relations and retains inner rings. Failed assembly
     # can omit areas without a callback; hence this is observations, never completeness.
-    Handler().apply_file(str(path), locations=True, idx='flex_mem')
+    Handler().apply_file(str(path), locations=True, idx=location_index)
 
 
 def build(path, bounds, revision, source_url, license_name, license_url, attribution, output, max_input_bytes=768*1024*1024):

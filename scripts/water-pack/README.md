@@ -238,3 +238,14 @@ The Chugoku source reported `relation/20045092: invalid-area`; this unlocalized
 issue remains attached to its Hiroshima pack. Zero issues elsewhere also cannot
 prove all relations assembled. Probe bounds/counts/pins/issues are recorded in
 [water-live-probes-20261115.json](../../docs/water-live-probes-20261115.json).
+
+## Whole-region staging and composite inspection
+
+The new `stage.py` stores selected whole-region observations in a pinned SQLite
+stage, then queries bounded leaf packs without rescanning the PBF. `compose.py` and
+`readWaterEvidenceComposite` combine independently pinned inland/marine parts while
+preserving separate source revision claims, issues and overlapping geometry.
+They do not certify coverage or produce a construction snapshot. See
+[the staging/composite contract](../../docs/water-national-staging.md) for commands,
+limits, unfinished work and the live Takamatsu composite pin. Completed DB size is
+bounded separately from transient location-index/journal disk usage.

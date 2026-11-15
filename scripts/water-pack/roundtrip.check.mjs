@@ -61,3 +61,31 @@ print(json.dumps(build_marine(root/'sea.shp',[134.02,34.02,134.1,34.1],'fixture'
   assert.equal(pack.water.length,1);assert.equal(pack.water[0].rings.length,2);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
+
+test('sealed disk stage extracts and composes without claiming common source time',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'rosenfu-water-stage-composite-'));
+ try{
+  const scripts=dirname(fileURLToPath(import.meta.url));
+  const script=`import sys,json,hashlib
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from test_source_set import SourceSetTests
+from source_set import audit_sources
+from build import encoded,build
+from stage import stage_region,extract_stage
+from compose import compose
+root=Path(sys.argv[2]);receipts=SourceSetTests().fixture(root)
+raw=encoded(audit_sources(receipts,'2026-11-14T21:20:41Z'));(root/'sources.json').write_bytes(raw)
+report=stage_region(root/'kanto-261114.osm.pbf',root/'sources.json',hashlib.sha256(raw).hexdigest(),'kanto',root/'stage')
+a=extract_stage(root/'stage',report['stage_manifest_sha256'],[134,34,134.1,34.1],root/'inland')
+(root/'source.json').write_bytes(encoded(dict(type='FeatureCollection',features=[])))
+b=build(root/'source.json',[134,34,134.1,34.1],'different-source-date','https://source.test','ODbL-1.0','https://license.test','OSM',root/'marine')
+print(json.dumps(compose(root/'inland',a['manifest_sha256'],root/'marine',b['manifest_sha256'],root/'composite')))
+`;
+  const run=spawnSync(process.platform==='win32'?'python':'python3',['-B','-c',script,scripts,root],{encoding:'utf8'});assert.equal(run.status,0,run.stderr);
+  const {readWaterEvidenceComposite}=await import('../../src/waterEvidenceComposite.ts');
+  const files=new Map();for(const key of ['inland','marine'])for(const name of ['manifest.json','evidence.json'])files.set(`${key}/${name}`,readFileSync(join(root,'composite',key,name)));
+  const pack=await readWaterEvidenceComposite(readFileSync(join(root,'composite/composite.json')),JSON.parse(run.stdout).composite_sha256,files);
+  assert.equal(pack.status,'incomplete');assert.deepEqual(pack.coverage,[]);assert.equal(pack.hasMixedRevisionClaims,true);
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
