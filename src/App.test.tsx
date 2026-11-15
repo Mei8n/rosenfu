@@ -7,7 +7,7 @@ import { App } from "./App";
 import { project, GSI_TILES, GSI_ATTRIBUTION_URL, DEFAULT_CAMERA, panCamera, visibleTiles, positionTile } from "./map";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 
-const empty = { next_id: "3", players: [{ id: "1", name: "Player" }], companies: [{ id: "2", owner: "1", name: "Railway" }], stations: [], tracks: [], routes: [], services: [] };
+const empty = { next_id: "3", players: [{ id: "1", name: "Player" }], companies: [{ id: "2", owner: "1", name: "Railway" }], stations: [], routes: [], route_paths: [], services: [], service_paths: [] };
 const populated = { ...empty, next_id: "4", stations: [{ id: "3", owner: "2", name: "中央", latitude: 35.675, longitude: 139.75 }] };
 // Keep semantic role/name queries inside their owning UI region. The app keeps
 // inactive panels mounted, so document-wide a11y queries scan unrelated controls.
@@ -126,85 +126,18 @@ const twoStations = {
   ...populated, next_id: "5",
   stations: [...populated.stations, { id: "4", owner: "2", name: "東", latitude: 35.70, longitude: 139.80 }],
 };
-const connected = { ...twoStations, next_id: "6", tracks: [{ id: "5", owner: "2", from: "3", to: "4" }] };
+const connected = {...twoStations,next_id:"6",alignments:[{id:"5",owner:"2",name:"接続線形",track_type:"normal",points:twoStations.stations.map(({latitude,longitude})=>({latitude,longitude}))}],station_placements:twoStations.stations.map((station,i)=>({station_id:station.id,alignment_id:"5",position:i,length_m:100,width_m:12}))};
 async function renderWithStations(snapshot: unknown = twoStations) {
   desktop();
   vi.mocked(invoke).mockResolvedValueOnce({ name: "Rosenfu", version: "test-version" }).mockResolvedValueOnce(snapshot);
   renderStationEditor(); await screen.findByText(/test-version/);
   fireEvent.click(screen.getByRole("tab", { name: "路線" }));
 }
-function selectEndpoints() {
-  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-  fireEvent.change(screen.getByLabelText("接続元の駅"), { target: { value: "3" } });
-  fireEvent.change(screen.getByLabelText("接続先の駅"), { target: { value: "4" } });
-}
 
-test("track selectors forbid missing/same endpoints and successful string-ID request draws below markers", async () => {
-  await renderWithStations();
-  const submit = screen.getByRole("button", { name: "線路を接続" }) as HTMLButtonElement;
-  expect(submit.disabled).toBe(true);
-  fireEvent.change(screen.getByLabelText("接続元の駅"), { target: { value: "3" } });
-  fireEvent.change(screen.getByLabelText("接続先の駅"), { target: { value: "3" } });
-  expect(submit.disabled).toBe(true);
-  expect(screen.getByText("異なる2駅を選択してください。")).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("接続先の駅"), { target: { value: "4" } });
-  expect(submit.disabled).toBe(false);
-  vi.mocked(invoke).mockResolvedValueOnce(connected);
-  fireEvent.click(submit);
-  await screen.findByText("線路を接続しました。");
-  expect(invoke).toHaveBeenCalledWith("add_track", { from: "3", to: "4" });
-  expect(screen.getByLabelText("線路数").textContent).toBe("1");
-  expect(screen.getByText("未保存の変更あり")).toBeTruthy();
-  const map = screen.getByRole("img", { name: "駅配置用サンプル地図" });
-  const track = map.querySelector(".track-connection")!;
-  const line = track.querySelector(".track-line")!;
-  expect(Number(line.getAttribute("x1"))).toBeCloseTo(project(35.675, 139.75).x);
-  expect(Number(line.getAttribute("y1"))).toBeCloseTo(project(35.675, 139.75).y);
-  expect(Number(line.getAttribute("x2"))).toBeCloseTo(project(35.70, 139.80).x);
-  expect(Number(line.getAttribute("y2"))).toBeCloseTo(project(35.70, 139.80).y);
-  expect(track.compareDocumentPosition(map.querySelector(".station-marker")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  fireEvent.click(line);
-  expect(invoke).not.toHaveBeenCalledWith("add_station", expect.anything());
-});
 
-test("track failure leaves existing track and station snapshot intact", async () => {
-  await renderWithStations(connected);
-  selectEndpoints();
-  vi.mocked(invoke).mockRejectedValueOnce(new Error("duplicate track"));
-  fireEvent.click(screen.getByRole("button", { name: "線路を接続" }));
-  await screen.findByText(/duplicate track/);
-  expect(screen.getByLabelText("線路数").textContent).toBe("1");
-  expect(screen.getByRole("img", { name: "駅配置用サンプル地図" }).querySelectorAll(".station-marker")).toHaveLength(2);
-  expect(screen.queryByText("未保存の変更あり")).toBeNull();
-});
 
-test("pending track addition blocks all duplicate edits and load resets endpoint selection", async () => {
-  await renderWithStations(); selectEndpoints();
-  let finish!: (value: typeof connected) => void;
-  vi.mocked(invoke).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-  const submit = screen.getByRole("button", { name: "線路を接続" });
-  fireEvent.click(submit); fireEvent.click(submit);
-  expect((submit as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "add_track")).toHaveLength(1);
-  expect(screen.getByLabelText("線路数").textContent).toBe("0");
-  finish(connected); await screen.findByText("線路を接続しました。");
-  fireEvent.click(screen.getByRole("button", { name: "読込" }));
-  expect(invoke).not.toHaveBeenCalledWith("load_world");
-  fireEvent.click(screen.getByRole("button", { name: "読込を続ける" }));
-  await screen.findByText("保存したワールドを読み込みました。");
-  expect((screen.getByLabelText("接続元の駅") as HTMLSelectElement).value).toBe("");
-  expect((screen.getByLabelText("接続先の駅") as HTMLSelectElement).value).toBe("");
-  expect(screen.getByLabelText("線路数").textContent).toBe("0");
-});
 
-test("browser preview contains a synthetic track without enabling edits", () => {
-  vi.mocked(isTauri).mockReturnValue(false); renderStationEditor(); fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-  expect(screen.getByLabelText("線路数").textContent).toBe("1");
-  expect(screen.getByRole("img", { name: "駅配置用サンプル地図" }).querySelectorAll(".track-connection")).toHaveLength(1);
-  expect((screen.getByRole("button", { name: "線路を接続" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(invoke).not.toHaveBeenCalled();
-});
+
 
 const network = {
   ...connected, next_id: "12",
@@ -213,74 +146,14 @@ const network = {
     { id: "8", owner: "2", name: "離島A", latitude: 35.62, longitude: 139.67 },
     { id: "9", owner: "2", name: "離島B", latitude: 35.63, longitude: 139.68 },
   ],
-  tracks: [...connected.tracks, { id: "6", owner: "2", from: "4", to: "7" }, { id: "10", owner: "2", from: "8", to: "9" }],
-  routes: [{ id: "11", owner: "2", name: "既存線", start: "3", tracks: ["5"] }],
+  routes: [{ id: "11", owner: "2", name: "既存線", start: "3" }],
+  route_paths:[{route_id:"11",segments:[{kind:"alignment",alignment_id:"5",from:"3",to:"4"}],member_stations:["3","4"]}],
 };
-async function renderRoutes() {
-  await renderWithStations(network); fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-}
-function appendRouteTrack(id: string) {
-  fireEvent.change(region("#workspace-panel-routes").getByLabelText("次にたどる線路"), { target: { value: id } });
-  fireEvent.click(region("#workspace-panel-routes").getByRole("button", { name: "経路に追加" }));
-}
 
-test("route creation offers only connected track choices and applies an ordered string-ID path", async () => {
-  await renderRoutes();
-  fireEvent.change(screen.getByLabelText("路線名"), { target: { value: "本線" } });
-  fireEvent.change(screen.getByLabelText("路線の起点"), { target: { value: "3" } });
-  const next = screen.getByLabelText("次にたどる線路") as HTMLSelectElement;
-  expect(Array.from(next.options).map((option) => option.value)).toEqual(["", "5"]);
-  appendRouteTrack("5");
-  expect(Array.from(next.options).map((option) => option.value)).toEqual(["", "5", "6"]);
-  appendRouteTrack("6");
-  expect(screen.getByRole("list", { name: "路線の経由順序" }).textContent).toBe("中央東北");
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
-  const applied = { ...network, next_id: "13", routes: [...network.routes, { id: "12", owner: "2", name: "本線", start: "3", tracks: ["5", "6"] }] };
-  vi.mocked(invoke).mockResolvedValueOnce(applied);
-  fireEvent.click(screen.getByRole("button", { name: "路線を適用" }));
-  await screen.findByText(/路線をワールドに適用しました/);
-  expect(invoke).toHaveBeenCalledWith("save_route", { routeId: null, name: "本線", start: "3", tracks: ["5", "6"] });
-  expect(screen.getByText(/編集中の路線 ID: 12/)).toBeTruthy();
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
-});
 
-test("editing a route retains its ID and start changes visibly clear its ordered path", async () => {
-  await renderRoutes(); fireEvent.click(screen.getByRole("button", { name: "編集: 既存線" }));
-  fireEvent.change(screen.getByLabelText("路線名"), { target: { value: "改名線" } });
-  vi.mocked(invoke).mockResolvedValueOnce({ ...network, routes: [{ ...network.routes[0], name: "改名線" }] });
-  fireEvent.click(screen.getByRole("button", { name: "路線を適用" }));
-  await screen.findByText(/路線をワールドに適用しました/);
-  expect(invoke).toHaveBeenCalledWith("save_route", { routeId: "11", name: "改名線", start: "3", tracks: ["5"] });
-  fireEvent.change(screen.getByLabelText("路線の起点"), { target: { value: "7" } });
-  expect(screen.getByText("起点を変更したため、経路をクリアしました。")).toBeTruthy();
-  expect(screen.getByRole("list", { name: "路線の経由順序" }).textContent).toBe("北");
-  expect((screen.getByRole("button", { name: "路線を適用" }) as HTMLButtonElement).disabled).toBe(true);
-});
 
-test("route draft survives failed apply and requires confirmation before switching or loading", async () => {
-  await renderRoutes();
-  fireEvent.change(region("#workspace-panel-routes").getByLabelText("路線名"), { target: { value: "作業中" } });
-  fireEvent.change(region("#workspace-panel-routes").getByLabelText("路線の起点"), { target: { value: "3" } });
-  appendRouteTrack("5");
-  vi.mocked(invoke).mockRejectedValueOnce(new Error("route rejected"));
-  fireEvent.click(region("#workspace-panel-routes").getByRole("button", { name: "路線を適用" }));
-  await screen.findByText(/route rejected/);
-  expect((region("#workspace-panel-routes").getByLabelText("路線名") as HTMLInputElement).value).toBe("作業中");
-  expect(region("#workspace-panel-routes").getByRole("list", { name: "路線の経由順序" }).textContent).toBe("中央東");
-  fireEvent.click(region("#workspace-panel-routes").getByRole("button", { name: "編集: 既存線" }));
-  fireEvent.click(region("#workspace-panel-routes").getByRole("button", { name: "編集を続ける" }));
-  expect((region("#workspace-panel-routes").getByLabelText("路線名") as HTMLInputElement).value).toBe("作業中");
-  fireEvent.click(region(".save-controls").getByRole("button", { name: "読込" }));
-  expect(invoke).not.toHaveBeenCalledWith("load_world");
-  vi.mocked(invoke).mockRejectedValueOnce(new Error("load rejected"));
-  fireEvent.click(region(".load-confirm").getByRole("button", { name: "読込を続ける" }));
-  await screen.findByText(/load rejected/);
-  expect((region("#workspace-panel-routes").getByLabelText("路線名") as HTMLInputElement).value).toBe("作業中");
-  fireEvent.click(region("#workspace-panel-routes").getByRole("button", { name: "新規路線" }));
-  fireEvent.click(region("#workspace-panel-routes").getByRole("button", { name: "下書きを破棄して切替" }));
-  expect((region("#workspace-panel-routes").getByLabelText("路線名") as HTMLInputElement).value).toBe("新路線");
-  expect(screen.queryByText("未適用の下書きあり")).toBeNull();
-});
+
+
 
 test("company name is applied to the existing company and unsubmitted input is not saved", async () => {
   await renderWithStations(network); fireEvent.click(screen.getByRole("tab", { name: "設定" }));
@@ -298,15 +171,6 @@ test("company name is applied to the existing company and unsubmitted input is n
   expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
-test("editor tabs support keyboard navigation without discarding local route drafts", async () => {
-  await renderRoutes();
-  fireEvent.change(screen.getByLabelText("路線名"), { target: { value: "保持する下書き" } });
-  fireEvent.keyDown(screen.getByRole("tab", { name: "路線" }), { key: "End" });
-  expect(screen.getByRole("tab", { name: "設定" }).getAttribute("aria-selected")).toBe("true");
-  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-  expect((screen.getByLabelText("路線名") as HTMLInputElement).value).toBe("保持する下書き");
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
-});
 
 test("map station placement is disabled outside the station editor tab", async () => {
   desktop(); renderStationEditor(); await screen.findByText(/test-version/);
@@ -541,7 +405,7 @@ test("existing equipment short clicks avoid capture and retargeted clicks cannot
   fireEvent.click(marker);
   expect(marker.classList.contains("selected")).toBe(true);
   fireEvent.click(map,{clientX:250,clientY:150});
-  const line = map.querySelector(".track-line")!;
+  const line = map.querySelector(".alignment-hit")!;
   pointer(line,"pointerdown",260,150); pointer(line,"pointerup",260,150); fireEvent.click(map,{clientX:260,clientY:150});
   expect(invoke).not.toHaveBeenCalledWith("add_station",expect.anything());
 });
@@ -590,94 +454,15 @@ test("bubbled child capture loss does not cancel the active SVG drag", async () 
 
 const serviceNetwork = {
   ...network, next_id: "13",
-  services: [{ id: "12", owner: "2", name: "折返し系統", start: "3", tracks: ["5", "5"], stops: [0, 1, 2] }],
+  services: [{ id: "12", owner: "2", name: "折返し系統", start: "3" }],
+  service_paths:[{service_id:"12",next_leg_key:"3",legs:[{key:"1",segment:{kind:"alignment",alignment_id:"5",from:"3",to:"4"}},{key:"2",segment:{kind:"alignment",alignment_id:"5",from:"4",to:"3"}}],stops:[{kind:"start"},{kind:"on_leg",leg_key:"1",station_id:"4"},{kind:"on_leg",leg_key:"2",station_id:"3"}]}],
 };
-async function renderServices() {
-  await renderWithStations(serviceNetwork); fireEvent.click(screen.getByRole("tab", { name: "系統" }));
-}
-function appendServiceTrack(id: string) {
-  fireEvent.change(region("#workspace-panel-services").getByLabelText("系統で次にたどる線路"), { target: { value: id } });
-  fireEvent.click(region("#workspace-panel-services").getByRole("button", { name: "系統経路に追加" }));
-}
 
-test("service creation distinguishes repeated station occurrences and sends ordered stop indexes", async () => {
-  await renderServices();
-  fireEvent.change(screen.getByLabelText("系統名"), { target: { value: "反復系統" } });
-  fireEvent.change(screen.getByLabelText("系統の起点"), { target: { value: "3" } });
-  expect(Array.from((screen.getByLabelText("系統で次にたどる線路") as HTMLSelectElement).options).map(option=>option.value)).toEqual(["", "5"]);
-  appendServiceTrack("5"); appendServiceTrack("5"); appendServiceTrack("5");
-  const firstCentral = screen.getByRole("checkbox", { name: "停車 1: 中央" }) as HTMLInputElement;
-  const repeatedCentral = screen.getByRole("checkbox", { name: "停車 3: 中央" }) as HTMLInputElement;
-  const endpoint = screen.getByRole("checkbox", { name: "停車 4: 東" }) as HTMLInputElement;
-  expect(firstCentral.disabled).toBe(true); expect(endpoint.disabled).toBe(true);
-  expect(repeatedCentral.disabled).toBe(false); fireEvent.click(repeatedCentral);
-  expect(firstCentral.checked).toBe(true); expect(repeatedCentral.checked).toBe(false); expect(endpoint.checked).toBe(true);
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
-  const created = { id: "13", owner: "2", name: "反復系統", start: "3", tracks: ["5", "5", "5"], stops: [0, 1, 3] };
-  vi.mocked(invoke).mockResolvedValueOnce({ ...serviceNetwork, next_id: "14", services: [...serviceNetwork.services, created] });
-  fireEvent.click(screen.getByRole("button", { name: "系統を適用" }));
-  await screen.findByText(/運行系統をワールドに適用しました/);
-  expect(invoke).toHaveBeenCalledWith("save_service", { serviceId: null, name: "反復系統", start: "3", tracks: ["5", "5", "5"], stops: [0, 1, 3] });
-  expect(screen.getByText(/編集中の系統 ID: 13/)).toBeTruthy();
-  expect((screen.getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
-  expect(invoke).not.toHaveBeenCalledWith("save_route", expect.anything());
-});
 
-test("existing service updates preserve its ID and pending submission prevents duplicate calls", async () => {
-  await renderServices(); fireEvent.click(screen.getByRole("button", { name: "系統編集: 折返し系統" }));
-  fireEvent.change(screen.getByLabelText("系統名"), { target: { value: "通過あり系統" } });
-  fireEvent.click(screen.getByRole("checkbox", { name: "停車 2: 東" }));
-  const updated = { ...serviceNetwork, services: [{ ...serviceNetwork.services[0], name: "通過あり系統", stops: [0, 2] }] };
-  let finish!: (value: typeof updated) => void;
-  vi.mocked(invoke).mockImplementationOnce(() => new Promise(resolve=>{finish=resolve;}));
-  const submit = screen.getByRole("button", { name: "系統を適用" });
-  fireEvent.click(submit); fireEvent.click(submit);
-  expect((submit as HTMLButtonElement).disabled).toBe(true);
-  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="save_service")).toHaveLength(1);
-  expect(invoke).toHaveBeenCalledWith("save_service", { serviceId: "12", name: "通過あり系統", start: "3", tracks: ["5", "5"], stops: [0, 2] });
-  finish(updated); await screen.findByText(/運行系統をワールドに適用しました/);
-  expect(screen.getByText(/編集中の系統 ID: 12/)).toBeTruthy();
-  expect((screen.getByRole("checkbox", { name: "停車 2: 東" }) as HTMLInputElement).checked).toBe(false);
-});
 
-test("service path changes explicitly reset stops and keep disconnected tracks unavailable", async () => {
-  await renderServices(); fireEvent.click(screen.getByRole("button", { name: "系統編集: 折返し系統" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: "停車 2: 東" }));
-  appendServiceTrack("5");
-  expect(screen.getByText("経路を変更したため、停車設定を全駅停車へ戻しました。")).toBeTruthy();
-  expect((screen.getByRole("checkbox", { name: "停車 2: 東" }) as HTMLInputElement).checked).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "系統末尾を戻す" }));
-  expect(region("#workspace-panel-services").getAllByRole("checkbox")).toHaveLength(3);
-  expect((screen.getByRole("checkbox", { name: "停車 3: 中央" }) as HTMLInputElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "系統経路をクリア" }));
-  expect(region("#workspace-panel-services").getAllByRole("checkbox")).toHaveLength(1);
-  expect((screen.getByRole("button", { name: "系統を適用" }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.change(screen.getByLabelText("系統の起点"), { target: { value: "7" } });
-  expect(Array.from((screen.getByLabelText("系統で次にたどる線路") as HTMLSelectElement).options).map(option=>option.value)).toEqual(["", "6"]);
-});
 
-test("failed service apply and load preserve draft until an explicit discard choice", async () => {
-  await renderServices();
-  fireEvent.change(region("#workspace-panel-services").getByLabelText("系統名"), { target: { value: "作業中の系統" } });
-  fireEvent.change(region("#workspace-panel-services").getByLabelText("系統の起点"), { target: { value: "3" } }); appendServiceTrack("5");
-  vi.mocked(invoke).mockRejectedValueOnce(new Error("service rejected"));
-  fireEvent.click(region("#workspace-panel-services").getByRole("button", { name: "系統を適用" }));
-  await screen.findByText(/service rejected/);
-  expect((region("#workspace-panel-services").getByLabelText("系統名") as HTMLInputElement).value).toBe("作業中の系統");
-  expect(region("#workspace-panel-services").getAllByRole("checkbox")).toHaveLength(2);
-  fireEvent.click(region(".save-controls").getByRole("button", { name: "読込" }));
-  expect(invoke).not.toHaveBeenCalledWith("load_world");
-  vi.mocked(invoke).mockRejectedValueOnce(new Error("load rejected"));
-  fireEvent.click(region(".load-confirm").getByRole("button", { name: "読込を続ける" })); await screen.findByText(/load rejected/);
-  expect((region("#workspace-panel-services").getByLabelText("系統名") as HTMLInputElement).value).toBe("作業中の系統");
-  fireEvent.click(region("#workspace-panel-services").getByRole("button", { name: "新規系統" }));
-  fireEvent.click(region("#workspace-panel-services").getByRole("button", { name: "系統編集を続ける" }));
-  expect((region("#workspace-panel-services").getByLabelText("系統名") as HTMLInputElement).value).toBe("作業中の系統");
-  fireEvent.click(region("#workspace-panel-services").getByRole("button", { name: "系統編集: 折返し系統" }));
-  fireEvent.click(region("#workspace-panel-services").getByRole("button", { name: "系統下書きを破棄して切替" }));
-  expect((region("#workspace-panel-services").getByLabelText("系統名") as HTMLInputElement).value).toBe("折返し系統");
-  expect((region(".save-controls").getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
-});
+
+
 
 test("browser preview includes a read-only service without implying train operation", () => {
   vi.mocked(isTauri).mockReturnValue(false); renderStationEditor();
@@ -759,34 +544,10 @@ test("isolated station deletion confirms, handles failure, and prevents duplicat
   expect(screen.getByText("未保存の変更あり")).toBeTruthy();
 });
 
-test("equipment references and local drafts prevent deletion, while unreferenced track can be removed", async () => {
-  await editEquipment(connected, async (command) => {
-    if (command === "delete_track") return twoStations;
-    throw new Error(command);
-  });
-  selectFirstStation();
-  expect((screen.getByRole("button", { name: "選択駅を削除" }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getByText(/削除不可: 接続線路/)).toBeTruthy();
-  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-  fireEvent.change(screen.getByLabelText("路線名"), { target: { value: "未適用" } });
-  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-  expect((screen.getByRole("button", { name: "線路 5 を削除" }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-  fireEvent.click(screen.getByRole("button", { name: "下書きを破棄" }));
-  fireEvent.click(screen.getByRole("button", { name: "下書きを破棄して切替" }));
-  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-  fireEvent.click(screen.getByRole("button", { name: "線路 5 を削除" }));
-  fireEvent.click(screen.getByRole("button", { name: "削除を確定" }));
-  await screen.findByText("設備を削除しました。保存でファイルに反映します。");
-  expect(invoke).toHaveBeenCalledWith("delete_track", { trackId: "5" });
-  expect(document.querySelectorAll(".track-connection")).toHaveLength(0);
-  expect(document.querySelectorAll(".station-marker")).toHaveLength(2);
-});
 
 test("route and service references are explained and browser equipment editing stays disabled", async () => {
   await editEquipment(serviceNetwork, async () => { throw new Error("must not invoke"); });
-  fireEvent.click(screen.getByRole("tab", { name: "路線" }));
-  expect((screen.getByRole("button", { name: "線路 5 を削除" }) as HTMLButtonElement).disabled).toBe(true);
+  selectFirstStation();
   expect(screen.getByText(/削除不可:.*系統: 折返し系統/)).toBeTruthy();
   cleanup(); vi.mocked(invoke).mockClear(); vi.mocked(isTauri).mockReturnValue(false);
   renderStationEditor(); selectFirstStation();
@@ -851,38 +612,21 @@ test("OSM is the normal background with attribution and offline sample remains a
  expect(screen.getByRole("img",{name:"駅配置用OpenStreetMap"}).querySelectorAll("[data-failed-tile]")).toHaveLength(0);
 });
 
-test("endpoint candidate planning populates a new manual route without saving or replacing existing data", async () => {
-  await renderRoutes();
-  fireEvent.click(screen.getByRole("button", {name:"編集: 既存線"}));
-  fireEvent.change(screen.getByLabelText("候補の起点"), {target:{value:"3"}});
-  fireEvent.change(screen.getByLabelText("候補の終点"), {target:{value:"7"}});
-  const path={stations:["3","4","7"],segments:[{kind:"track",track_id:"5"},{kind:"track",track_id:"6"}],track_only:true};
-  vi.mocked(invoke).mockResolvedValueOnce({status:"unique",candidates:[path],truncated:false})
-    .mockResolvedValueOnce({path,member_stations:path.stations,excluded_stations:[]});
-  fireEvent.click(screen.getByRole("button",{name:"経路候補を検索"}));
-  fireEvent.click(await screen.findByRole("button",{name:"新規路線の手動下書きへ使う"}));
-  expect(screen.getByRole("list",{name:"路線の経由順序"}).textContent).toBe("中央東北");
-  expect((screen.getByLabelText("路線名") as HTMLInputElement).value).toBe("新路線");
-  expect(screen.getByText(/^新規路線の下書き/)).toBeTruthy();
-  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="save_route")).toBe(false);
-  expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(true);
-});
 test("persisted alignment route is shown and protected against legacy editing",async()=>{
- desktop();const world={...populated,stations:[...populated.stations,{id:"4",owner:"2",name:"東",latitude:35.68,longitude:139.8}],routes:[{id:"6",owner:"2",name:"新方式本線",start:"3",tracks:[]}],alignments:[{id:"5",owner:"2",name:"東西線形",points:[{latitude:35.675,longitude:139.75},{latitude:35.68,longitude:139.8}]}],route_paths:[{route_id:"6",segments:[{kind:"alignment",alignment_id:"5",from:"3",to:"4"}],member_stations:["3","4"]}]};
+ desktop();const world={...populated,stations:[...populated.stations,{id:"4",owner:"2",name:"東",latitude:35.68,longitude:139.8}],routes:[{id:"6",owner:"2",name:"新方式本線",start:"3"}],alignments:[{id:"5",owner:"2",name:"東西線形",points:[{latitude:35.675,longitude:139.75},{latitude:35.68,longitude:139.8}]}],route_paths:[{route_id:"6",segments:[{kind:"alignment",alignment_id:"5",from:"3",to:"4"}],member_stations:["3","4"]}]};
  vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{name:"Rosenfu",version:"test-version"}:world);
  renderStationEditor();await screen.findByText(/test-version/);
  fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.click(screen.getByRole("button",{name:"編集: 新方式本線"}));
  expect(screen.getByText("所属駅: 中央 → 東")).toBeTruthy();expect(screen.getByText(/建設線形 東西線形/)).toBeTruthy();
- expect(screen.getByLabelText("路線名").closest("fieldset")?.disabled).toBe(true);
- fireEvent.submit(screen.getByLabelText("路線名").closest("form")!);
+ expect(screen.queryByLabelText("路線名")).toBeNull();
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="save_route")).toBe(false);
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^中央 35/}));
  expect(screen.getAllByText(/路線: 新方式本線/).length).toBeGreaterThan(0);
 });
 test("candidate apply invokes RoutePath save and marks world unsaved",async()=>{
  desktop();const stations=[...populated.stations,{id:"4",owner:"2",name:"東",latitude:35.68,longitude:139.8}];
- const path={stations:["3","4"],segments:[{kind:"alignment",alignment_id:"5",from:"3",to:"4"}],track_only:false};
- const oldRoute={id:"7",owner:"2",name:"既存路線",start:"3",tracks:[]};const oldPath={route_id:"7",segments:path.segments,member_stations:path.stations};const world={...empty,stations,routes:[oldRoute],route_paths:[oldPath]};const applied={...world,routes:[oldRoute,{id:"6",owner:"2",name:"候補路線",start:"3",tracks:[]}],route_paths:[oldPath,{route_id:"6",segments:path.segments,member_stations:path.stations}]};let rejectSave=true;
+ const path={stations:["3","4"],segments:[{kind:"alignment",alignment_id:"5",from:"3",to:"4"}]};
+ const oldRoute={id:"7",owner:"2",name:"既存路線",start:"3"};const oldPath={route_id:"7",segments:path.segments,member_stations:path.stations};const world={...empty,stations,routes:[oldRoute],route_paths:[oldPath]};const applied={...world,routes:[oldRoute,{id:"6",owner:"2",name:"候補路線",start:"3"}],route_paths:[oldPath,{route_id:"6",segments:path.segments,member_stations:path.stations}]};let rejectSave=true;
  vi.mocked(invoke).mockImplementation(async command=>{if(command==="engine_info")return {name:"Rosenfu",version:"test-version"};if(command==="world_snapshot")return world;if(command==="preview_route_candidates")return {status:"unique",candidates:[path],truncated:false};if(command==="preview_route_membership")return {path,member_stations:path.stations,excluded_stations:[]};if(command==="save_planned_route"){if(rejectSave){rejectSave=false;throw Error("temporary route save failure");}return applied;}throw Error(command);});
  render(<App/>);await screen.findByText(/test-version/);fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.click(screen.getByRole("button",{name:"編集: 既存路線"}));const routePanel=region("#workspace-panel-routes");
  fireEvent.change(routePanel.getByLabelText("候補の起点"),{target:{value:"3"}});fireEvent.change(routePanel.getByLabelText("候補の終点"),{target:{value:"4"}});fireEvent.click(routePanel.getByRole("button",{name:"経路候補を検索"}));
@@ -903,4 +647,19 @@ test("reference station import stays separate from game stations and can be hidd
 test("display settings restore to actual UI and failures are visible outside collapsed settings",()=>{
  vi.mocked(isTauri).mockReturnValue(false);localStorage.setItem("rosenfu.display-settings",JSON.stringify({version:1,settings:{theme:"dark",lineWidth:6,contrast:120,panelWidth:360,textSize:14}}));const view=render(<App/>);const main=document.querySelector("main")!;expect(main.getAttribute("data-theme")).toBe("dark");expect(main.style.getPropertyValue("--panel-width")).toBe("360px");fireEvent.click(screen.getByRole("button",{name:"表示設定を既定に戻す"}));expect(main.getAttribute("data-theme")).toBe("light");expect(localStorage.getItem("rosenfu.display-settings")).toBeNull();view.unmount();
  localStorage.setItem("rosenfu.display-settings","invalid");render(<App/>);expect(document.querySelector('.display-settings-warning')?.textContent).toContain("表示設定の復元に失敗");expect(document.querySelector('.display-settings-warning')?.closest('details')).toBeNull();
+});
+
+
+test("physical path UI removes obsolete manual creation and retains read-only alignment preview",()=>{
+ vi.mocked(isTauri).mockReturnValue(false);const view=render(<App/>);
+ expect(view.container.querySelector(".alignment-hit")).toBeTruthy();
+ expect(view.container.querySelector(".track-connection")).toBeNull();
+ fireEvent.click(screen.getByRole("tab",{name:"路線"}));
+ expect(screen.queryByLabelText("接続元の駅")).toBeNull();
+ expect(screen.queryByLabelText("次にたどる線路")).toBeNull();
+ expect(screen.queryByRole("button",{name:"線路を接続"})).toBeNull();
+ fireEvent.click(screen.getByRole("tab",{name:"系統"}));
+ expect(screen.queryByLabelText("系統で次にたどる線路")).toBeNull();
+ expect(screen.queryByRole("button",{name:"系統を適用"})).toBeNull();
+ expect(invoke).not.toHaveBeenCalled();
 });
