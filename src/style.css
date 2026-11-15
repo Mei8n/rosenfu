@@ -520,3 +520,8 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .route-directory th, .route-directory td { padding: .3rem .2rem; text-align: left; }
 .route-directory td { white-space: nowrap; }
 .route-directory tbody th { font-weight: normal; }
+
+/* Native disclosure keeps speed controls out of the closed toolbar and tab order. */
+.workbench .construction-toolbar .track-advanced-settings { min-width:0; max-width:100%; font-size:11px; }
+.workbench .construction-toolbar .track-advanced-settings > summary { cursor:pointer; }
+.workbench .construction-toolbar .track-advanced-settings .target-speed-control { flex-wrap:wrap; padding-top:4px; }
