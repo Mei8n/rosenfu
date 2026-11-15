@@ -2,11 +2,11 @@ import {alignmentLength,type GeoPoint} from './alignment';
 import {corridorSpans} from './connectedCorridor';
 import type {EndpointConnection} from './destinationJoin';
 import type {Segment} from './RouteCandidatePreview';
-type Route={id:string;name:string;start:string;tracks:string[]};
-type World={routes:Route[];tracks:{id:string;from:string;to:string}[];alignments?:{id:string;points:GeoPoint[]}[];station_placements?:{station_id:string;alignment_id:string;position:number}[];alignment_connections?:EndpointConnection[];route_paths?:{route_id:string;segments:Segment[]}[]};
+type Route={id:string;name:string;start:string};
+type World={routes:Route[];alignments?:{id:string;points:GeoPoint[]}[];station_placements?:{station_id:string;alignment_id:string;position:number}[];alignment_connections?:EndpointConnection[];route_paths?:{route_id:string;segments:Segment[]}[]};
 /** Physical spans only. Legacy links without geometry have no measurable length. */
 export function routeLength(route:Route,world:World):number|null {
- const segments=world.route_paths?.find(p=>p.route_id===route.id)?.segments??route.tracks.map(track_id=>({kind:'track' as const,track_id}));
+ const segments=world.route_paths?.find(p=>p.route_id===route.id)?.segments??[];
  if(!segments.length)return null;
  const placement=(id:string)=>world.station_placements?.find(p=>p.station_id===id);
  function span(id:string,begin:number,finish:number){
@@ -20,8 +20,7 @@ export function routeLength(route:Route,world:World):number|null {
  try{return segments.reduce((total,s)=>{
   if(s.kind==='alignment')return total+between(s.alignment_id,s.from,s.to);
   if(s.kind==='connected_alignments')return total+corridorSpans(s,world).reduce((sum,p)=>sum+span(p.alignmentId,p.begin,p.finish),0);
-  const t=world.tracks.find(t=>t.id===s.track_id),p=t&&placement(t.from);
-  if(!t||!p)throw Error('No geometry');return total+between(p.alignment_id,t.from,t.to);
+  throw Error('Unsupported physical segment');
  },0);}catch{return null;}
 }
 export function RouteDirectory({world,enabled,selected,onChoose}:{world:World;enabled:boolean;selected:string|null;onChoose:(id:string|null)=>void}){

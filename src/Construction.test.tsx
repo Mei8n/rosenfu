@@ -18,6 +18,8 @@ async function start(snapshot: unknown = empty) {
   vi.mocked(invoke).mockImplementation(async command => {
     if(command==="engine_info") return {name:"Rosenfu",version:"construction-test"};
     if(command==="world_snapshot") return snapshot;
+    if(command==="list_save_slots") return {active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]};
+    if(command==="autosave_status") return {available:false};
     throw Error("unexpected "+command);
   });
   render(<App/>); fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"})); await screen.findByText(/construction-test/);

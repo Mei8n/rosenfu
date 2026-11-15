@@ -1,20 +1,19 @@
-use super::WorldEditor;
 use rosenfu_core::world::*;
 #[test]
 fn source_rebinding_failure_and_stale_expected_path_preserve_entire_world() {
-    let mut e = WorldEditor::new();
-    let a = e.add_station("A".into(), 35., 139.).unwrap().stations[0].id;
-    let b = e.add_station("B".into(), 35., 139.01).unwrap().stations[1].id;
-    let c = e.add_station("C".into(), 35., 139.02).unwrap().stations[2].id;
-    let ab = e.add_track(a, b).unwrap().tracks[0].id;
-    let bc = e.add_track(b, c).unwrap().tracks[1].id;
-    let r = e.save_route(None, "R".into(), a, vec![ab]).unwrap().routes[0].id;
+    let (mut e, line, [a, b, c]) = super::tests::alignment_fixture();
+    let span = |from, to| super::tests::span(line, from, to);
+    let r = e
+        .save_planned_route(None, "R".into(), a, vec![span(a, b)], vec![])
+        .unwrap()
+        .routes[0]
+        .id;
     let other = e
-        .save_route(None, "Other".into(), b, vec![bc])
+        .save_planned_route(None, "Other".into(), b, vec![span(b, c)], vec![])
         .unwrap()
         .routes[1]
         .id;
-    let segments = vec![RouteSegment::Track { track_id: ab }];
+    let segments = vec![span(a, b)];
     let preview = e.preview_service_path(a, segments.clone()).unwrap();
     let stops = preview
         .occurrences
@@ -26,7 +25,7 @@ fn source_rebinding_failure_and_stale_expected_path_preserve_entire_world() {
         .unwrap();
     let id = initial.services[0].id;
     let expected = initial.service_paths[0].clone();
-    let new_segments = vec![RouteSegment::Track { track_id: bc }];
+    let new_segments = vec![span(b, c)];
     let preview = e
         .preview_service_path_replacement(id, b, new_segments.clone())
         .unwrap();

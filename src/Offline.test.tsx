@@ -24,11 +24,12 @@ beforeEach(() => {
   saved = world;
   vi.mocked(isTauri).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async command => {
+    if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};
     if (command === "engine_info") return { name: "Rosenfu", version: "offline-test" };
     if (command === "world_snapshot") return world;
     if (command === "rename_company") return renamed;
     if (command === "save_world") { saved = renamed; return { saved: true }; }
-    if (command === "load_world") return saved;
+    if (command === "load_save_slot") return saved;
     throw new Error(`unexpected local command: ${command}`);
   });
 });
@@ -78,6 +79,6 @@ test("background failure does not block editing, saving and reloading local stat
   await screen.findByText("保存したワールドを読み込みました。");
   expect((screen.getByLabelText("会社名") as HTMLInputElement).value).toBe("オフライン鉄道");
   expect(invoke).toHaveBeenCalledWith("save_world",expect.objectContaining({constructionPlans:expect.any(Object)}));
-  expect(invoke).toHaveBeenCalledWith("load_world");
+  expect(invoke).toHaveBeenCalledWith("load_save_slot",{slotId:"test-slot"});
   expect(fetchAttempt).not.toHaveBeenCalled();
 });

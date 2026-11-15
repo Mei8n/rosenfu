@@ -16,9 +16,6 @@ pub enum RouteSegment {
         to: StationId,
         connections: Vec<AlignmentConnection>,
     },
-    Track {
-        track_id: TrackId,
-    },
     /// A virtual edge between adjacent stations on one alignment, not a Track.
     Alignment {
         alignment_id: AlignmentId,
@@ -30,8 +27,6 @@ pub enum RouteSegment {
 pub struct RouteCandidate {
     pub stations: Vec<StationId>,
     pub segments: Vec<RouteSegment>,
-    /// False means existing save_route cannot consume this candidate.
-    pub track_only: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,21 +77,6 @@ type Graph = BTreeMap<StationId, Vec<Edge>>;
 
 fn graph(data: &WorldDraft) -> (Graph, bool) {
     let mut graph: Graph = data.stations.iter().map(|s| (s.id, vec![])).collect();
-    // Sort independently of save order, to make limited searches deterministic.
-    let mut tracks: Vec<_> = data.tracks.iter().collect();
-    tracks.sort_by_key(|t| t.id);
-    for t in tracks {
-        graph.get_mut(&t.from).unwrap().push(Edge {
-            to: t.to,
-            segment: RouteSegment::Track { track_id: t.id },
-        });
-        graph.get_mut(&t.to).unwrap().push(Edge {
-            to: t.from,
-            segment: RouteSegment::Track { track_id: t.id },
-        });
-    }
-    // Group once rather than scanning every placement for every alignment.
-    // BTreeMap retains alignment-ID order independently of save order.
     let mut by_alignment: BTreeMap<AlignmentId, Vec<&StationPlacement>> = BTreeMap::new();
     for placement in &data.station_placements {
         by_alignment
@@ -155,14 +135,7 @@ fn graph(data: &WorldDraft) -> (Graph, bool) {
     (graph, truncated)
 }
 fn candidate(stations: Vec<StationId>, segments: Vec<RouteSegment>) -> RouteCandidate {
-    let track_only = segments
-        .iter()
-        .all(|s| matches!(s, RouteSegment::Track { .. }));
-    RouteCandidate {
-        stations,
-        segments,
-        track_only,
-    }
+    RouteCandidate { stations, segments }
 }
 // Physical infrastructure distance, not number of stations or route membership.
 fn segment_distance(data: &WorldDraft, segment: &RouteSegment) -> Option<f64> {
@@ -174,17 +147,6 @@ fn segment_distance(data: &WorldDraft, segment: &RouteSegment) -> Option<f64> {
             .map(|a| a.length_m())
     };
     match segment {
-        RouteSegment::Track { track_id } => {
-            let track = data.tracks.iter().find(|t| t.id == *track_id)?;
-            let a = data.stations.iter().find(|s| s.id == track.from)?;
-            let b = data.stations.iter().find(|s| s.id == track.to)?;
-            // Legacy tracks have no sampled geometry: their stored geometry is
-            // the straight station-to-station span, using Alignment's metric.
-            let x = (b.longitude - a.longitude).to_radians()
-                * ((a.latitude + b.latitude) / 2.0).to_radians().cos();
-            let y = (b.latitude - a.latitude).to_radians();
-            Some(6_371_000.0 * x.hypot(y))
-        }
         RouteSegment::Alignment {
             alignment_id,
             from,
@@ -226,6 +188,106 @@ fn segment_distance(data: &WorldDraft, segment: &RouteSegment) -> Option<f64> {
         }
     }
 }
+// Search is independent of persisted infrastructure, allowing exhaustive graph
+// budget/order regressions without reintroducing obsolete Track save models.
+fn enumerate_candidates(
+    graph: &Graph,
+    graph_truncated: bool,
+    start: StationId,
+    end: StationId,
+    via: &[StationId],
+) -> Result<RouteCandidates, RoutePlanningError> {
+    if !graph.contains_key(&start) || !graph.contains_key(&end) {
+        return Err(RoutePlanningError::MissingStation);
+    }
+    if start == end {
+        return Err(RoutePlanningError::SameEndpoints);
+    }
+    if via.iter().any(|station| !graph.contains_key(station)) {
+        return Err(RoutePlanningError::MissingStation);
+    }
+    let mut selected = BTreeSet::from([start, end]);
+    if via.iter().any(|station| !selected.insert(*station)) {
+        return Err(RoutePlanningError::RepeatedStation);
+    }
+    if via.len() >= MAX_HOPS {
+        return Err(RoutePlanningError::PathTooLong);
+    }
+    let required: BTreeMap<_, _> = via
+        .iter()
+        .copied()
+        .chain([end])
+        .enumerate()
+        .map(|(index, station)| (station, index))
+        .collect();
+    let mut progress = vec![0usize];
+    let mut stations = vec![start];
+    let mut segments = vec![];
+    let mut cursors = vec![0usize];
+    let mut visited = BTreeSet::from([start]);
+    let mut candidates = vec![];
+    let mut truncated = graph_truncated;
+    let mut steps = 0;
+    while let Some(&current) = stations.last() {
+        if steps >= MAX_STEPS {
+            truncated = true;
+            break;
+        }
+        steps += 1;
+        let edges = &graph[&current];
+        let cursor = cursors.last_mut().unwrap();
+        if *cursor == edges.len() {
+            visited.remove(&stations.pop().unwrap());
+            cursors.pop();
+            progress.pop();
+            segments.pop();
+            continue;
+        }
+        let edge = &edges[*cursor];
+        *cursor += 1;
+        if visited.contains(&edge.to) {
+            continue;
+        }
+        let next = *progress.last().unwrap();
+        if required.get(&edge.to).is_some_and(|index| *index != next) {
+            continue;
+        }
+        if segments.len() >= MAX_HOPS {
+            truncated = true;
+            continue;
+        }
+        stations.push(edge.to);
+        segments.push(edge.segment.clone());
+        if edge.to == end {
+            candidates.push(candidate(stations.clone(), segments.clone()));
+            stations.pop();
+            segments.pop();
+            if candidates.len() >= MAX_CANDIDATES {
+                truncated = true;
+                break;
+            }
+        } else {
+            visited.insert(edge.to);
+            cursors.push(0);
+            progress.push(next + usize::from(required.contains_key(&edge.to)));
+        }
+    }
+    let status = if truncated {
+        RouteSearchStatus::Incomplete
+    } else {
+        match candidates.len() {
+            0 => RouteSearchStatus::NoPath,
+            1 => RouteSearchStatus::Unique,
+            _ => RouteSearchStatus::Ambiguous,
+        }
+    };
+    Ok(RouteCandidates {
+        status,
+        candidates,
+        truncated,
+        shortest_candidate_index: None,
+    })
+}
 impl World {
     /// Enumerate station-simple paths, not a shortest-path recommendation.
     /// Cycles/repeated stations require explicit future editing support.
@@ -247,94 +309,12 @@ impl World {
         via: &[StationId],
     ) -> Result<RouteCandidates, RoutePlanningError> {
         let (graph, graph_truncated) = graph(self.snapshot());
-        if !graph.contains_key(&start) || !graph.contains_key(&end) {
-            return Err(RoutePlanningError::MissingStation);
-        }
-        if start == end {
-            return Err(RoutePlanningError::SameEndpoints);
-        }
-        if via.iter().any(|station| !graph.contains_key(station)) {
-            return Err(RoutePlanningError::MissingStation);
-        }
-        let mut selected = BTreeSet::from([start, end]);
-        if via.iter().any(|station| !selected.insert(*station)) {
-            return Err(RoutePlanningError::RepeatedStation);
-        }
-        if via.len() >= MAX_HOPS {
-            return Err(RoutePlanningError::PathTooLong);
-        }
-        let required: BTreeMap<_, _> = via
-            .iter()
-            .copied()
-            .chain([end])
-            .enumerate()
-            .map(|(index, station)| (station, index))
-            .collect();
-        let mut progress = vec![0usize];
-        let mut stations = vec![start];
-        let mut segments = vec![];
-        let mut cursors = vec![0usize];
-        let mut visited = BTreeSet::from([start]);
-        let mut candidates = vec![];
-        let mut truncated = graph_truncated;
-        let mut steps = 0;
-        while let Some(&current) = stations.last() {
-            if steps >= MAX_STEPS {
-                truncated = true;
-                break;
-            }
-            steps += 1;
-            let edges = &graph[&current];
-            let cursor = cursors.last_mut().unwrap();
-            if *cursor == edges.len() {
-                visited.remove(&stations.pop().unwrap());
-                cursors.pop();
-                progress.pop();
-                segments.pop();
-                continue;
-            }
-            let edge = &edges[*cursor];
-            *cursor += 1;
-            if visited.contains(&edge.to) {
-                continue;
-            }
-            let next = *progress.last().unwrap();
-            if required.get(&edge.to).is_some_and(|index| *index != next) {
-                continue;
-            }
-            if segments.len() >= MAX_HOPS {
-                truncated = true;
-                continue;
-            }
-            stations.push(edge.to);
-            segments.push(edge.segment.clone());
-            if edge.to == end {
-                candidates.push(candidate(stations.clone(), segments.clone()));
-                stations.pop();
-                segments.pop();
-                if candidates.len() >= MAX_CANDIDATES {
-                    truncated = true;
-                    break;
-                }
-            } else {
-                visited.insert(edge.to);
-                cursors.push(0);
-                progress.push(next + usize::from(required.contains_key(&edge.to)));
-            }
-        }
-        let status = if truncated {
-            RouteSearchStatus::Incomplete
-        } else {
-            match candidates.len() {
-                0 => RouteSearchStatus::NoPath,
-                1 => RouteSearchStatus::Unique,
-                _ => RouteSearchStatus::Ambiguous,
-            }
-        };
-        let shortest_candidate_index = if truncated {
+        let mut result = enumerate_candidates(&graph, graph_truncated, start, end, via)?;
+        result.shortest_candidate_index = if result.truncated {
             None
         } else {
-            let distances: Option<Vec<f64>> = candidates
+            let distances: Option<Vec<f64>> = result
+                .candidates
                 .iter()
                 .map(|candidate| {
                     candidate.segments.iter().try_fold(0.0, |sum, segment| {
@@ -351,12 +331,7 @@ impl World {
                     .map(|(index, _)| index)
             })
         };
-        Ok(RouteCandidates {
-            status,
-            candidates,
-            truncated,
-            shortest_candidate_index,
-        })
+        Ok(result)
     }
     /// Validate a selected path against the CURRENT world and preview membership.
     /// No writes occur, including when a stale selection or exclusion is rejected.
@@ -404,3 +379,7 @@ impl World {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "route_search_tests.rs"]
+mod search_tests;

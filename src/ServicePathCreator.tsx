@@ -6,10 +6,10 @@ import type {Segment} from './RouteCandidatePreview';
 import {resolveServicePath,referenceKey,sameSegment,sameOccurrence} from './servicePaths';
 import type {PathPreview,PathWorld,StopReference,ServicePath} from './servicePaths';
 export type CreateServicePath={sourceRouteId?:string;name:string;start:string;segments:Segment[];stops:StopReference[]};
-export function ServicePathCreator({routes,routePaths,stations,world,enabled,canStart,onDirty,onSave,replaceService}:{routes:{id:string;name:string;start:string;tracks:string[]}[];routePaths:{route_id:string;segments:Segment[];member_stations:string[]}[];stations:{id:string;name:string}[];world:PathWorld;enabled:boolean;canStart:boolean;onDirty:(dirty:boolean)=>void;onSave:(draft:CreateServicePath)=>Promise<void>;replaceService?:{id:string;name:string;path:ServicePath}}){
+export function ServicePathCreator({routes,routePaths,stations,world,enabled,canStart,onDirty,onSave,replaceService}:{routes:{id:string;name:string;start:string}[];routePaths:{route_id:string;segments:Segment[];member_stations:string[]}[];stations:{id:string;name:string}[];world:PathWorld;enabled:boolean;canStart:boolean;onDirty:(dirty:boolean)=>void;onSave:(draft:CreateServicePath)=>Promise<void>;replaceService?:{id:string;name:string;path:ServicePath}}){
  const [from,setFrom]=useState(0),[to,setTo]=useState<number|null>(null);
  const [routeId,setRouteId]=useState(''),[name,setName]=useState(replaceService?.name??''),[preview,setPreview]=useState<PathPreview|null>(null),[stops,setStops]=useState<string[]>([]),[policy,setPolicy]=useState(''),[confirmed,setConfirmed]=useState(false),[error,setError]=useState(''),[loading,setLoading]=useState(false);const generation=useRef(0),pending=useRef(false),nameEdited=useRef(false);
- const route=routes.find(r=>r.id===routeId),path=routePaths.find(p=>p.route_id===routeId),segments=path?.segments??route?.tracks.map(track_id=>({kind:'track' as const,track_id}))??[];
+ const route=routes.find(r=>r.id===routeId),path=routePaths.find(p=>p.route_id===routeId),segments=path?.segments??[];
  const routeOccurrences=(()=>{try{return route?resolveServicePath(route.start,segments.map((segment,i)=>({key:String(i+1),segment})),world):[];}catch{return [];}})();
  const section=(()=>{try{return route?routeSection(route.start,segments,from,to??routeOccurrences.length-1,world):null;}catch{return null;}})();
  const names=new Map(stations.map(s=>[s.id,s.name]));

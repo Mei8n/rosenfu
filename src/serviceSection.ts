@@ -10,8 +10,7 @@ export function routeSection(start:string,segments:Segment[],from:number,to:numb
   const stations=resolveServicePath(current,[{key:'1',segment}],world).map(o=>o.station_id),end=offset+stations.length-1;
   const a=Math.max(low,offset)-offset,b=Math.min(high,end)-offset;
   if(a<b){
-   if(segment.kind==='track')selected.push(segment);
-   else if(segment.kind==='alignment')selected.push({...segment,from:stations[a],to:stations[b]});
+   if(segment.kind==='alignment')selected.push({...segment,from:stations[a],to:stations[b]});
    else{
     const spans=corridorSpans(segment,world);const places=world.station_placements??[];
     const pa=places.find(p=>p.station_id===stations[a])!,pb=places.find(p=>p.station_id===stations[b])!;

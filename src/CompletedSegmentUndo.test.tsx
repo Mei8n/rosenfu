@@ -15,7 +15,7 @@ const line={id:"3",owner:"2",name:"既存",track_type:"normal",points:[point(180
 const world={next_id:"4",players:[{id:"1",name:"P"}],companies:[{id:"2",owner:"1",name:"C"}],stations:[],tracks:[],routes:[],services:[],alignments:[line],station_placements:[]};
 async function start(extra={}){
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
- if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};throw Error("unexpected "+command);
+ if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]};if(command==="autosave_status")return {available:false};throw Error("unexpected "+command);
  });
  // Resolve the mocked startup IPC and restored-plan effects before the first key.
  // Version text alone can render before the window keyboard listener is refreshed.

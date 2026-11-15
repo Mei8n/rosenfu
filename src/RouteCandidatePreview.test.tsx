@@ -7,7 +7,7 @@ import { RouteCandidatePreview, type Candidate, type Candidates } from "./RouteC
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 const stations = [{id:"1",name:"始発"},{id:"2",name:"中間"},{id:"3",name:"終点"}];
-const path: Candidate = {stations:["1","2","3"],segments:[{kind:"track",track_id:"4"},{kind:"track",track_id:"5"}],track_only:true};
+const path: Candidate = {stations:["1","2","3"],segments:[{kind:"alignment",alignment_id:"4",from:"1",to:"2"},{kind:"alignment",alignment_id:"5",from:"2",to:"3"}]};
 const unique: Candidates = {status:"unique",candidates:[path],truncated:false};
 const version = {};
 function start(result: Candidates = unique, canApply = true) {
@@ -28,18 +28,16 @@ function start(result: Candidates = unique, canApply = true) {
   return {...view,onApply,props};
 }
 const search=()=>fireEvent.click(screen.getByRole("button",{name:"経路候補を検索"}));
-test("unique track route previews membership and imports only to a manual draft",async()=>{
-  const {onApply}=start(); search();
+test("unique physical route previews membership without a legacy manual draft",async()=>{
+  start(); search();
   await screen.findByText("所属駅: 始発 → 中間 → 終点");
   expect(invoke).toHaveBeenCalledWith("preview_route_candidates",{start:"1",end:"3"});
   expect((screen.getByLabelText("始発（起点）") as HTMLInputElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole("button",{name:"新規路線の手動下書きへ使う"}));
-  expect(onApply).toHaveBeenCalledWith("1",["4","5"]);
-  expect(screen.queryByText("所属駅: 始発 → 中間 → 終点")).toBeNull();
+  expect(screen.queryByRole("button",{name:"新規路線の手動下書きへ使う"})).toBeNull();
   expect(vi.mocked(invoke).mock.calls.every(([command])=>command.startsWith("preview_"))).toBe(true);
 });
 test("ambiguous and incomplete candidates require explicit selection",async()=>{
-  const other={...path,segments:[{kind:"track" as const,track_id:"9"}]};
+  const other={...path,segments:[{kind:"alignment" as const,alignment_id:"9",from:"1",to:"3"}]};
   const {rerender,props}=start({status:"ambiguous",candidates:[path,other],truncated:false}); search();
   await screen.findByText(/複数の経路/);
   expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="preview_route_membership")).toHaveLength(0);
@@ -59,21 +57,21 @@ test("exclusion preserves physical segments but blocks import and is reversible"
   expect(screen.queryByRole("button",{name:"新規路線の手動下書きへ使う"})).toBeNull();
   expect(onApply).not.toHaveBeenCalled();
   fireEvent.click(screen.getByLabelText("中間"));
-  await screen.findByRole("button",{name:"新規路線の手動下書きへ使う"});
+  await screen.findByText("所属駅: 始発 → 中間 → 終点");
 });
 test("alignment candidates are visible but not saveable",async()=>{
-  start({...unique,candidates:[{...path,track_only:false,segments:[{kind:"alignment",alignment_id:"10",from:"1",to:"3"}]}]}); search();
+  start({...unique,candidates:[{...path,segments:[{kind:"alignment",alignment_id:"10",from:"1",to:"3"}]}]}); search();
   await screen.findByText("所属駅: 始発 → 中間 → 終点");
   expect(screen.getByText(/この候補はプレビューのみ/)).toBeTruthy();
   expect(screen.queryByRole("button",{name:"新規路線の手動下書きへ使う"})).toBeNull();
 });
 test("existing drafts prevent replacement and invalid endpoints disable search",async()=>{
-  start(unique,false);
+  const view=start(unique,false);view.rerender(<RouteCandidatePreview {...view.props} onSave={vi.fn()}/>);
   fireEvent.change(screen.getByLabelText("候補の終点"),{target:{value:"1"}});
   expect((screen.getByRole("button",{name:"経路候補を検索"}) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(screen.getByLabelText("候補の終点"),{target:{value:"3"}}); search();
-  await screen.findByText(/先に編集中の路線下書き/);
-  expect((screen.getByRole("button",{name:"新規路線の手動下書きへ使う"}) as HTMLButtonElement).disabled).toBe(true);
+  await screen.findByText(/先に編集中の下書き/);
+  expect((screen.getByRole("button",{name:"候補を新規路線へ適用"}) as HTMLButtonElement).disabled).toBe(true);
 });
 test("no path, failure and retry are distinguished",async()=>{
   start({status:"no_path",candidates:[],truncated:false}); search();
@@ -117,7 +115,7 @@ test("persistable candidate saves excluded membership without losing physical se
  fireEvent.click(screen.getByRole("button",{name:"候補を新規路線へ適用"}));await waitFor(()=>expect(screen.queryByText("所属駅: 始発 → 終点")).toBeNull());
 });
 test('uses only backend-certified shortest candidate and never truncated shortest',async()=>{
- const response:Candidates={status:'ambiguous',candidates:[path,{...path,segments:[{kind:'track',track_id:'9'}]}],truncated:false,shortest_candidate_index:1};
+ const response:Candidates={status:'ambiguous',candidates:[path,{...path,segments:[{kind:'alignment',alignment_id:'9',from:'1',to:'3'}]}],truncated:false,shortest_candidate_index:1};
  const view=start(response);search();await screen.findByText('最短距離の経路を選択しました。');
  expect(invoke).toHaveBeenCalledWith('preview_route_membership',{start:'1',segments:response.candidates[1].segments,excludedStations:[]});
  view.unmount();vi.mocked(invoke).mockClear();start({...response,status:'incomplete',truncated:true});search();

@@ -12,14 +12,14 @@ const view={latitude:34.7,longitude:135.5,zoom:16};
 async function start(){
  vi.mocked(isTauri).mockReturnValue(true);
  vi.mocked(invoke).mockImplementation(async command=>{
-  if(command==='engine_info')return {name:'Rosenfu',version:'view-test'};
+  if(command==='list_save_slots')return {active_slot_id:'test-slot',slots:[]};if(command==='engine_info')return {name:'Rosenfu',version:'view-test'};
   if(command==='world_snapshot')return {...base,view_state:view};
   if(command==='autosave_status')return {available:false};
   if(command==='save_world')return {saved:true};
-  if(command==='load_world')return {...base,view_state:view};
+  if(command==='load_save_slot')return {...base,view_state:view};
   throw Error('unexpected '+command);
  });
- render(<App/>);await screen.findByText(/view-test/);
+ render(<App/>);await screen.findByText(/view-test/);await waitFor(()=>expect(invoke).toHaveBeenCalledWith('autosave_status',{slotId:'test-slot'}));
 }
 const latitude=()=>Number((screen.getByLabelText('中心緯度') as HTMLInputElement).value);
 test('restores saved center and zoom on startup, includes current view in manual save and restores on reload',async()=>{

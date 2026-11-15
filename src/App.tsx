@@ -1,6 +1,6 @@
+import {SaveSlots,type SaveSlot} from "./SaveSlots";
 import {ServiceRouteBindingEditor,type ServiceRouteBindingRecord} from "./ServiceRouteBinding";
 import {RouteDirectory} from "./RouteDirectory";
-import {ServiceStopDiagram} from './ServiceStopDiagram';
 import {PARALLEL_RANGE_M,parallelProjection,offsetTrack,parallelSection} from "./parallelTrack";
 import {TrackFollowIcon} from "./TrackFollowIcon";
 import {stationGroupViews,footprintsIntersect,type StationGroup} from "./stationGroups";
@@ -29,7 +29,6 @@ import {WorkspaceTabs,type WorkspaceTab} from "./WorkspaceTabs";
 import {PanelResizer} from "./PanelResizer";
 import {CompanySetup} from "./CompanySetup";
 import { useSmoothZoom, wheelZoomDelta } from "./useSmoothZoom";
-import {SaveReplacementDialog} from "./SaveReplacementDialog";
 import {UnsavedCloseDialog} from "./UnsavedCloseDialog";
 import {useUnsavedCloseGuard} from "./useUnsavedCloseGuard";
 import { ErrorNotice } from "./ErrorNotice";
@@ -48,7 +47,6 @@ import {ServicePathCreator} from "./ServicePathCreator";
 import type {CreateServicePath} from "./ServicePathCreator";
 import {resolveServicePath} from "./servicePaths";
 import type {ServicePath} from "./servicePaths";
-import { ServiceFromRoutePreview } from "./ServiceFromRoutePreview";
 import { useDisplaySettings } from "./useDisplaySettings";
 import { StationNamePreview } from "./StationNamePreview";
 import { automaticStationName } from "./automaticStationName";
@@ -74,9 +72,8 @@ type StationPlacement = { station_id: string; alignment_id: string; position: nu
 
 type EngineInfo = { name: string; version: string; company_setup_required?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
-type Track = { id: string; owner: string; from: string; to: string };
-type Route = { id: string; owner: string; name: string; start: string; tracks: string[] };
-type OperatingService = { id: string; owner: string; name: string; start: string; tracks: string[]; stops: number[] };
+type Route = { id: string; owner: string; name: string; start: string };
+type OperatingService = { id: string; owner: string; name: string; start: string };
 type RoutePath = { route_id: string; segments: Segment[]; member_stations: string[] };
 type World = {
   service_route_bindings?:ServiceRouteBindingRecord[];
@@ -94,7 +91,6 @@ type World = {
   players: { id: string; name: string }[];
   companies: { id: string; owner: string; name: string }[];
   stations: Station[];
-  tracks: Track[];
   routes: Route[];
   services: OperatingService[];
 };
@@ -108,7 +104,14 @@ const previewWorld: World = {
   stations: [
     { id: "3", owner: "2", name: "サンプル中央", latitude: 35.685, longitude: 139.735 },
     { id: "4", owner: "2", name: "サンプル東", latitude: 35.66, longitude: 139.79 },
-  ], tracks: [{ id: "5", owner: "2", from: "3", to: "4" }], routes: [{ id: "6", owner: "2", name: "サンプル本線", start: "3", tracks: ["5"] }], services: [{ id: "7", owner: "2", name: "サンプル系統", start: "3", tracks: ["5"], stops: [0, 1] }],
+  ],
+  alignments: [{id:"5",owner:"2",name:"サンプル線形",track_type:"normal",points:[{latitude:35.685,longitude:139.735},{latitude:35.66,longitude:139.79}]}],
+  station_placements: [{station_id:"3",alignment_id:"5",position:0,length_m:100,width_m:12},{station_id:"4",alignment_id:"5",position:1,length_m:100,width_m:12}],
+  routes: [{id:"6",owner:"2",name:"サンプル本線",start:"3"}],
+  route_paths: [{route_id:"6",segments:[{kind:"alignment",alignment_id:"5",from:"3",to:"4"}],member_stations:["3","4"]}],
+  services: [{id:"7",owner:"2",name:"サンプル系統",start:"3"}],
+  service_paths: [{service_id:"7",next_leg_key:"2",legs:[{key:"1",segment:{kind:"alignment",alignment_id:"5",from:"3",to:"4"}}],stops:[{kind:"start"},{kind:"on_leg",leg_key:"1",station_id:"4"}]}],
+  service_route_bindings:[{service_id:"7",binding:{kind:"route",route_id:"6"}}],
 };
 const detail = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -127,9 +130,6 @@ export function App() {
   const [centerLatitude, setCenterLatitude] = useState(DEFAULT_CAMERA.latitude.toFixed(5));
   const [centerLongitude, setCenterLongitude] = useState(DEFAULT_CAMERA.longitude.toFixed(5));
   const [cameraError, setCameraError] = useState("");
-  const [saveReplacement,setSaveReplacement]=useState<{token:string;company_name:string}|null>(null);
-  const [replacementError,setReplacementError]=useState("");
-  const [replacementInvalid,setReplacementInvalid]=useState(false);
   const [savedViewFingerprint,setSavedViewFingerprint]=useState(JSON.stringify(DEFAULT_CAMERA));
   function restoreView(view:Camera|null|undefined){
     const next=view?cameraAt(view.latitude,view.longitude,view.zoom):DEFAULT_CAMERA;
@@ -213,11 +213,19 @@ export function App() {
   const stationNameInput=useRef<HTMLInputElement>(null);
   const stationNameEditButton=useRef<HTMLButtonElement>(null);
   const [pendingStation, setPendingStation] = useState<{ id: string } | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ kind: "station" | "track"; id: string } | null>(null);
-  const [stationFrom, setStationFrom] = useState("");
-  const [stationTo, setStationTo] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<{ kind: "station"; id: string } | null>(null);
   const [dirty, setDirty] = useState(false);
   const [confirmLoad, setConfirmLoad] = useState(false);
+  const [saveSlots,setSaveSlots]=useState<SaveSlot[]>([]);
+  const [activeSlotId,setActiveSlotId]=useState<string|null>(null);
+  const [slotsReady,setSlotsReady]=useState(false);
+  const [slotsLoading,setSlotsLoading]=useState(false);
+  const [slotsError,setSlotsError]=useState("");
+  const slotGeneration=useRef(0);
+  const [slotAction,setSlotAction]=useState<{kind:"load";id:string}|{kind:"new";name:string}|null>(null);
+  const [slotDialog,setSlotDialog]=useState<"save-as"|"new"|null>(null);
+  const [slotName,setSlotName]=useState("");
+  const [slotPicker,setSlotPicker]=useState(false);
   const [loadSource,setLoadSource]=useState<"manual"|"auto">("manual");
   const [worldEpoch,setWorldEpoch]=useState(0);
   const [restoredAutosaveEpoch,setRestoredAutosaveEpoch]=useState(-1);
@@ -487,27 +495,17 @@ export function App() {
   const [routeId, setRouteId] = useState<string | null>(null);
   const [routeName, setRouteName] = useState("新路線");
   const [routeStart, setRouteStart] = useState("");
-  const [routeTracks, setRouteTracks] = useState<string[]>([]);
-  const [nextTrack, setNextTrack] = useState("");
-  const [routeDirty, setRouteDirty] = useState(false);
   const [routeHint, setRouteHint] = useState("");
-  const [pendingRouteChoice, setPendingRouteChoice] = useState<{ id: string | null } | null>(null);
   const [serviceId, setServiceId] = useState<string | null>(null);
-  const [serviceName, setServiceName] = useState("新系統");
   const [serviceStart, setServiceStart] = useState("");
-  const [serviceTracks, setServiceTracks] = useState<string[]>([]);
-  const [serviceStops, setServiceStops] = useState<number[]>([]);
-  const [serviceNextTrack, setServiceNextTrack] = useState("");
   const [serviceDirty, setServiceDirty] = useState(false);
   const [bindingDirty,setBindingDirty]=useState(false);
-  const [serviceSourceRouteId,setServiceSourceRouteId]=useState<string|undefined>(undefined);
   const [pathServiceDirty,setPathServiceDirty]=useState(false);
   const [pathDraftEpoch,setPathDraftEpoch]=useState(0);
   const [serviceHint, setServiceHint] = useState("");
   const [pendingServiceChoice, setPendingServiceChoice] = useState<{ id: string | null } | null>(null);
-  const enabled = status === "ready" && !busy && !companySetupRequired && !saveReplacement;
+  const enabled = status === "ready" && !busy && !companySetupRequired;
   const stationsById = useMemo(()=>new Map(world?.stations.map((station) => [station.id, station])),[world]);
-  const validEndpoints = stationFrom !== stationTo && stationsById.has(stationFrom) && stationsById.has(stationTo);
 
   useEffect(() => {
     const svg = svgRef.current;
@@ -535,7 +533,7 @@ export function App() {
   const selectedPlacement = world?.station_placements?.find(p => p.station_id === selected);
   const platformDirty = !!selectedPlacement && (Number(editLength) !== selectedPlacement.length_m || Number(editWidth) !== selectedPlacement.width_m);
   const stationSettingsDirty = stationDirty || platformDirty;
-  const copyCanStart=!(routeDirty||serviceDirty||pathServiceDirty||companyDirty||stationSettingsDirty);
+  const copyCanStart=!(serviceDirty||pathServiceDirty||companyDirty||stationSettingsDirty);
   const referenceCopyState=useReferenceCopy({bundle:graphBundle,worldVersion:world,enabled,canStart:copyCanStart,tool:activeTool,name:alignmentName,onBuild:buildReferenceAlignment,roadFollow:roadFollowingBlocked});
   const [referenceExtensionKey,setReferenceExtensionKey]=useState("");
   const referenceBuild=referenceCopyState.plan.build;
@@ -577,7 +575,7 @@ export function App() {
   useEffect(()=>{if(!referenceCopy.active)discardPlanStations(-1);},[referenceCopy.active]);
   const graphNodesById=useMemo(()=>new Map(graphBundle?.graph.nodes.map(node=>[node.osmId,node])??[]),[graphBundle]);
   useEffect(()=>{referenceCopy.clearHover();},[camera]);
-  const saveBlocked = bindingDirty || !!anchorPreview || candidateDirty || routeDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
+  const saveBlocked = bindingDirty || !!anchorPreview || candidateDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
   const hasPlans = plannedStations.length>0 || draftPoints.length > 0 || redoPoints.length > 0 || parkedPaths.length > 0 || referenceCopy.active;
   const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,roadFollowing,plannedStations,draftFinished]);
   const persistedPlans=useMemo(()=>compactEmptyPlans(constructionPlans),[constructionPlans]);
@@ -587,7 +585,7 @@ export function App() {
   const unapplied = saveBlocked || referenceCopy.active;
   const viewDirty=JSON.stringify(camera)!==savedViewFingerprint;
   const autosaveSnapshot=useMemo(()=>({world,constructionPlans,camera}),[world,constructionPlans,camera]);
-  const autosave=useAutosave({ready:status==="ready",dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired&&!saveReplacement,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
+  const autosave=useAutosave({slotId:activeSlotId,ready:status==="ready"&&slotsReady&&activeSlotId!==null,dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined,compact=false){
     parkedAnchorHistory.current.clear();
@@ -720,13 +718,9 @@ export function App() {
     });
   }
   function stationReferences(id: string) {
-    const links = world?.tracks.filter((track) => track.from === id || track.to === id) ?? [];
-    const routes = world?.routes.filter((route) => route.start === id || world?.route_paths?.some(path => path.route_id === route.id && (path.member_stations.includes(id) || path.segments.some(segment => segment.kind !== "track" ? segment.from === id || segment.to === id : links.some(link => link.id === segment.track_id)))) || route.tracks.some((track) => links.some((link) => link.id === track))) ?? [];
-    const services = world?.services.filter((service) => service.start === id || world?.service_paths?.some(path=>{if(path.service_id!==service.id)return false;try{return resolveServicePath(service.start,path.legs,world).some(o=>o.station_id===id);}catch{return true;}}) || service.tracks.some((track) => links.some((link) => link.id === track))) ?? [];
-    return [links.length ? "接続線路 " + links.length + "本" : "", ...routes.map((route) => "路線: " + route.name), ...services.map((service) => "系統: " + service.name)].filter(Boolean).join(" / ");
-  }
-  function trackReferences(id: string) {
-    return [...(world?.routes.filter((route) => (route.tracks.includes(id) || world?.route_paths?.some(path => path.route_id === route.id && path.segments.some(segment => segment.kind === "track" && segment.track_id === id)))).map((route) => "路線: " + route.name) ?? []), ...(world?.services.filter((service) => (service.tracks.includes(id)||world?.service_paths?.some(path=>path.service_id===service.id&&path.legs.some(leg=>leg.segment.kind==="track"&&leg.segment.track_id===id)))).map((service) => "系統: " + service.name) ?? [])].join(" / ");
+    const routes = world?.routes.filter(route => route.start === id || world.route_paths?.some(path => path.route_id === route.id && (path.member_stations.includes(id) || path.segments.some(segment => segment.from === id || segment.to === id)))) ?? [];
+    const services = world?.services.filter(service => service.start === id || world.service_paths?.some(path => {if(path.service_id !== service.id)return false;try{return resolveServicePath(service.start,path.legs,world).some(o=>o.station_id===id);}catch{return true;}})) ?? [];
+    return [...routes.map(route=>"路線: "+route.name),...services.map(service=>"系統: "+service.name)].join(" / ");
   }
   function selectStation(id: string) {
     if (busyRef.current) return;
@@ -757,43 +751,19 @@ export function App() {
   function deleteEquipment() {
     if (!enabled || !pendingDelete || unapplied) return;
     const { kind, id } = pendingDelete;
-    if (kind === "station" ? stationReferences(id) : trackReferences(id)) return;
+    if (stationReferences(id)) return;
     void perform(async () => {
-      const snapshot = await invoke<World>(kind === "station" ? "delete_station" : "delete_track", kind === "station" ? { stationId: id } : { trackId: id });
+      const snapshot = await invoke<World>("delete_station", { stationId: id });
       setWorld(snapshot); setDirty(true); setConfirmLoad(false); setPendingDelete(null);
       if (kind === "station") {
         clearStationHistory();
         if (selected === id) { setSelected(null); setEditStationName(""); setPendingStation(null); }
-        if (stationFrom === id) setStationFrom("");
-        if (stationTo === id) setStationTo("");
         if (routeStart === id) resetRoute();
         if (serviceStart === id) resetService();
       }
-      if (nextTrack === id) setNextTrack("");
-      if (serviceNextTrack === id) setServiceNextTrack("");
       setNotice("設備を削除しました。保存でファイルに反映します。");
     });
   }
-  const routeStations = routeStart ? [routeStart] : [];
-  let routeEnd = routeStart;
-  let routeValid = stationsById.has(routeStart);
-  for (const id of routeTracks) {
-    const track = world?.tracks.find((entry) => entry.id === id);
-    if (!track || (track.from !== routeEnd && track.to !== routeEnd)) { routeValid = false; break; }
-    routeEnd = track.from === routeEnd ? track.to : track.from;
-    routeStations.push(routeEnd);
-  }
-  const nextTracks = routeValid ? world?.tracks.filter((track) => track.from === routeEnd || track.to === routeEnd) ?? [] : [];
-  const serviceStations = serviceStart ? [serviceStart] : [];
-  let serviceEnd = serviceStart;
-  let serviceValid = stationsById.has(serviceStart);
-  for (const id of serviceTracks) {
-    const track = world?.tracks.find((entry) => entry.id === id);
-    if (!track || (track.from !== serviceEnd && track.to !== serviceEnd)) { serviceValid = false; break; }
-    serviceEnd = track.from === serviceEnd ? track.to : track.from;
-    serviceStations.push(serviceEnd);
-  }
-  const serviceNextTracks = serviceValid ? world?.tracks.filter((track) => track.from === serviceEnd || track.to === serviceEnd) ?? [] : [];
   useEffect(() => {
     let active = true;
     setError("");
@@ -834,15 +804,6 @@ export function App() {
       recordStation(snapshot);
       setWorld(snapshot); setDirty(true); setConfirmLoad(false);
       setNotice(`${name.trim()}を配置しました。`);
-    });
-  }
-  function submitTrack(event: FormEvent) {
-    event.preventDefault();
-    if (!enabled || !validEndpoints) return;
-    void perform(async () => {
-      const snapshot = await invoke<World>("add_track", { from: stationFrom, to: stationTo });
-      setWorld(snapshot); setDirty(true); setConfirmLoad(false);
-      setNotice("線路を接続しました。");
     });
   }
   function cancelMapGesture() {
@@ -1199,7 +1160,7 @@ export function App() {
       const snapshot=await invoke<World>("delete_station",{stationId:entry.station.id});
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);setStationUndo(history=>history.slice(0,-1));setStationRedo(history=>[...history,entry]);
       if(selected===entry.station.id){setSelected(null);setEditStationName("");setPendingStation(null);}
-      if(stationFrom===entry.station.id)setStationFrom("");if(stationTo===entry.station.id)setStationTo("");
+
       if(routeStart===entry.station.id)resetRoute();if(serviceStart===entry.station.id)resetService();setPendingDelete(null);
       setNotice("直前の駅設置を取り消しました。やり直すと新しい駅IDになります。");
     });
@@ -1226,6 +1187,7 @@ export function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if(slotDialog||slotPicker||confirmLoad)return;
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget)return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
@@ -1275,13 +1237,12 @@ export function App() {
   }
   function resetRoute(route?: Route) {
     setRouteId(route?.id ?? null); setRouteName(route?.name ?? "新路線");
-    setRouteStart(route?.start ?? ""); setRouteTracks(route ? [...route.tracks] : []);
-    setNextTrack(""); setRouteDirty(false); setRouteHint(""); setPendingRouteChoice(null);
+    setRouteStart(route?.start ?? "");
+    setRouteHint("");
   }
   function chooseRoute(id: string | null) {
     if (!enabled) return;
     if (candidateDirty || routeMapEdit) {setRouteHint("先に地図選択の候補を適用するか、変更を取り消してください。");return;}
-    if (routeDirty) { setPendingRouteChoice({ id }); return; }
     resetRoute(world?.routes.find((route) => route.id === id));
   }
   function startCompany(event:FormEvent){
@@ -1297,19 +1258,8 @@ export function App() {
       setNotice("会社名を変更しました。");
     });
   }
-  function submitRoute(event: FormEvent) {
-    event.preventDefault();
-    if (!enabled || selectedRoutePath || !routeName.trim() || !routeValid || !routeTracks.length) return;
-    void perform(async () => {
-      const snapshot = await invoke<World>("save_route", { routeId, name: routeName.trim(), start: routeStart, tracks: routeTracks });
-      const applied = routeId ? snapshot.routes.find((route) => route.id === routeId)
-        : snapshot.routes.find((route) => !world?.routes.some((existing) => existing.id === route.id));
-      setWorld(snapshot); setDirty(true); setConfirmLoad(false); resetRoute(applied);
-      setNotice("路線をワールドに適用しました。ファイルへの保存は「保存」で行います。");
-    });
-  }
   async function applyPlannedRoute(name: string, membership: Membership) {
-    if (!enabled || routeDirty) throw new Error("先に路線下書きを適用または破棄してください。");
+    if (!enabled) throw new Error("先に路線下書きを適用または破棄してください。");
     if (busyRef.current) throw new Error("処理中です。");
     busyRef.current=true;setBusy(true);
     try {
@@ -1319,15 +1269,10 @@ export function App() {
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetRoute(created);setNotice("路線と所属駅を適用しました。ファイルへの保存は「保存」で行います。");
     } finally {busyRef.current=false;setBusy(false);}
   }
-  function appendTrack() {
-    if (!enabled || !nextTracks.some((track) => track.id === nextTrack)) return;
-    setRouteTracks((tracks) => [...tracks, nextTrack]); setNextTrack(""); setRouteDirty(true); setRouteHint("");
-  }
   function resetService(service?: OperatingService) {
-    setBindingDirty(false);setServiceSourceRouteId(undefined);
-    setServiceId(service?.id ?? null); setServiceName(service?.name ?? "新系統");
-    setServiceStart(service?.start ?? ""); setServiceTracks(service ? [...service.tracks] : []);
-    setServiceStops(service ? [...service.stops] : []); setServiceNextTrack("");
+    setBindingDirty(false);
+    setServiceId(service?.id ?? null);
+    setServiceStart(service?.start ?? "");
     setServiceDirty(false); setServiceHint(""); setPendingServiceChoice(null);
   }
   function chooseService(id: string | null) {
@@ -1336,32 +1281,6 @@ export function App() {
     if(pathServiceDirty){setServiceHint("先に新形式下書きを破棄または適用してください。");return;}
     if (serviceDirty) { setPendingServiceChoice({ id }); return; }
     resetService(world?.services.find((service) => service.id === id));
-  }
-  function updateServicePath(start: string, tracks: string[]) {
-    if (!enabled) return;
-    setServiceStart(start); setServiceTracks(tracks); setServiceNextTrack("");
-    setServiceStops(start ? Array.from({ length: tracks.length + 1 }, (_, index) => index) : []);
-    setServiceDirty(true); setServiceHint("経路を変更したため、停車設定を全駅停車へ戻しました。");
-  }
-  function appendServiceTrack() {
-    if (!enabled || !serviceNextTracks.some((track) => track.id === serviceNextTrack)) return;
-    updateServicePath(serviceStart, [...serviceTracks, serviceNextTrack]);
-  }
-  function toggleServiceStop(index: number, checked: boolean) {
-    if (!enabled || index === 0 || index === serviceTracks.length) return;
-    setServiceStops((stops) => checked ? [...new Set([...stops, index])].sort((a,b) => a-b) : stops.filter((stop) => stop !== index));
-    setServiceDirty(true);
-  }
-  function submitService(event: FormEvent) {
-    event.preventDefault();
-    if (!enabled || selectedServicePath || pathServiceDirty || bindingDirty || !serviceName.trim() || !serviceValid || !serviceTracks.length) return;
-    void perform(async () => {
-      const snapshot = await invoke<World>("save_service", { ...(serviceSourceRouteId?{sourceRouteId:serviceSourceRouteId}:{}),serviceId, name: serviceName.trim(), start: serviceStart, tracks: serviceTracks, stops: serviceStops });
-      const applied = serviceId ? snapshot.services.find((service) => service.id === serviceId)
-        : snapshot.services.find((service) => !world?.services.some((existing) => existing.id === service.id));
-      setWorld(snapshot); setDirty(true); setConfirmLoad(false); resetService(applied);
-      setNotice("運行系統をワールドに適用しました。ファイルへの保存は「保存」で行います。");
-    });
   }
   async function createPathService(draft:CreateServicePath){
     if(!enabled||busyRef.current||serviceDirty||serviceId!==null)throw Error("別の系統を編集中です。");
@@ -1372,41 +1291,73 @@ export function App() {
     setDirty(false);setStationUndo(history=>history.filter(entry=>entry.planned));setStationRedo(history=>history.filter(entry=>entry.planned));
     setNotice(referenceCopy.active?"ワールドと未着工計画を保存しました。選択中の参照候補は計画に追加するまで保存されません。":"ワールドと未着工計画を保存しました。");
   }
-  function save() {
-    if (saveBlocked||saveReplacement) return;
-    void perform(async () => {
-      const result=await invoke<{saved:boolean;replacement_required?:{token:string;company_name:string}}>("save_world",{constructionPlans:persistedPlans,viewState:camera}).catch(error=>{if(detail(error).includes("save file changed since it was observed"))throw Error("保存先が読み込み時から変更されています。編集中の内容は保持しています。未保存のまま読込や終了をせず、保存先を確認してください。");throw error;});
-      if(result.replacement_required){setSaveReplacement(result.replacement_required);setReplacementError("");setReplacementInvalid(false);return;}
-      if(!result.saved)throw Error("保存結果を確認できませんでした。編集中の内容は保持しています。");
-      completeSave();
+  async function refreshSaveSlots(){
+    const generation=++slotGeneration.current;setSlotsLoading(true);setSlotsError("");
+    try{
+      const result=await invoke<{active_slot_id:string|null;slots:SaveSlot[]}>("list_save_slots");
+      if(!Array.isArray(result?.slots)||!(result.active_slot_id===null||typeof result.active_slot_id==="string"))throw Error("保存一覧を確認できません。");
+      if(generation!==slotGeneration.current)return;
+      setSaveSlots(result.slots);setActiveSlotId(result.active_slot_id);setSlotsReady(true);
+    }catch(error){if(generation===slotGeneration.current){setSlotsError(detail(error));setSlotsReady(false);}}
+    finally{if(generation===slotGeneration.current)setSlotsLoading(false);}
+  }
+  useEffect(()=>{if(status==="ready")void refreshSaveSlots();return()=>{slotGeneration.current++;};},[status]);
+  function openSlotPicker(){setSlotPicker(true);void refreshSaveSlots();}
+  function requestSlotAction(action:{kind:"load";id:string}|{kind:"new";name:string}){
+    if(busyRef.current)return;
+    setSlotAction(action);
+    if(dirty||plansDirty||viewDirty||unapplied){setConfirmLoad(true);return;}
+    applySlotAction(action);
+  }
+  function applySlotAction(action=slotAction){
+    if(!action)return;setConfirmLoad(false);
+    void perform(async()=>{
+      const snapshot=await invoke<World>(action.kind==="load"?"load_save_slot":"create_new_world",action.kind==="load"?{slotId:action.id}:{companyName:action.name});
+      acceptLoadedWorld(snapshot,"manual");
+      setDirty(action.kind==="new");setSlotAction(null);setSlotDialog(null);setSlotPicker(false);
+      setNotice(action.kind==="new"?"新しいワールドを作成しました。初回保存で別のセーブを作ります。":"保存したワールドを読み込みました。");
+      await refreshSaveSlots();
     });
   }
-  async function cancelSaveReplacement(){
-    if(!saveReplacement||busyRef.current)return;
-    busyRef.current=true;setBusy(true);
-    try{await invoke("cancel_manual_save",{token:saveReplacement.token});setSaveReplacement(null);setReplacementError("");}
-    catch(error){setReplacementError(detail(error));}
-    finally{busyRef.current=false;setBusy(false);}
+  function submitSlotName(event:FormEvent){
+    event.preventDefault();if(busyRef.current||!slotName.trim())return;
+    if(slotDialog==="new"){requestSlotAction({kind:"new",name:slotName.trim()});return;}
+    if(saveBlocked)return;
+    void perform(async()=>{
+      const result=await invoke<{saved:boolean}>("save_world_as",{name:slotName.trim(),constructionPlans:persistedPlans,viewState:camera});
+      if(!result.saved)throw Error("保存結果を確認できませんでした。編集中の内容は保持しています。");
+      completeSave();setSlotDialog(null);setWorldEpoch(value=>value+1);await refreshSaveSlots();
+      setNotice("別のセーブとして保存しました。元の保存データは変更していません。");
+    });
   }
-  async function confirmSaveReplacement(){
-    if(!saveReplacement||replacementInvalid||busyRef.current)return;
-    busyRef.current=true;setBusy(true);
-    try{const result=await invoke<{saved:boolean}>("confirm_manual_save",{token:saveReplacement.token,constructionPlans:persistedPlans,viewState:camera});if(!result.saved)throw Error("保存結果を確認できませんでした。");completeSave();setSaveReplacement(null);setReplacementError("");}
-    catch(error){setReplacementInvalid(true);setReplacementError("保存できませんでした。編集中の内容は保持しています。編集へ戻り、保存先を再確認してください。 "+detail(error));}
-    finally{busyRef.current=false;setBusy(false);}
-  }
-  function requestLoad(source:"manual"|"auto"){setLoadSource(source);if(dirty||plansDirty||unapplied)setConfirmLoad(true);else load(source);}
-  function load(source: "manual"|"auto" = loadSource) {
-    setConfirmLoad(false);
+  function save() {
+    if (saveBlocked) return;
     void perform(async () => {
-      const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_world");
+      const result=await invoke<{saved:boolean;replacement_required?:{token:string;company_name:string}}>("save_world",{constructionPlans:persistedPlans,viewState:camera}).catch(error=>{if(detail(error).includes("save file changed since it was observed"))throw Error("保存先が読み込み時から変更されています。編集中の内容は保持しています。未保存のまま読込や終了をせず、保存先を確認してください。");throw error;});
+      if(result.replacement_required)throw Error("既存セーブの置き換えは行いません。新しい保存先を確認してください。");
+      if(!result.saved)throw Error("保存結果を確認できませんでした。編集中の内容は保持しています。");
+      completeSave();setWorldEpoch(value=>value+1);await refreshSaveSlots();
+    });
+  }
+  function acceptLoadedWorld(snapshot:World,source:"manual"|"auto"){
+      cancelMapGesture();cancelAnchorGesture();cancelParallel();cancelRouteMapPick();
+      setRouteMapEdit(null);setRouteSequenceKey(0);setDeleteTarget(null);setTrackDeleteRedo(null);
+      setPlanHover(null);setBuiltHover(null);
       restoreView(snapshot.view_state);
       setRestoredAutosaveEpoch(source==="auto"?worldEpoch+1:-1);
       setWorldEpoch(value=>value+1);
       referenceCopy.clear();setCandidateDirty(false);setPendingGraphChange(null);
       setCompanySetupRequired(false);
       clearStationHistory();
-      setTrackDeleteUndo(null);setSelectedPlanPath(null);setTrackDeleteConfirm(false);setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreConstructionPlans(snapshot.construction_plans,true);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setStationFrom(""); setStationTo(""); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
+      setTrackDeleteUndo(null);setSelectedPlanPath(null);setTrackDeleteConfirm(false);setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreConstructionPlans(snapshot.construction_plans,true);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
+  }
+  function requestLoad(source:"manual"|"auto"){setSlotAction(null);setLoadSource(source);if(dirty||plansDirty||viewDirty||unapplied)setConfirmLoad(true);else load(source);}
+  function load(source: "manual"|"auto" = loadSource) {
+    setConfirmLoad(false);
+    void perform(async () => {
+      if(!activeSlotId)throw Error("読み込むセーブを選択してください。");
+      const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_save_slot",{slotId:activeSlotId});
+      acceptLoadedWorld(snapshot,source);await refreshSaveSlots();
       setNotice(source==="auto"?"自動保存から復元しました。手動保存データは上書きしていません。必要なら保存してください。":"保存したワールドを読み込みました。");
     });
   }
@@ -1419,13 +1370,12 @@ export function App() {
       </header>
       <div className="toolbar">
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
-        <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={() => requestLoad("manual")}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
+        <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={()=>activeSlotId?requestSlotAction({kind:"load",id:activeSlotId}):openSlotPicker()}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
       </div>
-      {saveReplacement && <SaveReplacementDialog companyName={saveReplacement.company_name} currentCompanyName={world?.companies[0]?.name??companyName} busy={busy} invalid={replacementInvalid} error={replacementError} onCancel={()=>void cancelSaveReplacement()} onConfirm={()=>void confirmSaveReplacement()}/> }
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
       {pendingGraphChange && <div className="banner load-confirm" role="alert"><p>参考線データを変更すると、現在の実在形状に沿う敷設・道路追従の未着工計画を破棄します。変更しますか。</p><button className="secondary" onClick={()=>setPendingGraphChange(null)}>計画に戻る</button><button disabled={!enabled} onClick={()=>{referenceCopy.clear();setGraphBundle(pendingGraphChange.bundle);setPendingGraphChange(null);}}>参考計画を破棄して変更</button></div>}
-      {confirmLoad && <div className="banner load-confirm" role="alert"><p>読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。</p><button className="secondary" disabled={busy} onClick={() => setConfirmLoad(false)}>戻る</button><button disabled={busy} onClick={()=>load()}>読込を続ける</button></div>}
-      {pendingDelete && <div className="banner load-confirm" role="alert"><p>{pendingDelete.kind === "station" ? "駅「" + (stationsById.get(pendingDelete.id)?.name ?? pendingDelete.id) + "」"+(world?.station_groups?.some(g=>g.members.includes(pendingDelete.id))?"の選択ホーム":"") : "線路 ID " + pendingDelete.id}を削除しますか。連鎖削除は行いません。適用後は保存が必要です。</p><button className="secondary" disabled={busy} onClick={() => setPendingDelete(null)}>削除をやめる</button><button className="danger" disabled={!enabled || unapplied || !!(pendingDelete.kind === "station" ? stationReferences(pendingDelete.id) : trackReferences(pendingDelete.id))} onClick={deleteEquipment}>削除を確定</button></div>}
+
+      {pendingDelete && <div className="banner load-confirm" role="alert"><p>{pendingDelete.kind === "station" ? "駅「" + (stationsById.get(pendingDelete.id)?.name ?? pendingDelete.id) + "」"+(world?.station_groups?.some(g=>g.members.includes(pendingDelete.id))?"の選択ホーム":"") : "線路 ID " + pendingDelete.id}を削除しますか。連鎖削除は行いません。適用後は保存が必要です。</p><button className="secondary" disabled={busy} onClick={() => setPendingDelete(null)}>削除をやめる</button><button className="danger" disabled={!enabled || unapplied || !!(stationReferences(pendingDelete.id))} onClick={deleteEquipment}>削除を確定</button></div>}
       <div className="workspace">
         <section className="map-panel" aria-labelledby="map-title">
           <div className="map-notices" aria-label="通知">
@@ -1555,21 +1505,6 @@ export function App() {
               {detailedStations&&<><defs><filter id="station-group-outline" x="-10%" y="-10%" width="120%" height="120%"><feMorphology in="SourceAlpha" operator="dilate" radius={1/viewport.scale} result="expanded"/><feFlood floodColor="#333"/><feComposite in2="expanded" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>{stationGroupDisplay.filter(g=>g.members.length>1).map(group=><g key={group.id} className="station-group-footprint" data-station-group={group.id} pointerEvents="none"><title>{group.name}</title><g filter="url(#station-group-outline)">{group.members.map(member=>{const planned=plannedStations.find(s=>s.id===member.id),inactive=planned&&stationPlanId(planned)!==activePlanId;return <path key={member.id} data-group-platform={member.id} d={drawPath(member.polygon)+"Z"} fill={planned?(inactive?"#b1bac3":"#c4e6f3"):"white"} stroke={planned?(inactive?"#78838e":"#287c9e"):"none"} strokeWidth="1.5" strokeDasharray={planned?"4 3":undefined} vectorEffect="non-scaling-stroke"><title>{group.name}{planned?"（未着工）":""}</title></path>;})}</g></g>)}</>}
               {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className={"planned-station"+(stationPlanId(station)===activePlanId?"":" inactive-plan")} pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform" visibility={mergedStationIds.has(station.id)?"hidden":undefined}/>:<circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={p.x} cy={p.y} r="5" fill={valid?"#777":"#b34c4c"}/>}{stationNamesVisible&&stationDisplayGroup(station.id)?.id===station.id&&<text x={p.x+10} y={p.y-8}>{stationDisplayGroup(station.id)?.name??station.name}（計画）</text>}</g>;})}
               {stationPreview.length >= 4 && <path d={drawPath(stationPreview) + "Z"} className="station-platform station-placement-preview" opacity=".65" pointerEvents="none" />}
-              {world?.tracks.map((track) => {
-                const fromPlacement = world?.station_placements?.find((p) => p.station_id === track.from);
-                const toPlacement = world?.station_placements?.find((p) => p.station_id === track.to);
-                if (fromPlacement && toPlacement && fromPlacement.alignment_id === toPlacement.alignment_id) return null;
-                const from = stationsById.get(track.from);
-                const to = stationsById.get(track.to);
-                if (!from || !to) return null;
-                const a = project(from.latitude, from.longitude, camera);
-                const b = project(to.latitude, to.longitude, camera);
-                const points = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
-                return <g key={track.id} className={"track-connection" + (routeVisual.tracks.has(track.id) ? "" : " route-unassigned")} data-track-id={track.id} onClick={(event) => event.stopPropagation()}>
-                  <title>{from.name} — {to.name}</title>
-                  <line {...points} className="track-outline" /><line {...points} className="track-line" />
-                </g>;
-              })}
               {referenceVisible && referenceResult.stations.map(station=>{const p=project(station.latitude,station.longitude,camera);return <g key={station.osmType+"/"+station.osmId} className="reference-station" pointerEvents="none"><title>参考駅: {station.name} ({station.kind})</title><path d={`M${p.x},${p.y-5} l5,5 -5,5 -5,-5 Z`}/><text x={p.x+9} y={p.y-7}>参考: {station.name}</text></g>;})}
               {world?.stations.map((station) => {
                 const { x, y } = project(station.latitude, station.longitude, camera);
@@ -1602,7 +1537,10 @@ export function App() {
           </nav>
           <section id="workspace-panel-finance" role="tabpanel" aria-labelledby="workspace-tab-finance" hidden={mainTab!=="finance"}><h3>財務</h3><p>未実装です。収支・運賃・経費の画面は今後追加します。</p></section>
           <section id="workspace-panel-city" role="tabpanel" aria-labelledby="workspace-tab-city" hidden={mainTab!=="city"}><h3>都市</h3><p>未実装です。人口・需要・都市発展の画面は今後追加します。</p></section>
-          <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3><p>この試作は1つのローカル保存先を使います。セーブ一覧・複数スロットは未実装です。</p><button disabled={!enabled||saveBlocked} onClick={save}>ワールドを保存</button><button className="secondary" disabled={!enabled} onClick={()=>requestLoad("manual")}>ワールドを読み込む</button><h4>オートセーブ</h4><p>ワールドと未着工計画を専用ファイルに自動保存します。未適用の編集フォーム・未確定の参照候補は対象外。手動保存を上書きしません。最新1件のみ保持します。</p><p role="status">{autosave.message}</p>{autosave.permission==="blocked"&&<button className="secondary" disabled={!enabled} onClick={autosave.allowReplacement}>このワールドで自動保存を開始（以前の自動保存を置き換える）</button>}{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
+          <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3><button disabled={!enabled||saveBlocked} onClick={save}>ワールドを保存</button>
+            <SaveSlots slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy||status!=="ready"} canSave={!saveBlocked&&!companySetupRequired} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{setSlotName(companyName);setSlotDialog("save-as");}} onNew={()=>{setSlotName("");setSlotDialog("new");}}/>
+            {!activeSlotId&&<p>初回保存後に自動保存を開始します。</p>}
+            <h4>オートセーブ</h4><p>ワールドと未着工計画を専用ファイルに自動保存します。未適用の編集フォーム・未確定の参照候補は対象外。手動保存を上書きしません。最新1件のみ保持します。</p><p role="status">{!slotsReady?"保存先の確認が完了するまで自動保存は停止しています。":activeSlotId?autosave.message:"初回保存待ち"}</p>{autosave.permission==="blocked"&&<button className="secondary" disabled={!enabled} onClick={autosave.allowReplacement}>このワールドで自動保存を開始（以前の自動保存を置き換える）</button>}{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
           <section className="shared-plan" aria-label="建設計画">
             <div className="plan-heading"><label htmlFor="construction-plan-name">計画</label><input id="construction-plan-name" aria-label="計画名（任意）" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled||referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/><button type="button" className="secondary" aria-label="別の線路計画を追加" title="新しい計画" disabled={!enabled||referenceCopy.active||!(currentPaths.some(path=>path.points.length>0)||currentStations.length>0)} onClick={newIndependentPlan}>＋</button></div>
@@ -1648,63 +1586,23 @@ export function App() {
             {pendingStation && <div className="inline-confirm" role="alert"><p>{platformDirty ? "駅名・ホーム長の下書きを破棄して別駅を選びますか。" : "駅名の下書きを破棄して別駅を選びますか。"}</p><button className="secondary" disabled={busy} onClick={() => setPendingStation(null)}>駅名編集を続ける</button><button disabled={busy} onClick={() => { const placement = world?.station_placements?.find(p=>p.station_id===pendingStation.id); setEditLength(String(placement?.length_m ?? 200));setEditWidth(String(placement?.width_m ?? 12));setMainTab("stations"); setActiveTool("station-management");setSelected(pendingStation.id); setEditStationName(stationsById.get(pendingStation.id)?.name ?? ""); setPendingStation(null); setPendingDelete(null); }}>{platformDirty ? "駅設定下書きを破棄して切替" : "駅名下書きを破棄して切替"}</button></div>}
           </section>
           <section className="route-editor" role="tabpanel" id="workspace-panel-routes" aria-labelledby="workspace-tab-routes" hidden={activeTool !== "routes"}>
-            <details className="legacy-tools"><summary>運行経路用：駅間接続</summary>
-            <div className="track-heading"><h3 id="track-editor-title">駅を線路でつなぐ</h3><span className="count" aria-label="線路数">{world?.tracks.length ?? 0}</span></div>
-            <p className="muted">2駅を直線で接続します。線形・距離・速度はまだ再現していません。</p>
-            <form onSubmit={submitTrack}><fieldset disabled={!enabled}>
-              <label htmlFor="track-from">接続元の駅</label>
-              <select id="track-from" value={stationFrom} onChange={(event) => setStationFrom(event.target.value)}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
-              <label htmlFor="track-to" className="track-to-label">接続先の駅</label>
-              <select id="track-to" value={stationTo} onChange={(event) => setStationTo(event.target.value)}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
-              {stationFrom && stationFrom === stationTo && <p className="field-hint">異なる2駅を選択してください。</p>}
-              <button className="full-width track-submit" type="submit" disabled={!enabled || !validEndpoints}>線路を接続</button>
-            </fieldset></form>
-            {world?.tracks.length ? <ul className="track-list">{world.tracks.map((track) => <li key={track.id}><span>{stationsById.get(track.from)?.name ?? track.from} ↔ {stationsById.get(track.to)?.name ?? track.to} (ID {track.id})</span><button className="secondary danger" disabled={!enabled || unapplied || !!trackReferences(track.id)} onClick={() => setPendingDelete({ kind: "track", id: track.id })}>線路 {track.id} を削除</button>{trackReferences(track.id) && <small>削除不可: {trackReferences(track.id)}</small>}</li>)}</ul> : <p className="field-hint">駅を2つ配置すると接続できます。</p>}</details>
             <h3>路線</h3>
-            <RouteDirectory world={world??previewWorld} enabled={enabled} selected={routeId} onChoose={id=>{chooseRoute(id);if(id===null&&!routeDirty&&!candidateDirty&&!routeMapEdit)setRouteSequenceKey(key=>key+1);else cancelRouteMapPick();}}/>
-            <RouteCandidatePreview key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} onCancelEdit={routeMapEdit?()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setCandidateDirty(false);}:undefined} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={!routeDirty} onSave={applyPlannedRoute} onApply={(start, tracks) => {
-              resetRoute(); setRouteStart(start); setRouteTracks(tracks); setRouteDirty(true);
-              setRouteHint("候補を新規路線の下書きへ取り込みました。路線名と経路を確認して適用してください。");
-            }}/>
-            {pendingRouteChoice && <div className="inline-confirm" role="alert"><p>未適用の路線下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingRouteChoice(null)}>編集を続ける</button><button disabled={busy} onClick={() => resetRoute(world?.routes.find((route) => route.id === pendingRouteChoice.id))}>下書きを破棄して切替</button></div>}
-            {routeId && <button type="button" className="secondary" disabled={!enabled||routeDirty||candidateDirty||!!routeMapEdit} onClick={()=>{const route=world?.routes.find(r=>r.id===routeId);if(!route)return;cancelRouteMapPick();setRouteMapEdit({id:route.id,name:route.name});setRouteSequenceKey(key=>key+1);}}>地図で路線の経路を選び直す</button>}
-            {selectedRoutePath && <section aria-label="保存済み路線の経路"><h4>{routeName}</h4><p>所属駅: {selectedRoutePath.member_stations.map(id=>stationsById.get(id)?.name ?? id).join(" → ")}</p><ol>{selectedRoutePath.segments.map((segment,index)=><li key={index}>{segment.kind === "track" ? "駅間接続 " + segment.track_id : (segment.kind==="alignment"?"建設線形 " + (alignments.find(a=>a.id===segment.alignment_id)?.name ?? segment.alignment_id):"接続経路") + ": " + (stationsById.get(segment.from)?.name ?? segment.from) + " → " + (stationsById.get(segment.to)?.name ?? segment.to)}</li>)}</ol></section>}
-            <form onSubmit={submitRoute}><fieldset disabled={!enabled || !!selectedRoutePath}>
-              <label htmlFor="route-name">路線名</label><input id="route-name" value={routeName} maxLength={80} onChange={(event) => { setRouteName(event.target.value); setRouteDirty(true); }} />
-              <label htmlFor="route-start" className="track-to-label">路線の起点</label><select id="route-start" value={routeStart} onChange={(event) => { setRouteStart(event.target.value); setRouteTracks([]); setNextTrack(""); setRouteDirty(true); setRouteHint("起点を変更したため、経路をクリアしました。"); }}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
-              <label htmlFor="route-next" className="track-to-label">次にたどる線路</label><select id="route-next" value={nextTrack} onChange={(event) => setNextTrack(event.target.value)}><option value="">接続する線路を選択</option>{nextTracks.map((track) => { const next = track.from === routeEnd ? track.to : track.from; return <option key={track.id} value={track.id}>{stationsById.get(next)?.name ?? next} (線路 {track.id})</option>; })}</select>
-              <button className="secondary full-width track-submit" type="button" disabled={!enabled || !nextTrack} onClick={appendTrack}>経路に追加</button>
-              {routeHint && <p className="field-hint">{routeHint}</p>}
-              <ol className="route-walk" aria-label="路線の経由順序">{routeStations.map((id, index) => <li key={`${index}-${id}`}>{stationsById.get(id)?.name ?? id}</li>)}</ol>
-              <div className="route-actions"><button type="button" className="secondary" disabled={!enabled || !routeTracks.length} onClick={() => { setRouteTracks((tracks) => tracks.slice(0, -1)); setNextTrack(""); setRouteDirty(true); }}>末尾を戻す</button><button type="button" className="secondary" disabled={!enabled || !routeTracks.length} onClick={() => { setRouteTracks([]); setNextTrack(""); setRouteDirty(true); }}>経路をクリア</button></div>
-              <button className="full-width track-submit" type="submit" disabled={!enabled || !routeName.trim() || !routeValid || !routeTracks.length}>路線を適用</button>
-              <button className="secondary full-width track-submit" type="button" disabled={!enabled || !routeDirty} onClick={() => chooseRoute(routeId)}>下書きを破棄</button>
-              <p className="field-hint">{routeId ? `編集中の路線 ID: ${routeId}` : "新規路線の下書き"} / 適用後に「保存」でファイルへ反映</p>
-            </fieldset></form>
+            <RouteDirectory world={world??previewWorld} enabled={enabled} selected={routeId} onChoose={id=>{chooseRoute(id);if(id===null&&!candidateDirty&&!routeMapEdit)setRouteSequenceKey(key=>key+1);else cancelRouteMapPick();}}/>
+            <RouteCandidatePreview key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} onCancelEdit={routeMapEdit?()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setCandidateDirty(false);}:undefined} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={true} onSave={applyPlannedRoute} />
+            {routeId && <button type="button" className="secondary" disabled={!enabled||candidateDirty||!!routeMapEdit} onClick={()=>{const route=world?.routes.find(r=>r.id===routeId);if(!route)return;cancelRouteMapPick();setRouteMapEdit({id:route.id,name:route.name});setRouteSequenceKey(key=>key+1);}}>地図で路線の経路を選び直す</button>}
+            {selectedRoutePath && <section aria-label="保存済み路線の経路"><h4>{routeName}</h4><p>所属駅: {selectedRoutePath.member_stations.map(id=>stationsById.get(id)?.name ?? id).join(" → ")}</p><ol>{selectedRoutePath.segments.map((segment,index)=><li key={index}>{(segment.kind==="alignment"?"建設線形 " + (alignments.find(a=>a.id===segment.alignment_id)?.name ?? segment.alignment_id):"接続経路") + ": " + (stationsById.get(segment.from)?.name ?? segment.from) + " → " + (stationsById.get(segment.to)?.name ?? segment.to)}</li>)}</ol></section>}
           </section>
           <section className="service-editor" role="tabpanel" id="workspace-panel-services" aria-labelledby="workspace-tab-services" hidden={activeTool !== "services"}>
             <h3>系統</h3>
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
             <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => chooseService(null)}>新規系統</button>{world?.services.map((service) => <button key={service.id} className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id)} aria-label={`系統編集: ${service.name}`} aria-pressed={service.id===serviceId}>{service.name}</button>)}</div>
             <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null} onDirty={setPathServiceDirty} onSave={createPathService}/>
-            <ServiceFromRoutePreview routes={world?.routes??[]} tracks={world?.tracks??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} worldVersion={world} enabled={enabled} canApply={!serviceDirty && !pathServiceDirty && serviceId===null} onApply={draft=>{if(!enabled || busyRef.current || serviceDirty || pathServiceDirty || serviceId!==null)return;resetService();setServiceSourceRouteId(draft.sourceRouteId);setServiceName("");setServiceStart(draft.start);setServiceTracks(draft.tracks);setServiceStops(draft.stops);setServiceDirty(true);setServiceHint("路線区間を新規下書きへ取り込みました。系統名を入力して停車設定を再確認してください。");}}/>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
             {serviceId&&world&&<ServiceRouteBindingEditor key={`binding-${serviceId}-${worldEpoch}`} binding={world.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding} routes={world.routes.filter(r=>r.owner===world.services.find(s=>s.id===serviceId)?.owner)} enabled={enabled&&!serviceDirty&&!pathServiceDirty} onDirty={setBindingDirty} onSave={async binding=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty)throw Error("別の系統編集を適用または破棄してください。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("set_service_route_binding",{serviceId,binding});const saved=snapshot.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding;if(!saved||saved.kind!==binding.kind||(saved.kind==="route"&&binding.kind==="route"&&saved.route_id!==binding.route_id))throw Error("関連付けの保存結果を確認できません。");setWorld(snapshot);setDirty(true);setConfirmLoad(false);setBindingDirty(false);}finally{busyRef.current=false;setBusy(false);}}}/>}
             {selectedServicePath&&world&&<ServicePathCreator key={`replace-${serviceId}-${pathDraftEpoch}`} routes={world.routes} routePaths={world.route_paths??[]} stations={world.stations} world={world} enabled={enabled} canStart={!serviceDirty&&!bindingDirty} onDirty={setPathServiceDirty} replaceService={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,path:selectedServicePath}} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("同じ系統IDで経路と停車設定を更新しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/>}
             {selectedServicePath&&world&&<ServicePathEditor key={serviceId!} service={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,start:serviceStart}} path={selectedServicePath} world={world} stations={world.stations} enabled={enabled&&!pathServiceDirty&&!bindingDirty} onDirty={setServiceDirty} onSave={async(name,stops)=>{if(!enabled||busyRef.current)throw Error("処理中です");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("update_service_path",{serviceId,name,stops});setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("系統名と停車設定を適用しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/> }
-            <form onSubmit={submitService}><fieldset disabled={!enabled||!!selectedServicePath||pathServiceDirty||bindingDirty}>
-              <label htmlFor="service-name">系統名</label><input id="service-name" value={serviceName} maxLength={80} onChange={(event) => { setServiceName(event.target.value); setServiceDirty(true); }} />
-              <label htmlFor="service-start" className="track-to-label">系統の起点</label><select id="service-start" value={serviceStart} onChange={(event) => updateServicePath(event.target.value, [])}><option value="">駅を選択</option>{world?.stations.map((station) => <option key={station.id} value={station.id}>{station.name} (ID {station.id})</option>)}</select>
-              <label htmlFor="service-next" className="track-to-label">系統で次にたどる線路</label><select id="service-next" value={serviceNextTrack} onChange={(event) => setServiceNextTrack(event.target.value)}><option value="">接続する線路を選択</option>{serviceNextTracks.map((track) => { const next = track.from === serviceEnd ? track.to : track.from; return <option key={track.id} value={track.id}>{stationsById.get(next)?.name ?? next} (線路 {track.id})</option>; })}</select>
-              <button className="secondary full-width track-submit" type="button" disabled={!enabled || !serviceNextTrack} onClick={appendServiceTrack}>系統経路に追加</button>
-              <ServiceStopDiagram label="系統の停車位置" controlLabel={(index,row)=>`停車 ${index+1}: ${row.name}`} disabled={!enabled} rows={serviceStations.map((id,index)=>({key:String(index),name:stationsById.get(id)?.name??id,stopping:serviceStops.includes(index),fixed:index===0||index===serviceTracks.length}))} onChange={(key,checked)=>toggleServiceStop(Number(key),checked)}/>
-              <div className="route-actions"><button type="button" className="secondary" disabled={!enabled || !serviceTracks.length} onClick={() => updateServicePath(serviceStart, serviceTracks.slice(0,-1))}>系統末尾を戻す</button><button type="button" className="secondary" disabled={!enabled || !serviceTracks.length} onClick={() => updateServicePath(serviceStart, [])}>系統経路をクリア</button></div>
-              <button className="full-width track-submit" type="submit" disabled={!enabled || !serviceName.trim() || !serviceValid || !serviceTracks.length}>系統を適用</button>
-              <button className="secondary full-width track-submit" type="button" disabled={!enabled || !serviceDirty} onClick={() => chooseService(serviceId)}>系統下書きを破棄</button>
-              <p className="field-hint">{serviceId ? `編集中の系統 ID: ${serviceId}` : "新規系統の下書き"} / 適用後に「保存」でファイルへ反映</p>
-            </fieldset></form>
           </section>
           <section className="company-editor" role="tabpanel" id="workspace-panel-settings" aria-labelledby="workspace-tab-settings" hidden={activeTool !== "company"}>
             <h3>設定</h3><UserGuide /><h4>地図表示</h4><label><input type="checkbox" checked={stationNamesVisible} onChange={event=>setStationNamesVisible(event.target.checked)}/>駅名を表示</label><h4>会社名</h4><p className="muted">この試作では1プレイヤー・1会社です。会社の追加や子会社には未対応です。</p>
@@ -1714,7 +1612,10 @@ export function App() {
         </aside>
         {!panelCollapsed&&<PanelResizer value={panelWidth} onChange={setPanelWidth}/>}
       </div>
-      {companySetupRequired&&<CompanySetup name={companyName} onName={setCompanyName} busy={busy} error={error} errorRevision={errorRevision} onDismissError={()=>setError("")} onStart={startCompany} onLoad={()=>load("manual")} onRestore={autosave.available?()=>load("auto"):undefined}/>}
+      {companySetupRequired&&<CompanySetup name={companyName} onName={setCompanyName} busy={busy} error={error} errorRevision={errorRevision} onDismissError={()=>setError("")} onStart={startCompany} onLoad={openSlotPicker} onRestore={autosave.available?()=>load("auto"):undefined}/>}
+      {slotPicker&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label="ワールドを選択"><h2>ワールドを選択</h2><SaveSlots slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy} canSave={false} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{}} onNew={()=>{setSlotPicker(false);setSlotName("");setSlotDialog("new");}}/><button disabled={busy} onClick={()=>setSlotPicker(false)}>閉じる</button>{error&&<p role="alert">{error}</p>}</section></div>}
+      {slotDialog&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label={slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}><h2>{slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}</h2><form onSubmit={submitSlotName}><label>名前<input autoFocus maxLength={80} value={slotName} disabled={busy} onChange={event=>setSlotName(event.target.value)}/></label><button type="submit" disabled={busy||!slotName.trim()||confirmLoad}>{slotDialog==="new"?"作成":"保存"}</button><button type="button" disabled={busy} onClick={()=>{setSlotDialog(null);setSlotAction(null);setConfirmLoad(false);}}>キャンセル</button></form>{error&&<p role="alert">{error}</p>}</section></div>}
+      {confirmLoad && <div className="banner load-confirm" style={{position:"fixed",zIndex:2000,left:"20%",right:"20%",top:"20%"}} role="alert"><p>{slotAction?.kind==="new"?"新しいワールドを作成すると、現在の未保存の変更と未適用の下書きは破棄されます。保存済みのワールドは変更しません。":"読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。"}</p><button className="secondary" disabled={busy} onClick={() => {setConfirmLoad(false);setSlotAction(null);}}>戻る</button><button disabled={busy} onClick={()=>slotAction?applySlotAction():load()}>{slotAction?.kind==="new"?"変更を破棄して作成":"読込を続ける"}</button></div>}
       <footer className="app-footer"><p role="status" aria-live="polite">{busy ? "ワールドを更新しています。" : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>列車種別・ダイヤ・列車運行・旅客流動は未実装</span></footer>
     </main>
   );

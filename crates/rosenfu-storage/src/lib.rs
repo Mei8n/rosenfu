@@ -7,16 +7,8 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
-mod legacy_alignment;
-mod legacy_v1;
-mod legacy_v3;
-mod legacy_v4;
-mod legacy_v5;
-mod legacy_v6;
-mod legacy_v7;
-
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 17;
+pub const SCHEMA_VERSION: u64 = 18;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -26,6 +18,7 @@ pub enum StorageError {
     InvalidHeader,
     InvalidFormat,
     UnsupportedVersion(u64),
+    LegacyFormat,
     TooLarge,
     FileChanged,
     InvalidWorld(WorldError),
@@ -40,8 +33,9 @@ impl std::fmt::Display for StorageError {
             Self::InvalidFormat => write!(f, "not a Rosenfu world file"),
             Self::UnsupportedVersion(v) => write!(
                 f,
-                "unsupported world schema {v}; supported: 1..={SCHEMA_VERSION}"
+                "このセーブ形式（schema {v}）は非対応です。対応形式は schema {SCHEMA_VERSION} のみです。旧データは移行せず、元ファイルは変更していません。"
             ),
+            Self::LegacyFormat => write!(f, "旧式の駅間線路・路線・系統データは非対応です。元ファイルは変更していません。新しいワールドを作成してください。"),
             Self::FileChanged => write!(
                 f,
                 "save file changed since it was observed; reload before saving"
@@ -115,58 +109,66 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or(StorageError::InvalidHeader)?;
-    if version < 17
-        && value
-            .get("world")
-            .and_then(|w| w.get("service_route_bindings"))
-            .is_some()
-    {
-        return Err(StorageError::InvalidHeader);
+    if version != SCHEMA_VERSION {
+        return Err(StorageError::UnsupportedVersion(version));
     }
-    if version == 17
-        && !value
-            .get("world")
-            .and_then(|w| w.get("service_route_bindings"))
-            .is_some_and(|v| v.is_array())
+    let data = value.get("world").ok_or(StorageError::InvalidHeader)?;
+    if data.get("tracks").is_some()
+        || ["routes", "services"].iter().any(|field| {
+            data.get(*field)
+                .and_then(|v| v.as_array())
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item.get("tracks").is_some() || item.get("stops").is_some())
+                })
+        })
+        || data
+            .get("route_paths")
+            .and_then(|v| v.as_array())
+            .is_some_and(|paths| {
+                paths.iter().any(|p| {
+                    p.get("segments")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|segments| {
+                            segments
+                                .iter()
+                                .any(|s| s.get("kind").and_then(|k| k.as_str()) == Some("track"))
+                        })
+                })
+            })
+        || data
+            .get("service_paths")
+            .and_then(|v| v.as_array())
+            .is_some_and(|paths| {
+                paths.iter().any(|p| {
+                    p.get("legs")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|legs| {
+                            legs.iter().any(|l| {
+                                l.get("segment")
+                                    .and_then(|s| s.get("kind"))
+                                    .and_then(|k| k.as_str())
+                                    == Some("track")
+                            })
+                        })
+                })
+            })
     {
-        return Err(StorageError::InvalidHeader);
+        return Err(StorageError::LegacyFormat);
     }
-    let current = match version {
-        1 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(
-            legacy_v3::migrate(legacy_v1::migrate(value)?)?,
-        )?)?)?,
-        2 | 3 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(
-            legacy_v3::migrate(value)?,
-        )?)?)?,
-        4 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(value)?)?)?,
-        5 => legacy_v6::migrate(legacy_v5::migrate(value)?)?,
-        6 => legacy_v6::migrate(value)?,
-        7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | SCHEMA_VERSION => {
-            if [
-                "route_paths",
-                "service_paths",
-                "source_records",
-                "alignment_provenance",
-            ]
-            .iter()
-            .any(|field| {
-                !value
-                    .get("world")
-                    .and_then(|w| w.get(*field))
-                    .is_some_and(|p| p.is_array())
-            }) {
-                return Err(StorageError::InvalidHeader);
-            }
-            value
+    for field in [
+        "route_paths",
+        "service_paths",
+        "service_route_bindings",
+        "source_records",
+        "alignment_provenance",
+    ] {
+        if !data.get(field).is_some_and(|v| v.is_array()) {
+            return Err(StorageError::InvalidHeader);
         }
-        _ => return Err(StorageError::UnsupportedVersion(version)),
-    };
-    let current = if version <= 7 {
-        legacy_v7::migrate(current)?
-    } else {
-        current
-    };
-    let document: SaveDocument = serde_json::from_value(current)?;
+    }
+    let document: SaveDocument = serde_json::from_value(value)?;
     let world = World::new(document.world)?;
     ensure_world_saveable(&world)?;
     Ok(world)
@@ -441,3 +443,6 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"other writer");
     }
 }
+
+mod slots;
+pub use slots::{create_save_slot, list_save_slots, save_slot_path, SaveSlot};

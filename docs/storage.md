@@ -1,29 +1,12 @@
-# ワールド保存基盤（アルファ版）
+# 保存仕様
 
-`rosenfu-storage` は `rosenfu-core` の検証済みワールドをファイルへ保存します。
-UI・Tauri から独立したクレートで、単体テストでは一時ディレクトリのみを使用します。
+## 現行形式：schema 18
 
-## 現段階の形式
+暫定アルファ JSON は `format: "rosenfu-world"` と `schema_version: 18` を持つ。schema 18 のみ読み書きし、1〜17 は非対応を明示して拒否する。旧 Track モデルと自動移行を撤去したため、データは新しいワールドで作成し直す。読込処理は旧データを変更・削除しない。
 
-コード照合はschema 17 backend PR #84（674bd142、2026-11-15）。公開devとは区別する。以下の旧schema説明は導入時の履歴で、現行番号とは区別する。読込対応は1〜17（旧1〜16互換）。schema 16は駅グループの共有名称と物理ホーム所属を保持し、物理ホームID・経路参照を統合しない。schema 17は系統と路線の明示的な関連付けを追加する。旧1〜16には関連付けを推測せず、未確認状態を維持する。新保存はschema 17未対応アプリでは開けない。読込だけで元ファイルは書き換えない。ネイティブ保存再開の受入は未確認。
+設備は Alignment と端点接続。すべての路線・系統に RoutePath / ServicePath が必要で、旧 Track、Route.tracks、OperatingService.tracks/stops は非対応。旧データを現形式番号に書き換えただけの偽装も拒否する。
 
-JSON のエンベロープに `format: "rosenfu-world"` と `schema_version: 17`、
-`world` を格納します。推奨拡張子は `.rosenfu.json` です。
-この JSON 形式はアルファの小規模検証用であり、SQLite の正式採用・不採用を
-決定したものではありません。製品バージョンと保存スキーマ番号は別に管理します。
-
-読み込みは形式とスキーマ番号を確認した後、モデルを復元し、参照整合性を検証します。
-未対応の新旧スキーマはエラーにし、空のワールドへの置換や黙った初期化を行いません。
-将来スキーマのデータ部分が読み取れなくても、先に非対応バージョンとして報告します。
-スキーマ1〜8は厳密な旧形式を検証し、メモリ内でスキーマ9へ段階移行します。旧1には空の運行系統、旧1〜3には空の `route_paths`、旧1〜4には空の `service_paths` を追加します。旧4の `route_paths` と全既存データは保持します。読込だけで元ファイルは変更しません。旧版に新しいsidecarを混入したファイルは拒否し、黙って捨てません。スキーマ6では `route_paths`、`service_paths`、`source_records`、`alignment_provenance` が必須です。旧1〜5には空の出典sidecarを追加し、旧5の系統経路・停車参照を変更しません。
-
-スキーマ7では物理線形 `Alignment.track_type` が必須で、`normal`（通常）・`high_speed`（高速）・`tram`（トラム）のみを許可します。旧1〜6の線形には `normal` を補い、ID・形状・駅や経路の参照は変えません。旧ヘッダーに新しい `track_type` を混入したファイル、新形式で種別が欠けたファイルや未知値は拒否します。種別の保存は性能・勾配・費用・道路追従の実装を意味しません。このスキーマ7は線路種別用であり、採用を見送った未着工計画の永続化は含みません。
-
-スキーマ8では区間単位の参照由来範囲、スキーマ9では線路の `design_speed_kmh` を扱います。旧出典は元線形全体の範囲へ移行し、設計速度がない線路は種別の初期値として解釈します。詳細は[参照延伸](reference-extension-provenance.md)と[設計速度](track-design-speed.md)。
-
-`ServicePath` は安定したローカルleg keyと駅参照で停車を保存し、Alignment途中への駅追加で既存の停車先をずらしません。対応する `OperatingService.tracks` と `stops` は空にし、旧方式との二重指定を拒否します。新方式は新規作成・参照・保存読込に加え、保存済み系統名・停車設定の編集と、単一路線の全体/部分/逆方向区間による経路再設定に対応します。停車編集は既存leg keyを維持し、経路再設定は旧停車を自動移植せず、元ServicePathとの一致を確認して新しいleg keyを割り当てます。適用後のグローバルUndo/Redoと複数路線の任意経由は未対応です。旧式編集APIによる上書きも拒否します。路線の変更は系統を自動変更しません。初期版では運行経路上の駅は通過駅も含めて削除・移動を拒否し、使用する線形形状やTrack端点の一般変更も拒否します。ただし[専用端部延伸](built-alignment-extension.md)は既存駅座標・系統定義・停車参照を保ったまま許可します。これらは既存の経路・停車参照を保護する制限であり、専用の系統経路再設定とは区別します。ホーム寸法変更は駅位置が変わらない範囲に限ります。
-
-物理経路と路線所属駅の分離は[経路候補・保存仕様](route-candidate-preview.md)、系統は[ServicePath設計](service-path-design.md)を参照。スキーマ9未対応の旧アプリは新しい保存を開けません。出典の保存契約と未信頼・権利上の境界は[出典仕様](alignment-provenance.md)を参照してください。ベータの互換性保証には将来世代の移行・復旧テストも必要です。
+未着工計画、編集済み形状、駅・駅グループ、視点、速度設定、系統の経路・停車・明示的路線関連を現形式で保存する。路線所属駅と停車駅を区別し、系統経路編集では既存 ID と参照整合性を保護する。列車運行や乗換効果を保存モデルの存在だけで実装済みにしない。
 
 ID と採番状態はコアモデルの文字列表現をそのまま保存します。描画データや検索索引は
 保存せず、再生成対象とします。読み書きする JSON は暫定で 16 MiB に制限しています。
@@ -85,3 +68,20 @@ cargo test --locked -p rosenfu-storage
 ## schema 11: 既設線上の計画駅
 
 計画駅の対象を `pathId`（未着工経路）または `alignmentId`（既設線）で区別し、既設線対象は `planId` で所属計画を指定します。schema 10以前の省略されたplanIdは経路の所属から解決します。
+
+## Multiple save slots
+
+New worlds are saved into independent `saves/slot-<opaque-id>/` directories. Each
+slot has a display-label manifest and its own world, rolling backup and autosave;
+labels never become filesystem paths. Creating a slot is create-only, even if its
+label matches another slot. A failed creation does not publish a partial world.
+The session selects one active slot and uses its own observed file version for
+manual/autosave conflict protection. Selecting a slot must load successfully
+before replacing the active in-memory world.
+
+The previous fixed-path world remains available as a legacy list entry. Unsupported
+schemas are explained rather than migrated, erased or overwritten. A new current
+world can coexist with that file. Slot deletion is not exposed by this change.
+Current-format storage tests cover independent labels/files/backups, incomplete
+creation visibility, invalid IDs and directory symlink rejection. Full session,
+UI and real-device acceptance remain separate verification gates.

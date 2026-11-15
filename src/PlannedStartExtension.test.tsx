@@ -17,7 +17,7 @@ const line={id:"3",owner:"2",name:"既存",track_type:"normal",points:[point(180
 const world={next_id:"4",players:[{id:"1",name:"P"}],companies:[{id:"2",owner:"1",name:"C"}],stations:[],tracks:[],routes:[],services:[],alignments:[line],station_placements:[]};
 async function start(extra={}){
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
- if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};throw Error("unexpected "+command);
+ if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]};if(command==="autosave_status")return {available:false};throw Error("unexpected "+command);
  });
  // Resolve the mocked startup IPC and restored-plan effects before the first key.
  // Version text alone can render before the window keyboard listener is refreshed.
@@ -62,8 +62,8 @@ test("start resumption preserves sampled curve and station coordinates through s
  const save=async()=>{
   vi.mocked(invoke).mockResolvedValueOnce({saved:true});
   await act(async()=>{fireEvent.click(screen.getByRole("button",{name:"保存"}));});
-  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.at(-1)?.[0]).toBe("save_world"));
-  return (vi.mocked(invoke).mock.calls.at(-1)![1] as {constructionPlans:ConstructionPlans}).constructionPlans;
+  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="save_world").at(-1)?.[0]).toBe("save_world"));
+  return (vi.mocked(invoke).mock.calls.filter(([command])=>command==="save_world").at(-1)![1] as {constructionPlans:ConstructionPlans}).constructionPlans;
  };
  fireEvent.click(map,{clientX:102,clientY:200,detail:1});
  let saved=await save();
@@ -84,10 +84,11 @@ test("reversing a free start transfers the far built connection to source; occup
  const map=await start({construction_plans:{...emptyConstructionPlans(),draftPoints:anchors,draftFinished:true,draftDestination:destination}});
  fireEvent.click(map,{clientX:102,clientY:130,detail:1});
  vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole("button",{name:"保存"}));
- await waitFor(()=>expect(vi.mocked(invoke).mock.calls.at(-1)?.[0]).toBe("save_world"));
- const saved=(vi.mocked(invoke).mock.calls.at(-1)![1] as {constructionPlans:ConstructionPlans}).constructionPlans;
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="save_world").at(-1)?.[0]).toBe("save_world"));
+ const saved=(vi.mocked(invoke).mock.calls.filter(([command])=>command==="save_world").at(-1)![1] as {constructionPlans:ConstructionPlans}).constructionPlans;
  expect(saved.draftExtension).toEqual(destination);expect(saved.draftDestination).toBeUndefined();
  expect(saved.draftPoints).toEqual([...anchors].reverse());
+ await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
  fireEvent.click(map,{clientX:100,clientY:130,detail:1});
  fireEvent.pointerMove(map,{clientX:180,clientY:130});
  expect(screen.getByText("この端点は接続済みです")).toBeTruthy();

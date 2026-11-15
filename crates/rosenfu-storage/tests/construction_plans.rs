@@ -26,25 +26,6 @@ fn plans_roundtrip_with_multiple_plans_paths_and_stations() {
     assert_eq!(load_world(backup_path(&path)).unwrap(), previous);
 }
 #[test]
-fn schema_nine_without_plans_remains_readable() {
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&encode(&World::default()).unwrap()).unwrap();
-    value["schema_version"] = json!(9);
-    value["world"]
-        .as_object_mut()
-        .unwrap()
-        .remove("service_route_bindings");
-    value["world"]
-        .as_object_mut()
-        .unwrap()
-        .remove("construction_plans");
-    assert!(decode(&serde_json::to_vec(&value).unwrap())
-        .unwrap()
-        .snapshot()
-        .construction_plans
-        .is_none());
-}
-#[test]
 fn invalid_plan_payload_is_rejected_without_overwriting_old_save() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("world.json");
@@ -58,39 +39,6 @@ fn invalid_plan_payload_is_rejected_without_overwriting_old_save() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let mut value: serde_json::Value = serde_json::from_slice(&before).unwrap();
     value["world"]["construction_plans"] = json!({"version":999});
-    assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
-}
-
-#[test]
-fn schema_ten_path_station_and_schema_eleven_built_station_roundtrip() {
-    let legacy = World::new(WorldDraft {
-        construction_plans: Some(plans()),
-        ..WorldDraft::default()
-    })
-    .unwrap();
-    let mut value: serde_json::Value = serde_json::from_slice(&encode(&legacy).unwrap()).unwrap();
-    value["schema_version"] = json!(10);
-    value["world"]
-        .as_object_mut()
-        .unwrap()
-        .remove("service_route_bindings");
-    assert_eq!(
-        decode(&serde_json::to_vec(&value).unwrap()).unwrap(),
-        legacy
-    );
-    let station = &mut value["world"]["construction_plans"]["plannedStations"][0];
-    station.as_object_mut().unwrap().remove("pathId");
-    station["alignmentId"] = json!("999");
-    station["planId"] = json!(2);
-    value["schema_version"] = json!(11);
-    value["world"]
-        .as_object_mut()
-        .unwrap()
-        .remove("service_route_bindings");
-    // Stale infrastructure references remain editable drafts, validated at build time.
-    let restored = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
-    assert_eq!(decode(&encode(&restored).unwrap()).unwrap(), restored);
-    value["world"]["construction_plans"]["plannedStations"][0]["pathId"] = json!(3);
     assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
 }
 
@@ -110,26 +58,6 @@ fn edited_plan_shape_roundtrips_without_reconstruction() {
     let mut invalid = WorldDraft::default();
     invalid.construction_plans = Some(serde_json::from_value(payload).unwrap());
     assert!(World::new(invalid).is_err());
-}
-
-#[test]
-fn schema_eleven_plan_without_geometry_remains_unchanged() {
-    let mut draft = WorldDraft::default();
-    draft.construction_plans = Some(plans());
-    let world = World::new(draft).unwrap();
-    let mut value: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
-    value["schema_version"] = json!(11);
-    value["world"]
-        .as_object_mut()
-        .unwrap()
-        .remove("service_route_bindings");
-    let restored = decode(&serde_json::to_vec(&value).unwrap()).unwrap();
-    assert_eq!(restored, world);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&encode(&restored).unwrap()).unwrap()
-            ["schema_version"],
-        rosenfu_storage::SCHEMA_VERSION
-    );
 }
 
 #[test]

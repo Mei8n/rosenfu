@@ -62,7 +62,6 @@ impl WorldEditor {
                     .iter()
                     .any(|c| c.a.alignment_id == id || c.b.alignment_id == id)
             }
-            _ => false,
         };
         if before
             .route_paths

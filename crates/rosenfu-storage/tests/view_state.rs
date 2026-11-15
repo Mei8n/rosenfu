@@ -1,7 +1,7 @@
 use rosenfu_core::world::{ViewState, World, WorldDraft};
 use rosenfu_storage::{decode, encode};
 #[test]
-fn view_roundtrips_and_legacy_save_has_no_view() {
+fn view_roundtrips_and_absent_optional_view_remains_absent() {
     let world = World::new(WorldDraft {
         view_state: Some(ViewState {
             latitude: 35.7,
@@ -14,11 +14,6 @@ fn view_roundtrips_and_legacy_save_has_no_view() {
     assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
     let mut value: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
     value["world"].as_object_mut().unwrap().remove("view_state");
-    value["schema_version"] = 12.into();
-    value["world"]
-        .as_object_mut()
-        .unwrap()
-        .remove("service_route_bindings");
     assert!(decode(&serde_json::to_vec(&value).unwrap())
         .unwrap()
         .snapshot()

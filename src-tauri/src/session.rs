@@ -1,9 +1,12 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
+#[path = "session/save_slots.rs"]
+mod save_slots;
 use rosenfu_core::world::{
-    AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, TrackId, World, WorldDraft,
+    AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, World, WorldDraft,
 };
+pub use save_slots::SaveSlotList;
 use std::path::{Path, PathBuf};
 
 // Prototype edit extent, not a national boundary or map-coverage guarantee.
@@ -97,6 +100,7 @@ pub struct WorldEditor {
     world: World,
     company: CompanyId,
     loaded_path: Option<PathBuf>,
+    active_slot_id: Option<String>,
     company_setup_required: bool,
     manual_version: Option<rosenfu_storage::FileVersion>,
     manual_repair_allowed: bool,
@@ -285,16 +289,7 @@ impl WorldEditor {
             .map_err(|e| e.to_string())?;
         Ok(self.snapshot())
     }
-    pub fn preview_service_from_route(
-        &self,
-        route_id: RouteId,
-        from_occurrence: u32,
-        to_occurrence: u32,
-    ) -> Result<rosenfu_core::world::ServiceRoutePreview, String> {
-        self.world
-            .preview_service_from_route(route_id, from_occurrence, to_occurrence)
-            .map_err(|e| e.to_string())
-    }
+
     pub fn preview_route_candidates(
         &self,
         start: StationId,
@@ -334,6 +329,7 @@ impl WorldEditor {
             world,
             company,
             loaded_path: None,
+            active_slot_id: None,
             company_setup_required: true,
             manual_version: None,
             manual_repair_allowed: false,
@@ -867,10 +863,6 @@ impl WorldEditor {
             || candidate.service_paths.iter().any(|p|p.stops.iter().any(|stop|matches!(stop,rosenfu_core::world::StationOccurrenceRef::OnLeg{station_id:id,..} if *id==station_id)) || p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Alignment{from,to,..} | rosenfu_core::world::RouteSegment::ConnectedAlignments{from,to,..} if from==station_id || to==station_id)))
             || candidate.route_paths.iter().any(|p| p.member_stations.contains(&station_id) || p.segments.iter().any(|segment| matches!(segment, rosenfu_core::world::RouteSegment::Alignment { from, to, .. } | rosenfu_core::world::RouteSegment::ConnectedAlignments { from,to,.. } if *from == station_id || *to == station_id)))
             || candidate
-            .tracks
-            .iter()
-            .any(|track| track.from == station_id || track.to == station_id)
-            || candidate
                 .routes
                 .iter()
                 .any(|route| route.start == station_id)
@@ -989,74 +981,6 @@ impl WorldEditor {
         Ok(self.snapshot())
     }
 
-    pub fn delete_track(&mut self, track_id: TrackId) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.delete_track_unchecked(track_id)?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
-        Ok(self.snapshot())
-    }
-    fn delete_track_unchecked(&mut self, track_id: TrackId) -> Result<WorldDraft, String> {
-        let mut candidate = self.snapshot();
-        if !candidate
-            .tracks
-            .iter()
-            .any(|track| track.id == track_id && track.owner == self.company)
-        {
-            return Err("削除する線路が見つかりません。".into());
-        }
-        if candidate.service_paths.iter().any(|p|p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Track{track_id:id} if id==track_id)))
-            || candidate.route_paths.iter().any(|p| p.segments.iter().any(|segment| matches!(segment, rosenfu_core::world::RouteSegment::Track { track_id: id } if *id == track_id)))
-            || candidate
-            .routes
-            .iter()
-            .any(|route| route.tracks.contains(&track_id))
-            || candidate
-                .services
-                .iter()
-                .any(|service| service.tracks.contains(&track_id))
-        {
-            return Err(
-                "路線・運行系統から参照されている線路は削除できません。連鎖削除は行いません。"
-                    .into(),
-            );
-        }
-        candidate.tracks.retain(|track| track.id != track_id);
-        self.world
-            .replace(candidate)
-            .map_err(|error| error.to_string())?;
-        Ok(self.snapshot())
-    }
-    pub fn add_track(&mut self, from: StationId, to: StationId) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.add_track_unchecked(from, to)?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
-        Ok(self.snapshot())
-    }
-    fn add_track_unchecked(
-        &mut self,
-        from: StationId,
-        to: StationId,
-    ) -> Result<WorldDraft, String> {
-        if from == to {
-            return Err("接続元と接続先には別の駅を選んでください。".into());
-        }
-        let data = self.world.snapshot();
-        if !data.stations.iter().any(|s| s.id == from) || !data.stations.iter().any(|s| s.id == to)
-        {
-            return Err("接続する駅が見つかりません。ワールドを確認してください。".into());
-        }
-        if data.tracks.iter().any(|track| {
-            (track.from == from && track.to == to) || (track.from == to && track.to == from)
-        }) {
-            return Err("この2駅は既に線路で接続されています。".into());
-        }
-        self.world
-            .add_track(self.company, from, to)
-            .map_err(|e| e.to_string())?;
-        Ok(self.snapshot())
-    }
     pub fn rename_company(&mut self, name: String) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.rename_company_unchecked(name)?;
@@ -1121,24 +1045,16 @@ impl WorldEditor {
                 .iter()
                 .find(|r| r.id == id && r.owner == self.company)
                 .ok_or("編集する路線が見つかりません。")?;
-            let previous_segments = candidate
+            let previous_segments = &candidate
                 .route_paths
                 .iter()
                 .find(|p| p.route_id == id)
-                .map(|p| p.segments.clone())
-                .unwrap_or_else(|| {
-                    previous
-                        .tracks
-                        .iter()
-                        .map(|track_id| rosenfu_core::world::RouteSegment::Track {
-                            track_id: *track_id,
-                        })
-                        .collect()
-                });
+                .ok_or("路線の経路データがありません。")?
+                .segments;
             // Services currently own independent physical paths, not route IDs.
             // Do not guess which service depends on a route: until explicit
             // associations exist, reject path changes conservatively.
-            if (previous.start != start || previous_segments != preview.path.segments)
+            if (previous.start != start || previous_segments != &preview.path.segments)
                 && candidate.services.iter().any(|service| {
                     service.owner == self.company
                         && !candidate
@@ -1156,7 +1072,6 @@ impl WorldEditor {
                 .ok_or("編集する路線が見つかりません。")?;
             route.name = name.trim().to_owned();
             route.start = start;
-            route.tracks.clear();
             candidate.route_paths.retain(|p| p.route_id != id);
             candidate.route_paths.push(rosenfu_core::world::RoutePath {
                 route_id: id,
@@ -1177,170 +1092,7 @@ impl WorldEditor {
         }
         Ok(self.snapshot())
     }
-    pub fn save_route(
-        &mut self,
-        route_id: Option<RouteId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-    ) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.save_route_unchecked(route_id, name, start, tracks)?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
-        Ok(self.snapshot())
-    }
-    fn save_route_unchecked(
-        &mut self,
-        route_id: Option<RouteId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-    ) -> Result<WorldDraft, String> {
-        if name.trim().is_empty() || name.chars().count() > 80 {
-            return Err("路線名は1〜80文字で入力してください。".into());
-        }
-        if tracks.is_empty() {
-            return Err("路線には1本以上の線路を指定してください。".into());
-        }
-        if let Some(id) = route_id {
-            let mut candidate = self.snapshot();
-            if candidate.route_paths.iter().any(|p| p.route_id == id) {
-                return Err(
-                    "この路線は所属駅付き経路です。旧式の線路編集では上書きできません。".into(),
-                );
-            }
-            let previous = candidate
-                .routes
-                .iter()
-                .find(|r| r.id == id && r.owner == self.company)
-                .ok_or("編集する路線が見つかりません。")?;
-            if (previous.start != start || previous.tracks != tracks)
-                && candidate.services.iter().any(|service| {
-                    service.owner == self.company
-                        && !candidate
-                            .service_route_bindings
-                            .iter()
-                            .any(|row| row.service_id == service.id)
-                })
-            {
-                return Err("路線との関連が未確認の系統があります。先に系統の路線を割り当てるか、独立系統として指定してください。系統は変更していません。".into());
-            }
-            let route = candidate
-                .routes
-                .iter_mut()
-                .find(|r| r.id == id && r.owner == self.company)
-                .ok_or("編集する路線が見つかりません。")?;
-            route.name = name.trim().to_owned();
-            route.start = start;
-            route.tracks = tracks;
-            self.world.replace(candidate).map_err(|e| e.to_string())?;
-        } else {
-            self.world
-                .add_route(self.company, name.trim().to_owned(), start, tracks)
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(self.snapshot())
-    }
-    pub fn save_service(
-        &mut self,
-        service_id: Option<ServiceId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-        stops: Vec<u32>,
-    ) -> Result<WorldDraft, String> {
-        self.save_service_with_source_route(service_id, name, start, tracks, stops, None)
-    }
-    pub fn save_service_with_source_route(
-        &mut self,
-        service_id: Option<ServiceId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-        stops: Vec<u32>,
-        source_route_id: Option<RouteId>,
-    ) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        // Rebinding and path replacement are one outer transaction. The temporary
-        // independent row exists only in this discarded-on-failure clone.
-        if source_route_id.is_some() {
-            if let Some(id) = service_id {
-                candidate
-                    .world
-                    .set_service_route_binding(
-                        candidate.company,
-                        id,
-                        rosenfu_core::world::ServiceRouteBindingKind::Independent,
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        candidate.save_service_unchecked(service_id, name, start, tracks, stops)?;
-        if let Some(route_id) = source_route_id {
-            let id = service_id.unwrap_or_else(|| {
-                candidate
-                    .world
-                    .snapshot()
-                    .services
-                    .last()
-                    .expect("created service")
-                    .id
-            });
-            candidate
-                .world
-                .set_service_route_binding(
-                    candidate.company,
-                    id,
-                    rosenfu_core::world::ServiceRouteBindingKind::Route { route_id },
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
-        Ok(self.snapshot())
-    }
-    fn save_service_unchecked(
-        &mut self,
-        service_id: Option<ServiceId>,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-        stops: Vec<u32>,
-    ) -> Result<WorldDraft, String> {
-        if name.trim().is_empty() || name.chars().count() > 80 {
-            return Err("系統名は1〜80文字で入力してください。".into());
-        }
-        if let Some(id) = service_id {
-            if self
-                .world
-                .snapshot()
-                .service_paths
-                .iter()
-                .any(|p| p.service_id == id)
-            {
-                return Err("建設線形対応の系統は現在、新規作成と参照のみ対応しています。旧式編集では上書きできません。".into());
-            }
-            let mut candidate = self.snapshot();
-            let service = candidate
-                .services
-                .iter_mut()
-                .find(|service| service.id == id && service.owner == self.company)
-                .ok_or("編集する運行系統が見つかりません。")?;
-            service.name = name.trim().to_owned();
-            service.start = start;
-            service.tracks = tracks;
-            service.stops = stops;
-            self.world
-                .replace(candidate)
-                .map_err(|error| error.to_string())?;
-        } else {
-            self.world
-                .add_service(self.company, name.trim().to_owned(), start, tracks, stops)
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(self.snapshot())
-    }
+
     /// A fresh world may replace an existing healthy save only after approval of
     /// this exact observed version. Loaded-session conflicts stay ordinary errors.
     pub fn request_manual_save(
@@ -1651,6 +1403,7 @@ impl WorldEditor {
         self.company_setup_required = false;
         self.pending_manual_replacement = None;
         self.loaded_path = Some(path.to_owned());
+        self.active_slot_id = None;
         self.manual_version = Some(version);
         self.manual_repair_allowed = false;
         self.autosave_version = None;
@@ -1674,6 +1427,59 @@ mod tests {
         assert!(!result.saved);
         result.replacement_required.unwrap().token
     }
+    pub(super) fn alignment_fixture() -> (WorldEditor, AlignmentId, [StationId; 3]) {
+        let mut e = WorldEditor::new();
+        let a = e
+            .world
+            .build_alignment(
+                e.company,
+                "線形".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 35.0,
+                        longitude: 139.0,
+                    },
+                    GeoPoint {
+                        latitude: 35.0,
+                        longitude: 139.1,
+                    },
+                ],
+            )
+            .unwrap();
+        let s = [0.1, 0.5, 0.9].map(|position| {
+            e.world
+                .place_station_on_alignment(e.company, "駅".into(), a, position, 100.0, 10.0)
+                .unwrap()
+        });
+        (e, a, s)
+    }
+    pub(super) fn span(
+        a: AlignmentId,
+        from: StationId,
+        to: StationId,
+    ) -> rosenfu_core::world::RouteSegment {
+        rosenfu_core::world::RouteSegment::Alignment {
+            alignment_id: a,
+            from,
+            to,
+        }
+    }
+    fn create_test_service(
+        e: &mut WorldEditor,
+        start: StationId,
+        segments: Vec<rosenfu_core::world::RouteSegment>,
+    ) -> WorldDraft {
+        let stops = e
+            .preview_service_path(start, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect();
+        e.create_service_path("系統".into(), start, segments, stops)
+            .unwrap()
+    }
+
     #[test]
     fn fresh_manual_replacement_requires_confirmation_and_preserves_backup_and_auto() {
         let dir = tempfile::tempdir().unwrap();
@@ -2279,131 +2085,84 @@ mod tests {
 
     #[test]
     fn company_and_route_editing_preserve_ids_and_roundtrip() {
-        let mut editor = WorldEditor::new();
-        let company_id = editor.snapshot().companies[0].id;
-        editor.rename_company("  路線譜鉄道  ".into()).unwrap();
-        let a = editor
-            .add_station("A".into(), 35.67, 139.71)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.68, 139.75)
-            .unwrap()
-            .stations[1]
-            .id;
-        let c = editor
-            .add_station("C".into(), 35.69, 139.8)
-            .unwrap()
-            .stations[2]
-            .id;
-        let ab = editor.add_track(a, b).unwrap().tracks[0].id;
-        let bc = editor.add_track(c, b).unwrap().tracks[1].id;
-        let created = editor
-            .save_route(None, "本線".into(), a, vec![ab, bc])
+        let (mut e, a, s) = alignment_fixture();
+        let created = e
+            .save_planned_route(None, "本線".into(), s[0], vec![span(a, s[0], s[2])], vec![])
             .unwrap();
         let id = created.routes[0].id;
-        let next_id = created.next_id;
-        let edited = editor
-            .save_route(Some(id), "新本線".into(), c, vec![bc, ab])
+        let edited = e
+            .save_planned_route(
+                Some(id),
+                "新本線".into(),
+                s[2],
+                vec![span(a, s[2], s[0])],
+                vec![],
+            )
             .unwrap();
         assert_eq!(edited.routes[0].id, id);
-        assert_eq!(edited.routes[0].tracks, vec![bc, ab]);
-        assert_eq!(edited.next_id, next_id);
-        assert_eq!(edited.tracks, created.tracks);
-        assert_eq!(edited.stations, created.stations);
-        assert_eq!(edited.companies[0].id, company_id);
-        assert_eq!(edited.companies[0].name, "路線譜鉄道");
+        assert_eq!(edited.routes[0].start, s[2]);
+        assert_eq!(edited.alignments, created.alignments);
+        let renamed = e.rename_company("会社".into()).unwrap();
+        assert_eq!(renamed.companies[0].id, created.companies[0].id);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.json");
-        editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), edited);
+        e.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), renamed);
     }
     #[test]
     fn invalid_company_or_route_edit_does_not_change_world() {
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.67, 139.71)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.68, 139.75)
-            .unwrap()
-            .stations[1]
-            .id;
-        let c = editor
-            .add_station("C".into(), 35.69, 139.8)
-            .unwrap()
-            .stations[2]
-            .id;
-        let ab = editor.add_track(a, b).unwrap().tracks[0].id;
-        let before = editor.snapshot();
-        assert!(editor.rename_company(" ".into()).is_err());
-        assert!(editor.rename_company("A".repeat(81)).is_err());
-        assert!(editor.save_route(None, "空".into(), a, vec![]).is_err());
-        assert!(editor
-            .save_route(None, "不連続".into(), c, vec![ab])
+        let (mut e, a, s) = alignment_fixture();
+        let before = e.snapshot();
+        assert!(e.rename_company(" ".into()).is_err());
+        assert!(e
+            .save_planned_route(None, "".into(), s[0], vec![span(a, s[0], s[2])], vec![])
             .is_err());
-        assert!(editor
-            .save_route(None, "不明".into(), a, vec![TrackId(999)])
+        assert!(e
+            .save_planned_route(None, "R".into(), s[0], vec![], vec![])
             .is_err());
-        assert!(editor
-            .save_route(Some(RouteId(999)), "編集".into(), a, vec![ab])
+        assert!(e
+            .save_planned_route(
+                Some(RouteId(999)),
+                "R".into(),
+                s[0],
+                vec![span(a, s[0], s[2])],
+                vec![]
+            )
             .is_err());
-        assert_eq!(editor.snapshot(), before);
-        let created = editor.save_route(None, "本線".into(), a, vec![ab]).unwrap();
-        let id = created.routes[0].id;
-        assert!(editor
-            .save_route(Some(id), "不連続".into(), c, vec![ab])
+        assert!(e
+            .save_planned_route(
+                None,
+                "R".into(),
+                s[0],
+                vec![span(a, s[0], StationId(999))],
+                vec![]
+            )
             .is_err());
-        assert_eq!(editor.snapshot(), created);
+        assert_eq!(e.snapshot(), before);
     }
     #[test]
-    fn connect_save_and_reload_preserve_tracks() {
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.67, 139.72)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.68, 139.78)
-            .unwrap()
-            .stations[1]
-            .id;
-        let connected = editor.add_track(a, b).unwrap();
-        assert_eq!(connected.tracks.len(), 1);
-        assert_eq!(connected.tracks[0].from, a);
-        assert_eq!(connected.tracks[0].to, b);
+    fn alignment_save_and_reload_preserve_geometry() {
+        let (mut e, _, _) = alignment_fixture();
+        let before = e.snapshot();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.json");
-        editor.save(&path).unwrap();
-        let mut restored = WorldEditor::new();
-        assert_eq!(restored.load(&path).unwrap(), connected);
-        assert_eq!(restored.snapshot().next_id, connected.next_id);
+        e.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), before);
     }
     #[test]
     fn self_loop_duplicate_and_missing_station_do_not_mutate_or_allocate() {
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.67, 139.72)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.68, 139.78)
-            .unwrap()
-            .stations[1]
-            .id;
-        let before = editor.snapshot();
-        assert!(editor.add_track(a, a).is_err());
-        assert!(editor.add_track(a, StationId(999)).is_err());
-        assert_eq!(editor.snapshot(), before);
-        let connected = editor.add_track(a, b).unwrap();
-        assert!(editor.add_track(a, b).is_err());
-        assert!(editor.add_track(b, a).is_err());
-        assert_eq!(editor.snapshot(), connected);
+        let (mut e, a, s) = alignment_fixture();
+        let before = e.snapshot();
+        for segment in [span(a, s[0], s[0]), span(a, s[0], StationId(999))] {
+            assert!(e
+                .save_planned_route(None, "R".into(), s[0], vec![segment], vec![])
+                .is_err());
+        }
+        assert!(e
+            .world
+            .place_station_on_alignment(e.company, "重複".into(), a, 0.1, 100.0, 10.0)
+            .is_err());
+        assert_eq!(e.snapshot(), before);
     }
     #[test]
     fn place_save_and_reload_preserve_stations_and_next_id() {
@@ -2486,212 +2245,120 @@ mod tests {
     }
     #[test]
     fn service_data_survives_editor_load_route_and_company_edits_and_save() {
-        let mut source = World::default();
-        let player = source.add_player("P".into()).unwrap();
-        let company = source.add_company(player, "C".into()).unwrap();
-        let a = source
-            .add_station(company, "A".into(), 35.67, 139.71)
-            .unwrap();
-        let b = source
-            .add_station(company, "B".into(), 35.68, 139.75)
-            .unwrap();
-        let track = source.add_track(company, a, b).unwrap();
-        let route = source
-            .add_route(company, "路線".into(), a, vec![track])
-            .unwrap();
-        source
-            .add_service(company, "系統".into(), a, vec![track], vec![0, 1])
-            .unwrap();
-        let services = source.snapshot().services.clone();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("services.json");
-        rosenfu_storage::create_world(&path, &source).unwrap();
-        let mut editor = WorldEditor::new();
-        editor.load(&path).unwrap();
-        editor.rename_company("新会社名".into()).unwrap();
-        let before = editor.snapshot();
-        assert!(editor
-            .save_route(Some(route), "逆方向の路線".into(), b, vec![track])
+        let (mut e, a, s) = alignment_fixture();
+        let route = e
+            .save_planned_route(None, "R".into(), s[0], vec![span(a, s[0], s[2])], vec![])
+            .unwrap()
+            .routes[0]
+            .id;
+        let services = create_test_service(&mut e, s[0], vec![span(a, s[0], s[2])]);
+        e.rename_company("新会社".into()).unwrap();
+        let before = e.snapshot();
+        assert!(e
+            .save_planned_route(
+                Some(route),
+                "逆".into(),
+                s[2],
+                vec![span(a, s[2], s[0])],
+                vec![]
+            )
             .is_err());
-        assert_eq!(editor.snapshot(), before);
-        editor
-            .save_route(Some(route), "新しい路線名".into(), a, vec![track])
-            .unwrap();
-        editor
-            .add_station("新駅".into(), 34.7025, 135.4959)
-            .unwrap();
-        editor.save(&path).unwrap();
-        assert_eq!(editor.snapshot().services, services);
-        assert_eq!(WorldEditor::new().load(&path).unwrap().services, services);
+        assert_eq!(e.snapshot(), before);
+        e.save_planned_route(
+            Some(route),
+            "新名".into(),
+            s[0],
+            vec![span(a, s[0], s[2])],
+            vec![],
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("w.json");
+        e.save(&path).unwrap();
+        let loaded = WorldEditor::new().load(&path).unwrap();
+        assert_eq!(loaded.services, services.services);
+        assert_eq!(loaded.service_paths, services.service_paths);
     }
     #[test]
     fn service_editing_preserves_identity_and_repeated_stop_occurrences() {
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.67, 139.71)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.68, 139.75)
-            .unwrap()
-            .stations[1]
-            .id;
-        let track = editor.add_track(a, b).unwrap().tracks[0].id;
-        let created = editor
-            .save_service(
-                None,
-                "  循環  ".into(),
-                a,
-                vec![track, track],
-                vec![0, 1, 2],
+        let (mut e, a, s) = alignment_fixture();
+        let created = create_test_service(
+            &mut e,
+            s[0],
+            vec![
+                span(a, s[0], s[1]),
+                span(a, s[1], s[0]),
+                span(a, s[0], s[1]),
+            ],
+        );
+        let id = created.services[0].id;
+        let stops = created.service_paths[0].stops.clone();
+        let edited = e
+            .update_service_path(
+                id,
+                "改名".into(),
+                vec![stops[0].clone(), stops[2].clone(), stops[3].clone()],
             )
             .unwrap();
-        let id = created.services[0].id;
-        assert_eq!(created.services[0].name, "循環");
-        let edited = editor
-            .save_service(Some(id), "B通過".into(), a, vec![track, track], vec![0, 2])
-            .unwrap();
         assert_eq!(edited.services[0].id, id);
-        assert_eq!(edited.services[0].stops, vec![0, 2]);
+        assert_eq!(edited.service_paths[0].legs, created.service_paths[0].legs);
         assert_eq!(edited.next_id, created.next_id);
-        assert_eq!(edited.stations, created.stations);
-        assert_eq!(edited.tracks, created.tracks);
-        assert_eq!(edited.routes, created.routes);
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("service-edit.json");
-        editor.save(&path).unwrap();
-        assert_eq!(WorldEditor::new().load(&path).unwrap(), edited);
+        assert_eq!(edited.service_paths[0].stops.len(), 3);
     }
     #[test]
     fn invalid_service_edits_leave_world_and_allocator_unchanged() {
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.67, 139.71)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.68, 139.75)
-            .unwrap()
-            .stations[1]
-            .id;
-        let track = editor.add_track(a, b).unwrap().tracks[0].id;
-        let before = editor.snapshot();
-        for (name, tracks, stops) in [
-            (" ".to_owned(), vec![track], vec![0, 1]),
-            ("A".repeat(81), vec![track], vec![0, 1]),
-            ("empty".into(), vec![], vec![0]),
-            ("bad-track".into(), vec![TrackId(999)], vec![0, 1]),
-            ("missing-end".into(), vec![track], vec![0]),
-            ("unsorted".into(), vec![track], vec![1, 0]),
-        ] {
-            assert!(editor.save_service(None, name, a, tracks, stops).is_err());
-            assert_eq!(editor.snapshot(), before);
-        }
-        assert!(editor
-            .save_service(
-                Some(ServiceId(999)),
-                "unknown".into(),
-                a,
-                vec![track],
-                vec![0, 1]
+        let (mut e, a, s) = alignment_fixture();
+        let created = create_test_service(&mut e, s[0], vec![span(a, s[0], s[2])]);
+        let id = created.services[0].id;
+        assert!(e
+            .update_service_path(id, " ".into(), created.service_paths[0].stops.clone())
+            .is_err());
+        assert!(e.update_service_path(id, "S".into(), vec![]).is_err());
+        assert!(e
+            .update_service_path(
+                ServiceId(999),
+                "S".into(),
+                created.service_paths[0].stops.clone()
             )
             .is_err());
-        assert_eq!(editor.snapshot(), before);
-        let created = editor
-            .save_service(None, "valid".into(), a, vec![track], vec![0, 1])
-            .unwrap();
-        assert!(editor
-            .save_service(
-                Some(created.services[0].id),
-                "bad".into(),
-                a,
-                vec![track],
-                vec![0, 2]
-            )
-            .is_err());
-        assert_eq!(editor.snapshot(), created);
+        assert_eq!(e.snapshot(), created);
     }
     #[test]
     fn station_rename_and_unreferenced_deletion_preserve_ids_and_roundtrip() {
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.67, 139.71)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.68, 139.75)
-            .unwrap()
-            .stations[1]
-            .id;
-        let track = editor.add_track(a, b).unwrap().tracks[0].id;
-        let before = editor.snapshot();
-        let renamed = editor.rename_station(a, "  中央  ".into()).unwrap();
-        assert_eq!(renamed.stations[0].id, a);
-        assert_eq!(renamed.stations[0].name, "中央");
-        assert_eq!(renamed.stations[0].latitude, before.stations[0].latitude);
-        assert_eq!(renamed.next_id, before.next_id);
-        assert_eq!(renamed.tracks, before.tracks);
-        editor.delete_track(track).unwrap();
-        editor.delete_station(b).unwrap();
-        let deleted = editor.snapshot();
-        assert_eq!(deleted.next_id, before.next_id);
-        assert_eq!(deleted.stations.len(), 1);
-        assert!(deleted.tracks.is_empty());
+        let (mut e, _, s) = alignment_fixture();
+        let original = e.snapshot();
+        let renamed = e.rename_station(s[0], "改名".into()).unwrap();
+        assert_eq!(renamed.stations[0].id, s[0]);
+        assert_eq!(renamed.next_id, original.next_id);
+        let deleted = e.delete_station(s[2]).unwrap();
+        assert!(!deleted.stations.iter().any(|station| station.id == s[2]));
+        assert_eq!(deleted.alignments, original.alignments);
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("edited.json");
-        editor.save(&path).unwrap();
-        let mut restored = WorldEditor::new();
-        assert_eq!(restored.load(&path).unwrap(), deleted);
-        let created = restored.add_station("new".into(), 35.68, 139.78).unwrap();
-        assert!(created.stations[1].id.0 > track.0);
+        let path = dir.path().join("s.json");
+        e.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), deleted);
     }
     #[test]
     fn referenced_deletions_and_invalid_station_edits_are_atomic() {
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.67, 139.71)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.68, 139.75)
-            .unwrap()
-            .stations[1]
-            .id;
-        let track = editor.add_track(a, b).unwrap().tracks[0].id;
-        let before = editor.snapshot();
-        for name in [" ".to_owned(), "A".repeat(81)] {
-            assert!(editor.rename_station(a, name).is_err());
-        }
-        assert!(editor
-            .rename_station(StationId(999), "Missing".into())
-            .is_err());
-        assert!(editor.delete_station(a).is_err());
-        assert!(editor.delete_station(StationId(999)).is_err());
-        assert!(editor.delete_track(TrackId(999)).is_err());
-        assert_eq!(editor.snapshot(), before);
-        editor
-            .save_route(None, "Route".into(), a, vec![track])
+        let (mut e, a, s) = alignment_fixture();
+        let before = e.snapshot();
+        assert!(e.rename_station(s[0], " ".into()).is_err());
+        assert!(e.delete_station(StationId(999)).is_err());
+        assert_eq!(e.snapshot(), before);
+        e.save_planned_route(None, "R".into(), s[0], vec![span(a, s[0], s[2])], vec![])
             .unwrap();
-        let with_route = editor.snapshot();
-        assert!(editor.delete_track(track).is_err());
-        assert_eq!(editor.snapshot(), with_route);
-        // Independently verify a service reference also protects a track.
-        let mut candidate = editor.snapshot();
-        candidate.routes.clear();
-        editor.world.replace(candidate).unwrap();
-        editor
-            .save_service(None, "Service".into(), a, vec![track, track], vec![0, 2])
-            .unwrap();
-        let with_service = editor.snapshot();
-        assert!(editor.delete_track(track).is_err());
-        assert!(editor.delete_station(b).is_err());
-        assert_eq!(editor.snapshot(), with_service);
-        let renamed = editor.rename_station(a, "Renamed".into()).unwrap();
-        assert_eq!(renamed.services, with_service.services);
+        let route = e.snapshot();
+        assert!(e.delete_alignment(a).is_err());
+        assert!(e.delete_station(s[1]).is_err());
+        assert_eq!(e.snapshot(), route);
+        let mut no_route = e.snapshot();
+        no_route.routes.clear();
+        no_route.route_paths.clear();
+        e.world.replace(no_route).unwrap();
+        let service = create_test_service(&mut e, s[0], vec![span(a, s[0], s[2])]);
+        assert!(e.delete_alignment(a).is_err());
+        assert!(e.delete_station(s[1]).is_err());
+        assert_eq!(e.snapshot(), service);
     }
     #[test]
     fn fresh_session_cannot_overwrite_existing_save() {
@@ -2753,9 +2420,6 @@ mod tests {
         );
         assert_eq!(created.routes[0].name, "R");
         assert!(editor
-            .save_route(Some(id), "Bad".into(), stations[0], vec![])
-            .is_err());
-        assert!(editor
             .save_planned_route(
                 Some(id),
                 "Bad".into(),
@@ -2787,193 +2451,143 @@ mod tests {
     #[test]
     fn explicit_bindings_allow_unrelated_routes_and_protect_assigned_routes() {
         use rosenfu_core::world::ServiceRouteBindingKind;
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.0, 139.0)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.0, 139.1)
-            .unwrap()
-            .stations[1]
-            .id;
-        let c = editor
-            .add_station("C".into(), 35.0, 139.2)
-            .unwrap()
-            .stations[2]
-            .id;
-        let ab = editor.add_track(a, b).unwrap().tracks[0].id;
-        let bc = editor.add_track(b, c).unwrap().tracks[1].id;
-        let route = editor
-            .save_route(None, "R".into(), a, vec![ab])
+        let (mut e, a, s) = alignment_fixture();
+        let r = e
+            .save_planned_route(None, "R".into(), s[0], vec![span(a, s[0], s[1])], vec![])
             .unwrap()
             .routes[0]
             .id;
-        let other = editor
-            .save_route(None, "Other".into(), a, vec![ab])
+        let other = e
+            .save_planned_route(
+                None,
+                "Other".into(),
+                s[0],
+                vec![span(a, s[0], s[1])],
+                vec![],
+            )
             .unwrap()
             .routes[1]
             .id;
-        let saved = editor
-            .save_service_with_source_route(None, "S".into(), a, vec![ab], vec![0, 1], Some(route))
+        let segments = vec![span(a, s[0], s[1])];
+        let stops = e
+            .preview_service_path(s[0], segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect();
+        let saved = e
+            .create_service_path_with_source_route("S".into(), s[0], segments, stops, Some(r))
             .unwrap();
         let id = saved.services[0].id;
-        editor
-            .save_route(Some(other), "Other".into(), b, vec![bc])
-            .unwrap();
-        let before = editor.snapshot();
-        assert!(editor
-            .save_route(Some(route), "Changed".into(), b, vec![bc])
-            .is_err());
-        assert_eq!(editor.snapshot(), before);
-        assert!(editor
-            .save_service_with_source_route(
-                None,
-                "Bad".into(),
-                b,
-                vec![bc],
-                vec![0, 1],
-                Some(route)
+        e.save_planned_route(
+            Some(other),
+            "Other".into(),
+            s[1],
+            vec![span(a, s[1], s[2])],
+            vec![],
+        )
+        .unwrap();
+        let before = e.snapshot();
+        assert!(e
+            .save_planned_route(
+                Some(r),
+                "Changed".into(),
+                s[1],
+                vec![span(a, s[1], s[2])],
+                vec![]
             )
             .is_err());
-        assert_eq!(editor.snapshot(), before);
-        editor
-            .set_service_route_binding(id, ServiceRouteBindingKind::Independent)
+        assert_eq!(e.snapshot(), before);
+        e.set_service_route_binding(id, ServiceRouteBindingKind::Independent)
             .unwrap();
-        editor
-            .save_route(Some(route), "Changed".into(), b, vec![bc])
-            .unwrap();
-        assert_eq!(editor.snapshot().services, before.services);
+        e.save_planned_route(
+            Some(r),
+            "Changed".into(),
+            s[1],
+            vec![span(a, s[1], s[2])],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(e.snapshot().services, before.services);
+        assert_eq!(e.snapshot().service_paths, before.service_paths);
     }
     #[test]
     fn route_path_edits_conservatively_protect_existing_services_atomically() {
-        use rosenfu_core::world::RouteSegment;
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.0, 139.0)
+        let (mut e, a, s) = alignment_fixture();
+        let r = e
+            .save_planned_route(None, "R".into(), s[0], vec![span(a, s[0], s[1])], vec![])
             .unwrap()
-            .stations[0]
+            .routes[0]
             .id;
-        let b = editor
-            .add_station("B".into(), 35.0, 139.1)
-            .unwrap()
-            .stations[1]
-            .id;
-        let c = editor
-            .add_station("C".into(), 35.0, 139.2)
-            .unwrap()
-            .stations[2]
-            .id;
-        let ab = editor.add_track(a, b).unwrap().tracks[0].id;
-        let bc = editor.add_track(b, c).unwrap().tracks[1].id;
-        let initial = editor.save_route(None, "R".into(), a, vec![ab]).unwrap();
-        let route = initial.routes[0].id;
-        // No services: editing the route remains supported.
-        editor
-            .save_route(Some(route), "R".into(), a, vec![ab, bc])
+        e.save_planned_route(Some(r), "R".into(), s[0], vec![span(a, s[0], s[2])], vec![])
             .unwrap();
-        editor
-            .save_service(None, "S".into(), a, vec![ab], vec![0, 1])
-            .unwrap();
-        let before = editor.snapshot();
-        assert!(editor
-            .save_route(Some(route), "Changed".into(), a, vec![ab])
-            .unwrap_err()
-            .contains("未確認"));
-        assert_eq!(editor.snapshot(), before);
-        assert!(editor
+        let before = create_test_service(&mut e, s[0], vec![span(a, s[0], s[1])]);
+        assert!(e
             .save_planned_route(
-                Some(route),
+                Some(r),
                 "Changed".into(),
-                a,
-                vec![RouteSegment::Track { track_id: ab }],
+                s[0],
+                vec![span(a, s[0], s[1])],
                 vec![]
             )
             .unwrap_err()
             .contains("未確認"));
-        assert_eq!(editor.snapshot(), before);
-        // Equivalent legacy -> explicit representation and rename are safe.
-        let renamed = editor
+        assert_eq!(e.snapshot(), before);
+        let renamed = e
             .save_planned_route(
-                Some(route),
+                Some(r),
                 "Renamed".into(),
-                a,
-                vec![
-                    RouteSegment::Track { track_id: ab },
-                    RouteSegment::Track { track_id: bc },
-                ],
+                s[0],
+                vec![span(a, s[0], s[2])],
                 vec![],
             )
             .unwrap();
         assert_eq!(renamed.services, before.services);
         assert_eq!(renamed.service_paths, before.service_paths);
-        assert_eq!(renamed.routes[0].name, "Renamed");
     }
     #[test]
-    fn planned_track_routes_guard_references_without_changing_services() {
-        use rosenfu_core::world::RouteSegment;
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.0, 139.0)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.0, 139.1)
-            .unwrap()
-            .stations[1]
-            .id;
-        let t = editor.add_track(a, b).unwrap().tracks[0].id;
-        editor
-            .save_service(None, "S".into(), a, vec![t], vec![0, 1])
+    fn alignment_routes_guard_references_without_changing_services() {
+        let (mut e, a, s) = alignment_fixture();
+        let services = create_test_service(&mut e, s[0], vec![span(a, s[0], s[2])]);
+        let saved = e
+            .save_planned_route(None, "R".into(), s[0], vec![span(a, s[0], s[2])], vec![])
             .unwrap();
-        let services = editor.snapshot().services;
-        let saved = editor
-            .save_planned_route(
-                None,
-                "R".into(),
-                a,
-                vec![RouteSegment::Track { track_id: t }],
-                vec![],
-            )
-            .unwrap();
-        assert_eq!(saved.services, services);
-        // Remove service so the sidecar is the only Track reference.
+        assert_eq!(saved.services, services.services);
+        assert_eq!(saved.service_paths, services.service_paths);
         let mut only_route = saved;
         only_route.services.clear();
-        editor.world.replace(only_route).unwrap();
-        let before = editor.snapshot();
-        assert!(editor.delete_track(t).is_err());
-        assert_eq!(editor.snapshot(), before);
+        only_route.service_paths.clear();
+        e.world.replace(only_route).unwrap();
+        let before = e.snapshot();
+        assert!(e.delete_alignment(a).is_err());
+        assert_eq!(e.snapshot(), before);
     }
     #[test]
     fn route_to_service_preview_does_not_save_or_choose_stops() {
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .add_station("A".into(), 35.0, 139.0)
-            .unwrap()
-            .stations[0]
-            .id;
-        let b = editor
-            .add_station("B".into(), 35.0, 139.1)
-            .unwrap()
-            .stations[1]
-            .id;
-        let track = editor.add_track(a, b).unwrap().tracks[0].id;
-        let world = editor
-            .save_route(None, "Route".into(), a, vec![track])
+        let (mut e, a, s) = alignment_fixture();
+        e.save_planned_route(
+            None,
+            "R".into(),
+            s[0],
+            vec![span(a, s[0], s[2])],
+            vec![s[1]],
+        )
+        .unwrap();
+        let before = e.snapshot();
+        let preview = e
+            .preview_service_path(s[2], vec![span(a, s[2], s[1])])
             .unwrap();
-        let preview = editor
-            .preview_service_from_route(world.routes[0].id, 1, 0)
-            .unwrap();
-        assert_eq!(preview.start, b);
-        assert_eq!(preview.tracks, vec![track]);
+        assert_eq!(
+            preview
+                .occurrences
+                .iter()
+                .map(|o| o.station_id)
+                .collect::<Vec<_>>(),
+            vec![s[2], s[1]]
+        );
         assert!(preview.requires_stop_selection);
-        assert!(editor
-            .preview_service_from_route(world.routes[0].id, 0, 99)
-            .is_err());
-        assert_eq!(editor.snapshot(), world);
+        assert_eq!(e.snapshot(), before);
     }
     #[test]
     fn new_service_paths_reject_old_edit_and_deletion_and_roundtrip() {
@@ -3028,15 +2642,6 @@ mod tests {
         let created = editor
             .create_service_path("New".into(), stations[0], segments, stops.clone())
             .unwrap();
-        assert!(editor
-            .save_service(
-                Some(created.services[0].id),
-                "Bad".into(),
-                stations[0],
-                vec![],
-                vec![]
-            )
-            .is_err());
         assert!(editor.delete_station(stations[1]).is_err());
         assert!(editor.delete_station(stations[2]).is_err());
         assert_eq!(editor.snapshot(), created);
@@ -3049,45 +2654,15 @@ mod tests {
         let path = dir.path().join("new-path.json");
         editor.save(&path).unwrap();
         assert_eq!(WorldEditor::new().load(&path).unwrap(), editor.snapshot());
-        // A physical Track may be referenced solely by a ServicePath.
-        let track = editor.add_track(stations[0], stations[2]).unwrap().tracks[0].id;
-        let segments = vec![RouteSegment::Track { track_id: track }];
-        let stops = editor
-            .preview_service_path(stations[0], segments.clone())
-            .unwrap()
-            .occurrences
-            .into_iter()
-            .map(|o| o.reference)
-            .collect();
-        editor
-            .create_service_path("Track".into(), stations[0], segments, stops)
-            .unwrap();
         let before = editor.snapshot();
-        assert!(editor.delete_track(track).is_err());
+        assert!(editor.delete_alignment(a).is_err());
         assert_eq!(editor.snapshot(), before);
     }
+
     #[test]
     fn saved_path_editor_preserves_ids_and_roundtrips_stop_changes() {
-        use rosenfu_core::world::RouteSegment;
-        let mut editor = WorldEditor::new();
-        let a = editor
-            .world
-            .add_station(editor.company, "A".into(), 35.0, 139.0)
-            .unwrap();
-        let b = editor
-            .world
-            .add_station(editor.company, "B".into(), 35.0, 139.1)
-            .unwrap();
-        let c = editor
-            .world
-            .add_station(editor.company, "C".into(), 35.0, 139.2)
-            .unwrap();
-        let ab = editor.world.add_track(editor.company, a, b).unwrap();
-        let bc = editor.world.add_track(editor.company, b, c).unwrap();
-        let segments = vec![
-            RouteSegment::Track { track_id: ab },
-            RouteSegment::Track { track_id: bc },
-        ];
+        let (mut editor, alignment, [a, b, c]) = alignment_fixture();
+        let segments = vec![span(alignment, a, b), span(alignment, b, c)];
         let stops: Vec<_> = editor
             .preview_service_path(a, segments.clone())
             .unwrap()
@@ -3126,10 +2701,7 @@ mod tests {
             .update_service_path(id, "Local".into(), stops)
             .unwrap();
         assert_eq!(editor.snapshot(), created);
-        let reverse = vec![
-            RouteSegment::Track { track_id: bc },
-            RouteSegment::Track { track_id: ab },
-        ];
+        let reverse = vec![span(alignment, c, b), span(alignment, b, a)];
         let expected = created.service_paths[0].clone();
         let preview = editor
             .preview_service_path_replacement(id, c, reverse.clone())
