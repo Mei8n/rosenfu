@@ -2,8 +2,6 @@ name: National road pack generator
 on:
   pull_request:
     paths: ['scripts/road-pack/**', '.github/workflows/national-road-pack.yml']
-  push:
-    branches: [feat/national-road-pack-crossings]
 permissions:
   contents: read
 jobs:
