@@ -280,6 +280,36 @@ impl World {
         })
         .map(ServiceId)
     }
+    /// Edit only a saved path's label and stop policy. Physical geometry, leg keys,
+    /// service identity, and the allocator are never changed by this operation.
+    pub fn update_service_path(
+        &mut self,
+        owner: CompanyId,
+        id: ServiceId,
+        name: String,
+        stops: Vec<StationOccurrenceRef>,
+    ) -> Result<(), WorldError> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 80 {
+            return Err(WorldError::EmptyName("service (1–80 characters)"));
+        }
+        let mut candidate = self.data.clone();
+        let service = candidate
+            .services
+            .iter_mut()
+            .find(|s| s.id == id && s.owner == owner)
+            .ok_or(WorldError::MissingReference("owned service"))?;
+        let path = candidate
+            .service_paths
+            .iter_mut()
+            .find(|p| p.service_id == id)
+            .ok_or(WorldError::InvalidServicePath)?;
+        service.name = name.to_owned();
+        path.stops = stops;
+        candidate.validate()?;
+        self.data = candidate;
+        Ok(())
+    }
     pub fn service_path_occurrences(
         &self,
         id: ServiceId,

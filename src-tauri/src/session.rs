@@ -130,6 +130,21 @@ impl WorldEditor {
         *self = candidate;
         Ok(self.snapshot())
     }
+    pub fn update_service_path(
+        &mut self,
+        service_id: ServiceId,
+        name: String,
+        stops: Vec<rosenfu_core::world::StationOccurrenceRef>,
+    ) -> Result<WorldDraft, String> {
+        let mut candidate = self.clone();
+        candidate
+            .world
+            .update_service_path(candidate.company, service_id, name, stops)
+            .map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        *self = candidate;
+        Ok(self.snapshot())
+    }
     fn create_service_path_unchecked(
         &mut self,
         name: String,
@@ -2688,6 +2703,67 @@ mod tests {
         let before = editor.snapshot();
         assert!(editor.delete_track(track).is_err());
         assert_eq!(editor.snapshot(), before);
+    }
+    #[test]
+    fn saved_path_editor_preserves_ids_and_roundtrips_stop_changes() {
+        use rosenfu_core::world::RouteSegment;
+        let mut editor = WorldEditor::new();
+        let a = editor
+            .world
+            .add_station(editor.company, "A".into(), 35.0, 139.0)
+            .unwrap();
+        let b = editor
+            .world
+            .add_station(editor.company, "B".into(), 35.0, 139.1)
+            .unwrap();
+        let c = editor
+            .world
+            .add_station(editor.company, "C".into(), 35.0, 139.2)
+            .unwrap();
+        let ab = editor.world.add_track(editor.company, a, b).unwrap();
+        let bc = editor.world.add_track(editor.company, b, c).unwrap();
+        let segments = vec![
+            RouteSegment::Track { track_id: ab },
+            RouteSegment::Track { track_id: bc },
+        ];
+        let stops: Vec<_> = editor
+            .preview_service_path(a, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect();
+        let created = editor
+            .create_service_path("Local".into(), a, segments, stops.clone())
+            .unwrap();
+        let id = created.services[0].id;
+        let updated = editor
+            .update_service_path(
+                id,
+                "Express".into(),
+                vec![stops[0].clone(), stops[2].clone()],
+            )
+            .unwrap();
+        assert_eq!(updated.services[0].id, id);
+        assert_eq!(updated.services[0].start, a);
+        assert_eq!(updated.service_paths[0].legs, created.service_paths[0].legs);
+        assert_eq!(
+            updated.service_paths[0].next_leg_key,
+            created.service_paths[0].next_leg_key
+        );
+        assert_eq!(updated.next_id, created.next_id);
+        assert!(editor
+            .update_service_path(id, "Invalid".into(), vec![])
+            .is_err());
+        assert_eq!(editor.snapshot(), updated);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edited-service.json");
+        editor.save(&path).unwrap();
+        assert_eq!(WorldEditor::new().load(&path).unwrap(), updated);
+        editor
+            .update_service_path(id, "Local".into(), stops)
+            .unwrap();
+        assert_eq!(editor.snapshot(), created);
     }
     #[test]
     fn reference_geometry_and_provenance_are_atomic_and_roundtrip() {
