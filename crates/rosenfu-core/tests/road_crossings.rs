@@ -422,3 +422,32 @@ fn unverified_polygon_never_certifies_coverage() {
     value.as_object_mut().unwrap().remove("coverage_verified");
     assert!(serde_json::from_value::<RoadSnapshot>(value).is_err());
 }
+
+#[test]
+fn broadphase_preserves_boundary_crossings_and_advisory_status() {
+    let (w, _) = world();
+    let alignment = &w.snapshot().alignments[0];
+    let mut s = snapshot();
+    // Zero-width road bounding box and an intersection on the coverage edge.
+    s.road_coverage[0].west = 139.;
+    let expected = assessment(alignment, s.clone());
+    assert_eq!(expected.crossings.len(), 1);
+    assert!(!expected.roads_ready);
+    for i in 0..100 {
+        let mut distant = road();
+        distant.id = format!("far/{i}");
+        distant.points = vec![point(0.02, 0.02), point(0.03, 0.03)];
+        distant.layer = Some("unknown".into());
+        s.roads.push(distant);
+    }
+    assert_eq!(assessment(alignment, s.clone()), expected);
+    // Nearby unknown structure stays unverified, not silently filtered out.
+    s.roads[0].layer = Some("unknown".into());
+    let unknown = assessment(alignment, s.clone());
+    assert!(unknown.unknown_road_height);
+    assert!(unknown.crossings.is_empty());
+    s.roads[0].layer = Some("1".into());
+    let elevated = assessment(alignment, s);
+    assert!(!elevated.unknown_road_height);
+    assert!(elevated.crossings.is_empty());
+}

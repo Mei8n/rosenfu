@@ -296,6 +296,32 @@ fn crosses_road_at(
     positive && negative
 }
 
+// Broad phase only: never use geometry bounds as source coverage. The padding
+// conservatively includes intersection()'s 1e-9 parameter tolerance even for
+// worldwide coordinate spans, as well as floating-point rounding at boundaries.
+fn geometry_bounds(points: &[GeoPoint]) -> CoverageBounds {
+    let mut bounds = CoverageBounds {
+        west: f64::INFINITY,
+        south: f64::INFINITY,
+        east: f64::NEG_INFINITY,
+        north: f64::NEG_INFINITY,
+    };
+    for point in points {
+        bounds.west = bounds.west.min(point.longitude);
+        bounds.east = bounds.east.max(point.longitude);
+        bounds.south = bounds.south.min(point.latitude);
+        bounds.north = bounds.north.max(point.latitude);
+    }
+    bounds
+}
+fn overlaps(a: CoverageBounds, b: CoverageBounds) -> bool {
+    const PAD: f64 = 1e-6;
+    a.west <= b.east + PAD
+        && b.west <= a.east + PAD
+        && a.south <= b.north + PAD
+        && b.south <= a.north + PAD
+}
+
 /// Derive crossings from current physical height at each intersection. Never cache
 /// these records in a save: alignment edits, removals and Undo change them immediately.
 pub fn assess_road_crossings(alignment: &Alignment, snapshots: &[RoadSnapshot]) -> RoadAssessment {
@@ -329,18 +355,33 @@ fn assess_connected_road_crossings(
     if alignment.points.len() < 2 || !total.is_finite() || total <= 0. {
         return result;
     }
+    let alignment_bounds = geometry_bounds(&alignment.points);
+    // Keep the full roads list for source-way endpoint continuation. Only the
+    // expensive rail/road intersection scan uses these local candidates.
+    let candidates: Vec<_> = roads
+        .iter()
+        .filter_map(|&(road, scope)| {
+            let height = road_height(road);
+            let bounds = geometry_bounds(&road.points);
+            (height != RoadHeight::Separated && overlaps(alignment_bounds, bounds))
+                .then_some((road, scope, height, bounds))
+        })
+        .collect();
     result.roads_ready = true;
     let mut cursor = 0.;
     for (i, pair) in alignment.points.windows(2).enumerate() {
         let (a, b) = (pair[0], pair[1]);
         let length = super::alignment::distance(a, b);
         result.roads_ready &= coverage(a, b, &bounds);
-        for &(road, scope) in &roads {
-            let height = road_height(road);
-            if height == RoadHeight::Separated {
+        let segment_bounds = geometry_bounds(pair);
+        for &(road, scope, height, road_bounds) in &candidates {
+            if !overlaps(segment_bounds, road_bounds) {
                 continue;
             }
             for (j, edge) in road.points.windows(2).enumerate() {
+                if !overlaps(segment_bounds, geometry_bounds(edge)) {
+                    continue;
+                }
                 let Some((t, u)) = intersection(a, b, edge[0], edge[1]) else {
                     continue;
                 };

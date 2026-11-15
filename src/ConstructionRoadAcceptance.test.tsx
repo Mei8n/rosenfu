@@ -33,14 +33,14 @@ async function start(snapshot:unknown=empty,draw=true){
 test('road following OFF still loads construction roads and atomically attaches immutable facts',async()=>{
  provider.load.mockImplementation(async bounds=>parseRoadResponse({osm3s:{timestamp_osm_base:'2026-11-14T21:20:41Z'},elements:[{type:'way',id:'1',nodes:['1','2'],geometry:[{lat:35.67,lon:139.75},{lat:35.68,lon:139.75}],tags:{highway:'service'}}]},bounds,0));
  const map=await start();
- await waitFor(()=>expect(screen.getByRole('status',{name:'踏切・道路確認状態'}).textContent).toContain('出典の範囲保証は未検証'));
+ await waitFor(()=>expect(screen.getByRole('status',{name:'踏切・道路確認状態'}).querySelector('[title]')?.getAttribute('title')).toContain('出典の範囲保証は未検証'));
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan_with_roads',expect.objectContaining({roads:[expect.objectContaining({coverage_verified:false,roads:expect.any(Array)})]})));
  await waitFor(()=>expect(map.querySelectorAll('[data-crossing-alignment]')).toHaveLength(1));
 });
 test('missing road data remains advisory and ordinary construction still succeeds',async()=>{
  provider.load.mockRejectedValue(Error('outside Tokyo cells'));
- await start();await waitFor(()=>expect(screen.getByRole('status',{name:'踏切・道路確認状態'}).textContent).toContain('outside Tokyo cells'));
+ await start();await waitFor(()=>expect(screen.getByRole('status',{name:'踏切・道路確認状態'}).querySelector('[title]')?.getAttribute('title')).toContain('outside Tokyo cells'));
  const button=screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement;expect(button.disabled).toBe(false);fireEvent.click(button);
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_alignment',expect.any(Object)));
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_plan_with_environment')).toBe(false);
@@ -53,7 +53,7 @@ test('junction Undo and Redo use exactly the same road snapshot payload',async()
  const before={...empty,next_id:'4',alignments:[source]};
  const map=await start(before,false);
  fireEvent.click(map,{clientX:200,clientY:150});fireEvent.click(map,{clientX:300,clientY:170});fireEvent.click(map,{clientX:300,clientY:170});
- await waitFor(()=>expect(screen.getByRole('status',{name:'踏切・道路確認状態'}).textContent).toContain('出典の範囲保証は未検証'));
+ await waitFor(()=>expect(screen.getByRole('status',{name:'踏切・道路確認状態'}).querySelector('[title]')?.getAttribute('title')).toContain('出典の範囲保証は未検証'));
  const original=vi.mocked(invoke).getMockImplementation()!;
  vi.mocked(invoke).mockImplementation(async(command,args)=>{
   if(command==='undo_alignment_deletion')return before;
