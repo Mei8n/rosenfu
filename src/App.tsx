@@ -274,9 +274,29 @@ export function App() {
   const setContrast=(value:number)=>displaySettings.update({contrast:value});
   const setPanelWidth=(value:number)=>displaySettings.update({panelWidth:value});
   const setTextSize=(value:number)=>displaySettings.update({textSize:value});
-  function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} if (!draftPoints.length) return; if(draftFinished&&draftPoints.length===2){undoLastSegment();return;} setDraftRedoDestination(draftDestination??draftRedoDestination);setDraftDestination(undefined);setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
+  const pendingPathHistory=useRef<{id:number;redo:boolean}|null>(null);
+  function adjacentHistoryPath(redo:boolean){
+    return [...parkedPaths].reverse().find(path=>path.planId===activePlanId&&!path.reference&&(
+      redo ? path.redo.length>0 || !!parkedAnchorHistory.current.get(path.id)?.redo.length
+        : path.points.length>0 || !!parkedAnchorHistory.current.get(path.id)?.undo.length
+    ));
+  }
+  function movePathHistory(redo:boolean){
+    const target=adjacentHistoryPath(redo);if(!target)return;
+    pendingPathHistory.current={id:target.id,redo};
+    selectPath(target.id,false);
+  }
+  // Selection restores that path's own history first. Apply the key only after
+  // React has installed the selected path, never against the previous draft.
+  useEffect(()=>{
+    const pending=pendingPathHistory.current;
+    if(!pending||pending.id!==activePathId)return;
+    pendingPathHistory.current=null;
+    if(pending.redo)redoPoint();else undoPoint();
+  },[activePathId]);
+  function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} if (!draftPoints.length) {movePathHistory(false);return;} if(draftFinished&&draftPoints.length===2){undoLastSegment();return;} setDraftRedoDestination(draftDestination??draftRedoDestination);setDraftDestination(undefined);setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
   function redoPoint() {
-    if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) return;
+    if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) {movePathHistory(true);return;}
     const count=draftFinished&&!draftPoints.length&&redoPoints.length>=2?2:1;
     const after={points:[...draftPoints,...redoPoints.slice(-count).reverse()],geometry:draftEditedGeometry,redo:redoPoints.slice(0,-count),destination:redoPoints.length===count?draftRedoDestination:draftDestination,redoDestination:redoPoints.length===count?undefined:draftRedoDestination};
     setAnchorUndo(items=>[...items,{kind:"point" as const,id:activePathId,before:{points:draftPoints,geometry:draftEditedGeometry,redo:redoPoints,destination:draftDestination,redoDestination:draftRedoDestination},after}].slice(-50));
@@ -1179,7 +1199,7 @@ export function App() {
         if(activeTool==="delete"){if(event.shiftKey)redoTrackDelete();else undoTrackDelete();return;}
         if(activeTool==="tracks" && (event.shiftKey?anchorRedo.length:anchorUndo.length)){undoAnchor(event.shiftKey);return;}
         if(referenceCopy.active && activeTool==="tracks"){if(event.shiftKey)referenceCopy.redoPick();else referenceCopy.undo();}
-        else if(activeTool==="tracks" && (draftPoints.length || redoPoints.length)){if(event.shiftKey)redoPoint();else undoPoint();}
+        else if(activeTool==="tracks" && (draftPoints.length || redoPoints.length || adjacentHistoryPath(event.shiftKey))){if(event.shiftKey)redoPoint();else undoPoint();}
         else if(event.shiftKey)redoStation();else undoStation();return;
       }
       if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
