@@ -1,3 +1,4 @@
+import {SaveSlots,type SaveSlot} from "./SaveSlots";
 import {ServiceRouteBindingEditor,type ServiceRouteBindingRecord} from "./ServiceRouteBinding";
 import {RouteDirectory} from "./RouteDirectory";
 import {PARALLEL_RANGE_M,parallelProjection,offsetTrack,parallelSection} from "./parallelTrack";
@@ -219,6 +220,16 @@ export function App() {
   const [pendingDelete, setPendingDelete] = useState<{ kind: "station"; id: string } | null>(null);
   const [dirty, setDirty] = useState(false);
   const [confirmLoad, setConfirmLoad] = useState(false);
+  const [saveSlots,setSaveSlots]=useState<SaveSlot[]>([]);
+  const [activeSlotId,setActiveSlotId]=useState<string|null>(null);
+  const [slotsReady,setSlotsReady]=useState(false);
+  const [slotsLoading,setSlotsLoading]=useState(false);
+  const [slotsError,setSlotsError]=useState("");
+  const slotGeneration=useRef(0);
+  const [slotAction,setSlotAction]=useState<{kind:"load";id:string}|{kind:"new";name:string}|null>(null);
+  const [slotDialog,setSlotDialog]=useState<"save-as"|"new"|null>(null);
+  const [slotName,setSlotName]=useState("");
+  const [slotPicker,setSlotPicker]=useState(false);
   const [loadSource,setLoadSource]=useState<"manual"|"auto">("manual");
   const [worldEpoch,setWorldEpoch]=useState(0);
   const [restoredAutosaveEpoch,setRestoredAutosaveEpoch]=useState(-1);
@@ -578,7 +589,7 @@ export function App() {
   const unapplied = saveBlocked || referenceCopy.active;
   const viewDirty=JSON.stringify(camera)!==savedViewFingerprint;
   const autosaveSnapshot=useMemo(()=>({world,constructionPlans,camera}),[world,constructionPlans,camera]);
-  const autosave=useAutosave({ready:status==="ready",dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired&&!saveReplacement,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
+  const autosave=useAutosave({ready:status==="ready"&&slotsReady&&activeSlotId!==null,dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired&&!saveReplacement,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined,compact=false){
     parkedAnchorHistory.current.clear();
@@ -1180,6 +1191,7 @@ export function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if(slotDialog||slotPicker||confirmLoad)return;
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget)return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
@@ -1283,13 +1295,52 @@ export function App() {
     setDirty(false);setStationUndo(history=>history.filter(entry=>entry.planned));setStationRedo(history=>history.filter(entry=>entry.planned));
     setNotice(referenceCopy.active?"ワールドと未着工計画を保存しました。選択中の参照候補は計画に追加するまで保存されません。":"ワールドと未着工計画を保存しました。");
   }
+  async function refreshSaveSlots(){
+    const generation=++slotGeneration.current;setSlotsLoading(true);setSlotsError("");
+    try{
+      const result=await invoke<{active_slot_id:string|null;slots:SaveSlot[]}>("list_save_slots");
+      if(!Array.isArray(result?.slots)||!(result.active_slot_id===null||typeof result.active_slot_id==="string"))throw Error("保存一覧を確認できません。");
+      if(generation!==slotGeneration.current)return;
+      setSaveSlots(result.slots);setActiveSlotId(result.active_slot_id);setSlotsReady(true);
+    }catch(error){if(generation===slotGeneration.current){setSlotsError(detail(error));setSlotsReady(false);}}
+    finally{if(generation===slotGeneration.current)setSlotsLoading(false);}
+  }
+  useEffect(()=>{if(status==="ready")void refreshSaveSlots();return()=>{slotGeneration.current++;};},[status]);
+  function openSlotPicker(){setSlotPicker(true);void refreshSaveSlots();}
+  function requestSlotAction(action:{kind:"load";id:string}|{kind:"new";name:string}){
+    if(busyRef.current)return;
+    setSlotAction(action);
+    if(dirty||plansDirty||viewDirty||unapplied){setConfirmLoad(true);return;}
+    applySlotAction(action);
+  }
+  function applySlotAction(action=slotAction){
+    if(!action)return;setConfirmLoad(false);
+    void perform(async()=>{
+      const snapshot=await invoke<World>(action.kind==="load"?"load_save_slot":"create_new_world",action.kind==="load"?{slotId:action.id}:{companyName:action.name});
+      acceptLoadedWorld(snapshot,"manual");
+      setDirty(action.kind==="new");setSlotAction(null);setSlotDialog(null);setSlotPicker(false);
+      setNotice(action.kind==="new"?"新しいワールドを作成しました。初回保存で別のセーブを作ります。":"選択したワールドを読み込みました。");
+      await refreshSaveSlots();
+    });
+  }
+  function submitSlotName(event:FormEvent){
+    event.preventDefault();if(busyRef.current||!slotName.trim())return;
+    if(slotDialog==="new"){requestSlotAction({kind:"new",name:slotName.trim()});return;}
+    if(saveBlocked)return;
+    void perform(async()=>{
+      const result=await invoke<{saved:boolean}>("save_world_as",{name:slotName.trim(),constructionPlans:persistedPlans,viewState:camera});
+      if(!result.saved)throw Error("保存結果を確認できませんでした。編集中の内容は保持しています。");
+      completeSave();setSlotDialog(null);setWorldEpoch(value=>value+1);await refreshSaveSlots();
+      setNotice("別のセーブとして保存しました。元の保存データは変更していません。");
+    });
+  }
   function save() {
     if (saveBlocked||saveReplacement) return;
     void perform(async () => {
       const result=await invoke<{saved:boolean;replacement_required?:{token:string;company_name:string}}>("save_world",{constructionPlans:persistedPlans,viewState:camera}).catch(error=>{if(detail(error).includes("save file changed since it was observed"))throw Error("保存先が読み込み時から変更されています。編集中の内容は保持しています。未保存のまま読込や終了をせず、保存先を確認してください。");throw error;});
       if(result.replacement_required){setSaveReplacement(result.replacement_required);setReplacementError("");setReplacementInvalid(false);return;}
       if(!result.saved)throw Error("保存結果を確認できませんでした。編集中の内容は保持しています。");
-      completeSave();
+      completeSave();setWorldEpoch(value=>value+1);await refreshSaveSlots();
     });
   }
   async function cancelSaveReplacement(){
@@ -1306,11 +1357,7 @@ export function App() {
     catch(error){setReplacementInvalid(true);setReplacementError("保存できませんでした。編集中の内容は保持しています。編集へ戻り、保存先を再確認してください。 "+detail(error));}
     finally{busyRef.current=false;setBusy(false);}
   }
-  function requestLoad(source:"manual"|"auto"){setLoadSource(source);if(dirty||plansDirty||unapplied)setConfirmLoad(true);else load(source);}
-  function load(source: "manual"|"auto" = loadSource) {
-    setConfirmLoad(false);
-    void perform(async () => {
-      const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_world");
+  function acceptLoadedWorld(snapshot:World,source:"manual"|"auto"){
       restoreView(snapshot.view_state);
       setRestoredAutosaveEpoch(source==="auto"?worldEpoch+1:-1);
       setWorldEpoch(value=>value+1);
@@ -1318,6 +1365,13 @@ export function App() {
       setCompanySetupRequired(false);
       clearStationHistory();
       setTrackDeleteUndo(null);setSelectedPlanPath(null);setTrackDeleteConfirm(false);setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreConstructionPlans(snapshot.construction_plans,true);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
+  }
+  function requestLoad(source:"manual"|"auto"){setSlotAction(null);setLoadSource(source);if(dirty||plansDirty||viewDirty||unapplied)setConfirmLoad(true);else load(source);}
+  function load(source: "manual"|"auto" = loadSource) {
+    setConfirmLoad(false);
+    void perform(async () => {
+      const snapshot = await invoke<World>(source==="auto"?"load_autosave":"load_world");
+      acceptLoadedWorld(snapshot,source);await refreshSaveSlots();
       setNotice(source==="auto"?"自動保存から復元しました。手動保存データは上書きしていません。必要なら保存してください。":"保存したワールドを読み込みました。");
     });
   }
@@ -1335,7 +1389,7 @@ export function App() {
       {saveReplacement && <SaveReplacementDialog companyName={saveReplacement.company_name} currentCompanyName={world?.companies[0]?.name??companyName} busy={busy} invalid={replacementInvalid} error={replacementError} onCancel={()=>void cancelSaveReplacement()} onConfirm={()=>void confirmSaveReplacement()}/> }
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
       {pendingGraphChange && <div className="banner load-confirm" role="alert"><p>参考線データを変更すると、現在の実在形状に沿う敷設・道路追従の未着工計画を破棄します。変更しますか。</p><button className="secondary" onClick={()=>setPendingGraphChange(null)}>計画に戻る</button><button disabled={!enabled} onClick={()=>{referenceCopy.clear();setGraphBundle(pendingGraphChange.bundle);setPendingGraphChange(null);}}>参考計画を破棄して変更</button></div>}
-      {confirmLoad && <div className="banner load-confirm" role="alert"><p>読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。</p><button className="secondary" disabled={busy} onClick={() => setConfirmLoad(false)}>戻る</button><button disabled={busy} onClick={()=>load()}>読込を続ける</button></div>}
+
       {pendingDelete && <div className="banner load-confirm" role="alert"><p>{pendingDelete.kind === "station" ? "駅「" + (stationsById.get(pendingDelete.id)?.name ?? pendingDelete.id) + "」"+(world?.station_groups?.some(g=>g.members.includes(pendingDelete.id))?"の選択ホーム":"") : "線路 ID " + pendingDelete.id}を削除しますか。連鎖削除は行いません。適用後は保存が必要です。</p><button className="secondary" disabled={busy} onClick={() => setPendingDelete(null)}>削除をやめる</button><button className="danger" disabled={!enabled || unapplied || !!(stationReferences(pendingDelete.id))} onClick={deleteEquipment}>削除を確定</button></div>}
       <div className="workspace">
         <section className="map-panel" aria-labelledby="map-title">
@@ -1498,7 +1552,10 @@ export function App() {
           </nav>
           <section id="workspace-panel-finance" role="tabpanel" aria-labelledby="workspace-tab-finance" hidden={mainTab!=="finance"}><h3>財務</h3><p>未実装です。収支・運賃・経費の画面は今後追加します。</p></section>
           <section id="workspace-panel-city" role="tabpanel" aria-labelledby="workspace-tab-city" hidden={mainTab!=="city"}><h3>都市</h3><p>未実装です。人口・需要・都市発展の画面は今後追加します。</p></section>
-          <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3><p>この試作は1つのローカル保存先を使います。セーブ一覧・複数スロットは未実装です。</p><button disabled={!enabled||saveBlocked} onClick={save}>ワールドを保存</button><button className="secondary" disabled={!enabled} onClick={()=>requestLoad("manual")}>ワールドを読み込む</button><h4>オートセーブ</h4><p>ワールドと未着工計画を専用ファイルに自動保存します。未適用の編集フォーム・未確定の参照候補は対象外。手動保存を上書きしません。最新1件のみ保持します。</p><p role="status">{autosave.message}</p>{autosave.permission==="blocked"&&<button className="secondary" disabled={!enabled} onClick={autosave.allowReplacement}>このワールドで自動保存を開始（以前の自動保存を置き換える）</button>}{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
+          <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3><button disabled={!enabled||saveBlocked} onClick={save}>ワールドを保存</button>
+            <SaveSlots slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy||status!=="ready"} canSave={!saveBlocked&&!companySetupRequired} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{setSlotName(companyName);setSlotDialog("save-as");}} onNew={()=>{setSlotName("");setSlotDialog("new");}}/>
+            {!activeSlotId&&<p>初回保存後に自動保存を開始します。</p>}
+            <h4>オートセーブ</h4><p>ワールドと未着工計画を専用ファイルに自動保存します。未適用の編集フォーム・未確定の参照候補は対象外。手動保存を上書きしません。最新1件のみ保持します。</p><p role="status">{autosave.message}</p>{autosave.permission==="blocked"&&<button className="secondary" disabled={!enabled} onClick={autosave.allowReplacement}>このワールドで自動保存を開始（以前の自動保存を置き換える）</button>}{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
           <section className="shared-plan" aria-label="建設計画">
             <div className="plan-heading"><label htmlFor="construction-plan-name">計画</label><input id="construction-plan-name" aria-label="計画名（任意）" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled||referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/><button type="button" className="secondary" aria-label="別の線路計画を追加" title="新しい計画" disabled={!enabled||referenceCopy.active||!(currentPaths.some(path=>path.points.length>0)||currentStations.length>0)} onClick={newIndependentPlan}>＋</button></div>
@@ -1570,7 +1627,10 @@ export function App() {
         </aside>
         {!panelCollapsed&&<PanelResizer value={panelWidth} onChange={setPanelWidth}/>}
       </div>
-      {companySetupRequired&&<CompanySetup name={companyName} onName={setCompanyName} busy={busy} error={error} errorRevision={errorRevision} onDismissError={()=>setError("")} onStart={startCompany} onLoad={()=>load("manual")} onRestore={autosave.available?()=>load("auto"):undefined}/>}
+      {companySetupRequired&&<CompanySetup name={companyName} onName={setCompanyName} busy={busy} error={error} errorRevision={errorRevision} onDismissError={()=>setError("")} onStart={startCompany} onLoad={openSlotPicker} onRestore={autosave.available?()=>load("auto"):undefined}/>}
+      {slotPicker&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label="ワールドを選択"><h2>ワールドを選択</h2><SaveSlots slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy} canSave={false} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{}} onNew={()=>{setSlotPicker(false);setSlotName("");setSlotDialog("new");}}/><button disabled={busy} onClick={()=>setSlotPicker(false)}>閉じる</button>{error&&<p role="alert">{error}</p>}</section></div>}
+      {slotDialog&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label={slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}><h2>{slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}</h2><form onSubmit={submitSlotName}><label>名前<input autoFocus maxLength={80} value={slotName} disabled={busy} onChange={event=>setSlotName(event.target.value)}/></label><button type="submit" disabled={busy||!slotName.trim()||confirmLoad}>{slotDialog==="new"?"作成":"保存"}</button><button type="button" disabled={busy} onClick={()=>{setSlotDialog(null);setSlotAction(null);setConfirmLoad(false);}}>キャンセル</button></form>{error&&<p role="alert">{error}</p>}</section></div>}
+      {confirmLoad && <div className="banner load-confirm" style={{position:"fixed",zIndex:2000,left:"20%",right:"20%",top:"20%"}} role="alert"><p>{slotAction?.kind==="new"?"新しいワールドを作成すると、現在の未保存の変更と未適用の下書きは破棄されます。保存済みのワールドは変更しません。":"読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。"}</p><button className="secondary" disabled={busy} onClick={() => {setConfirmLoad(false);setSlotAction(null);}}>戻る</button><button disabled={busy} onClick={()=>slotAction?applySlotAction():load()}>{slotAction?.kind==="new"?"変更を破棄して作成":"読込を続ける"}</button></div>}
       <footer className="app-footer"><p role="status" aria-live="polite">{busy ? "ワールドを更新しています。" : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>列車種別・ダイヤ・列車運行・旅客流動は未実装</span></footer>
     </main>
   );
