@@ -25,6 +25,7 @@ fn sample() -> (
         conversion_format_version: 1,
     };
     let provenance = AlignmentProvenanceInput {
+        network_path: vec![],
         source_key: key,
         method: ProvenanceMethod::OsmWaySliceV1,
         osm_way_id: "123".into(),
@@ -504,4 +505,66 @@ fn imported_geometry_split_retains_source_claim_and_composes_explicit_lineage() 
     assert!(World::new(serde_json::from_str(&forged_json).unwrap()).is_err());
     assert!(w.replace(forged).is_err());
     assert_eq!(w.snapshot(), &before);
+}
+
+#[test]
+fn supplier_network_path_is_not_an_osm_way_and_survives_world_validation() {
+    let (mut world, owner, mut record, mut source, points) = sample();
+    record.conversion_format_version = 2;
+    source.method = ProvenanceMethod::RailGraphRouteV1;
+    source.osm_way_id.clear();
+    source.start_segment_index = 0;
+    source.end_segment_index = 0;
+    source.start_fraction = 0.0;
+    source.end_fraction = 0.0;
+    source.network_path = vec![
+        RailGraphSpan {
+            region: "jp".into(),
+            chain_id: 17,
+            from_fraction: 0.2,
+            to_fraction: 1.0,
+        },
+        RailGraphSpan {
+            region: "jp".into(),
+            chain_id: 28,
+            from_fraction: 1.0,
+            to_fraction: 0.4,
+        },
+    ];
+    world
+        .build_alignment_from_reference(
+            owner,
+            "rail network".into(),
+            points.clone(),
+            record.clone(),
+            source.clone(),
+        )
+        .unwrap();
+    assert_eq!(World::new(world.snapshot().clone()).unwrap(), world);
+    assert_eq!(
+        world.snapshot().alignment_provenance[0].source.network_path,
+        source.network_path
+    );
+    for bad in 0..5 {
+        let mut invalid = source.clone();
+        let mut invalid_record = record.clone();
+        match bad {
+            0 => invalid.osm_way_id = "123".into(),
+            1 => invalid.network_path.clear(),
+            2 => invalid.network_path[0].from_fraction = f64::NAN,
+            3 => invalid_record.conversion_format_version = 1,
+            _ => invalid.network_path[0].chain_id = 600_000,
+        }
+        let snapshot = world.clone();
+        assert!(world
+            .build_alignment_from_reference(
+                owner,
+                "bad".into(),
+                points.clone(),
+                invalid_record,
+                invalid
+            )
+            .is_err());
+        assert_eq!(world, snapshot);
+    }
 }

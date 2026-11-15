@@ -3587,6 +3587,7 @@ mod tests {
             conversion_format_version: 1,
         };
         let provenance = AlignmentProvenanceInput {
+            network_path: vec![],
             source_key: key,
             method: ProvenanceMethod::OsmSegmentCopyV1,
             osm_way_id: "1".into(),
@@ -4481,6 +4482,7 @@ mod tests {
             conversion_format_version: 1,
         };
         let provenance = AlignmentProvenanceInput {
+            network_path: vec![],
             source_key: key,
             method: ProvenanceMethod::OsmSegmentCopyV1,
             osm_way_id: "1".into(),

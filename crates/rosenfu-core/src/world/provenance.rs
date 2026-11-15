@@ -22,6 +22,7 @@ pub struct SourceRecord {
 pub enum ProvenanceMethod {
     OsmSegmentCopyV1,
     OsmWaySliceV1,
+    RailGraphRouteV1,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +33,8 @@ pub enum ReferenceMode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlignmentProvenanceInput {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network_path: Vec<RailGraphSpan>,
     pub source_key: String,
     pub method: ProvenanceMethod,
     pub osm_way_id: String,
@@ -40,6 +43,15 @@ pub struct AlignmentProvenanceInput {
     pub start_fraction: f64,
     pub end_segment_index: u64,
     pub end_fraction: f64,
+}
+/// Versioned supplier chain identity; this is deliberately not an OSM way ID.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RailGraphSpan {
+    pub region: String,
+    pub chain_id: u32,
+    pub from_fraction: f64,
+    pub to_fraction: f64,
 }
 /// Explicit lineage for a geometric subset. The original OSM segment range is
 /// retained unchanged; we do not guess correspondence to missing raw way nodes.
@@ -149,7 +161,7 @@ impl SourceRecord {
             && self.source_date.as_ref().is_none_or(|s| safe_text(s, 64))
             && self.license == "ODbL-1.0"
             && self.attribution == "© OpenStreetMap contributors"
-            && self.conversion_format_version == 1
+            && matches!(self.conversion_format_version, 1 | 2)
     }
     fn bytes(&self) -> usize {
         self.key.len()
@@ -165,7 +177,38 @@ impl SourceRecord {
     }
 }
 impl AlignmentProvenanceInput {
+    pub(super) fn matches_source(&self, source: &SourceRecord) -> bool {
+        self.source_key == source.key
+            && source.conversion_format_version
+                == if self.method == ProvenanceMethod::RailGraphRouteV1 {
+                    2
+                } else {
+                    1
+                }
+    }
+
     pub(super) fn valid(&self) -> bool {
+        if self.method == ProvenanceMethod::RailGraphRouteV1 {
+            return self.osm_way_id.is_empty()
+                && self.mode == ReferenceMode::Rail
+                && self.start_segment_index == 0
+                && self.end_segment_index == 0
+                && self.start_fraction == 0.0
+                && self.end_fraction == 0.0
+                && (1..=256).contains(&self.network_path.len())
+                && self.network_path.iter().all(|span| {
+                    span.region == "jp"
+                        && span.chain_id < 600_000
+                        && span.from_fraction.is_finite()
+                        && span.to_fraction.is_finite()
+                        && (0.0..=1.0).contains(&span.from_fraction)
+                        && (0.0..=1.0).contains(&span.to_fraction)
+                        && span.from_fraction != span.to_fraction
+                });
+        }
+        if !self.network_path.is_empty() {
+            return false;
+        }
         let id = &self.osm_way_id;
         !id.is_empty()
             && id.len() <= 20
@@ -212,6 +255,10 @@ impl WorldDraft {
                     && p.end_point_index < a.points.len()
             }) || !keys.contains(&p.source.source_key)
                 || !p.source.valid()
+                || !self
+                    .source_records
+                    .iter()
+                    .any(|record| p.source.matches_source(record))
             {
                 return Err(WorldError::InvalidProvenance);
             }
@@ -252,7 +299,10 @@ impl WorldDraft {
                 return Err(WorldError::InvalidProvenance);
             }
             ranges.push((p.start_point_index, p.end_point_index));
-            bytes += p.source.source_key.len() + p.source.osm_way_id.len() + 256;
+            bytes += p.source.source_key.len()
+                + p.source.osm_way_id.len()
+                + 256
+                + p.source.network_path.len() * 64;
         }
         if bytes > MAX_METADATA_BYTES {
             return Err(WorldError::InvalidProvenance);
@@ -456,6 +506,10 @@ impl World {
                     &mut source.end_segment_index,
                 );
                 std::mem::swap(&mut source.start_fraction, &mut source.end_fraction);
+                source.network_path.reverse();
+                for span in &mut source.network_path {
+                    std::mem::swap(&mut span.from_fraction, &mut span.to_fraction);
+                }
                 (0, added_count)
             }
         };

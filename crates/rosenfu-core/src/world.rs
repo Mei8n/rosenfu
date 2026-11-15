@@ -590,7 +590,7 @@ pub use service_paths::{
 mod provenance;
 pub use provenance::{
     AlignmentProvenance, AlignmentProvenanceInput, ProvenanceGeometrySlice, ProvenanceMethod,
-    ReferenceMode, SourceRecord,
+    RailGraphSpan, ReferenceMode, SourceRecord,
 };
 
 mod construction_plans;

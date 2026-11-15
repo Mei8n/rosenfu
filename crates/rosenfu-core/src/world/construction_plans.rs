@@ -277,6 +277,9 @@ impl ConstructionPlans {
                     || !valid_points(&reference.points)
                     || !reference.source_record.valid()
                     || !reference.provenance.valid()
+                    || !reference
+                        .provenance
+                        .matches_source(&reference.source_record)
                     || reference.source_record.key != reference.provenance.source_key
                 {
                     return Err(invalid);
