@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import React from 'react';
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import React,{useState} from 'react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,expect,test,vi} from 'vitest';
 import {ServicePathEditor} from './ServicePathEditor';
 import {routeSection} from './serviceSection';
@@ -34,4 +34,43 @@ test('unrelated world snapshots preserve unsaved service fields and changed save
  view.rerender(<ServicePathEditor {...props} world={{...world}} path={JSON.parse(JSON.stringify(path))}/>);expect((screen.getByLabelText('保存済み系統名') as HTMLInputElement).value).toBe('編集中');expect((screen.getByLabelText('保存済み停車 2') as HTMLInputElement).checked).toBe(false);
  view.rerender(<ServicePathEditor {...props} service={{...props.service,name:'他の変更'}}/>);expect(screen.getByRole('alert').textContent).toContain('入力は保持');expect((screen.getByRole('button',{name:'保存済み系統の変更を適用'}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(screen.getByRole('button',{name:'保存済み系統の変更を取り消す'}));expect((screen.getByLabelText('保存済み系統名') as HTMLInputElement).value).toBe('他の変更');
+});
+
+test('save completion is announced only with an editable settled child after an early snapshot',async()=>{
+ let resolve!:()=>void;
+ function Harness(){
+  const [saved,setSaved]=useState({service:props.service,path});
+  const [notice,setNotice]=useState(false);
+  const callbacks={onSaved:()=>setNotice(true),onSave:async(name:string,stops:typeof path.stops)=>{
+   setSaved({service:{...props.service,name},path:{...path,stops}});
+   await new Promise<void>(done=>{resolve=done;});
+  }};
+  return <>{notice&&<p role="status">適用完了</p>}<ServicePathEditor {...props} {...saved} {...callbacks}/></>;
+ }
+ render(<Harness/>);
+ fireEvent.change(screen.getByLabelText('保存済み系統名'),{target:{value:' 更新 '}});
+ fireEvent.click(screen.getByLabelText('保存済み停車 2'));
+ fireEvent.click(screen.getByRole('button',{name:'保存済み系統の変更を適用'}));
+ // The parent snapshot is already visible, while its promise has not settled.
+ expect((screen.getByLabelText('保存済み系統名') as HTMLInputElement).value).toBe('更新');
+ expect(screen.getByLabelText('保存済み停車 2').closest('fieldset')!.disabled).toBe(true);
+ expect(screen.queryByRole('status')).toBeNull();
+ await act(async()=>resolve());
+ expect(screen.getByRole('status').textContent).toBe('適用完了');
+ expect(screen.getByLabelText('保存済み停車 2').closest('fieldset')!.disabled).toBe(false);
+ fireEvent.click(screen.getByLabelText('保存済み停車 2'));
+ expect((screen.getByRole('button',{name:'保存済み系統の変更を適用'}) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('failed or unmounted saves do not announce completion',async()=>{
+ const onSaved=vi.fn();
+ const view=render(<ServicePathEditor {...props} onSaved={onSaved} onSave={vi.fn().mockRejectedValue(Error('拒否'))}/>);
+ fireEvent.change(screen.getByLabelText('保存済み系統名'),{target:{value:'保持'}});
+ fireEvent.click(screen.getByRole('button',{name:'保存済み系統の変更を適用'}));
+ await screen.findByText('Error: 拒否');expect(onSaved).not.toHaveBeenCalled();
+ expect((screen.getByLabelText('保存済み系統名') as HTMLInputElement).value).toBe('保持');
+ let resolve!:()=>void;
+ view.rerender(<ServicePathEditor {...props} onSaved={onSaved} onSave={()=>new Promise<void>(done=>{resolve=done;})}/>);
+ fireEvent.click(screen.getByRole('button',{name:'保存済み系統の変更を適用'}));view.unmount();
+ await act(async()=>resolve());expect(onSaved).not.toHaveBeenCalled();
 });
