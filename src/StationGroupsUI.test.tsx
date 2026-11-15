@@ -58,5 +58,11 @@ test("crossing preview reports actual distance without inventing passenger data"
  expect(planned.textContent).toContain("未着工");
  expect((screen.getByLabelText("計画駅名") as HTMLInputElement).value).toBe("交差駅");
  expect((screen.getByLabelText("計画駅名") as HTMLInputElement).readOnly).toBe(true);
+ fireEvent.click(screen.getByRole("button",{name:"別の線路計画を追加"}));
+ const inactive=document.querySelector(`[data-group-platform="${planned.getAttribute("data-group-platform")}"]`)!;
+ expect(inactive.getAttribute("fill")).toBe("#b1bac3");
+ expect(inactive.getAttribute("stroke-dasharray")).toBe("4 3");
+ expect(document.querySelector('[data-group-platform="5"]')?.getAttribute("fill")).toBe("white");
+
 });
 
