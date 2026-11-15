@@ -2661,7 +2661,6 @@ mod tests {
 
     #[test]
     fn saved_path_editor_preserves_ids_and_roundtrips_stop_changes() {
-        use rosenfu_core::world::RouteSegment;
         let (mut editor, alignment, [a, b, c]) = alignment_fixture();
         let segments = vec![span(alignment, a, b), span(alignment, b, c)];
         let stops: Vec<_> = editor
