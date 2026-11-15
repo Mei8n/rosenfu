@@ -400,48 +400,6 @@ pub fn save_world_if_version(
     Ok((SaveOutcome::Updated { backup }, new_version))
 }
 
-/// Explicitly replace an approved legacy save after preserving its exact bytes.
-/// Normal loading/saving never invokes this. Existing rolling backups are untouched.
-pub fn replace_legacy_world_if_version(
-    path: impl AsRef<Path>,
-    world: &World,
-    expected: &FileVersion,
-) -> Result<(SaveOutcome, FileVersion), StorageError> {
-    let path = path.as_ref();
-    let bytes = encode(world)?;
-    let _lock = lock_save(path)?;
-    if *expected == FileVersion::Missing || file_version(path)? != *expected {
-        return Err(StorageError::FileChanged);
-    }
-    let previous = read_bounded(path)?;
-    if bytes_version(&previous) != *expected {
-        return Err(StorageError::FileChanged);
-    }
-    match decode(&previous) {
-        Err(StorageError::UnsupportedVersion(version))
-            if (1..SCHEMA_VERSION).contains(&version) => {}
-        _ => return Err(StorageError::InvalidHeader),
-    }
-    // Content-addressed, create-only backup: repeated attempts may reuse only
-    // the identical original, and no older backup is overwritten.
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".legacy-{:x}.bak", Sha256::digest(&previous)));
-    let backup = PathBuf::from(name);
-    let new_file = prepare_file(path, &bytes)?;
-    if regular_file_exists(&backup)? {
-        if file_version(&backup)? != *expected {
-            return Err(StorageError::FileChanged);
-        }
-    } else {
-        persist(prepare_file(&backup, &previous)?, &backup, false)?;
-    }
-    if file_version(path)? != *expected || file_version(&backup)? != *expected {
-        return Err(StorageError::FileChanged);
-    }
-    persist(new_file, path, true)?;
-    Ok((SaveOutcome::Updated { backup }, bytes_version(&bytes)))
-}
-
 /// Explicit replacement after user approval (e.g. restoring an autosave over an unreadable main file).
 /// Unlike normal save, this does not decode the old file and leaves its existing backup untouched.
 /// The caller must have captured and approved this exact baseline, not fetch a fresh one at save time.
