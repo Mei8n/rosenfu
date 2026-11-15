@@ -51,3 +51,20 @@ fn schema17_requires_bindings_and_older_schema_cannot_smuggle_them() {
         .remove("service_route_bindings");
     assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
 }
+#[test]
+fn schema7_through16_preserve_services_as_unknown_without_guessing() {
+    let w = world();
+    let mut old: serde_json::Value = serde_json::from_slice(&encode(&w).unwrap()).unwrap();
+    old["world"]
+        .as_object_mut()
+        .unwrap()
+        .remove("service_route_bindings");
+    for version in 7..=16 {
+        old["schema_version"] = version.into();
+        let restored = decode(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(restored.snapshot().service_route_bindings.is_empty());
+        assert_eq!(restored.snapshot().services, w.snapshot().services);
+    }
+    let oldest = decode(include_bytes!("fixtures/schema-1-world.json")).unwrap();
+    assert!(oldest.snapshot().service_route_bindings.is_empty());
+}

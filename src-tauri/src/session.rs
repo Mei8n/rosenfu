@@ -4202,3 +4202,7 @@ mod endpoint_join_tests {
         assert_eq!(WorldEditor::new().load(&file).unwrap(), after);
     }
 }
+
+#[cfg(test)]
+#[path = "session_binding_review_tests.rs"]
+mod binding_review_tests;
