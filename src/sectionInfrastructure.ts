@@ -14,7 +14,7 @@ export function endpointInfrastructure(alignment:Parameters<typeof infrastructur
 /** Screen-space schematic rails. This does not claim lane topology or real track spacing. */
 export function schematicTrackPaths(points:{x:number;y:number}[],count:1|2|4):string[]{
  return Array.from({length:count},(_,rail)=>{
-  const offset=(rail-(count-1)/2)*3;
+  const offset=(rail-(count-1)/2)*5;
   return points.map((point,index)=>{
    const before=points[Math.max(0,index-1)],after=points[Math.min(points.length-1,index+1)];
    const dx=after.x-before.x,dy=after.y-before.y,length=Math.hypot(dx,dy);

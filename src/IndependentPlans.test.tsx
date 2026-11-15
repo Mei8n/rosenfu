@@ -1,3 +1,4 @@
+import {LEVEL_LABELS} from './sectionInfrastructure';
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -300,4 +301,43 @@ test("delayed slot discovery does not turn the early load picker into a world mu
  await act(async()=>{resolveSlots({active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]});});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));
  expect(vi.mocked(invoke).mock.calls.every(([command])=>["engine_info","world_snapshot","list_save_slots","autosave_status"].includes(command))).toBe(true);
+});
+
+test("section infrastructure survives plan switching Undo Redo save reload and build",async()=>{
+ window.PointerEvent=MouseEvent as typeof PointerEvent;
+ let map=await start();
+ const count=()=>screen.getByLabelText('敷設する線路数') as HTMLSelectElement;
+ const level=(value:keyof typeof LEVEL_LABELS)=>screen.getByRole('button',{name:LEVEL_LABELS[value]});
+ fireEvent.change(count(),{target:{value:'2'}});fireEvent.click(level('elevated'));
+ fireEvent.click(map,{clientX:120,clientY:100});
+ fireEvent.pointerMove(map,{clientX:200,clientY:100});
+ expect(map.querySelector('.candidate-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
+ fireEvent.click(map,{clientX:200,clientY:100});fireEvent.click(map,{clientX:200,clientY:100});
+ expect(map.querySelector('.confirmed-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
+ fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));
+ fireEvent.change(count(),{target:{value:'4'}});fireEvent.click(level('underground_2'));
+ fireEvent.click(map,{clientX:300,clientY:200});fireEvent.click(map,{clientX:380,clientY:200});fireEvent.click(map,{clientX:380,clientY:200});
+ fireEvent.click(trackPanel().getByRole('button',{name:/計画 1 を編集/}));
+ expect(count().value).toBe('2');expect(level('elevated').getAttribute('aria-pressed')).toBe('true');
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});});
+ expect(count().value).toBe('2');expect(level('elevated').getAttribute('aria-pressed')).toBe('true');
+ vi.mocked(invoke).mockResolvedValueOnce({saved:true});
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ await screen.findByText('ワールドと未着工計画を保存しました。');
+ const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
+ expect(saved.infrastructure).toEqual({track_count:2,level:'elevated'});
+ expect(saved.parkedPaths[0].infrastructure).toEqual({track_count:4,level:'underground_2'});
+ cleanup();map=await start({...empty,construction_plans:saved});
+ expect(count().value).toBe('2');expect(level('elevated').getAttribute('aria-pressed')).toBe('true');
+ expect(screen.queryByText('未保存の変更あり')).toBeNull();
+ const original=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation((command,args)=>command==='build_alignment'?Promise.reject(Error('payload inspected')):original(command,args));
+ fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/payload inspected/);
+ const args=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_alignment')![1] as {infrastructure:unknown};
+ expect(args.infrastructure).toEqual({track_count:2,level:'elevated'});
+ fireEvent.click(trackPanel().getByRole('button',{name:/計画 2 を編集/}));
+ expect(count().value).toBe('4');expect(level('underground_2').getAttribute('aria-pressed')).toBe('true');
+ expect(map.querySelector('.confirmed-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(4);
+ expect(map.querySelector('.parked-plan')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
 });
