@@ -1,0 +1,23 @@
+name: Water worst-case proof
+on:
+  pull_request:
+    paths:
+      - 'scripts/water-proof/**'
+      - '.github/workflows/water-worst-case-proof.yml'
+permissions:
+  contents: read
+jobs:
+  proof:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile and run independent proof tests
+        shell: bash
+        run: |
+          rustc --edition=2021 -D warnings --test scripts/water-proof/worst_case.rs -o water-proof-tests.exe
+          ./water-proof-tests.exe
