@@ -309,6 +309,7 @@ fn compact_world_that_exceeds_pretty_limit_is_rejected_before_load() {
     let mut draft = world.snapshot().clone();
     for i in 0..40 {
         draft.alignments.push(Alignment {
+            anchor_indices: None,
             id: AlignmentId(3 + i),
             owner,
             name: "a".into(),

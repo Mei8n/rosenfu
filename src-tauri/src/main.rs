@@ -51,11 +51,13 @@ fn build_alignment_from_reference(
     provenance: rosenfu_core::world::AlignmentProvenanceInput,
     track_type: rosenfu_core::world::TrackType,
     design_speed_kmh: Option<f64>,
+    anchor_indices: Option<Vec<usize>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            anchor_indices,
             name,
             points,
             track_type,
@@ -76,11 +78,13 @@ fn build_alignment(
     points: Vec<GeoPoint>,
     track_type: rosenfu_core::world::TrackType,
     design_speed_kmh: Option<f64>,
+    anchor_indices: Option<Vec<usize>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            anchor_indices,
             name,
             points,
             track_type,
@@ -100,11 +104,13 @@ fn build_alignment_with_stations(
     stations: Vec<session::PlannedStation>,
     reference: Option<session::PlannedAlignmentReference>,
     design_speed_kmh: Option<f64>,
+    anchor_indices: Option<Vec<usize>>,
 ) -> Result<WorldDraft, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            anchor_indices,
             name,
             points,
             track_type,
@@ -155,11 +161,13 @@ fn rename_station(
 fn delete_station(
     editor: State<'_, Mutex<WorldEditor>>,
     station_id: StationId,
+    construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .delete_station(station_id)
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    match construction_plans {
+        Some(plans) => editor.delete_station_with_plans(station_id, plans),
+        None => editor.delete_station(station_id),
+    }
 }
 #[tauri::command]
 fn delete_alignment(
@@ -171,6 +179,18 @@ fn delete_alignment(
         .lock()
         .map_err(|_| "world state unavailable")?
         .delete_alignment_with_plans(alignment_id, construction_plans)
+}
+#[tauri::command]
+fn delete_alignment_section(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignment_id: AlignmentId,
+    section_index: usize,
+    construction_plans: rosenfu_core::world::ConstructionPlans,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .delete_alignment_section(alignment_id, section_index, construction_plans)
 }
 #[tauri::command]
 fn undo_alignment_deletion(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
@@ -457,6 +477,7 @@ fn main() {
             delete_station,
             delete_track,
             delete_alignment,
+            delete_alignment_section,
             undo_alignment_deletion,
             rename_company,
             save_route,

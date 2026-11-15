@@ -176,6 +176,7 @@ impl WorldDraft {
             return Err(WorldError::ProvenanceEditUnsupported);
         }
         current.points = previous.points.clone();
+        current.anchor_indices = previous.anchor_indices.clone();
         for p in normalized
             .alignment_provenance
             .iter_mut()
@@ -284,6 +285,7 @@ impl World {
                 owner,
                 name,
                 points,
+                anchor_indices: None,
                 track_type,
                 design_speed_kmh: None,
             });

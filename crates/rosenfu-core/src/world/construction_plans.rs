@@ -149,7 +149,7 @@ impl ConstructionPlans {
         if self.draft_destination.as_ref().is_some_and(|d| {
             self.draft_extension
                 .as_ref()
-                .is_none_or(|e| e.alignment_id == d.alignment_id)
+                .is_none_or(|e| e.alignment_id == d.alignment_id && e.endpoint == d.endpoint)
                 || self.draft_points.len() < 2
         }) {
             return Err(invalid);
@@ -168,7 +168,7 @@ impl ConstructionPlans {
             if path.destination.as_ref().is_some_and(|d| {
                 path.extension
                     .as_ref()
-                    .is_none_or(|e| e.alignment_id == d.alignment_id)
+                    .is_none_or(|e| e.alignment_id == d.alignment_id && e.endpoint == d.endpoint)
                     || path.points.len() < 2
             }) {
                 return Err(invalid);

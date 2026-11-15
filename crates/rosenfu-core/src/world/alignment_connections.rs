@@ -19,7 +19,7 @@ impl WorldDraft {
         let invalid = WorldError::InvalidAlignmentConnection;
         let mut occupied = BTreeSet::new();
         for connection in &self.alignment_connections {
-            if connection.a.alignment_id == connection.b.alignment_id {
+            if connection.a == connection.b {
                 return Err(invalid);
             }
             let mut ends = Vec::with_capacity(2);

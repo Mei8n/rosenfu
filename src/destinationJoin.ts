@@ -10,7 +10,7 @@ export function occupiedEndpoint(connections:EndpointConnection[],end:Extension)
 export function destinationJoinError(line:GeoPoint[],source:Extension|null,destination:Extension|undefined,alignments:JoinAlignment[],connections:EndpointConnection[],owner:string|undefined):string|null {
  if(!destination)return null;
  const a=alignments.find(a=>a.id===source?.alignmentId),b=alignments.find(a=>a.id===destination.alignmentId);
- if(!source||!a||!b||a.id===b.id)return "接続先の線路が無効です";
+ if(!source||!a||!b||(a.id===b.id&&source.endpoint===destination.endpoint))return "接続先の線路が無効です";
  if(a.owner!==owner||b.owner!==owner)return "他社の線路には接続できません";
  if((a.track_type??"normal")!==(b.track_type??"normal"))return "線路種別が一致しません";
  if(occupiedEndpoint(connections,source)||occupiedEndpoint(connections,destination))return "この端点は接続済みです";
