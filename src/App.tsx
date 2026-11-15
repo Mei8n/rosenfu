@@ -1286,7 +1286,7 @@ export function App() {
           </div>
           <div className="track-selection-controls" role="group" aria-label="線路選択">
             <button type="button" className="secondary" disabled={!enabled} aria-pressed={mapMode==="move"&&activeTool==="inactive"} onClick={()=>{setActiveTool("inactive");changeMapMode("move");setTrackDeleteConfirm(false);}}>選択</button>
-            {selectedTrackExists&&mapMode==="move"&&<><span>{selectedPlanPath!==null?"計画線路 "+selectedPlanPath:"線路 "+alignmentId}</span><button type="button" className="danger" disabled={!enabled||unapplied||!!selectedTrackReferences} onClick={()=>setTrackDeleteConfirm(true)}>選択線路を削除</button>{selectedTrackReferences&&<small>削除不可：{selectedTrackReferences}が使用中</small>}</>}
+            {selectedTrackExists&&mapMode==="move"&&<>{!(mainTab==="construction"&&activeTool==="inactive")&&<span>{selectedPlanPath!==null?"計画線路 "+selectedPlanPath:"線路 "+alignmentId}</span>}<button type="button" className="danger" disabled={!enabled||unapplied||!!selectedTrackReferences} onClick={()=>setTrackDeleteConfirm(true)}>選択線路を削除</button>{selectedTrackReferences&&<small>削除不可：{selectedTrackReferences}が使用中</small>}</>}
             {trackDeleteUndo&&activeTool!=="delete"&&<button type="button" className="secondary" disabled={!enabled||!canUndoTrackDelete} onClick={undoTrackDelete}>線路削除を元に戻す</button>}
           </div>
           {trackDeleteConfirm&&selectedTrackExists&&<TrackDeleteDialog busy={busy} blocked={!enabled||unapplied||!!selectedTrackReferences} error={error} onCancel={()=>setTrackDeleteConfirm(false)} onDelete={deleteSelectedTrack}/>}
@@ -1345,7 +1345,7 @@ export function App() {
                 </g>}
               <ReferenceGraphLayer edges={graphDisplay.edges} camera={camera}/>
               {alignments.map((alignment) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>
-                <title>{alignment.name}</title>
+                {!(mainTab==="construction"&&activeTool==="inactive")&&<title>{alignment.name}</title>}
                 <path d={drawPath(alignment.points)} className="track-outline" fill="none" />
                 <path d={drawPath(alignment.points)} className="alignment-sleepers" />
                 <path d={drawPath(alignment.points)} className={alignmentId === alignment.id ? "alignment-path alignment-selected" : "alignment-path"} />
