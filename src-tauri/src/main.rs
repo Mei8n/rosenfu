@@ -461,37 +461,6 @@ fn save_world(
         .map_err(|_| "world state unavailable")?
         .save_active_slot(&save_root(&app)?, construction_plans, view_state)
 }
-#[tauri::command]
-fn confirm_manual_save(
-    app: tauri::AppHandle,
-    token: String,
-    construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
-    view_state: Option<rosenfu_core::world::ViewState>,
-    editor: State<'_, Mutex<WorldEditor>>,
-) -> Result<session::ManualSaveResult, String> {
-    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
-    let path = editor.active_save_path(&save_root(&app)?)?;
-    editor.confirm_manual_save(&path, &token, construction_plans, view_state)
-}
-#[tauri::command]
-fn cancel_manual_save(token: String, editor: State<'_, Mutex<WorldEditor>>) -> Result<(), String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .cancel_manual_save(&token);
-    Ok(())
-}
-// Compatibility command for the previous fixed-file entry point. Never overwrite it.
-#[tauri::command]
-fn load_world(
-    app: tauri::AppHandle,
-    editor: State<'_, Mutex<WorldEditor>>,
-) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .load_save_slot(&save_root(&app)?, "legacy".into())
-}
 fn main() {
     tauri::Builder::default()
         .manage(Mutex::new(WorldEditor::new()))
@@ -525,13 +494,10 @@ fn main() {
             load_save_slot,
             save_world_as,
             save_world,
-            confirm_manual_save,
-            cancel_manual_save,
             autosave_world,
             autosave_status,
             allow_autosave_replacement,
-            load_autosave,
-            load_world
+            load_autosave
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Rosenfu");

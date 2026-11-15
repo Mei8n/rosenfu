@@ -128,7 +128,11 @@ impl WorldEditor {
                 .clone();
             return self.save_world_as_slot(root, name, plans, view);
         }
-        self.request_manual_save(&self.active_save_path(root)?, plans, view)
+        self.save_with_view(&self.active_save_path(root)?, plans, view, false)?;
+        Ok(ManualSaveResult {
+            saved: true,
+            replacement_required: None,
+        })
     }
 }
 
