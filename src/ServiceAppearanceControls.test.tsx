@@ -134,3 +134,20 @@ test('C1 input is disabled before submission and a complex initial still allows 
  expect((screen.getByRole('button',{name:'色を適用'}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.keyDown(screen.getByLabelText('系統色 HEX'),{key:'Enter'});expect(save).not.toHaveBeenCalled();
 });
+
+test('saved service rename does not report an untouched automatic symbol as unsaved',()=>{
+ const dirty=vi.fn();const propsWithName={...props(),serviceName:'旧名',onDirty:dirty};
+ const view=render(<ServiceAppearanceControls {...propsWithName}/>);dirty.mockClear();
+ view.rerender(<ServiceAppearanceControls {...propsWithName} serviceName="新名"/>);
+ expect((screen.getByLabelText('系統記号') as HTMLInputElement).value).toBe('新');
+ expect(dirty.mock.calls.some(([value])=>value===true)).toBe(false);
+});
+
+ test('rename then immediate appearance save uses the new automatic initial',async()=>{
+ const save=vi.fn().mockResolvedValue(undefined);const p={...props(),serviceName:'旧名',onSaveAppearance:save};
+ const view=render(<ServiceAppearanceControls {...p}/>);
+ view.rerender(<ServiceAppearanceControls {...p} serviceName="新名"/>);
+ fireEvent.click(screen.getByRole('button',{name:'系統の形 四角'}));
+ fireEvent.click(screen.getByRole('button',{name:'色を設定'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledWith('#3b82f6','square','新'));
+ });
