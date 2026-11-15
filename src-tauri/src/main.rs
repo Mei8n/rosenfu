@@ -209,6 +209,10 @@ fn rename_company(
         .rename_company(name)
 }
 #[tauri::command]
+fn rename_route(editor: State<'_, Mutex<WorldEditor>>, route_id: RouteId, name: String, expected_name: String) -> Result<WorldDraft, String> {
+    editor.lock().map_err(|_| "world state unavailable")?.rename_route(route_id, name, expected_name)
+}
+#[tauri::command]
 fn save_planned_route(
     editor: State<'_, Mutex<WorldEditor>>,
     route_id: Option<RouteId>,
@@ -488,6 +492,7 @@ fn main() {
             undo_alignment_deletion,
             rename_company,
             save_planned_route,
+            rename_route,
             set_service_route_binding,
             list_save_slots,
             create_new_world,
