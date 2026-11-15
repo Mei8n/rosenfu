@@ -11,8 +11,13 @@ are locked; the backend remains responsible for their actual height and grade,
 which may be between nominal levels. Changing a height uses anchor Undo/Redo.
 Explicit malformed height array lengths are rejected rather than silently fitted.
 
-This checkpoint is not ready for integration: native preview_construction_plan
-connection and multi-profile backend integration are pending. Parked-anchor editing
-history, plan switching and explicit array deletion need further focused tests.
+Native `preview_construction_plan` now receives the same complete requests used by
+build, for confirmed anchors. A response only applies to its exact world and request;
+stale results are ignored. Unconfirmed cursor points are not yet included. The
+preview never mutates the world; build performs authoritative validation again.
+
+This checkpoint awaits multi-profile backend integration and independent review.
+Active and parked anchor edits, Undo/Redo, save/reload, plan-switch and start-reversal
+regressions pass. Explicit array deletion needs further focused boundary tests.
 Native GUI and 3 OS CI are not verified. No train operation or financial effect
 is implied by changing height.
