@@ -1112,7 +1112,7 @@ mod tests {
                 pending,
             )
             .unwrap_err();
-        assert!(error.contains("駅"), "unexpected rejection: {error}");
+        assert_eq!(error, "InvalidStationPlacement");
         assert_eq!(editor.snapshot(), before);
         assert_eq!(editor.deleted_alignment, previous_undo);
         assert_eq!(editor.undo_alignment_deletion().unwrap(), original);
