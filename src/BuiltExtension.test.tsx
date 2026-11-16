@@ -29,7 +29,7 @@ for(const endpoint of ["start","end"] as const)test(`${endpoint} extension joins
  await click(anchor+2);expect(screen.getByText(/から延伸を計画しています/)).toBeTruthy();await click(finish);
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"8"}});await click((anchor+finish)/2);
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));await click(finish);await click(340,220);await click(400,220);
- vi.mocked(invoke).mockRejectedValueOnce(Error("atomic failure"));fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/atomic failure/);
+ const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==="build_plan"?Promise.reject(Error("atomic failure")):original(command,args));fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/atomic failure/);
  const request=vi.mocked(invoke).mock.calls.find(([c])=>c==="build_plan")![1] as {alignments:any[]};
  expect(request.alignments).toHaveLength(2);const ext=request.alignments.find(p=>p.extension);
  expect(ext.extension).toEqual({alignmentId:"3",endpoint});expect(ext.points[0]).toEqual(line.points[endpoint==="start"?0:1]);expect(ext.stations[0].lengthM).toBe(160);
@@ -155,17 +155,16 @@ for(const endpoint of ['start','end'] as const)test(`tangent guide follows built
  expect(screen.queryByText('最後の点をもう一度クリックで終了')).toBeNull();
  });
 
-test('built line list keeps a unique selectable label without repetitive metadata',async()=>{
- await start({alignments:[{...line,name:'新しい線路'}]});
+test('Escape after construction does not expose the internal built line directory',async()=>{
+ const map=await start({alignments:[{...line,name:'新しい線路'}]});
  expect(screen.queryByRole('button',{name:'名前未設定の線路'})).toBeNull();
  const css=document.createElement('style');css.textContent=styles;document.head.append(css);
- expect(getComputedStyle(document.querySelector('.construction-list')!).display).toBe('none');
- css.remove();
- fireEvent.click(screen.getByRole('button',{name:'選択'}));
- const entry=screen.getByRole('button',{name:'名前未設定の線路'});
- expect(entry.textContent).toBe('名前未設定の線路');
- expect(screen.queryByText('出典記録なし')).toBeNull();
- fireEvent.click(entry);
+ expect(document.querySelector('.construction-list')).toBeNull();
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.queryByRole('button',{name:'名前未設定の線路'})).toBeNull();
+ expect(document.querySelector('.construction-list')).toBeNull();
+ // Explicit map selection is still available without an internal-object directory.
+ fireEvent.click(map.querySelector('.alignment-hit')!);
  expect(screen.queryByText('出典記録なし')).toBeNull();
 });
 

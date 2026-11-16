@@ -1,6 +1,5 @@
 import {useEffect,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
-import {project,type Camera} from './map';
 import type {RoadAssessments,SavedRoadSnapshot} from './constructionRoads';
 /** Results are tied to the exact world object. Edits, load and Undo hide old
  * assets immediately, and late IPC responses cannot restore stale crossings. */
@@ -16,10 +15,4 @@ export function useRoadAssessments(world:({road_snapshots?:SavedRoadSnapshot[]})
   return()=>{alive=false;};
  },[world,enabled]);
  return enabled&&state?.world===world?{...state,pending:false}:{world,value:[] as RoadAssessments,error:null,pending:enabled&&!!world?.road_snapshots?.length};
-}
-export function RoadCrossings({assessments,camera}:{assessments:RoadAssessments;camera:Camera}){
- return <g className="automatic-road-crossings" pointerEvents="none">{assessments.flatMap(([id,assessment])=>assessment.crossings.map((crossing,index)=>{
-  const p=project(crossing.point.latitude,crossing.point.longitude,camera);
-  return <g key={`${id}/${index}`} data-crossing-alignment={id} transform={`translate(${p.x} ${p.y})`}><title>踏切</title><circle r="5" fill="#f8cb4e" stroke="#29343a" strokeWidth="1.5"/><path d="M -2 -2 L 2 2 M -2 2 L 2 -2" stroke="#29343a" strokeWidth="1.5"/></g>;
- }))}</g>;
 }
