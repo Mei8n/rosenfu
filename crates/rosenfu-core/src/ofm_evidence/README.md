@@ -273,3 +273,65 @@ backend geometry, and commit evidence plus actual alignments only after all chec
 Still absent: alignment-to-PathDescriptor provenance, physical path construction,
 source license metadata binding, UI/IPC integration, and seam build/Undo acceptance.
 The manifest reference checks here are table integrity, not physical track approval.
+
+## World plan and separate path provenance, checkpoint 6
+
+`ConstructionPath.ofmPath` is optional and mutually exclusive with legacy
+`reference`, edited geometry, and redo points. Parked plans are now validated
+against a freshly reconstructed descriptor: their points and line must match the
+backend result (1e-10 degrees). The manifest, raw evidence, and lightweight plan
+survive schema-25 save/load without putting raw blobs in IPC world JSON.
+
+World APIs (all mutate only after complete candidate validation):
+- `stage_ofm_construction_plans(plans, raw_additions, tile_bindings)` merges raw
+  evidence with the current immutable store, regenerates every OFM plan's points
+  and line, validates the whole world and commits once. Frontend preview geometry
+  is replaced, never trusted. Plans' level arrays and other physical inputs must
+  still satisfy their existing validation; incompatible arrays are not repaired.
+- `build_alignment_from_road_path(owner, name, track_type, path_descriptor)` uses
+  only the staged store and backend-generated points via existing typed build.
+- `extend_alignment_from_road_path(owner, id, endpoint, path_descriptor)` uses
+  existing endpoint/owner/tangent/length checks and preserves earlier provenance.
+  For prepend, it independently reconstructs reversed provenance orientation.
+
+Session must call stage and build on the **same outer candidate clone**, then run
+its existing physical profile/design-speed/station/roads/saveable checks before
+publishing that candidate. Parking alone is also a legitimate atomic operation;
+there are no built assets yet. Build does not itself clear the parked plan. Preview
+uses a clone. This checkpoint does not wire those session/IPC commands.
+
+`AlignmentRoadPathProvenance` is separate from the old single-source type and
+contains alignment/index range, PathDescriptor, retained whole-path arc fraction
+interval, and explicit OFM attribution/license. Validation reconstructs original
+path geometry from evidence and checks the current retained slice with the existing
+source-lineage geometric tolerance (0.01 m + original length * 1e-6), including both
+current and original interior vertices. Source snapshots are never rewritten.
+Insertion/splitting and endpoint growth preserve range indices and retained
+fractions. Generic replacement cannot attach/drop/change provenance on a surviving
+alignment or change its points. Explicit removal drops that alignment's derived
+records, not raw evidence; restoration/Undo can reuse immutable snapshots. Geometry
+edits not covered by explicit range-preserving commands fail closed.
+
+Plan plus built path records are capped at 32 per world, bounding repeated full
+path validation. Full store limits remain unchanged. `EvidenceStore::scope(keys)`
+is a read-only projection of **already validated** full tiles, sharing raw/decoded
+Arcs. Missing/duplicate keys reject; individual roads cannot be filtered. This is
+not a constructor for untrusted input. Each descriptor is reconstructed against its
+recorded scope, so adding unrelated world tiles does not invalidate prior paths.
+A caller can omit an external tile from its declared scope; this API cannot prove
+acquisition completeness. The trusted frozen frontend acquisition set must match
+the descriptor, and future source scope must not be presented as physical identity
+certainty. A whole-tile scope retains all same-tile ambiguous candidates; omission
+of required tiles rejects. Different scope can change the hypothesis set.
+
+Serde JSON `float_roundtrip` is enabled in storage (and core test decoding) because
+otherwise a generated coordinate can change one ULP on parsing, producing false
+World inequality after reload. This is bit-preserving parsing, not a relaxed
+geometric acceptance rule. Tests cover complete parked/built envelope round-trips,
+reload equality, failed park/build candidates, generic-edit rejection, insertion /
+split / append / prepend, deletion plus snapshot Undo, and unrelated tile additions.
+
+**Still unintegrated:** session transaction/IPC/App, route-aware user deletion
+workflows, UI Undo execution, and physical seam-build acceptance. The core entrypoints
+preserve existing typed alignment/extension checks; session must still apply actual
+height/grade/curvature/speed and endpoint-connection policy before live commit.

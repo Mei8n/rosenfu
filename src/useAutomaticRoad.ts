@@ -1,4 +1,5 @@
-import {useEffect,useRef,useState} from 'react';
+import type {OpenFreeMapEvidenceRequest,OpenFreeMapEvidenceBatch} from './openFreeMapRoadData';
+import {useCallback,useEffect,useRef,useState} from 'react';
 import {createRoadProvider,type RoadProvider} from './roadProvider';
 import {roadBoundsKey,ROAD_LIMITS,type RoadDataState,type RoadSnapshot} from './automaticRoadData';
 import type {GraphBounds} from './referenceGraph';
@@ -9,6 +10,7 @@ function load(area:GraphBounds){
  provider??=createRoadProvider();
  const task=provider.load(area).finally(()=>pending.delete(key));pending.set(key,task);return task;
 }
+export type CurrentRoadEvidenceResult={status:'ready';evidence:OpenFreeMapEvidenceBatch}|{status:'unavailable';reason:string}|{status:'stale'};
 export type CurrentRoadResult={status:'ready';snapshot:RoadSnapshot}|{status:'unavailable';reason:string}|{status:'stale'};
 /** Road display/following is independent of water availability. No construction
  * approval or crossing assessment is implied by a successfully loaded reference. */
@@ -54,5 +56,14 @@ export function useAutomaticRoad(bounds:GraphBounds,enabled:boolean,world:unknow
    const reason=`道路未確認：${String(error)}`;setResult({key,world,state:{status:'error',message:reason}});return {status:'unavailable',reason};
   }finally{if(timer!==undefined)clearTimeout(timer);if(abort)signal?.removeEventListener('abort',abort);}
  }
- return {...state,retry:()=>setAttempt(n=>n+1),ensureCurrent};
+ const readTileEvidenceBatch=useCallback(async(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal):Promise<CurrentRoadEvidenceResult>=>{
+  const matches=()=>!signal?.aborted&&current.current.enabled&&current.current.key===key&&current.current.world===world;
+  if(!matches())return {status:'stale'};
+  // Reuse the exact provider that observed these tiles. A new repository would
+  // lose its pinned knownRaw map and must not silently establish new evidence.
+  if(!provider)return {status:'unavailable',reason:'道路原データはまだ取得されていません。'};
+  try{const evidence=await provider.readTileEvidenceBatch(refs,signal);return matches()?{status:'ready',evidence}:{status:'stale'};}
+  catch(error){return matches()?{status:'unavailable',reason:`道路証拠未取得：${String(error)}`}:{status:'stale'};}
+ },[key,world,enabled]);
+ return {...state,readTileEvidenceBatch,retry:()=>setAttempt(n=>n+1),ensureCurrent};
 }

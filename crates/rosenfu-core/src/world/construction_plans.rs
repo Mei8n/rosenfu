@@ -58,6 +58,8 @@ pub struct ConstructionReference {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionPath {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ofm_path: Option<crate::ofm_evidence::PathDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor_levels: Option<Vec<InfrastructureLevel>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redo_anchor_levels: Option<Vec<InfrastructureLevel>>,
@@ -269,6 +271,13 @@ impl ConstructionPlans {
                 || !valid_points(&path.line)
                 || !path.design_speed_kmh.is_finite()
                 || !(1.0..=1000.0).contains(&path.design_speed_kmh)
+            {
+                return Err(invalid);
+            }
+            if path.ofm_path.is_some()
+                && (path.reference.is_some()
+                    || path.edited_geometry.is_some()
+                    || !path.redo.is_empty())
             {
                 return Err(invalid);
             }

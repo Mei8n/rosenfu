@@ -53,6 +53,19 @@ fn ofm_world_token(editor: State<'_, Mutex<WorldEditor>>) -> Result<String, Stri
         .ofm_world_token()
 }
 #[tauri::command]
+fn stage_ofm_construction_plan(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    plans: rosenfu_core::world::ConstructionPlans,
+    raw_evidence: Vec<session::OfmRawInput>,
+    tile_bindings: Vec<session::OfmBindingInput>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .stage_ofm_construction_plan(&expected_world_token, plans, raw_evidence, tile_bindings)
+}
+#[tauri::command]
 fn world_snapshot(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
     Ok(editor
         .lock()
@@ -90,6 +103,7 @@ fn build_alignment_from_reference(
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            ofm_path: None,
             anchor_levels,
             junction_source,
             start_level,
@@ -125,6 +139,7 @@ fn build_alignment(
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            ofm_path: None,
             anchor_levels,
             junction_source,
             start_level,
@@ -159,6 +174,7 @@ fn build_alignment_with_stations(
         .lock()
         .map_err(|_| "world state unavailable")?
         .build_plan(vec![session::PlannedAlignment {
+            ofm_path: None,
             anchor_levels,
             junction_source,
             start_level,
@@ -688,6 +704,7 @@ fn main() {
             preview_route_membership,
             world_snapshot,
             ofm_world_token,
+            stage_ofm_construction_plan,
             preview_track_movement_geometry,
             preview_track_render_geometry,
             add_station,

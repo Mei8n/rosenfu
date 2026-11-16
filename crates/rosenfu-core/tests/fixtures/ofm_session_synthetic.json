@@ -1,0 +1,481 @@
+{
+  "path": {
+    "algorithm": "ofm_overlap_blend_v1",
+    "coverageVerified": false,
+    "end": {
+      "fraction": 1.0,
+      "fragmentId": "ofm:20261101_080013_pt:14:14553:6451:0:0",
+      "segmentIndex": 0
+    },
+    "geometryDerived": true,
+    "joins": [
+      {
+        "aId": "ofm:20261101_080013_pt:14:14552:6451:0:0",
+        "aRange": [
+          0.376917069223192,
+          0.583082930776808
+        ],
+        "axis": 0,
+        "bId": "ofm:20261101_080013_pt:14:14553:6451:0:0",
+        "bRange": [
+          0.376917069223192,
+          0.583082930776808
+        ],
+        "fromAxis": 139.76795581026352,
+        "rule": "ofm_overlap_blend_v1",
+        "toAxis": 139.76817700223648
+      }
+    ],
+    "method": "ofm_tile_path_v1",
+    "orderedSpans": [
+      {
+        "bindingKey": "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14552/6451.pbf",
+        "fragmentId": "ofm:20261101_080013_pt:14:14552:6451:0:0",
+        "from": 0.0,
+        "to": 0.583082930776808
+      },
+      {
+        "bindingKey": "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14553/6451.pbf",
+        "fragmentId": "ofm:20261101_080013_pt:14:14553:6451:0:0",
+        "from": 0.376917069223192,
+        "to": 1.0
+      }
+    ],
+    "requiredBindingKeys": [
+      "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14552/6451.pbf",
+      "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14553/6451.pbf"
+    ],
+    "start": {
+      "fraction": 0.0,
+      "fragmentId": "ofm:20261101_080013_pt:14:14552:6451:0:0",
+      "segmentIndex": 0
+    }
+  },
+  "plans": {
+    "activePathId": 1,
+    "activePlanId": 1,
+    "designSpeedKmh": 120.0,
+    "draftExtension": null,
+    "draftFinished": false,
+    "draftPoints": [],
+    "infrastructure": {
+      "level": "ground",
+      "track_count": 1
+    },
+    "parkedPaths": [
+      {
+        "designSpeedKmh": 120.0,
+        "extension": null,
+        "id": 2,
+        "infrastructure": {
+          "level": "ground",
+          "track_count": 1
+        },
+        "line": [
+          {
+            "latitude": 35.68428067969554,
+            "longitude": 139.76755142211914
+          },
+          {
+            "latitude": 35.68428067969554,
+            "longitude": 139.76795581026352
+          },
+          {
+            "latitude": 35.684280648105734,
+            "longitude": 139.76796686986216
+          },
+          {
+            "latitude": 35.68428055769354,
+            "longitude": 139.7679779294608
+          },
+          {
+            "latitude": 35.684280414994774,
+            "longitude": 139.76798898905946
+          },
+          {
+            "latitude": 35.684280226545255,
+            "longitude": 139.7680000486581
+          },
+          {
+            "latitude": 35.684279998880804,
+            "longitude": 139.76801110825676
+          },
+          {
+            "latitude": 35.68427973853725,
+            "longitude": 139.7680221678554
+          },
+          {
+            "latitude": 35.68427945205041,
+            "longitude": 139.76803322745405
+          },
+          {
+            "latitude": 35.684279145956104,
+            "longitude": 139.7680442870527
+          },
+          {
+            "latitude": 35.684278826790155,
+            "longitude": 139.76805534665135
+          },
+          {
+            "latitude": 35.684278501088386,
+            "longitude": 139.76806640625
+          },
+          {
+            "latitude": 35.68427817538662,
+            "longitude": 139.76807746584865
+          },
+          {
+            "latitude": 35.684277856220675,
+            "longitude": 139.7680885254473
+          },
+          {
+            "latitude": 35.68427755012637,
+            "longitude": 139.76809958504595
+          },
+          {
+            "latitude": 35.68427726363953,
+            "longitude": 139.7681106446446
+          },
+          {
+            "latitude": 35.684277003295975,
+            "longitude": 139.76812170424324
+          },
+          {
+            "latitude": 35.684276775631524,
+            "longitude": 139.7681327638419
+          },
+          {
+            "latitude": 35.684276587182005,
+            "longitude": 139.76814382344054
+          },
+          {
+            "latitude": 35.68427644448324,
+            "longitude": 139.7681548830392
+          },
+          {
+            "latitude": 35.684276354071045,
+            "longitude": 139.76816594263784
+          },
+          {
+            "latitude": 35.68427632248124,
+            "longitude": 139.76817700223648
+          },
+          {
+            "latitude": 35.68427632248124,
+            "longitude": 139.7686243057251
+          }
+        ],
+        "name": "seam",
+        "ofmPath": {
+          "algorithm": "ofm_overlap_blend_v1",
+          "coverageVerified": false,
+          "end": {
+            "fraction": 1.0,
+            "fragmentId": "ofm:20261101_080013_pt:14:14553:6451:0:0",
+            "segmentIndex": 0
+          },
+          "geometryDerived": true,
+          "joins": [
+            {
+              "aId": "ofm:20261101_080013_pt:14:14552:6451:0:0",
+              "aRange": [
+                0.376917069223192,
+                0.583082930776808
+              ],
+              "axis": 0,
+              "bId": "ofm:20261101_080013_pt:14:14553:6451:0:0",
+              "bRange": [
+                0.376917069223192,
+                0.583082930776808
+              ],
+              "fromAxis": 139.76795581026352,
+              "rule": "ofm_overlap_blend_v1",
+              "toAxis": 139.76817700223648
+            }
+          ],
+          "method": "ofm_tile_path_v1",
+          "orderedSpans": [
+            {
+              "bindingKey": "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14552/6451.pbf",
+              "fragmentId": "ofm:20261101_080013_pt:14:14552:6451:0:0",
+              "from": 0.0,
+              "to": 0.583082930776808
+            },
+            {
+              "bindingKey": "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14553/6451.pbf",
+              "fragmentId": "ofm:20261101_080013_pt:14:14553:6451:0:0",
+              "from": 0.376917069223192,
+              "to": 1.0
+            }
+          ],
+          "requiredBindingKeys": [
+            "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14552/6451.pbf",
+            "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14553/6451.pbf"
+          ],
+          "start": {
+            "fraction": 0.0,
+            "fragmentId": "ofm:20261101_080013_pt:14:14552:6451:0:0",
+            "segmentIndex": 0
+          }
+        },
+        "planId": 1,
+        "points": [
+          {
+            "latitude": 35.68428067969554,
+            "longitude": 139.76755142211914
+          },
+          {
+            "latitude": 35.68428067969554,
+            "longitude": 139.76795581026352
+          },
+          {
+            "latitude": 35.684280648105734,
+            "longitude": 139.76796686986216
+          },
+          {
+            "latitude": 35.68428055769354,
+            "longitude": 139.7679779294608
+          },
+          {
+            "latitude": 35.684280414994774,
+            "longitude": 139.76798898905946
+          },
+          {
+            "latitude": 35.684280226545255,
+            "longitude": 139.7680000486581
+          },
+          {
+            "latitude": 35.684279998880804,
+            "longitude": 139.76801110825676
+          },
+          {
+            "latitude": 35.68427973853725,
+            "longitude": 139.7680221678554
+          },
+          {
+            "latitude": 35.68427945205041,
+            "longitude": 139.76803322745405
+          },
+          {
+            "latitude": 35.684279145956104,
+            "longitude": 139.7680442870527
+          },
+          {
+            "latitude": 35.684278826790155,
+            "longitude": 139.76805534665135
+          },
+          {
+            "latitude": 35.684278501088386,
+            "longitude": 139.76806640625
+          },
+          {
+            "latitude": 35.68427817538662,
+            "longitude": 139.76807746584865
+          },
+          {
+            "latitude": 35.684277856220675,
+            "longitude": 139.7680885254473
+          },
+          {
+            "latitude": 35.68427755012637,
+            "longitude": 139.76809958504595
+          },
+          {
+            "latitude": 35.68427726363953,
+            "longitude": 139.7681106446446
+          },
+          {
+            "latitude": 35.684277003295975,
+            "longitude": 139.76812170424324
+          },
+          {
+            "latitude": 35.684276775631524,
+            "longitude": 139.7681327638419
+          },
+          {
+            "latitude": 35.684276587182005,
+            "longitude": 139.76814382344054
+          },
+          {
+            "latitude": 35.68427644448324,
+            "longitude": 139.7681548830392
+          },
+          {
+            "latitude": 35.684276354071045,
+            "longitude": 139.76816594263784
+          },
+          {
+            "latitude": 35.68427632248124,
+            "longitude": 139.76817700223648
+          },
+          {
+            "latitude": 35.68427632248124,
+            "longitude": 139.7686243057251
+          }
+        ],
+        "redo": [],
+        "roadFollowing": true,
+        "trackType": "normal"
+      }
+    ],
+    "plannedStations": [],
+    "plans": [
+      {
+        "id": 1,
+        "name": "seam"
+      }
+    ],
+    "redoPoints": [],
+    "roadFollowing": true,
+    "trackType": "normal",
+    "version": 1
+  },
+  "rawEvidence": [
+    {
+      "bytes": [
+        26,
+        56,
+        10,
+        14,
+        116,
+        114,
+        97,
+        110,
+        115,
+        112,
+        111,
+        114,
+        116,
+        97,
+        116,
+        105,
+        111,
+        110,
+        120,
+        2,
+        40,
+        128,
+        32,
+        18,
+        17,
+        18,
+        2,
+        0,
+        0,
+        24,
+        2,
+        34,
+        9,
+        9,
+        192,
+        62,
+        160,
+        31,
+        10,
+        144,
+        3,
+        0,
+        26,
+        5,
+        99,
+        108,
+        97,
+        115,
+        115,
+        34,
+        7,
+        10,
+        5,
+        109,
+        105,
+        110,
+        111,
+        114
+      ],
+      "sha256": "022b8a4343fdcbfa7eb7755af6effc6fc8571bdfa65bebde5503b5193aa4716e"
+    },
+    {
+      "bytes": [
+        26,
+        56,
+        10,
+        14,
+        116,
+        114,
+        97,
+        110,
+        115,
+        112,
+        111,
+        114,
+        116,
+        97,
+        116,
+        105,
+        111,
+        110,
+        120,
+        2,
+        40,
+        128,
+        32,
+        18,
+        17,
+        18,
+        2,
+        0,
+        0,
+        24,
+        2,
+        34,
+        9,
+        9,
+        191,
+        1,
+        162,
+        31,
+        10,
+        144,
+        3,
+        0,
+        26,
+        5,
+        99,
+        108,
+        97,
+        115,
+        115,
+        34,
+        7,
+        10,
+        5,
+        109,
+        105,
+        110,
+        111,
+        114
+      ],
+      "sha256": "fa69eb2e540eda8fdfe6ce747689790b803ffdfaec0cdc395f9666c79d43504f"
+    }
+  ],
+  "tileBindings": [
+    {
+      "canonical_url": "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14552/6451.pbf",
+      "decoder_rule": "ofm_transportation_z14_v1",
+      "raw_sha256": "022b8a4343fdcbfa7eb7755af6effc6fc8571bdfa65bebde5503b5193aa4716e",
+      "revision": "20261101_080013_pt",
+      "x": 14552,
+      "y": 6451,
+      "z": 14
+    },
+    {
+      "canonical_url": "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14553/6451.pbf",
+      "decoder_rule": "ofm_transportation_z14_v1",
+      "raw_sha256": "fa69eb2e540eda8fdfe6ce747689790b803ffdfaec0cdc395f9666c79d43504f",
+      "revision": "20261101_080013_pt",
+      "x": 14553,
+      "y": 6451,
+      "z": 14
+    }
+  ]
+}
