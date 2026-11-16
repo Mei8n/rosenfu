@@ -107,7 +107,11 @@ fn deletion_refuses_active_save_lock_without_moving_data() {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(file.with_file_name(filename))
+            .open(
+                root.path()
+                    .join("saves")
+                    .join(format!("{}.{}", slot.id, filename)),
+            )
             .unwrap();
         lock.try_lock().unwrap();
         assert!(move_save_slot(root.path(), &slot.id, false).is_err());
@@ -116,4 +120,18 @@ fn deletion_refuses_active_save_lock_without_moving_data() {
         drop(lock);
     }
     move_save_slot(root.path(), &slot.id, false).unwrap();
+    move_save_slot(root.path(), &slot.id, true).unwrap();
+    // Ordinary saves use the exact same stable lock identity.
+    let lock_path = root
+        .path()
+        .join("saves")
+        .join(format!("{}.world.rosenfu.json.lock", slot.id));
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .unwrap();
+    lock.try_lock().unwrap();
+    assert!(save_world(&file, &World::default()).is_err());
+    assert!(file.is_file());
 }

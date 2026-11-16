@@ -24,6 +24,21 @@ fn valid_id(id: &str) -> bool {
         && (11..=64).contains(&id.len())
         && id[5..].bytes().all(|b| b.is_ascii_alphanumeric())
 }
+// Keep locks outside the directory moved by archive/restore. Windows refuses
+// directory rename while any descendant file handle is open.
+pub(super) fn slot_lock_path(path: &Path) -> Option<PathBuf> {
+    let slot = path.parent()?;
+    let id = slot.file_name()?.to_str()?;
+    let saves = slot.parent()?;
+    if !valid_id(id) || saves.file_name()? != "saves" {
+        return None;
+    }
+    let mut name = std::ffi::OsString::from(id);
+    name.push(".");
+    name.push(path.file_name()?);
+    name.push(".lock");
+    Some(saves.join(name))
+}
 pub fn save_slot_path(root: &Path, id: &str) -> Result<PathBuf, StorageError> {
     directory(root)?;
     if id == "legacy" {
