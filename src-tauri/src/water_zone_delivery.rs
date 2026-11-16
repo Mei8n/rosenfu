@@ -31,6 +31,9 @@ pub enum DeliveryError {
 #[derive(Clone, Default)]
 pub struct Cancellation(Arc<AtomicBool>);
 impl Cancellation {
+    // Production delivery currently uses per-request deadlines; tests exercise
+    // cancellation without exposing an unused control API in the desktop build.
+    #[cfg(test)]
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
@@ -183,6 +186,9 @@ impl<T: Transport> WaterZoneDelivery<T> {
     ) -> Result<Arc<WaterZone>, DeliveryError> {
         self.acquire_inner(zone_id, cancel, false)
     }
+    // Pinned production data is immutable and acquired through the cache.
+    // Forced refresh is only used to test failure atomicity of cache replacement.
+    #[cfg(test)]
     pub fn refresh(
         &self,
         zone_id: &str,
