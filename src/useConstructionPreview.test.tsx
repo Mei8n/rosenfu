@@ -55,3 +55,31 @@ test('unmount drops queued preview without starting another native call',async()
   unmount();await act(async()=>finish(null));expect(invoke).toHaveBeenCalledTimes(1);
  }finally{vi.useRealTimers();}
 });
+
+
+test('continuous pointer movement starts preview without a debounce or pause',async()=>{
+ vi.useFakeTimers();
+ const world={},make=(name:string)=>({alignments:[{name}],stations:[]});
+ vi.mocked(invoke).mockResolvedValue({ok:true});
+ const {rerender,unmount}=renderHook(({request})=>useConstructionPreview(world,request),{initialProps:{request:make('A')}});
+ try{
+  expect(invoke).toHaveBeenCalledTimes(1);
+  await act(async()=>{});
+  for(const name of ['B','C','D']){
+   rerender({request:make(name)});
+   await act(async()=>{});
+   expect(invoke).toHaveBeenLastCalledWith('preview_construction_plan',{...make(name),roads:[]});
+  }
+  expect(invoke).toHaveBeenCalledTimes(4);
+ }finally{unmount();vi.useRealTimers();}
+});
+
+test('disabling while native runs drops the latest queued candidate',async()=>{
+ let finish:(value:unknown)=>void=()=>{};
+ vi.mocked(invoke).mockImplementation(()=>new Promise(resolve=>finish=resolve));
+ const world={},make=(name:string)=>({alignments:[{name}],stations:[]});
+ const {rerender,result}=renderHook(({request}:{request:ReturnType<typeof make>|null})=>useConstructionPreview(world,request),{initialProps:{request:make('A')} as {request:ReturnType<typeof make>|null}});
+ rerender({request:make('B')});rerender({request:null});
+ await act(async()=>finish({old:true}));
+ expect(invoke).toHaveBeenCalledTimes(1);expect(result.current).toBeNull();
+});
