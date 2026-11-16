@@ -42,11 +42,11 @@ test("track kind survives independent plans, undo, failed construction and is se
  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="build_alignment")?.[1]).toMatchObject({trackType:"high_speed"});
  vi.mocked(invoke).mockImplementation(async (command,args)=>command==="build_alignment"?{...built,alignments:[{...alignment,track_type:"high_speed"}]}:original(command,args));fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);expect(panel().queryByRole("button",{name:"試験線"})).toBeNull();fireEvent.click(screen.getByRole("button",{name:"選択"}));expect(panel().getByRole("button",{name:"試験線"})).toBeTruthy();
 });
-test("tram defaults road following on, blocks unsupported drawing and construction, permits explicit off",async()=>{
+test("tram defaults road following on without invalidating an existing ordinary draft",async()=>{
  const map=await start();const kind=screen.getByRole("button",{name:"トラム"});
  fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
  fireEvent.click(kind);const road=screen.getByRole("button",{name:"道路に合わせる"});expect(road.getAttribute("aria-pressed")).toBe("true");
- fireEvent.click(map,{clientX:300,clientY:130});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.click(map,{clientX:300,clientY:130});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
  fireEvent.click(road);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
  vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"tram"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="build_alignment")?.[1]).toMatchObject({trackType:"tram"});

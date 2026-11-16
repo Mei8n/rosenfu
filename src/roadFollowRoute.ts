@@ -17,10 +17,10 @@ export function createRoadFollowRouter(bundle:ReferenceGraphBundle){
  };
  const startPoint=pointAt(start),endPoint=pointAt(end);
  const distance=(a:GraphPoint,b:GraphPoint)=>{const r=Math.PI/180,dlat=(b.latitude-a.latitude)*r,dlon=(b.longitude-a.longitude)*r;const h=Math.sin(dlat/2)**2+Math.cos(a.latitude*r)*Math.cos(b.latitude*r)*Math.sin(dlon/2)**2;return 12742000*Math.asin(Math.sqrt(Math.min(1,h)));};
- // Merge only exact vertices on explicitly ground-level roads. Unknown levels
- // remain separate even at the same screen position; crossings without vertices
- // are not junctions. A geometric intersection alone never creates an edge.
- const key=(id:string,edge:typeof graph.edges[number])=>{const p=nodes.get(id)!;return edge.layer===0&&edge.bridge===false&&edge.tunnel===false?`ground:${p.longitude}:${p.latitude}`:`node:${id}`;};
+ // Merge exact road vertices only within the same encoded level group. Tiles
+ // with omitted level metadata form their own group, not an asserted elevation.
+ // Crossings without vertices never join; this drawing aid creates no rail junction.
+ const key=(id:string,edge:typeof graph.edges[number])=>{const p=nodes.get(id)!;return `vertex:${edge.layer??"unspecified"}:${edge.level??"unspecified"}:${p.longitude}:${p.latitude}`;};
  const locations=new Map<string,GraphPoint>([['@start',startPoint],['@end',endPoint]]);
  const adjacent=new Map<string,{to:string;length:number}[]>();
  const add=(a:string,b:string)=>{if(a===b)return;const length=distance(locations.get(a)!,locations.get(b)!);adjacent.set(a,[...(adjacent.get(a)??[]),{to:b,length}]);adjacent.set(b,[...(adjacent.get(b)??[]),{to:a,length}]);};
