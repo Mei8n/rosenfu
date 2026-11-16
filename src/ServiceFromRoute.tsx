@@ -8,7 +8,7 @@ import {ServiceStopDiagram} from './ServiceStopDiagram';
 export function ServiceFromRoute({routes,paths,stations,world,enabled,onDirty,onSave}:{routes:{id:string;name:string;start:string}[];paths:{route_id:string;segments:Segment[]}[];stations:{id:string;name:string}[];world:PathWorld;enabled:boolean;onDirty:(v:boolean)=>void;onSave:(v:CreateServicePath)=>Promise<void>}){
  const [routeId,setRouteId]=useState(''),[name,setName]=useState(''),[preview,setPreview]=useState<PathPreview|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const epoch=useRef(0);const names=new Map(stations.map(s=>[s.id,s.name]));
- useEffect(()=>{epoch.current++;setPreview(null);setBusy(false);return()=>{epoch.current++;};},[world,enabled]);
+ useEffect(()=>{epoch.current++;setPreview(null);setBusy(false);return()=>{epoch.current++;};},[world]);
  async function select(id:string){
   const token=++epoch.current;setRouteId(id);setPreview(null);setError('');onDirty(!!id);
   const route=routes.find(r=>r.id===id),path=paths.find(p=>p.route_id===id);if(!route||!path)return;

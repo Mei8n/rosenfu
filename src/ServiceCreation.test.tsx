@@ -36,3 +36,36 @@ test('late route response after cancellation cannot restore discarded creation',
  view.rerender(<ServiceFromRoute {...props} world={{...world}}/>);await act(async()=>resolve(preview));
  expect(screen.queryByLabelText('停車駅 2')).toBeNull();expect(props.onSave).not.toHaveBeenCalled();
 });
+
+
+test('failed creation retains preview and custom name through parent busy toggle for retry',async()=>{
+ responses();let reject:(reason:Error)=>void=()=>{};
+ const save=vi.fn().mockImplementationOnce(()=>new Promise((_resolve,r)=>{reject=r;})).mockResolvedValue(undefined);
+ const props={routes:[{id:'r',name:'本線',start:'a'}],paths:[{route_id:'r',segments}],stations,world,enabled:true,onDirty:vi.fn(),onSave:save};
+ const view=render(<ServiceFromRoute {...props}/>);
+ fireEvent.change(screen.getByLabelText('系統にする路線'),{target:{value:'r'}});
+ await screen.findByLabelText('停車駅 2');
+ fireEvent.change(screen.getByLabelText('系統名'),{target:{value:'快速'}});
+ fireEvent.click(screen.getByRole('button',{name:'系統を作成'}));
+ view.rerender(<ServiceFromRoute {...props} enabled={false}/>);
+ await act(async()=>reject(Error('保存失敗')));
+ view.rerender(<ServiceFromRoute {...props}/>);
+ expect(screen.getByLabelText('系統名')).toHaveProperty('value','快速');
+ expect(screen.getByLabelText('停車駅 2')).toHaveProperty('checked',true);
+ fireEvent.click(screen.getByRole('button',{name:'系統を作成'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledTimes(2));
+ expect(save.mock.calls[1][0].name).toBe('快速');
+});
+
+test('world epoch remount discards route draft even when another world reuses route id',async()=>{
+ responses();
+ const props={routes:[{id:'r',name:'本線',start:'a'}],paths:[{route_id:'r',segments}],stations,world,enabled:true,onDirty:vi.fn(),onSave:vi.fn()};
+ const view=render(<ServiceFromRoute key="route-service-1-1" {...props}/>);
+ fireEvent.change(screen.getByLabelText('系統にする路線'),{target:{value:'r'}});
+ await screen.findByLabelText('停車駅 2');
+ fireEvent.change(screen.getByLabelText('系統名'),{target:{value:'古い名前'}});
+ view.rerender(<ServiceFromRoute key="route-service-2-2" {...props} routes={[{id:'r',name:'別世界線',start:'a'}]} world={{...world}}/>);
+ expect(screen.getByLabelText('系統にする路線')).toHaveProperty('value','');
+ expect(screen.queryByLabelText('系統名')).toBeNull();
+ expect(screen.queryByLabelText('停車駅 2')).toBeNull();
+});
