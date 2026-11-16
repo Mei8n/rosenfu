@@ -903,6 +903,7 @@ export function App() {
       if (!enabled || !stationsById.has(id)) return;
       const select=routeMapSelect.current;if(routeMapPick!=="sequence")cancelRouteMapPick();select(id);return;
     }
+    clearTrackSelection();
     if (stationSettingsDirty && id !== selected) { setPendingStation({ id }); return; }
     if (id === selected) { setMainTab("stations"); setActiveTool("station-management"); setPanelCollapsed(false); return; }
     setMainTab("stations"); setActiveTool("station-management");
@@ -1356,10 +1357,18 @@ export function App() {
     applyAnchorEdit(activePathId,after);setAnchorUndo(history=>[...history,{kind:'point' as const,id:activePathId,before,after}].slice(-50));setAnchorRedo([]);setDraftFinished(!!targetRef||roadFinishAfterPlacement.current);roadFinishAfterPlacement.current=false;setHoverPoint(null);setError('');roadDrawing.cancel();
   }
 
+  function clearTrackSelection() {
+    setAlignmentId("");setSelectedPlanPath(null);setTrackDeleteConfirm(false);
+  }
+
   function mapClick(event: MouseEvent<SVGSVGElement>) {
     if(anchorPlacementPending.current){const at=pendingPlacementPoint.current;if(event.detail>=2&&at&&Math.hypot(event.clientX-at.x,event.clientY-at.y)<=8){finishPendingPlacement.current=true;if(roadFollowing)roadFinishAfterPlacement.current=true;}return;}
     smoothZoom.cancel();
-    if (!enabled || suppressMapClick.current || mapMode === "move") return;
+    if (!enabled || suppressSelectionClick.current) return;
+    // Track hit targets stop propagation in selection mode. A background click
+    // clears only the highlight, without consuming drawing/placement clicks.
+    clearTrackSelection();
+    if (suppressMapClick.current || mapMode === "move") return;
     const rect = event.currentTarget.getBoundingClientRect();
     const rawCoordinates = coordinatesFromClient(event.clientX, event.clientY, rect, camera);
     if (!rawCoordinates) return;
@@ -1583,7 +1592,8 @@ export function App() {
         else if(event.shiftKey)redoStation();else undoStation();return;
       }
       if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
-      if (event.key === "Escape") {roadDrawing.cancel();cancelParallel(); if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
+      if (event.key === "Escape" && (event.defaultPrevented || event.isComposing || event.keyCode === 229 || document.querySelector('dialog[open], [role="dialog"]'))) return;
+      if (event.key === "Escape") {clearTrackSelection();roadDrawing.cancel();cancelParallel(); if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   });
