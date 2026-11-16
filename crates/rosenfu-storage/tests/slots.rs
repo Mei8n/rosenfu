@@ -67,17 +67,30 @@ fn deletion_is_recoverable_and_keeps_related_files() {
     std::fs::write(file.with_file_name("world.autosave.rosenfu.json"), b"auto").unwrap();
     move_save_slot(root.path(), &slot.id, false).unwrap();
     assert!(list_save_slots(root.path()).unwrap().is_empty());
-    assert_eq!(list_deleted_save_slots(root.path()).unwrap()[0].name,"delete me");
+    assert_eq!(
+        list_deleted_save_slots(root.path()).unwrap()[0].name,
+        "delete me"
+    );
     assert!(move_save_slot(root.path(), "../escape", true).is_err());
     move_save_slot(root.path(), &slot.id, true).unwrap();
-    assert_eq!(std::fs::read(&file).unwrap(),before);
-    assert_eq!(std::fs::read(file.with_file_name("world.autosave.rosenfu.json")).unwrap(),b"auto");
+    assert_eq!(std::fs::read(&file).unwrap(), before);
+    assert_eq!(
+        std::fs::read(file.with_file_name("world.autosave.rosenfu.json")).unwrap(),
+        b"auto"
+    );
     assert!(list_deleted_save_slots(root.path()).unwrap().is_empty());
-    std::fs::write(root.path().join("world.rosenfu.json"), b"unsupported legacy").unwrap();
+    std::fs::write(
+        root.path().join("world.rosenfu.json"),
+        b"unsupported legacy",
+    )
+    .unwrap();
     move_save_slot(root.path(), "legacy", false).unwrap();
     std::fs::write(root.path().join("world.rosenfu.json"), b"new legacy").unwrap();
     assert!(move_save_slot(root.path(), "legacy", true).is_err());
-    assert_eq!(std::fs::read(root.path().join("world.rosenfu.json")).unwrap(), b"new legacy");
+    assert_eq!(
+        std::fs::read(root.path().join("world.rosenfu.json")).unwrap(),
+        b"new legacy"
+    );
 }
 
 #[test]
@@ -85,8 +98,17 @@ fn deletion_refuses_active_save_lock_without_moving_data() {
     let root = tempfile::tempdir().unwrap();
     let (slot, _) = create_save_slot(root.path(), "busy", &World::default()).unwrap();
     let file = save_slot_path(root.path(), &slot.id).unwrap();
-    for filename in ["world.rosenfu.json.lock", "world.autosave.rosenfu.json.lock"] {
-        let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(file.with_file_name(filename)).unwrap();
+    for filename in [
+        "world.rosenfu.json.lock",
+        "world.autosave.rosenfu.json.lock",
+    ] {
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(file.with_file_name(filename))
+            .unwrap();
         lock.try_lock().unwrap();
         assert!(move_save_slot(root.path(), &slot.id, false).is_err());
         assert!(file.is_file());

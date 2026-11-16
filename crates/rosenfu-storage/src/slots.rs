@@ -141,22 +141,34 @@ pub fn create_save_slot(
 pub fn move_save_slot(root: &Path, id: &str, restore: bool) -> Result<(), StorageError> {
     directory(root)?;
     let trash = root.join("deleted-saves");
-    if !trash.exists() { fs::create_dir(&trash)?; }
+    if !trash.exists() {
+        fs::create_dir(&trash)?;
+    }
     directory(&trash)?;
-    let (source_root, target_root) = if restore { (trash.as_path(), root) } else { (root, trash.as_path()) };
+    let (source_root, target_root) = if restore {
+        (trash.as_path(), root)
+    } else {
+        (root, trash.as_path())
+    };
     let file = save_slot_path(source_root, id)?;
-    if !regular_file_exists(&file)? { return Err(StorageError::InvalidHeader); }
+    if !regular_file_exists(&file)? {
+        return Err(StorageError::InvalidHeader);
+    }
     let _manual_lock = lock_save(&file)?;
     let _auto_lock = lock_save(&file.with_file_name("world.autosave.rosenfu.json"))?;
     let (source, target) = if id == "legacy" {
         (file, target_root.join("world.rosenfu.json"))
     } else {
         let saves = target_root.join("saves");
-        if !saves.exists() { fs::create_dir(&saves)?; }
+        if !saves.exists() {
+            fs::create_dir(&saves)?;
+        }
         directory(&saves)?;
         (file.parent().unwrap().to_owned(), saves.join(id))
     };
-    if fs::symlink_metadata(&target).is_ok() { return Err(StorageError::FileChanged); }
+    if fs::symlink_metadata(&target).is_ok() {
+        return Err(StorageError::FileChanged);
+    }
     if id == "legacy" {
         let _target_lock = lock_save(&target)?;
         // hard_link fails if the destination exists, unlike Unix rename.

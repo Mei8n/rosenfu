@@ -714,8 +714,16 @@ fn list_save_slots(
         .list_save_slots(&save_root(&app)?)
 }
 #[tauri::command]
-fn move_save_slot(app: tauri::AppHandle, slot_id: String, restore: bool, editor: State<'_, Mutex<WorldEditor>>) -> Result<(), String> {
-    editor.lock().map_err(|_| "world state unavailable")?.move_save_slot(&save_root(&app)?, &slot_id, restore)
+fn move_save_slot(
+    app: tauri::AppHandle,
+    slot_id: String,
+    restore: bool,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<(), String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .move_save_slot(&save_root(&app)?, &slot_id, restore)
 }
 #[tauri::command]
 fn create_new_world(

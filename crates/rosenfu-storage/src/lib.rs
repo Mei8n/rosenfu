@@ -451,4 +451,7 @@ mod tests {
 }
 
 mod slots;
-pub use slots::{create_save_slot, list_save_slots, list_deleted_save_slots, move_save_slot, save_slot_path, SaveSlot};
+pub use slots::{
+    create_save_slot, list_deleted_save_slots, list_save_slots, move_save_slot, save_slot_path,
+    SaveSlot,
+};

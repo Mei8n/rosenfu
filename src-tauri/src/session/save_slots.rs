@@ -11,7 +11,8 @@ impl WorldEditor {
         Ok(SaveSlotList {
             active_slot_id: self.active_slot_id.clone(),
             slots: rosenfu_storage::list_save_slots(root).map_err(|e| e.to_string())?,
-            deleted_slots: rosenfu_storage::list_deleted_save_slots(root).map_err(|e| e.to_string())?,
+            deleted_slots: rosenfu_storage::list_deleted_save_slots(root)
+                .map_err(|e| e.to_string())?,
         })
     }
     pub fn move_save_slot(&mut self, root: &Path, id: &str, restore: bool) -> Result<(), String> {
@@ -190,11 +191,17 @@ mod tests {
             "roadFollowing":false,"plannedStations":[],"draftFinished":true
         })).unwrap();
         assert!(!editor.slot_autosave_status(root.path()).unwrap());
-        editor.autosave_active_slot(root.path(), &id, Some(plans.clone()), None).unwrap();
+        editor
+            .autosave_active_slot(root.path(), &id, Some(plans.clone()), None)
+            .unwrap();
         assert_eq!(bytes(&manual), before);
         // A fresh session reloads the manual slot, then its separate autosave.
         let mut restarted = WorldEditor::new();
-        assert!(restarted.load_save_slot(root.path(), id.clone()).unwrap().construction_plans.is_none());
+        assert!(restarted
+            .load_save_slot(root.path(), id.clone())
+            .unwrap()
+            .construction_plans
+            .is_none());
         assert!(restarted.slot_autosave_status(root.path()).unwrap());
         let restored = restarted.load_slot_autosave(root.path()).unwrap();
         assert_eq!(restored.construction_plans, Some(plans));
@@ -213,7 +220,9 @@ mod tests {
         editor.move_save_slot(root.path(), &id, false).unwrap();
         assert_eq!(editor.snapshot(), before);
         assert!(editor.active_slot_id.is_none());
-        assert!(editor.autosave_active_slot(root.path(), &id, None, None).is_err());
+        assert!(editor
+            .autosave_active_slot(root.path(), &id, None, None)
+            .is_err());
         editor.move_save_slot(root.path(), &id, true).unwrap();
         assert!(editor.active_slot_id.is_none());
         editor.load_save_slot(root.path(), id).unwrap();
@@ -226,17 +235,23 @@ mod tests {
         editor.save_active_slot(root.path(), None, None).unwrap();
         let id = editor.active_slot_id.clone().unwrap();
         editor.rename_company("recovery".into()).unwrap();
-        editor.autosave_active_slot(root.path(), &id, None, None).unwrap();
+        editor
+            .autosave_active_slot(root.path(), &id, None, None)
+            .unwrap();
         let auto = editor.active_autosave_path(root.path()).unwrap();
         let previous = bytes(&auto);
         editor.load_save_slot(root.path(), id.clone()).unwrap();
         assert!(editor.slot_autosave_status(root.path()).unwrap());
         editor.rename_company("new edit".into()).unwrap();
-        editor.autosave_active_slot(root.path(), &id, None, None).unwrap();
+        editor
+            .autosave_active_slot(root.path(), &id, None, None)
+            .unwrap();
         assert_eq!(bytes(&rosenfu_storage::backup_path(&auto)), previous);
-        std::fs::write(&auto,b"corrupt").unwrap();
+        std::fs::write(&auto, b"corrupt").unwrap();
         assert!(editor.slot_autosave_status(root.path()).is_err());
-        assert!(editor.autosave_active_slot(root.path(), &id, None, None).is_err());
+        assert!(editor
+            .autosave_active_slot(root.path(), &id, None, None)
+            .is_err());
     }
     #[test]
     fn new_world_and_save_as_are_isolated_and_do_not_overwrite_legacy() {
