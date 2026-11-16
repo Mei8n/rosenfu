@@ -204,16 +204,31 @@ impl WorldEditor {
         expected_name: String,
     ) -> Result<WorldDraft, String> {
         let before = self.snapshot();
-        let service = before.services.iter().find(|s| s.id == service_id && s.owner == self.company)
+        let service = before
+            .services
+            .iter()
+            .find(|s| s.id == service_id && s.owner == self.company)
             .ok_or("削除する系統が見つかりません。")?;
-        if service.name != expected_name || before.service_paths.iter().find(|p| p.service_id == service_id) != Some(&expected_path) {
-            return Err("系統が変更されています。最新の内容を確認してから削除してください。".into());
+        if service.name != expected_name
+            || before
+                .service_paths
+                .iter()
+                .find(|p| p.service_id == service_id)
+                != Some(&expected_path)
+        {
+            return Err(
+                "系統が変更されています。最新の内容を確認してから削除してください。".into(),
+            );
         }
         let mut draft = before.clone();
         draft.services.retain(|s| s.id != service_id);
         draft.service_paths.retain(|p| p.service_id != service_id);
-        draft.service_route_bindings.retain(|b| b.service_id != service_id);
-        draft.service_appearances.retain(|a| a.service_id != service_id);
+        draft
+            .service_route_bindings
+            .retain(|b| b.service_id != service_id);
+        draft
+            .service_appearances
+            .retain(|a| a.service_id != service_id);
         let mut candidate = self.clone();
         candidate.world.replace(draft).map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
@@ -2638,25 +2653,54 @@ mod tests {
     #[test]
     fn service_delete_preserves_infrastructure_others_and_roundtrips_undo_redo_save() {
         let (mut e, a, stations) = alignment_fixture();
-        let route = e.save_planned_route(None, "R".into(), stations[0], vec![span(a, stations[0], stations[2])], vec![]).unwrap().routes[0].id;
-        let service = create_test_service(&mut e, stations[0], vec![span(a, stations[0], stations[2])]).services[0].id;
-        e.set_service_route_binding(service, rosenfu_core::world::ServiceRouteBindingKind::Route { route_id: route }).unwrap();
-        e.set_service_color(service, "#ab12ef".into(), None).unwrap();
+        let route = e
+            .save_planned_route(
+                None,
+                "R".into(),
+                stations[0],
+                vec![span(a, stations[0], stations[2])],
+                vec![],
+            )
+            .unwrap()
+            .routes[0]
+            .id;
+        let service =
+            create_test_service(&mut e, stations[0], vec![span(a, stations[0], stations[2])])
+                .services[0]
+                .id;
+        e.set_service_route_binding(
+            service,
+            rosenfu_core::world::ServiceRouteBindingKind::Route { route_id: route },
+        )
+        .unwrap();
+        e.set_service_color(service, "#ab12ef".into(), None)
+            .unwrap();
         let original = e.snapshot();
         let path = original.service_paths[0].clone();
-        e.duplicate_service(service, path.clone(), "系統".into()).unwrap();
+        e.duplicate_service(service, path.clone(), "系統".into())
+            .unwrap();
         let before = e.snapshot();
-        let after = e.delete_service(service, path.clone(), "系統".into()).unwrap();
+        let after = e
+            .delete_service(service, path.clone(), "系統".into())
+            .unwrap();
         let mut expected = before.clone();
         expected.services.retain(|s| s.id != service);
         expected.service_paths.retain(|p| p.service_id != service);
-        expected.service_route_bindings.retain(|b| b.service_id != service);
-        expected.service_appearances.retain(|a| a.service_id != service);
+        expected
+            .service_route_bindings
+            .retain(|b| b.service_id != service);
+        expected
+            .service_appearances
+            .retain(|a| a.service_id != service);
         assert_eq!(after, expected);
         assert_eq!(after.services.len(), 1);
         for _ in 0..3 {
             assert_eq!(e.undo_alignment_deletion().unwrap(), before);
-            assert_eq!(e.delete_service(service, path.clone(), "系統".into()).unwrap(), after);
+            assert_eq!(
+                e.delete_service(service, path.clone(), "系統".into())
+                    .unwrap(),
+                after
+            );
         }
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("deleted-service.json");
@@ -2673,25 +2717,35 @@ mod tests {
     #[test]
     fn service_delete_rejects_stale_and_foreign_requests_atomically() {
         let (mut e, a, stations) = alignment_fixture();
-        let service = create_test_service(&mut e, stations[0], vec![span(a, stations[0], stations[2])]).services[0].id;
+        let service =
+            create_test_service(&mut e, stations[0], vec![span(a, stations[0], stations[2])])
+                .services[0]
+                .id;
         let before = e.snapshot();
         let path = before.service_paths[0].clone();
-        assert!(e.delete_service(service, path.clone(), "古い名前".into()).is_err());
-        let mut stale = path.clone();stale.stops.clear();
+        assert!(e
+            .delete_service(service, path.clone(), "古い名前".into())
+            .is_err());
+        let mut stale = path.clone();
+        stale.stops.clear();
         assert!(e.delete_service(service, stale, "系統".into()).is_err());
         assert_eq!(e.snapshot(), before);
         let owner = e.company;
         e.company = rosenfu_core::world::CompanyId(999);
-        assert!(e.delete_service(service, path.clone(), "系統".into()).is_err());
-        assert_eq!(e.snapshot(), before);e.company=owner;
-        e.delete_service(service, path.clone(), "系統".into()).unwrap();
-        let after=e.snapshot();
-        assert!(e.delete_service(service,path,"系統".into()).is_err());
-        assert_eq!(e.snapshot(),after);
+        assert!(e
+            .delete_service(service, path.clone(), "系統".into())
+            .is_err());
+        assert_eq!(e.snapshot(), before);
+        e.company = owner;
+        e.delete_service(service, path.clone(), "系統".into())
+            .unwrap();
+        let after = e.snapshot();
+        assert!(e.delete_service(service, path, "系統".into()).is_err());
+        assert_eq!(e.snapshot(), after);
         e.rename_company("後の編集".into()).unwrap();
-        let later=e.snapshot();
+        let later = e.snapshot();
         assert!(e.undo_alignment_deletion().is_err());
-        assert_eq!(e.snapshot(),later);
+        assert_eq!(e.snapshot(), later);
     }
 
     #[test]

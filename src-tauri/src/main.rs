@@ -377,7 +377,9 @@ fn delete_service(
     expected_path: rosenfu_core::world::ServicePath,
     expected_name: String,
 ) -> Result<WorldDraft, String> {
-    editor.lock().map_err(|_| "world state unavailable")?
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
         .delete_service(service_id, expected_path, expected_name)
 }
 #[tauri::command]
