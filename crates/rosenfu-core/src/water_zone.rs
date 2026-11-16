@@ -92,7 +92,7 @@ impl ZonePin {
             || self.width > 65535
             || self.height == 0
             || self.height > 65535
-            || self.run_count % 2 != 0
+            || !self.run_count.is_multiple_of(2)
             || self.run_padding > 7
             || ![
                 self.origin_longitude,
@@ -195,16 +195,20 @@ impl WaterZone {
         }
         let split = (pin.height as usize + 1) * 4;
         let rows: Vec<u32> = bytes[..split]
-            .chunks_exact(4)
-            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b))
             .collect();
         let run_start = split + usize::from(pin.run_padding);
         if bytes[split..run_start].iter().any(|b| *b != 0) {
             return Err(Error::Decode);
         }
         let runs: Vec<u16> = bytes[run_start..]
-            .chunks_exact(2)
-            .map(|b| u16::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u16::from_le_bytes(*b))
             .collect();
         if rows.first() != Some(&0) || rows.last() != Some(&pin.run_count) {
             return Err(Error::Decode);
@@ -215,7 +219,7 @@ impl WaterZone {
                 return Err(Error::Decode);
             }
             let mut end = 0;
-            for run in runs[pair[0] as usize..pair[1] as usize].chunks_exact(2) {
+            for run in runs[pair[0] as usize..pair[1] as usize].as_chunks::<2>().0 {
                 if run[0] < end || run[0] >= run[1] || u32::from(run[1]) > pin.width {
                     return Err(Error::Decode);
                 }

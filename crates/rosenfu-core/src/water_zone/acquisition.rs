@@ -257,7 +257,13 @@ mod tests {
         };
         p.verify_header_spec(&header).unwrap();
         let z = WaterZone::from_range(p, 206, "bytes 2518712-2962247/6696000", &bytes).unwrap();
-        let wet: u64 = z.runs.chunks_exact(2).map(|p| u64::from(p[1] - p[0])).sum();
+        let wet: u64 = z
+            .runs
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u64::from(p[1] - p[0]))
+            .sum();
         let total = u64::from(z.pin.width) * u64::from(z.pin.height);
         assert!((wet as f64 / total as f64 - 0.2647).abs() < 0.00005);
         println!(
