@@ -564,3 +564,15 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
   .workbench .construction-toolbar .speed-input { max-width:100%; }
 }
 .workbench .route-station-select, .workbench .route-station-select * { cursor:crosshair; }
+
+/* Map legibility: neutral built infrastructure, blue plans, red refusals.
+   Screen-space widths remain readable without widening the hit targets. */
+.workbench .rail-casing { fill:none; stroke:#fffefa; stroke-width:calc(var(--rail-width) * .6px + 3.2px); stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; pointer-events:none; }
+.workbench .alignment-path { stroke:#414a4d; stroke-width:calc(var(--rail-width) * .6px + 1px); vector-effect:non-scaling-stroke; }
+.workbench .route-base .alignment-path { stroke:#858b8d; }
+.workbench .alignment-path.alignment-selected { stroke:#c17c0b; }
+.workbench .draft-path { stroke:#187cb2; stroke-width:calc(var(--rail-width) * .6px + 1px); stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:7 3; vector-effect:non-scaling-stroke; }
+.workbench .draft-path.candidate-draft,.workbench .draft-path.road-drawing-preview,.workbench .draft-path.reference-copy-preview,.workbench .draft-path.anchor-drag-preview { stroke:#087ca0; stroke-width:calc(var(--rail-width) * .6px + 1px); stroke-dasharray:none; }
+.workbench .inactive-plan .draft-path { stroke:#7a858b; }
+.workbench .draft-path.track-explicit-selection { stroke:#c17c0b; }
+.workbench .draft-path.invalid-candidate { stroke:#c43d45; stroke-dasharray:4 3; }
