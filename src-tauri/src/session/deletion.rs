@@ -1782,13 +1782,20 @@ mod tests {
             let mut before = editor.snapshot();
             before.alignments[0].section_profiles = vec![
                 rosenfu_core::world::VerticalProfile {
-                    start_height_m: 0.,
-                    end_height_m: 0.,
+                    start_height_m: 6.,
+                    end_height_m: 6.,
                     start_tangent_m: 0.,
                     end_tangent_m: 0.,
                 };
                 3
             ];
+            before.alignments[0].infrastructure = [1, 2, 4]
+                .into_iter()
+                .map(|track_count| rosenfu_core::world::SectionInfrastructure {
+                    level: rosenfu_core::world::InfrastructureLevel::Elevated,
+                    track_count,
+                })
+                .collect();
             before.construction_plans = Some(plans());
             editor.world.replace(before.clone()).unwrap();
             let after = editor
@@ -1802,7 +1809,15 @@ mod tests {
                 )
                 .unwrap();
             if indices.len() == 2 {
-                assert_eq!(after.alignments[0].section_profiles.len(), 1);
+                let kept = if indices[0] == 0 { 2 } else { 0 };
+                assert_eq!(
+                    after.alignments[0].section_profiles,
+                    vec![before.alignments[0].section_profiles[kept]]
+                );
+                assert_eq!(
+                    after.alignments[0].infrastructure,
+                    vec![before.alignments[0].infrastructure[kept]]
+                );
                 assert_eq!(after.alignments[0].section_count(), 1);
             } else {
                 assert!(after.alignments.is_empty());
