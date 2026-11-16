@@ -1,4 +1,4 @@
-//! Pinned observation masks. Missing or empty fine evidence is not dry land.
+//! Pinned construction masks. Valid decoded dry cells are game-model land; missing data is not.
 use super::water_model::{bundled, validate_with_model, WaterField, UNKNOWN};
 use super::*;
 use sha2::{Digest, Sha256};
@@ -170,11 +170,9 @@ impl WaterField for ConstructionWaterModel {
                 let fine = self.fine[i]
                     .as_ref()
                     .ok_or("水域の細密データを取得できていないため着工できません。")?;
-                return if fine.water(x, y) {
-                    Ok(true)
-                } else {
-                    Err("細密水域データの範囲が不完全なため着工できません。".into())
-                };
+                // A successful fixed mask defines the construction game model, not
+                // surveyed completeness. Missing/invalid installs never reach here.
+                return Ok(fine.water(x, y));
             }
         }
         // Complete compiled provider listing: no fine applies here, so coarse is used.
@@ -240,20 +238,19 @@ mod tests {
         assert!(m.install("unknown", KANMON).is_err());
     }
     #[test]
-    fn observations_empty_stays_unknown_while_normal_nonprovision_uses_coarse() {
+    fn acquired_fine_dry_is_model_land_while_normal_nonprovision_uses_coarse() {
         let mut m = ConstructionWaterModel::default();
         m.install(
             "fuji",
             include_bytes!("../../../../data/water-mask-trial-20261114/fuji/water.bin"),
         )
         .unwrap();
-        assert!(m
+        assert!(!m
             .water(GeoPoint {
                 longitude: 138.73,
                 latitude: 35.36
             })
-            .unwrap_err()
-            .contains("不完全"));
+            .unwrap());
         assert!(!m
             .water(GeoPoint {
                 longitude: 139.7671,
@@ -272,6 +269,32 @@ mod tests {
                 latitude: 0.
             })
             .is_err());
+    }
+    #[test]
+    fn acquired_fine_dry_overrides_coarse_water_without_claiming_survey_completeness() {
+        let mut m = ConstructionWaterModel::default();
+        m.install("kanmon", KANMON).unwrap();
+        let s = SPECS[1];
+        let (kx, ky) = s.scale();
+        let mut checked = 0;
+        for row in 0..s.height {
+            for col in 0..s.width {
+                let p = GeoPoint {
+                    longitude: s.lon + (s.x + (col as f64 + 0.5) * 25.) / kx,
+                    latitude: s.lat + (s.y + (row as f64 + 0.5) * 25.) / ky,
+                };
+                if bundled().unwrap().water(p).unwrap()
+                    && !m.fine[1].as_ref().unwrap().water(col, row)
+                {
+                    assert!(!m.water(p).unwrap());
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "real fixed mask must exercise fine-dry/coarse-wet precedence"
+        );
     }
     #[test]
     fn fine_cell_boundaries_are_included_even_with_endpoints_outside_fine() {

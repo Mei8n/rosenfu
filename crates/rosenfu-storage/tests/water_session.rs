@@ -102,3 +102,37 @@ fn unknown_fine_does_not_block_provably_deep_tunnel_but_never_becomes_land() {
         .preview_construction_plan(vec![plan(138.73, 35.36, "ground")], vec![])
         .is_err());
 }
+
+#[test]
+fn fuji_ground_requires_valid_acquisition_then_uses_dry_game_model() {
+    let mut editor = WorldEditor::new();
+    let before = editor.snapshot();
+    assert!(editor
+        .build_plan(vec![plan(138.73, 35.36, "ground")])
+        .is_err());
+    assert!(editor.install_water_mask("fuji", b"broken").is_err());
+    assert_eq!(editor.snapshot(), before);
+    assert!(editor
+        .build_plan(vec![plan(138.73, 35.36, "ground")])
+        .is_err());
+    editor
+        .install_water_mask(
+            "fuji",
+            include_bytes!("../../../data/water-mask-trial-20261114/fuji/water.bin"),
+        )
+        .unwrap();
+    let preview = editor
+        .preview_construction_plan(vec![plan(138.73, 35.36, "ground")], vec![])
+        .unwrap();
+    let built = editor
+        .build_plan(vec![plan(138.73, 35.36, "ground")])
+        .unwrap();
+    assert_eq!(preview, built);
+    let world = rosenfu_core::world::World::new(built.clone()).unwrap();
+    assert_eq!(
+        rosenfu_storage::decode(&rosenfu_storage::encode(&world).unwrap())
+            .unwrap()
+            .snapshot(),
+        &built
+    );
+}
