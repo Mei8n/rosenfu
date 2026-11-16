@@ -1,3 +1,4 @@
+import {useKeyboardPan} from "./useKeyboardPan";
 import {ofmEndpointPick} from './ofmEndpointPick';
 import {useWaterModelAcquisition} from './useWaterModelAcquisition';
 import {waterAcquisitionBounds} from './waterAcquisitionBounds';
@@ -87,7 +88,7 @@ import { MAP_PROVIDERS } from "./mapProviders";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, FormEvent, CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, MIN_ZOOM, MAX_ZOOM, cameraAt, panCamera, visibleTiles, positionTile, viewBounds, mapViewport } from "./map";
+import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, positionTile, viewBounds, mapViewport } from "./map";
 import { GsiBackground } from "./GsiBackground";
 import type { Camera } from "./map";
 import type { TileStatus } from "./GsiBackground";
@@ -163,9 +164,6 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [camera, setCamera] = useState<Camera>(DEFAULT_CAMERA);
   const [requestedCamera, setRequestedCamera] = useState<Camera>(DEFAULT_CAMERA);
-  const [centerLatitude, setCenterLatitude] = useState(DEFAULT_CAMERA.latitude.toFixed(5));
-  const [centerLongitude, setCenterLongitude] = useState(DEFAULT_CAMERA.longitude.toFixed(5));
-  const [cameraError, setCameraError] = useState("");
   const [savedViewFingerprint,setSavedViewFingerprint]=useState(JSON.stringify(DEFAULT_CAMERA));
   function restoreView(view:Camera|null|undefined){
     const next=view?cameraAt(view.latitude,view.longitude,view.zoom):DEFAULT_CAMERA;
@@ -219,17 +217,11 @@ export function App() {
   const smoothZoom=useSmoothZoom(cameraRef,renderCamera);
   function renderCamera(next: Camera) {
     if(boxGesture.current)cancelMapGesture();
-    cameraRef.current = next; setCamera(next); setCenterLatitude(next.latitude.toFixed(5)); setCenterLongitude(next.longitude.toFixed(5)); setCameraError("");
+    cameraRef.current = next; setCamera(next);
   }
   function changeCamera(next: Camera) { smoothZoom.cancel(); renderCamera(next); }
   function zoomFromControls(delta: number) { if(boxGesture.current)cancelMapGesture();smoothZoom.zoomBy(delta, { x: MAP_VIEWBOX.width / 2, y: MAP_VIEWBOX.height / 2 }); }
   useEffect(()=>{smoothZoom.cancel();},[background]);
-  function moveToCoordinates(event: FormEvent) {
-    event.preventDefault();
-    if (!centerLatitude.trim() || !centerLongitude.trim()) { setCameraError("中心の緯度・経度を入力してください。"); return; }
-    try { changeCamera(cameraAt(Number(centerLatitude), Number(centerLongitude), camera.zoom)); }
-    catch { setCameraError("中心座標は北緯20〜46度・東経122〜154度で指定してください。"); }
-  }
 
   const [tileStatus, setTileStatus] = useState<TileStatus>({ loaded: 0, failed: 0, total: GSI_TILES.length });
   const [status, setStatus] = useState<Status>("loading");
@@ -1412,6 +1404,8 @@ export function App() {
       setNotice("駅を再設置しました。駅IDは新規発行です。保存でファイルに反映します。");
     });
   }
+  useKeyboardPan((dx,dy)=>changeCamera(panCamera(cameraRef.current,dx,dy)),
+    ()=>!!(seamMutationPending.current||busyRef.current||slotDialog||slotPicker||confirmLoad||deleteTarget||confirmRangeDelete||gestureRef.current||anchorGesture.current||boxGesture.current));
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if(seamMutationPending.current)return;
@@ -1665,10 +1659,7 @@ export function App() {
           {trackDeleteConfirm&&selectedTrackExists&&<TrackDeleteDialog busy={busy} blocked={!enabled||unapplied||!!selectedTrackReferences} error={error} onCancel={()=>setTrackDeleteConfirm(false)} onDelete={deleteSelectedTrack}/>}
           <div className="camera-controls" aria-label="地図表示操作">
             <div className="map-mode-controls" role="group" aria-label="地図の操作モード"><button className="secondary" disabled={activeTool === "tracks"} aria-pressed={mapMode === "move"} onClick={() => { changeMapMode("move"); }}>移動</button><button className="secondary" aria-pressed={mapMode === "place"} disabled={!enabled || activeTool !== "stations"} onClick={() => { changeMapMode("place"); }}>駅配置</button><span>ドラッグで移動 / 縦ホイールでカーソル位置をズーム</span></div>
-            <div className="camera-buttons"><button className="secondary" aria-label="西へ移動" onClick={() => changeCamera(panCamera(camera, -300, 0))}>←</button><button className="secondary" aria-label="北へ移動" onClick={() => changeCamera(panCamera(camera, 0, -180))}>↑</button><button className="secondary" aria-label="南へ移動" onClick={() => changeCamera(panCamera(camera, 0, 180))}>↓</button><button className="secondary" aria-label="東へ移動" onClick={() => changeCamera(panCamera(camera, 300, 0))}>→</button><button className="secondary" aria-label="縮小" disabled={camera.zoom <= MIN_ZOOM} onClick={() => zoomFromControls(-1)}>−</button><button className="secondary" aria-label="拡大" disabled={camera.zoom >= MAX_ZOOM} onClick={() => zoomFromControls(1)}>＋</button><button className="secondary" onClick={() => changeCamera(DEFAULT_CAMERA)}>東京へ戻る</button></div>
-            <form className="camera-coordinate-form" onSubmit={moveToCoordinates}><label htmlFor="camera-latitude">中心緯度</label><input id="camera-latitude" type="number" step="any" min={BOUNDS.south} max={BOUNDS.north} value={centerLatitude} onChange={(event) => setCenterLatitude(event.target.value)} /><label htmlFor="camera-longitude">中心経度</label><input id="camera-longitude" type="number" step="any" min={BOUNDS.west} max={BOUNDS.east} value={centerLongitude} onChange={(event) => setCenterLongitude(event.target.value)} /><button className="secondary" type="submit">座標へ移動</button></form>
             <p>閲覧・建設範囲: 北緯20〜46度 / 東経122〜154度。領土境界を示すものではありません。範囲端では表示を矩形内に制限します。</p>
-            {cameraError && <p role="alert">{cameraError}</p>}
           </div>
           {roadFollowing?<label><input type="checkbox" aria-label="道路参考線を表示" checked={graphVisible} onChange={event=>setGraphVisible(event.target.checked)}/>道路参考線を表示</label>:<ReferenceGraphControls bundle={graphBundle} visible={graphVisible} onBundle={bundle=>{if(referenceCopy.active)setPendingGraphChange({bundle});else setGraphBundle(bundle);}} onVisible={setGraphVisible} total={graphDisplay.total} shown={graphDisplay.edges.length} zoom={camera.zoom}/>}
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>

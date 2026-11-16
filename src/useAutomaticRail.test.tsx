@@ -32,7 +32,7 @@ test('App ordinary save preserves selected rail route; adding and building uses 
  vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'auto-rail-save-test'}:command==='list_save_slots'?{active_slot_id:'test',slots:[]}:command==='save_world'?{saved:true}:world);
  const view=render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/auto-rail-save-test/);
  fireEvent.click(screen.getByRole('button',{name:'実在の路線網に合わせる'}));const worker=FakeWorker.instances[0];expect(worker).toBeDefined();
- act(()=>worker.reply({id:0,kind:'loaded',source}));fireEvent.click(screen.getByRole('button',{name:'拡大'}));fireEvent.click(screen.getByRole('button',{name:'拡大'}));
+ act(()=>worker.reply({id:0,kind:'loaded',source}));fireEvent.keyDown(window,{key:"+"});fireEvent.keyDown(window,{key:"+"});
  await waitFor(()=>expect(worker.messages.some(m=>m.kind==='view')).toBe(true));const request=worker.messages.filter(m=>m.kind==='view').at(-1)!;
  act(()=>worker.reply({id:request.id,kind:'view',view:{chains:[{id:7,points:route.points},{id:8,points:route.points}],truncated:false}}));
  fireEvent.click(screen.getByRole('button',{name:'実在線路の追従を開始'}));const map=view.container.querySelector('svg[role=img]')!;

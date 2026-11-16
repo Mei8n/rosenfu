@@ -90,7 +90,7 @@ test("line-constrained station previews then commits metric platform dimensions"
   fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText("計画駅を建設しました。");
   expect(invoke).toHaveBeenCalledWith("build_plan",expect.objectContaining({stations:[expect.objectContaining({alignmentId:"3",lengthM:240,widthM:12})]}));
   expect(map.querySelector(".station-marker circle.station-dot")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button",{name:"拡大"}));fireEvent.click(screen.getByRole("button",{name:"拡大"}));fireEvent.click(screen.getByRole("button",{name:"拡大"}));
+  fireEvent.keyDown(window,{key:"+"});fireEvent.keyDown(window,{key:"+"});fireEvent.keyDown(window,{key:"+"});
   await waitFor(()=>expect(map.querySelector(".station-marker path.station-platform")).toBeTruthy());
   expect(map.querySelector(".station-marker circle")).toBeNull();
 });
@@ -157,14 +157,14 @@ test("20m equivalent inputs preserve fractional metre lengths when creating and 
 
 test("station display switches exactly across ZL12 and ZL13 without changing dimensions",async()=>{
  const map=await start(placed);
- const zoomIn=()=>fireEvent.click(screen.getByRole("button",{name:"拡大"}));
+ const zoomIn=()=>fireEvent.keyDown(window,{key:"+"});
  await screen.findByText("ZL 12 / Web Mercator");
  expect(map.querySelector(".station-marker circle.station-dot")).toBeTruthy();
  expect(map.querySelector(".station-marker path.station-platform")).toBeNull();
  zoomIn();await screen.findByText("ZL 13 / Web Mercator");
  await waitFor(()=>expect(map.querySelector(".station-marker circle.station-dot")).toBeNull());
  expect(map.querySelector(".station-marker path.station-platform")).toBeTruthy();
- fireEvent.click(screen.getByRole("button",{name:"縮小"}));
+ fireEvent.keyDown(window,{key:"-"});
  await screen.findByText("ZL 12 / Web Mercator");
  expect(map.querySelector(".station-marker circle.station-dot")).toBeTruthy();
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="update_station_placement")).toBe(false);
