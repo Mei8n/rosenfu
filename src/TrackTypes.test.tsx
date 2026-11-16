@@ -105,3 +105,18 @@ test('undo of a transient parallel start leaves the existing draft untouched',as
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);expect(map.querySelector('.confirmed-draft')?.getAttribute('d')).toBe(before);
 });
+
+ test('all follow modes use accessible custom descriptions without native title tooltips',async()=>{
+ await start();
+ for(const name of ['実在の路線網に合わせる','道路に合わせる','線路の横に沿わせる']){
+  const button=screen.getByRole('button',{name});
+  expect(button.hasAttribute('title')).toBe(false);
+  expect(button.closest('[title]')).toBeNull();
+  expect(button.querySelector('[title]')).toBeNull();
+  const tip=document.getElementById(button.getAttribute('aria-describedby')!);
+  expect(tip?.getAttribute('role')).toBe('tooltip');
+  expect(tip?.classList.contains('follow-tip')).toBe(true);
+  expect(tip?.textContent).toContain(name);
+  expect(tip?.textContent?.length).toBeGreaterThan(name.length);
+ }
+});
