@@ -99,6 +99,8 @@ impl ViewState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
     /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
     #[serde(skip)]
     pub runtime_road_evidence: crate::ofm_evidence::EvidenceStore,
@@ -159,6 +161,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            road_path_provenance: vec![],
             runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
             road_evidence_descriptors: vec![],
             road_snapshots: vec![],
@@ -263,7 +266,9 @@ impl World {
             return Err(WorldError::InvalidRoadEvidence);
         }
         candidate.runtime_road_evidence = self.data.runtime_road_evidence.clone();
-        Self::new(candidate)
+        let mut replacement = self.clone();
+        replacement.replace(candidate)?;
+        Ok(replacement)
     }
     fn insert(&mut self, insert: impl FnOnce(&mut WorldDraft, u64)) -> Result<u64, WorldError> {
         let id = self.data.next_id;
@@ -315,7 +320,12 @@ impl World {
         &self.data
     }
     /// Atomic candidate replacement: failures leave the live state unchanged.
-    pub fn replace(&mut self, candidate: WorldDraft) -> Result<(), WorldError> {
+    pub fn replace(&mut self, mut candidate: WorldDraft) -> Result<(), WorldError> {
+        // Explicit alignment removal drops only its derived range records; source
+        // evidence is retained for Undo and other references.
+        candidate
+            .road_path_provenance
+            .retain(|p| candidate.alignments.iter().any(|a| a.id == p.alignment_id));
         candidate.validate()?;
         candidate.preserve_service_paths(&self.data)?;
         candidate.preserve_provenance(&self.data)?;
@@ -441,6 +451,7 @@ impl WorldDraft {
             }
         }
         self.validate_provenance()?;
+        self.validate_road_path_provenance()?;
         self.validate_route_paths()?;
         for r in &self.routes {
             name(&r.name, "route")?;
@@ -681,3 +692,6 @@ pub use roads::{
     assess_road_crossings, AutomaticCrossing, CoverageBounds, RoadAssessment, RoadClassification,
     RoadSnapshot, RoadWay,
 };
+
+mod road_path;
+pub use road_path::AlignmentRoadPathProvenance;

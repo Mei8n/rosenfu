@@ -919,3 +919,231 @@ fn world_runtime_evidence_is_not_an_ipc_or_plain_json_backup() {
     assert!(world.replace_retaining_road_evidence(forged).is_err());
     assert_eq!(world, before);
 }
+fn parked_ofm_plan(path: &PathDescriptor) -> rosenfu_core::world::ConstructionPlans {
+    serde_json::from_value(serde_json::json!({"version":1,"plans":[{"id":1,"name":"seam"}],"parkedPaths":[{"id":2,"planId":1,"name":"seam","points":[],"redo":[],"line":[],"extension":null,"trackType":"normal","designSpeedKmh":120,"roadFollowing":true,"ofmPath":path}],"activePathId":1,"activePlanId":1,"draftPoints":[],"redoPoints":[],"draftExtension":null,"trackType":"normal","designSpeedKmh":120,"roadFollowing":true,"plannedStations":[],"draftFinished":false})).unwrap()
+}
+fn staged_road_world() -> (
+    rosenfu_core::world::World,
+    rosenfu_core::world::CompanyId,
+    PathDescriptor,
+) {
+    use rosenfu_core::world::World;
+    let store = seam_store(WEST_LINE, &[east_line()], None, None);
+    let (keys, start, end) = seam_picks(&store);
+    let path = reconstruct_path(&store, &keys, &start, &end)
+        .unwrap()
+        .descriptor;
+    let mut world = World::default();
+    let player = world.add_player("p".into()).unwrap();
+    let owner = world.add_company(player, "c".into()).unwrap();
+    world
+        .stage_ofm_construction_plans(
+            parked_ofm_plan(&path),
+            store
+                .blobs()
+                .map(|(sha, raw)| RawEvidence {
+                    sha256: sha.into(),
+                    bytes: raw.into(),
+                })
+                .collect(),
+            store.bindings().cloned().collect(),
+        )
+        .unwrap();
+    (world, owner, path)
+}
+#[test]
+fn park_and_build_are_atomic_backend_geometry_and_keep_separate_path_provenance() {
+    use rosenfu_core::world::{TrackType, World, WorldDraft};
+    let (mut world, owner, path) = staged_road_world();
+    let before = world.clone();
+    let mut bad = path.clone();
+    bad.joins[0].a_range[0] += 0.1;
+    assert!(world
+        .stage_ofm_construction_plans(parked_ofm_plan(&bad), vec![], vec![])
+        .is_err());
+    assert_eq!(world, before);
+    let plans = world.snapshot().construction_plans.as_ref().unwrap();
+    assert_eq!(plans.parked_paths[0].points.len(), 23);
+    assert_eq!(plans.parked_paths[0].line, plans.parked_paths[0].points);
+    let id = world
+        .build_alignment_from_road_path(owner, "built".into(), TrackType::Normal, path)
+        .unwrap();
+    assert!(world.snapshot().alignment_provenance.is_empty());
+    assert_eq!(world.snapshot().road_path_provenance.len(), 1);
+    assert_eq!(world.snapshot().road_path_provenance[0].alignment_id, id);
+    let built = world.clone();
+    let mut moved = world.snapshot().clone();
+    moved.alignments[0].points[5].latitude += 0.001;
+    assert!(world.replace(moved).is_err());
+    assert_eq!(world, built);
+    let mut detached: WorldDraft =
+        serde_json::from_str(&serde_json::to_string(world.snapshot()).unwrap()).unwrap();
+    assert!(World::new(detached.clone()).is_err());
+    detached
+        .restore_road_evidence(world.snapshot().runtime_road_evidence.clone())
+        .unwrap();
+    assert_eq!(World::new(detached).unwrap(), world);
+    let mut deleted = world.snapshot().clone();
+    deleted.alignments.clear();
+    world.replace(deleted).unwrap();
+    assert!(world.snapshot().road_path_provenance.is_empty());
+    assert_eq!(
+        world.snapshot().runtime_road_evidence,
+        built.snapshot().runtime_road_evidence
+    );
+    world = World::new(built.snapshot().clone()).unwrap();
+    assert_eq!(world, built);
+}
+#[test]
+fn path_provenance_survives_insert_split_and_endpoint_growth() {
+    use rosenfu_core::world::{AlignmentEndpoint, GeoPoint, TrackType};
+    let (mut world, owner, path) = staged_road_world();
+    let id = world
+        .build_alignment_from_road_path(owner, "built".into(), TrackType::Normal, path.clone())
+        .unwrap();
+    let before = world.clone();
+    let suffix = world
+        .split_alignment_at_position(owner, id, 10, 0.5)
+        .unwrap();
+    assert_eq!(world.snapshot().road_path_provenance.len(), 2);
+    assert!(world
+        .snapshot()
+        .road_path_provenance
+        .iter()
+        .any(|p| p.alignment_id == suffix));
+    world.snapshot().validate().unwrap();
+    assert_ne!(world, before);
+    for endpoint in [AlignmentEndpoint::End, AlignmentEndpoint::Start] {
+        let (mut w, owner, path) = staged_road_world();
+        let store = &w.snapshot().runtime_road_evidence;
+        let actual = validate_path_descriptor(store, &path).unwrap();
+        let p = if endpoint == AlignmentEndpoint::End {
+            actual.points[0]
+        } else {
+            *actual.points.last().unwrap()
+        };
+        let a = GeoPoint {
+            longitude: p[0],
+            latitude: p[1],
+        };
+        let outside = GeoPoint {
+            longitude: p[0]
+                + if endpoint == AlignmentEndpoint::End {
+                    -0.0004
+                } else {
+                    0.0004
+                },
+            latitude: p[1],
+        };
+        let points = if endpoint == AlignmentEndpoint::End {
+            vec![outside, a]
+        } else {
+            vec![a, outside]
+        };
+        let id = w
+            .build_alignment_typed(owner, "extension".into(), points, TrackType::Normal)
+            .unwrap();
+        let path = if endpoint == AlignmentEndpoint::Start {
+            reconstruct_path(
+                &w.snapshot().runtime_road_evidence,
+                &path.required_binding_keys,
+                &path.end,
+                &path.start,
+            )
+            .unwrap()
+            .descriptor
+        } else {
+            path
+        };
+        w.extend_alignment_from_road_path(owner, id, endpoint, path)
+            .unwrap();
+        w.snapshot().validate().unwrap();
+        assert_eq!(w.snapshot().road_path_provenance.len(), 1);
+    }
+}
+#[test]
+fn immutable_scope_keeps_old_path_valid_after_unrelated_tile_addition() {
+    let (mut world, _, path) = staged_road_world();
+    let before = world.snapshot().clone();
+    let raw = tile(LINE, None);
+    let mut b = binding(&raw);
+    b.x = 100;
+    b.y = 100;
+    b.canonical_url = format!(
+        "https://tiles.openfreemap.org/planet/{}/14/100/100.pbf",
+        b.revision
+    );
+    world
+        .stage_ofm_construction_plans(parked_ofm_plan(&path), vec![raw_entry(&raw)], vec![b])
+        .unwrap();
+    world.snapshot().validate().unwrap();
+    assert_eq!(world.snapshot().runtime_road_evidence.bindings().count(), 3);
+    let scoped = world
+        .snapshot()
+        .runtime_road_evidence
+        .scope(&path.required_binding_keys)
+        .unwrap();
+    assert_eq!(scoped, before.runtime_road_evidence);
+    assert!(world
+        .snapshot()
+        .runtime_road_evidence
+        .scope(&["missing".into()])
+        .is_err());
+    assert!(scoped
+        .scope(&[
+            path.required_binding_keys[0].clone(),
+            path.required_binding_keys[0].clone()
+        ])
+        .is_err());
+}
+#[test]
+fn whole_tile_scope_cannot_hide_same_tile_ambiguous_fragments() {
+    let ambiguous = seam_store(WEST_LINE, &[east_line(), east_line()], None, None);
+    let keys = ambiguous
+        .bindings()
+        .map(|b| b.canonical_url.clone())
+        .collect::<Vec<_>>();
+    let scoped = ambiguous.scope(&keys).unwrap();
+    assert!(boundary_candidates(&scoped, SEAM_TILES).unwrap().is_empty());
+    let only_west = ambiguous.scope(&keys[..1]).unwrap();
+    assert!(boundary_candidates(&only_west, &SEAM_TILES[..1])
+        .unwrap()
+        .is_empty());
+    assert!(boundary_candidates(&only_west, SEAM_TILES).is_err());
+}
+#[test]
+fn existing_path_provenance_survives_plain_append_prepend_and_forbids_ui_removal() {
+    use rosenfu_core::world::{AlignmentEndpoint, GeoPoint, TrackType};
+    for endpoint in [AlignmentEndpoint::Start, AlignmentEndpoint::End] {
+        let (mut world, owner, path) = staged_road_world();
+        let id = world
+            .build_alignment_from_road_path(owner, "p".into(), TrackType::Normal, path)
+            .unwrap();
+        let alignment = &world.snapshot().alignments[0];
+        let p = if endpoint == AlignmentEndpoint::Start {
+            alignment.points[0]
+        } else {
+            *alignment.points.last().unwrap()
+        };
+        let outside = GeoPoint {
+            longitude: p.longitude
+                + if endpoint == AlignmentEndpoint::Start {
+                    -0.0004
+                } else {
+                    0.0004
+                },
+            latitude: p.latitude,
+        };
+        world
+            .extend_alignment(owner, id, endpoint, vec![p, outside])
+            .unwrap();
+        world.snapshot().validate().unwrap();
+        assert_eq!(
+            world.snapshot().road_path_provenance[0].start_point_index,
+            usize::from(endpoint == AlignmentEndpoint::Start)
+        );
+        let mut forged = world.snapshot().clone();
+        forged.road_path_provenance.clear();
+        assert!(world.replace_retaining_road_evidence(forged).is_err());
+    }
+}

@@ -1,0 +1,313 @@
+//! Separately typed multi-tile provenance. Never masquerades as one OSM source.
+use super::*;
+use crate::ofm_evidence::{validate_path_descriptor, PathDescriptor, RawEvidence, TileBinding};
+const MAX_PATHS: usize = 32;
+const LICENSE: &str = "ODbL-1.0";
+const ATTRIBUTION: &str = "© OpenMapTiles © OpenStreetMap contributors";
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlignmentRoadPathProvenance {
+    pub alignment_id: AlignmentId,
+    pub start_point_index: usize,
+    pub end_point_index: usize,
+    pub path: PathDescriptor,
+    /// Retained arc-length interval on the independently regenerated whole path.
+    pub from_position: f64,
+    pub to_position: f64,
+    pub license: String,
+    pub attribution: String,
+}
+fn generated(
+    store: &crate::ofm_evidence::EvidenceStore,
+    path: &PathDescriptor,
+) -> Result<Vec<GeoPoint>, WorldError> {
+    let scoped = store
+        .scope(&path.required_binding_keys)
+        .map_err(|_| WorldError::InvalidRoadEvidence)?;
+    Ok(validate_path_descriptor(&scoped, path)
+        .map_err(|_| WorldError::InvalidRoadEvidence)?
+        .points
+        .into_iter()
+        .map(|p| GeoPoint {
+            longitude: p[0],
+            latitude: p[1],
+        })
+        .collect())
+}
+fn same_points(a: &[GeoPoint], b: &[GeoPoint]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            (a.latitude - b.latitude).abs() <= 1e-10 && (a.longitude - b.longitude).abs() <= 1e-10
+        })
+}
+impl WorldDraft {
+    pub(super) fn validate_road_path_provenance(&self) -> Result<(), WorldError> {
+        let plan_paths = self.construction_plans.as_ref().map_or(0, |p| {
+            p.parked_paths
+                .iter()
+                .filter(|p| p.ofm_path.is_some())
+                .count()
+        });
+        if self.road_path_provenance.len() + plan_paths > MAX_PATHS {
+            return Err(WorldError::InvalidRoadEvidence);
+        }
+        if let Some(plans) = &self.construction_plans {
+            for p in &plans.parked_paths {
+                if let Some(path) = &p.ofm_path {
+                    let actual = generated(&self.runtime_road_evidence, path)?;
+                    if p.reference.is_some()
+                        || p.edited_geometry.is_some()
+                        || !same_points(&p.points, &actual)
+                        || !same_points(&p.line, &actual)
+                    {
+                        return Err(WorldError::InvalidConstructionPlans);
+                    }
+                }
+            }
+        }
+        let mut ranges: std::collections::BTreeMap<AlignmentId, Vec<(usize, usize)>> =
+            std::collections::BTreeMap::new();
+        for p in &self.alignment_provenance {
+            ranges
+                .entry(p.alignment_id)
+                .or_default()
+                .push((p.start_point_index, p.end_point_index));
+        }
+        for p in &self.road_path_provenance {
+            let a = self
+                .alignments
+                .iter()
+                .find(|a| a.id == p.alignment_id)
+                .ok_or(WorldError::InvalidProvenance)?;
+            if p.start_point_index >= p.end_point_index
+                || p.end_point_index >= a.points.len()
+                || p.license != LICENSE
+                || p.attribution != ATTRIBUTION
+                || !p.from_position.is_finite()
+                || !p.to_position.is_finite()
+                || p.from_position < 0.
+                || p.to_position > 1.
+                || p.from_position >= p.to_position
+            {
+                return Err(WorldError::InvalidProvenance);
+            }
+            let original = generated(&self.runtime_road_evidence, &p.path)?;
+            if !super::provenance::slice_matches(
+                &ProvenanceGeometrySlice {
+                    original_points: original,
+                    from_position: p.from_position,
+                    to_position: p.to_position,
+                },
+                &a.points[p.start_point_index..=p.end_point_index],
+            ) {
+                return Err(WorldError::InvalidProvenance);
+            }
+            let prior = ranges.entry(p.alignment_id).or_default();
+            if prior
+                .iter()
+                .any(|(s, e)| p.start_point_index < *e && *s < p.end_point_index)
+            {
+                return Err(WorldError::InvalidProvenance);
+            }
+            prior.push((p.start_point_index, p.end_point_index));
+        }
+        Ok(())
+    }
+    pub(super) fn preserve_road_paths(&self, old: &Self) -> Result<(), WorldError> {
+        if self.runtime_road_evidence != old.runtime_road_evidence {
+            return Err(WorldError::ProvenanceEditUnsupported);
+        }
+        for p in &old.road_path_provenance {
+            if let Some(a) = self.alignments.iter().find(|a| a.id == p.alignment_id) {
+                if !self.road_path_provenance.contains(p)
+                    || old
+                        .alignments
+                        .iter()
+                        .find(|o| o.id == a.id)
+                        .map(|o| &o.points)
+                        != Some(&a.points)
+                {
+                    return Err(WorldError::ProvenanceEditUnsupported);
+                }
+            }
+        }
+        if self
+            .road_path_provenance
+            .iter()
+            .any(|p| !old.road_path_provenance.contains(p))
+        {
+            return Err(WorldError::ProvenanceEditUnsupported);
+        }
+        Ok(())
+    }
+    pub(super) fn split_road_path_provenance(
+        &mut self,
+        id: AlignmentId,
+        suffix: AlignmentId,
+        split: usize,
+        points: &[GeoPoint],
+    ) -> Result<(), WorldError> {
+        let old = std::mem::take(&mut self.road_path_provenance);
+        for p in old {
+            if p.alignment_id != id || p.end_point_index <= split {
+                self.road_path_provenance.push(p);
+                continue;
+            }
+            if p.start_point_index >= split {
+                let mut p = p;
+                p.alignment_id = suffix;
+                p.start_point_index -= split;
+                p.end_point_index -= split;
+                self.road_path_provenance.push(p);
+                continue;
+            }
+            let length = |a: usize, b: usize| {
+                points[a..=b]
+                    .windows(2)
+                    .map(|e| super::alignment::distance(e[0], e[1]))
+                    .sum::<f64>()
+            };
+            let total = length(p.start_point_index, p.end_point_index);
+            if total <= 0. {
+                return Err(WorldError::InvalidProvenance);
+            }
+            let mid = p.from_position
+                + (p.to_position - p.from_position) * length(p.start_point_index, split) / total;
+            let mut left = p.clone();
+            left.end_point_index = split;
+            left.to_position = mid;
+            let mut right = p;
+            right.alignment_id = suffix;
+            right.start_point_index = 0;
+            right.end_point_index -= split;
+            right.from_position = mid;
+            self.road_path_provenance.extend([left, right]);
+        }
+        Ok(())
+    }
+}
+impl World {
+    /// Park light plans and raw evidence in one candidate. Supplied preview points
+    /// are replaced by regenerated backend points, not promoted to trusted geometry.
+    pub fn stage_ofm_construction_plans(
+        &mut self,
+        mut plans: ConstructionPlans,
+        raw: Vec<RawEvidence>,
+        bindings: Vec<TileBinding>,
+    ) -> Result<(), WorldError> {
+        if plans
+            .parked_paths
+            .iter()
+            .filter(|p| p.ofm_path.is_some())
+            .count()
+            + self.data.road_path_provenance.len()
+            > MAX_PATHS
+        {
+            return Err(WorldError::InvalidRoadEvidence);
+        }
+        let store = self
+            .data
+            .runtime_road_evidence
+            .with_additions(raw, bindings)
+            .map_err(|_| WorldError::InvalidRoadEvidence)?;
+        for p in &mut plans.parked_paths {
+            if let Some(path) = &p.ofm_path {
+                if p.reference.is_some() || p.edited_geometry.is_some() || !p.redo.is_empty() {
+                    return Err(WorldError::InvalidConstructionPlans);
+                }
+                let points = generated(&store, path)?;
+                p.points = points.clone();
+                p.line = points;
+            }
+        }
+        let mut draft = self.data.clone();
+        draft.road_evidence_descriptors = store.descriptors();
+        draft.runtime_road_evidence = store;
+        draft.construction_plans = Some(plans);
+        draft.validate()?;
+        self.data = draft;
+        Ok(())
+    }
+    pub fn build_alignment_from_road_path(
+        &mut self,
+        owner: CompanyId,
+        name: String,
+        track_type: TrackType,
+        path: PathDescriptor,
+    ) -> Result<AlignmentId, WorldError> {
+        let points = generated(&self.data.runtime_road_evidence, &path)?;
+        let end = points.len() - 1;
+        let mut candidate = self.clone();
+        let id = candidate.build_alignment_typed(owner, name, points, track_type)?;
+        candidate
+            .data
+            .road_path_provenance
+            .push(AlignmentRoadPathProvenance {
+                alignment_id: id,
+                start_point_index: 0,
+                end_point_index: end,
+                path,
+                from_position: 0.,
+                to_position: 1.,
+                license: LICENSE.into(),
+                attribution: ATTRIBUTION.into(),
+            });
+        candidate.data.validate()?;
+        *self = candidate;
+        Ok(id)
+    }
+    pub fn extend_alignment_from_road_path(
+        &mut self,
+        owner: CompanyId,
+        id: AlignmentId,
+        endpoint: AlignmentEndpoint,
+        mut path: PathDescriptor,
+    ) -> Result<(), WorldError> {
+        let points = generated(&self.data.runtime_road_evidence, &path)?;
+        let count = points.len() - 1;
+        let old = self
+            .data
+            .alignments
+            .iter()
+            .find(|a| a.id == id)
+            .ok_or(WorldError::MissingReference("alignment"))?
+            .points
+            .len();
+        let mut candidate = self.clone();
+        candidate.extend_alignment(owner, id, endpoint, points)?;
+        let start = match endpoint {
+            AlignmentEndpoint::End => old - 1,
+            AlignmentEndpoint::Start => {
+                let rebuilt = crate::ofm_evidence::reconstruct_path(
+                    &candidate
+                        .data
+                        .runtime_road_evidence
+                        .scope(&path.required_binding_keys)
+                        .map_err(|_| WorldError::InvalidRoadEvidence)?,
+                    &path.required_binding_keys,
+                    &path.end,
+                    &path.start,
+                )
+                .map_err(|_| WorldError::InvalidRoadEvidence)?;
+                path = rebuilt.descriptor;
+                0
+            }
+        };
+        candidate
+            .data
+            .road_path_provenance
+            .push(AlignmentRoadPathProvenance {
+                alignment_id: id,
+                start_point_index: start,
+                end_point_index: start + count,
+                path,
+                from_position: 0.,
+                to_position: 1.,
+                license: LICENSE.into(),
+                attribution: ATTRIBUTION.into(),
+            });
+        candidate.data.validate()?;
+        *self = candidate;
+        Ok(())
+    }
+}

@@ -420,6 +420,20 @@ impl World {
                 .checked_add(prepend)
                 .ok_or(WorldError::InvalidProvenance)?;
         }
+        for p in data
+            .road_path_provenance
+            .iter_mut()
+            .filter(|p| p.alignment_id == alignment_id)
+        {
+            p.start_point_index = p
+                .start_point_index
+                .checked_add(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+            p.end_point_index = p
+                .end_point_index
+                .checked_add(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+        }
         data.validate()?;
         data.preserve_extended_provenance(&self.data, alignment_id, prepend)?;
         data.preserve_service_traversals(&self.data)?;
