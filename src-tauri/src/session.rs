@@ -731,19 +731,10 @@ impl WorldEditor {
             )?;
         }
         for mut alignment in alignments {
-            let ofm_path = alignment.ofm_path.take();
+            let ofm_path = alignment.ofm_path.clone();
             if let Some(path) = &ofm_path {
-                if alignment.reference.is_some()
-                    || alignment.extension.is_some()
-                    || alignment.destination.is_some()
-                    || alignment.junction_source.is_some()
-                    || alignment.anchor_levels.is_some()
-                    || alignment.start_level.is_some()
-                {
-                    return Err(
-                        "タイル境界を跨ぐ道路追従の延伸・接続・アンカー別高さはまだ未対応です。"
-                            .into(),
-                    );
+                if alignment.reference.is_some() || alignment.junction_source.is_some() {
+                    return Err("道路追従と参照元・途中分岐を同時には指定できません。".into());
                 }
                 let scoped = candidate
                     .world
@@ -939,6 +930,19 @@ impl WorldEditor {
                     .or(alignment.start_level)
                     .map(|level| level.height_m())
             };
+            // A source-derived path may meet an existing endpoint at its end
+            // without extending an existing alignment. Keep it independent and
+            // let the shared physical connection validator check exact geometry,
+            // height, tangent and grade rather than silently moving its points.
+            if ofm_path.is_some()
+                && alignment.destination.is_some()
+                && alignment.extension.is_none()
+            {
+                let height =
+                    start_height.unwrap_or_else(|| alignment.infrastructure.level.height_m());
+                candidate.build_sloped_plan(alignment, height)?;
+                continue;
+            }
             if let Some(levels) = &alignment.anchor_levels {
                 let count = alignment.anchor_indices.as_ref().map_or(2, |a| a.len());
                 if levels.len() != count {
@@ -1029,7 +1033,17 @@ impl WorldEditor {
                     .len()
                     .checked_sub(1)
                     .ok_or("延伸する線路がありません。")?;
-                if let Some(reference) = alignment.reference {
+                if let Some(path) = ofm_path {
+                    candidate
+                        .world
+                        .extend_alignment_from_road_path(
+                            candidate.company,
+                            extension.alignment_id,
+                            extension.endpoint,
+                            path,
+                        )
+                        .map_err(|e| e.to_string())?;
+                } else if let Some(reference) = alignment.reference {
                     if alignment
                         .points
                         .iter()
@@ -1212,19 +1226,30 @@ impl WorldEditor {
         } else {
             alignment.design_speed_kmh
         };
-        let id = match alignment.reference {
-            Some(reference) => self.build_alignment_from_reference_typed_unchecked(
-                alignment.name,
-                alignment.points,
-                reference.source_record,
-                reference.provenance,
-                alignment.track_type,
-            )?,
-            None => self.build_alignment_typed_unchecked(
-                alignment.name,
-                alignment.points,
-                alignment.track_type,
-            )?,
+        let id = if let Some(path) = alignment.ofm_path {
+            self.world
+                .build_alignment_from_road_path(
+                    self.company,
+                    alignment.name.trim().to_owned(),
+                    alignment.track_type,
+                    path,
+                )
+                .map_err(|e| e.to_string())?
+        } else {
+            match alignment.reference {
+                Some(reference) => self.build_alignment_from_reference_typed_unchecked(
+                    alignment.name,
+                    alignment.points,
+                    reference.source_record,
+                    reference.provenance,
+                    alignment.track_type,
+                )?,
+                None => self.build_alignment_typed_unchecked(
+                    alignment.name,
+                    alignment.points,
+                    alignment.track_type,
+                )?,
+            }
         };
         let mut draft = self.world.snapshot().clone();
         let built = draft

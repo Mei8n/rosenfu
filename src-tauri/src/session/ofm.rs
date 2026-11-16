@@ -218,6 +218,225 @@ mod tests {
         assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
     }
     #[test]
+    fn seam_exact_endpoint_extension_keeps_existing_alignment_and_provenance() {
+        use rosenfu_core::world::AlignmentEndpoint;
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let points: Vec<GeoPoint> =
+            serde_json::from_value(fixture()["plans"]["parkedPaths"][0]["points"].clone()).unwrap();
+        let start = points[0];
+        let source = editor
+            .build_alignment_typed_unchecked(
+                "元線路".into(),
+                vec![
+                    GeoPoint {
+                        longitude: start.longitude - 0.002,
+                        latitude: start.latitude,
+                    },
+                    start,
+                ],
+                rosenfu_core::world::TrackType::Normal,
+            )
+            .unwrap();
+        let mut r = request();
+        r.extension = Some(PlannedAlignmentExtension {
+            alignment_id: source,
+            endpoint: AlignmentEndpoint::End,
+        });
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        assert_eq!(built.alignments.len(), 1);
+        assert_eq!(built.alignments[0].id, source);
+        assert_eq!(built.alignments[0].points[1..], points);
+        assert_eq!(built.road_path_provenance.len(), 1);
+        assert_eq!(built.road_path_provenance[0].alignment_id, source);
+        assert_eq!(
+            rosenfu_storage::decode(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap(),
+            editor.world
+        );
+    }
+
+    #[test]
+    fn seam_destination_only_connects_without_changing_existing_line() {
+        use rosenfu_core::world::{AlignmentEndpoint, TrackType};
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let points: Vec<GeoPoint> =
+            serde_json::from_value(fixture()["plans"]["parkedPaths"][0]["points"].clone()).unwrap();
+        let end = *points.last().unwrap();
+        let target = editor
+            .build_alignment_typed_unchecked(
+                "接続先".into(),
+                vec![
+                    end,
+                    GeoPoint {
+                        longitude: end.longitude + 0.002,
+                        latitude: end.latitude,
+                    },
+                ],
+                TrackType::Normal,
+            )
+            .unwrap();
+        let original = editor.snapshot().alignments[0].clone();
+        let mut r = request();
+        r.destination = Some(PlannedAlignmentExtension {
+            alignment_id: target,
+            endpoint: AlignmentEndpoint::Start,
+        });
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        assert_eq!(built.alignments.len(), 2);
+        assert_eq!(built.alignments[0], original);
+        assert_eq!(built.alignment_connections.len(), 1);
+        assert_eq!(built.road_path_provenance.len(), 1);
+        assert_eq!(
+            rosenfu_storage::decode(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap(),
+            editor.world
+        );
+    }
+
+    #[test]
+    fn invalid_seam_destination_rolls_back_world_plans_and_evidence() {
+        use rosenfu_core::world::{AlignmentEndpoint, TrackType};
+        for gap in [0.001, -0.002] {
+            let mut editor = WorldEditor::new();
+            stage(&mut editor);
+            let points: Vec<GeoPoint> =
+                serde_json::from_value(fixture()["plans"]["parkedPaths"][0]["points"].clone())
+                    .unwrap();
+            let mut end = *points.last().unwrap();
+            // A separated endpoint or a cusp cannot become a connection.
+            if gap > 0. {
+                end.longitude += gap;
+            }
+            let target = editor
+                .build_alignment_typed_unchecked(
+                    "接続先".into(),
+                    vec![
+                        end,
+                        GeoPoint {
+                            longitude: end.longitude + gap,
+                            latitude: end.latitude,
+                        },
+                    ],
+                    TrackType::Normal,
+                )
+                .unwrap();
+            let before = editor.snapshot();
+            let mut r = request();
+            r.destination = Some(PlannedAlignmentExtension {
+                alignment_id: target,
+                endpoint: AlignmentEndpoint::Start,
+            });
+            assert!(editor.build_plan(vec![r]).is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+    }
+
+    #[test]
+    fn seam_anchor_profile_connects_both_ends_and_preserves_sources() {
+        use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel, TrackType};
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let points: Vec<GeoPoint> =
+            serde_json::from_value(fixture()["plans"]["parkedPaths"][0]["points"].clone()).unwrap();
+        let start = points[0];
+        let end = *points.last().unwrap();
+        let source = editor
+            .build_alignment_typed_unchecked(
+                "元線路".into(),
+                vec![
+                    GeoPoint {
+                        longitude: start.longitude - 0.002,
+                        latitude: start.latitude,
+                    },
+                    start,
+                ],
+                TrackType::Normal,
+            )
+            .unwrap();
+        let target = editor
+            .build_alignment_typed_unchecked(
+                "接続先".into(),
+                vec![
+                    end,
+                    GeoPoint {
+                        longitude: end.longitude + 0.002,
+                        latitude: end.latitude,
+                    },
+                ],
+                TrackType::Normal,
+            )
+            .unwrap();
+        let originals = editor.snapshot().alignments;
+        let mut r = request();
+        r.extension = Some(PlannedAlignmentExtension {
+            alignment_id: source,
+            endpoint: AlignmentEndpoint::End,
+        });
+        r.destination = Some(PlannedAlignmentExtension {
+            alignment_id: target,
+            endpoint: AlignmentEndpoint::Start,
+        });
+        r.anchor_levels = Some(vec![InfrastructureLevel::Ground; 2]);
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        assert_eq!(built.alignments[..2], originals);
+        assert_eq!(built.alignments.len(), 3);
+        assert_eq!(built.alignment_connections.len(), 2);
+        assert_eq!(built.road_path_provenance.len(), 1);
+        assert_eq!(
+            rosenfu_storage::decode(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap(),
+            editor.world
+        );
+    }
+
+    #[test]
+    fn seam_anchor_heights_preserve_provenance_save_and_undo() {
+        use rosenfu_core::world::InfrastructureLevel;
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let mut r = request();
+        r.anchor_levels = Some(vec![InfrastructureLevel::Elevated; 2]);
+        r.infrastructure.level = InfrastructureLevel::Elevated;
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        let line = built.alignments.last().unwrap();
+        assert_eq!(line.section_profiles.len(), 1);
+        assert_eq!(line.section_profiles[0].start_height_m, 6.);
+        assert_eq!(line.section_profiles[0].end_height_m, 6.);
+        assert_eq!(built.road_path_provenance.len(), 1);
+        assert_eq!(
+            rosenfu_storage::decode(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap(),
+            editor.world
+        );
+        editor.delete_alignment(line.id).unwrap();
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+    }
+
+    #[test]
+    fn seam_steep_or_mismatched_anchor_heights_are_atomic() {
+        use rosenfu_core::world::InfrastructureLevel;
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let before = editor.snapshot();
+        let mut r = request();
+        r.anchor_levels = Some(vec![
+            InfrastructureLevel::Ground,
+            InfrastructureLevel::Elevated3,
+        ]);
+        assert!(editor.build_plan(vec![r]).unwrap_err().contains("勾配"));
+        assert_eq!(editor.snapshot(), before);
+        let mut r = request();
+        r.anchor_levels = Some(vec![InfrastructureLevel::Ground]);
+        assert!(editor
+            .build_plan(vec![r])
+            .unwrap_err()
+            .contains("高さ指定数"));
+        assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
     fn unsupported_old_save_leaves_file_and_session_unchanged() {
         let mut editor = WorldEditor::new();
         stage(&mut editor);
