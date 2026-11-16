@@ -1023,6 +1023,102 @@ mod tests {
     }
 
     #[test]
+    fn selected_track_type_platform_rejection_preserves_references_plans_and_previous_undo() {
+        use rosenfu_core::world::ServiceRouteBindingKind;
+        let (mut editor, id) = setup();
+        let a = editor
+            .world
+            .place_station_on_alignment(editor.company, "A".into(), id, 0.1, 20., 10.)
+            .unwrap();
+        let b = editor
+            .world
+            .place_station_on_alignment(editor.company, "B".into(), id, 0.9, 20., 10.)
+            .unwrap();
+        let segments = editor
+            .world
+            .route_candidates(a, b)
+            .unwrap()
+            .candidates
+            .remove(0)
+            .segments;
+        let route = editor
+            .world
+            .add_planned_route(
+                editor.company,
+                "路線".into(),
+                a,
+                segments.clone(),
+                vec![a, b],
+            )
+            .unwrap();
+        let stops = editor
+            .world
+            .preview_service_path(a, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect();
+        let service = editor
+            .world
+            .add_service_path(editor.company, "系統".into(), a, segments, stops)
+            .unwrap();
+        editor
+            .world
+            .set_service_route_binding(
+                editor.company,
+                service,
+                ServiceRouteBindingKind::Route { route_id: route },
+            )
+            .unwrap();
+        editor
+            .world
+            .place_station_on_alignment(editor.company, "境界駅".into(), id, 1.0 / 3.0, 40., 10.)
+            .unwrap();
+        let mut pending = plans();
+        let endpoint = serde_json::json!({"alignmentId": id, "endpoint": "end"});
+        let point = *editor.snapshot().alignments[0].points.last().unwrap();
+        pending.draft_points = vec![point];
+        pending.draft_extension = Some(serde_json::from_value(endpoint.clone()).unwrap());
+        pending.parked_paths.push(serde_json::from_value(serde_json::json!({
+            "id":2,"planId":1,"name":"保留延伸","points":[point],"line":[point],"redo":[],
+            "extension":endpoint,"destination":null,"designSpeedKmh":120,"trackType":"normal","roadFollowing":false
+        })).unwrap());
+        let mut original = editor.snapshot();
+        original.construction_plans = Some(pending.clone());
+        editor.world.replace(original.clone()).unwrap();
+        let before = editor
+            .update_alignment_section_infrastructure(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![0, 1, 2],
+                }],
+                original.alignments.clone(),
+                Some(2),
+                None,
+                pending.clone(),
+            )
+            .unwrap();
+        let previous_undo = editor.deleted_alignment.clone();
+        assert!(previous_undo.is_some());
+        let error = editor
+            .update_alignment_section_track_type(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1],
+                }],
+                before.alignments.clone(),
+                TrackType::HighSpeed,
+                pending,
+            )
+            .unwrap_err();
+        assert!(error.contains("駅"), "unexpected rejection: {error}");
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.deleted_alignment, previous_undo);
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), original);
+    }
+
+    #[test]
     fn selected_track_type_preserves_crossing_route_service_binding_and_history() {
         use rosenfu_core::world::ServiceRouteBindingKind;
         let (mut editor, id) = setup();
