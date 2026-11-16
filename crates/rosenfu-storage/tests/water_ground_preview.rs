@@ -1,5 +1,6 @@
 //! Observation diagnostics on unbuilt geometry. Real construction refusal is separately asserted.
-#[allow(dead_code)]
+// This test imports the session module but intentionally does not use its IPC re-exports.
+#[allow(dead_code, unused_imports)]
 #[path = "../../../src-tauri/src/session.rs"]
 mod session;
 use rosenfu_core::water_observations::{
