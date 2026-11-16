@@ -1,3 +1,5 @@
+import {ServiceFromRoute} from './ServiceFromRoute';
+import {ServiceMapCreator} from './ServiceMapCreator';
 import {StationDirectory} from './StationDirectory';
 import {TrackStroke} from "./TrackStroke";
 import {constructionValidationError,hasConstructionValidation} from './constructionPlacementGuard';
@@ -266,6 +268,9 @@ export function App() {
   const [routeMapEdit,setRouteMapEdit]=useState<{id:string;name:string}|null>(null);
   const [routeSequenceKey,setRouteSequenceKey]=useState(0);
   const [routeCreating,setRouteCreating]=useState(false);
+  const [routeServiceDirty,setRouteServiceDirty]=useState(false);
+  const [serviceCreating,setServiceCreating]=useState(false);
+  const [serviceSequenceKey,setServiceSequenceKey]=useState(0);
   const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|"sequence"|null>(null);
   const routeMapSelect=useRef<((id:string)=>void)|null>(null);
   function cancelRouteMapPick(){routeMapSelect.current=null;setRouteMapPick(null);}
@@ -877,7 +882,7 @@ export function App() {
   }
   function selectStation(id: string) {
     if (busyRef.current) return;
-    if (mainTab === "routes" && routeMapSelect.current) {
+    if ((mainTab === "routes" || mainTab === "services") && routeMapSelect.current) {
       if (!enabled || !stationsById.has(id)) return;
       const select=routeMapSelect.current;if(routeMapPick!=="sequence")cancelRouteMapPick();select(id);return;
     }
@@ -1627,6 +1632,7 @@ export function App() {
     } finally {busyRef.current=false;setBusy(false);}
   }
   function resetService(service?: OperatingService) {
+    setServiceCreating(false);setRouteServiceDirty(false);cancelRouteMapPick();
     setServiceAppearanceDirty(false);
     setBindingDirty(false);
     setServiceId(service?.id ?? null);
@@ -1643,7 +1649,7 @@ export function App() {
   }
   async function createPathService(draft:CreateServicePath){
     if(!enabled||busyRef.current||serviceDirty||serviceId!==null)throw Error("別の系統を編集中です。");
-    busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("create_service_path",draft);setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setNotice("新形式の系統を適用しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}
+    busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("create_service_path",draft);setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setNotice("系統を作成しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}
   }
   function completeSave() {
     setSavedViewFingerprint(JSON.stringify(camera));setSavedPlanFingerprint(planFingerprint);
@@ -1824,7 +1830,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={(enabled && mainTab==="routes" && routeMapPick ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
+            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={(enabled && (mainTab==="routes"||mainTab==="services") && routeMapPick ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
@@ -1977,8 +1983,11 @@ export function App() {
           <section className="service-editor" role="tabpanel" id="workspace-panel-services" aria-labelledby="workspace-tab-services" hidden={activeTool !== "services"}>
             <h3>系統</h3>
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
-            <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => chooseService(null)}>新規系統</button><table aria-label="系統一覧"><thead><tr><th>名前</th><th>乗客</th><th>収支</th><th>車両数</th></tr></thead><tbody>{world?.services.map((service) => <tr key={service.id}><th><button className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id===serviceId?null:service.id)} aria-label={`系統編集: ${service.name}`} aria-pressed={service.id===serviceId}><ServiceBadge color={world.service_appearances?.find(row=>row.service_id===service.id)?.color??'#3b82f6'} shape={world.service_appearances?.find(row=>row.service_id===service.id)?.shape??'circle'} symbol={world.service_appearances?.find(row=>row.service_id===service.id)?.symbol??initialServiceSymbol(service.name)}/>{service.name}</button></th>{["乗客","収支","車両数"].map(label=><td key={label} title="未実装" aria-label={`${label}: 未実装`}>—</td>)}</tr>)}</tbody></table></div>
-            <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null} onDirty={setPathServiceDirty} onSave={createPathService}/>
+            <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => {if(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty){chooseService(null);return;}chooseService(null);cancelRouteMapPick();setServiceCreating(true);setServiceSequenceKey(key=>key+1);}}>新規系統</button><table aria-label="系統一覧"><thead><tr><th>名前</th><th>乗客</th><th>収支</th><th>車両数</th></tr></thead><tbody>{world?.services.map((service) => <tr key={service.id}><th><button className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id===serviceId?null:service.id)} aria-label={`系統編集: ${service.name}`} aria-pressed={service.id===serviceId}><ServiceBadge color={world.service_appearances?.find(row=>row.service_id===service.id)?.color??'#3b82f6'} shape={world.service_appearances?.find(row=>row.service_id===service.id)?.shape??'circle'} symbol={world.service_appearances?.find(row=>row.service_id===service.id)?.symbol??initialServiceSymbol(service.name)}/>{service.name}</button></th>{["乗客","収支","車両数"].map(label=><td key={label} title="未実装" aria-label={`${label}: 未実装`}>—</td>)}</tr>)}</tbody></table></div>
+            {serviceCreating&&serviceId===null&&<ServiceMapCreator key={`map-service-${pathDraftEpoch}`} world={world??previewWorld} stations={world?.stations??[]} enabled={enabled&&mainTab==="services"} defaultName={(()=>{let n=1;while(world?.services.some(row=>row.name===`系統${n}`))n++;return `系統${n}`;})()} onDirty={setPathServiceDirty} onSave={async draft=>{await createPathService(draft);setServiceCreating(false);cancelRouteMapPick();}} onCancel={()=>{setServiceCreating(false);setPathServiceDirty(false);cancelRouteMapPick();}} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="services")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} mapPickTarget={routeMapPick} startSequenceKey={serviceSequenceKey}/>}
+            {!serviceCreating&&serviceId===null&&<ServiceFromRoute key={`route-service-${worldEpoch}-${pathDraftEpoch}`} routes={world?.routes??[]} paths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled&&!serviceDirty&&(!pathServiceDirty||routeServiceDirty)} onDirty={dirty=>{setRouteServiceDirty(dirty);setPathServiceDirty(dirty);}} onSave={createPathService}/>}
+            <details><summary>区間・直通を指定して作成</summary>
+            <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null&&!serviceCreating&&!routeServiceDirty} onDirty={setPathServiceDirty} onSave={createPathService}/></details>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
