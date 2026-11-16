@@ -10,14 +10,14 @@ export function removePlannedTarget(value:ConstructionPlans,target:PlannedDelete
   return {...value,plannedStations:value.plannedStations.filter(station=>station.id!==target.stationId)};
  }
  const active=target.pathId===value.activePathId;
- const path=active?{anchorLevels:value.draftAnchorLevels,points:value.draftPoints,editedGeometry:value.draftEditedGeometry,extension:value.draftExtension,destination:value.draftDestination,reference:undefined,roadFollowing:value.roadFollowing}:value.parkedPaths.find(path=>path.id===target.pathId);
+ const path=active?{anchorLevels:value.draftAnchorLevels,points:value.draftPoints,editedGeometry:value.draftEditedGeometry,extension:value.draftExtension,destination:value.draftDestination,reference:undefined,ofmPath:undefined,roadFollowing:value.roadFollowing}:value.parkedPaths.find(path=>path.id===target.pathId);
  if(!path||!path.points.length)throw Error('削除する計画線路が見つかりません');
  if(target.kind==='plan-section')return removePlannedSection(value,target,previous);
  if(value.plannedStations.some(station=>station.pathId===target.pathId))throw Error('計画駅が使用中です。先に駅計画を削除してください');
  let levels=path.anchorLevels,points:GeoPoint[]=[],extension=path.extension,destination=path.destination,editedGeometry:EditedGeometry|undefined;
  if(target.kind==='plan-anchor'){
   if(!Number.isInteger(target.index)||target.index<0||target.index>=path.points.length)throw Error('削除するアンカーが見つかりません');
-  if(path.reference||path.roadFollowing)throw Error('参照線路のアンカーは個別に削除できません');
+  if(path.reference||path.ofmPath||path.roadFollowing)throw Error('参照線路のアンカーは個別に削除できません');
   if(levels&&target.index>0&&target.index<levels.length-1&&new Set(levels.slice(target.index-1,target.index+2)).size>1)throw Error("勾配が変化するアンカーの削除は未対応です");
   levels=levels?.filter((_,index)=>index!==target.index);
   points=path.points.filter((_,index)=>index!==target.index);
@@ -50,7 +50,7 @@ function removePlannedSection(value:ConstructionPlans,target:Extract<PlannedDele
  const path:PlannedPath|undefined=active?{anchorLevels:value.draftAnchorLevels,startLevel:value.startLevel,id:value.activePathId,planId:value.activePlanId,name:'',points:value.draftPoints,line:[],redo:[],extension:value.draftExtension,destination:value.draftDestination,editedGeometry:value.draftEditedGeometry,infrastructure:value.infrastructure,designSpeedKmh:value.designSpeedKmh,trackType:value.trackType,roadFollowing:value.roadFollowing}:value.parkedPaths.find(p=>p.id===target.pathId);
  if(!path)throw Error('削除する計画線路が見つかりません');
  // Reference paths lack editable anchor semantics. Never guess their segmentation.
- if(path.reference||path.roadFollowing)throw Error('参照線路は区間ごとに削除できません');
+ if(path.reference||path.ofmPath||path.roadFollowing)throw Error('参照線路は区間ごとに削除できません');
  const original=plannedGeometry(path.points,path.editedGeometry,previous(path.extension));
  const indices=anchorIndices(path.points,original.points),i=target.sectionIndex;
  if(!indices||!Number.isInteger(i)||i<0||i>=indices.length-1)throw Error('削除する区間が見つかりません');

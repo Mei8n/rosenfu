@@ -1,3 +1,4 @@
+import type {OfmPathDescriptor} from './ofmPlannedReference';
 import type {JunctionSource} from './junctionSelection';
 import type {SectionInfrastructure} from './sectionInfrastructure';
 import type {EditedGeometry} from "./editedGeometry";
@@ -5,7 +6,7 @@ import type {ReferenceBuild} from "./referenceCopy";
 import type {TrackType} from "./TrackTypeControls";
 export type GeoPoint={latitude:number;longitude:number};
 export type Extension={alignmentId:string;endpoint:"start"|"end"};
-export type PlannedPath={anchorLevels?:SectionInfrastructure["level"][];redoAnchorLevels?:SectionInfrastructure["level"][];junctionSource?:JunctionSource;startLevel?:SectionInfrastructure["level"];infrastructure?:SectionInfrastructure;destination?:Extension;redoDestination?:Extension;editedGeometry?:EditedGeometry;reference?:ReferenceBuild;extension:Extension|null;id:number;planId:number;name:string;points:GeoPoint[];redo:GeoPoint[];line:GeoPoint[];designSpeedKmh:number;trackType:TrackType;roadFollowing:boolean};
+export type PlannedPath={anchorLevels?:SectionInfrastructure["level"][];redoAnchorLevels?:SectionInfrastructure["level"][];junctionSource?:JunctionSource;startLevel?:SectionInfrastructure["level"];infrastructure?:SectionInfrastructure;destination?:Extension;redoDestination?:Extension;editedGeometry?:EditedGeometry;reference?:ReferenceBuild;ofmPath?:OfmPathDescriptor;extension:Extension|null;id:number;planId:number;name:string;points:GeoPoint[];redo:GeoPoint[];line:GeoPoint[];designSpeedKmh:number;trackType:TrackType;roadFollowing:boolean};
 export type PlannedStation={id:string;pathId?:number;alignmentId?:string;planId?:number;name:string;point:GeoPoint;lengthM:number};
 /** Saved editor data, distinct from built infrastructure. Hover and unconfirmed reference picks are transient. */
 export type ConstructionPlans={draftAnchorLevels?:SectionInfrastructure["level"][];redoAnchorLevels?:SectionInfrastructure["level"][];draftJunctionSource?:JunctionSource;startLevel?:SectionInfrastructure["level"];infrastructure?:SectionInfrastructure;version:1;plans:{id:number;name:string}[];parkedPaths:PlannedPath[];activePathId:number;activePlanId:number;draftPoints:GeoPoint[];draftEditedGeometry?:EditedGeometry;redoPoints:GeoPoint[];draftExtension:Extension|null;draftDestination?:Extension;draftRedoDestination?:Extension;trackType:TrackType;designSpeedKmh:number;roadFollowing:boolean;plannedStations:PlannedStation[];draftFinished:boolean};
@@ -19,7 +20,7 @@ export function removeConstructionPlan(value:ConstructionPlans,id:number):Constr
  const plannedStations=value.plannedStations.filter(station=>(station.planId??(station.pathId===value.activePathId?value.activePlanId:value.parkedPaths.find(path=>path.id===station.pathId)?.planId))!==id);
  if(id!==value.activePlanId)return {...value,plans,parkedPaths,plannedStations};
  const activePlanId=plans[0]?.id??value.activePlanId;
- const path=parkedPaths.find(path=>path.planId===activePlanId&&!path.reference);
+ const path=parkedPaths.find(path=>path.planId===activePlanId&&!path.reference&&!path.ofmPath);
  return {...value,plans:plans.length?plans:[{id:activePlanId,name:""}],parkedPaths:parkedPaths.filter(p=>p!==path),plannedStations,activePlanId,
   activePathId:path?.id??nextConstructionIds(value).path,draftPoints:path?.points??[],redoPoints:path?.redo??[],draftEditedGeometry:path?.editedGeometry,
   draftExtension:path?.extension??null,draftDestination:path?.destination,draftRedoDestination:path?.redoDestination,draftFinished:!!path,
@@ -28,7 +29,7 @@ export function removeConstructionPlan(value:ConstructionPlans,id:number):Constr
 
 /** Drop only empty plan headers at persistence boundaries, never in-progress anchors or undo data. */
 export function compactEmptyPlans(value:ConstructionPlans):ConstructionPlans{
- const occupied=new Set(value.parkedPaths.filter(path=>path.points.length||path.redo.length||path.line.length||path.reference||path.editedGeometry||path.extension||path.destination||path.redoDestination).map(path=>path.planId));
+ const occupied=new Set(value.parkedPaths.filter(path=>path.points.length||path.redo.length||path.line.length||path.reference||path.ofmPath||path.editedGeometry||path.extension||path.destination||path.redoDestination).map(path=>path.planId));
  if(value.draftPoints.length||value.redoPoints.length||value.draftEditedGeometry||value.draftExtension||value.draftDestination||value.draftRedoDestination)occupied.add(value.activePlanId);
  for(const station of value.plannedStations){
   const owner=station.planId??(station.pathId===value.activePathId?value.activePlanId:value.parkedPaths.find(path=>path.id===station.pathId)?.planId);

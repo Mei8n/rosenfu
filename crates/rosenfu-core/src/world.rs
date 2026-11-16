@@ -100,6 +100,14 @@ impl ViewState {
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
+    /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
+    #[serde(skip)]
+    pub runtime_road_evidence: crate::ofm_evidence::EvidenceStore,
+    /// Lightweight manifest; must exactly match the runtime table after restoration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub road_evidence_descriptors: Vec<crate::ofm_evidence::EvidenceDescriptor>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_snapshots: Vec<RoadSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub station_groups: Vec<StationGroup>,
@@ -153,6 +161,9 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            road_path_provenance: vec![],
+            runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
+            road_evidence_descriptors: vec![],
             road_snapshots: vec![],
             station_groups: vec![],
             alignment_connections: vec![],
@@ -183,6 +194,7 @@ pub enum WorldError {
     InvalidCoordinate,
     InvalidConstructionPlans,
     InvalidRoadSnapshot,
+    InvalidRoadEvidence,
     InvalidViewState,
     InvalidAlignment,
     InvalidAlignmentConnection,
@@ -243,6 +255,21 @@ impl World {
         data.validate()?;
         Ok(Self { data })
     }
+    /// UI JSON omits runtime evidence. Preserve the CURRENT table and reject
+    /// manifest changes; explicit evidence attachment uses a different validated API.
+    /// Returns a replacement without modifying the current world on any failure.
+    pub fn replace_retaining_road_evidence(
+        &self,
+        mut candidate: WorldDraft,
+    ) -> Result<Self, WorldError> {
+        if candidate.road_evidence_descriptors != self.data.road_evidence_descriptors {
+            return Err(WorldError::InvalidRoadEvidence);
+        }
+        candidate.runtime_road_evidence = self.data.runtime_road_evidence.clone();
+        let mut replacement = self.clone();
+        replacement.replace(candidate)?;
+        Ok(replacement)
+    }
     fn insert(&mut self, insert: impl FnOnce(&mut WorldDraft, u64)) -> Result<u64, WorldError> {
         let id = self.data.next_id;
         let mut candidate = self.data.clone();
@@ -293,7 +320,12 @@ impl World {
         &self.data
     }
     /// Atomic candidate replacement: failures leave the live state unchanged.
-    pub fn replace(&mut self, candidate: WorldDraft) -> Result<(), WorldError> {
+    pub fn replace(&mut self, mut candidate: WorldDraft) -> Result<(), WorldError> {
+        // Explicit alignment removal drops only its derived range records; source
+        // evidence is retained for Undo and other references.
+        candidate
+            .road_path_provenance
+            .retain(|p| candidate.alignments.iter().any(|a| a.id == p.alignment_id));
         candidate.validate()?;
         candidate.preserve_service_paths(&self.data)?;
         candidate.preserve_provenance(&self.data)?;
@@ -337,7 +369,33 @@ fn name(value: &str, entity: &'static str) -> Result<(), WorldError> {
     Ok(())
 }
 impl WorldDraft {
+    /// Explicitly attach a validated immutable table and its matching manifest.
+    /// No path-to-alignment provenance or construction authorization is added here.
+    pub fn with_road_evidence(
+        mut self,
+        store: crate::ofm_evidence::EvidenceStore,
+    ) -> Result<Self, WorldError> {
+        self.road_evidence_descriptors = store.descriptors();
+        self.runtime_road_evidence = store;
+        self.validate()?;
+        Ok(self)
+    }
+    /// Restore raw evidence without overwriting a claimed serialized manifest.
+    /// Failure leaves the original draft unchanged.
+    pub fn restore_road_evidence(
+        &mut self,
+        store: crate::ofm_evidence::EvidenceStore,
+    ) -> Result<(), WorldError> {
+        let mut candidate = self.clone();
+        candidate.runtime_road_evidence = store;
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), WorldError> {
+        if self.road_evidence_descriptors != self.runtime_road_evidence.descriptors() {
+            return Err(WorldError::InvalidRoadEvidence);
+        }
         roads::validate_road_snapshots(&self.road_snapshots)?;
         if let Some(view) = self.view_state {
             view.validate()?;
@@ -393,6 +451,7 @@ impl WorldDraft {
             }
         }
         self.validate_provenance()?;
+        self.validate_road_path_provenance()?;
         self.validate_route_paths()?;
         for r in &self.routes {
             name(&r.name, "route")?;
@@ -636,3 +695,5 @@ pub use roads::{
 
 mod water_model;
 pub use water_model::{validate_construction_water, WATER_MODEL_REVISION};
+mod road_path;
+pub use road_path::AlignmentRoadPathProvenance;

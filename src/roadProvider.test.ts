@@ -13,3 +13,7 @@ it('does not switch sources or turn missing tiles into empty roads',async()=>{
  await expect(createRoadProvider().load(bounds)).rejects.toThrow('tile unavailable');expect(load).toHaveBeenCalledTimes(1);expect(mock.tiles).toHaveBeenCalledTimes(1);
 });
 it('preserves initialization failures instead of starting a pack download',()=>{mock.tiles.mockImplementation(()=>{throw Error('invalid tile provider');});expect(()=>createRoadProvider()).toThrow('invalid tile provider');});
+it('shares load and evidence through one repository, preserving refs and cancellation',async()=>{
+ const snapshot={tileSnapshots:[{revision:'pinned'}]},evidence={rawTiles:[],bindings:[]};const load=vi.fn().mockResolvedValue(snapshot),readTileEvidenceBatch=vi.fn().mockResolvedValue(evidence);mock.tiles.mockReturnValue({load,readTileEvidenceBatch});const provider=createRoadProvider(),c=new AbortController();
+ expect(await provider.load(bounds)).toBe(snapshot);expect(await provider.readTileEvidenceBatch([],c.signal)).toBe(evidence);expect(readTileEvidenceBatch).toHaveBeenCalledWith([],c.signal);expect(mock.tiles).toHaveBeenCalledTimes(1);
+});

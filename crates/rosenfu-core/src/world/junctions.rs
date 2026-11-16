@@ -117,6 +117,20 @@ impl World {
                 }
             }
         }
+        if fraction > 0.0 && fraction < 1.0 {
+            for p in draft
+                .road_path_provenance
+                .iter_mut()
+                .filter(|p| p.alignment_id == id)
+            {
+                if p.start_point_index >= next {
+                    p.start_point_index += 1;
+                }
+                if p.end_point_index >= next {
+                    p.end_point_index += 1;
+                }
+            }
+        }
         let mut candidate = Self::new(draft)?;
         let suffix = candidate.split_alignment_at_anchor(owner, id, anchor)?;
         *self = candidate;
@@ -176,6 +190,7 @@ impl World {
             }
         }
         let suffix_id = suffix.id;
+        draft.split_road_path_provenance(id, suffix_id, split, &original.points)?;
         let old_provenance = std::mem::take(&mut draft.alignment_provenance);
         for provenance in old_provenance {
             if provenance.alignment_id != id {
