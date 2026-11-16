@@ -56,3 +56,12 @@ python -m unittest discover -s scripts/water-mask -p 'test_*.py' -v
 固定試験入力の富士山・関門・高松を再生成し、本番TypeScriptデコーダで全セルを照合した。富士山は水域0/Unknown25,988、関門は15,691/43,805、高松は15,847/33,881。全てmodel_landは0、source issueは各1件を保持した。これらは旧9part試験compositeであり、全国coverageや最新stageの反映を示さない。生成物はクラウド検証領域だけに保存し、HTTPS配信catalogへはまだ登録していない。
 
 Python 8回帰（空入力、除外、版、hash/形状、上書き防止/上限、path、四境界、矛盾basin）を専用3 OS CIに追加した。公開済み読込コードの11試験に加えて生成器を検証する。
+
+## 固定commitのHTTPS配信試験
+
+`data/water-mask-trial-20261114/`へ3地点のマスクと原典metadataを登録する。
+ODbL帰属と編集可能な元データの固定リンクは同ディレクトリのREADMEに記載。
+`fetchFineWaterMask`は単独ファイルの200応答・hash・長さ・取消検証を経て復号し、await前にspecをコピーする。GitHub rawはContent-RangeをCORS公開しないため、独立した小ファイルを全体取得する。Range取得APIを200へ緩和するものではない。
+catalogは1579bytes、SHA256 `07ec91cdbfeda5f0f2a8157fc303bf9824b5da084bcdc924c45f00ec92dc5bab`。
+公開後は `node scripts/water-mask/check-delivery.mjs PUBLISHED_COMMIT_SHA` で、実HTTPS取得から全セル走査・水域/Unknown総数照合まで再現できる。
+この登録は3地点の観測専用データであり、全国coverage、WebView動作、建設許可を追加しない。

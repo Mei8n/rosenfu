@@ -1,5 +1,5 @@
 import {describe,it,expect,vi} from 'vitest';
-import {decodeFineWaterMask,decodeWorldWaterMask,lookupWaterModel,fetchWaterRange,type FineWaterSpec} from './waterMaskModel';
+import {decodeFineWaterMask,decodeWorldWaterMask,lookupWaterModel,fetchWaterRange,fetchFineWaterMask,fetchWaterFile,type FineWaterSpec} from './waterMaskModel';
 const spec:FineWaterSpec={id:'test',revision:'fixed-v1',coverage:'complete_model',originLongitude:139,originLatitude:35,x0:0,y0:0,cellM:25,width:2,height:2};
 function ints(values:number[],size:2|4) {const b=new Uint8Array(values.length*size);const v=new DataView(b.buffer);values.forEach((n,i)=>size===4?v.setUint32(i*size,n,true):v.setUint16(i*size,n,true));return b;}
 const lon=(m:number)=>139+m/(6371008.8*Math.cos(35*Math.PI/180))*180/Math.PI;
@@ -83,4 +83,24 @@ it('refuses externally implemented model land for an observations-only spec',()=
  const s:FineWaterSpec={...spec,coverage:'observations_only'};
  const forged={spec:s,at:()=> 'model_land' as const};
  expect(lookupWaterModel(lon(10),lat(10),[s],new Map([[s.id,forged]]),null)).toEqual({state:'unknown',reason:'fine_incomplete'});
+});
+
+it('loads a pinned standalone observation raster without promoting empty cells',async()=>{
+ const s:FineWaterSpec={...spec,coverage:'observations_only'};
+ const bytes=new Uint8Array([...ints([0,2,2],4),...ints([0,1],2)]);
+ const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+ const f=vi.fn().mockResolvedValue(response([...bytes],200));
+ const pending=fetchFineWaterMask(s,'https://example.org/water.bin',bytes.length,digest,new AbortController().signal,f);
+ s.coverage='complete_model';const mask=await pending;
+ expect(mask.at(lon(10),lat(10))).toBe('model_water');expect(mask.at(lon(40),lat(10))).toBeNull();
+ expect(f.mock.calls[0][1].headers).toBeUndefined();
+ const nofetch=vi.fn();await expect(fetchFineWaterMask(spec,'https://example.org/water.bin',3,digest,new AbortController().signal,nofetch)).rejects.toThrow();expect(nofetch).not.toHaveBeenCalled();
+});
+
+it('requires an exact complete file and does not accept partial or failed downloads',async()=>{
+ for(const r of [response([1,2,3],206),response([1,2,3],404),response([1,2],200),response([1,2,3,4],200),response([3,2,1],200)]){
+  await expect(fetchWaterFile('https://example.org/water.bin',3,hash,new AbortController().signal,vi.fn().mockResolvedValue(r))).rejects.toThrow();
+ }
+ const c=new AbortController(),cancel=vi.fn(),f=vi.fn().mockResolvedValue(new Response(new ReadableStream({cancel}),{status:200}));
+ const pending=fetchWaterFile('https://example.org/water.bin',3,hash,c.signal,f);await Promise.resolve();c.abort();await expect(pending).rejects.toThrow();expect(cancel).toHaveBeenCalled();
 });

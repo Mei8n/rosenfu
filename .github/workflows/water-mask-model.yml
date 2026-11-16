@@ -5,6 +5,7 @@ on:
       - 'src/waterMaskModel.ts'
       - 'src/waterMaskModel.test.ts'
       - 'scripts/water-mask/**'
+      - 'data/water-mask-trial-20261114/**'
       - 'package-lock.json'
       - '.github/workflows/water-mask-model.yml'
 permissions:

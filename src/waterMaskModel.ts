@@ -139,6 +139,10 @@ export async function fetchWaterRange(url:string,from:number,length:number,sha25
   if(response.status!==206 || !match || Number(match[1])!==from || Number(match[2])!==end || !Number.isSafeInteger(Number(match[3])) || Number(match[3])<=end || !response.body) {
     await response.body?.cancel();throw new Error('Water range unavailable');
   }
+  return readPinnedBody(response,length,sha256,signal);
+}
+async function readPinnedBody(response: Response,length: number,sha256: string,signal: AbortSignal): Promise<Uint8Array> {
+  if(!response.body)throw new Error('Missing water body');
   const reader=response.body.getReader();const bytes=new Uint8Array(length);let written=0;
   const abort=()=>{void reader.cancel().catch(()=>{});};
   signal.addEventListener('abort',abort,{once:true});
@@ -154,4 +158,32 @@ export async function fetchWaterRange(url:string,from:number,length:number,sha25
   const actual=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
   if(actual!==sha256)throw new Error('Water range hash mismatch');
   return bytes;
+}
+
+/** Load a separately published, pinned fine raster. Snapshot the declared spec
+ * before awaiting transport so a caller cannot change coverage during a fetch. */
+export async function fetchFineWaterMask(spec: FineWaterSpec, url: string, length: number,
+  sha256: string, signal: AbortSignal, fetcher: typeof fetch = fetch): Promise<FineWaterMask> {
+  const fixed = {...spec};
+  checkSpec(fixed);
+  const rowBytes = (fixed.height + 1) * 4;
+  if (!Number.isSafeInteger(length) || length < rowBytes || (length-rowBytes)%4 !== 0) {
+    throw new Error('Invalid fine raster descriptor');
+  }
+  const bytes = await fetchWaterFile(url, length, sha256, signal, fetcher);
+  return decodeFineWaterMask(fixed, bytes.subarray(0,rowBytes), bytes.subarray(rowBytes));
+}
+
+/** A small standalone file, not a fallback for ignored byte ranges. This avoids
+ * relying on Content-Range exposure in CORS while still verifying every byte. */
+export async function fetchWaterFile(url:string,length:number,sha256:string,signal:AbortSignal,
+  fetcher:typeof fetch=fetch):Promise<Uint8Array> {
+  if(typeof url!=='string' || !url.startsWith('https://') || !Number.isSafeInteger(length) ||
+      length<1 || length>MAX_BYTES || typeof sha256!=='string' || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error('Invalid water file descriptor');
+  signal.throwIfAborted();
+  const response=await fetcher(url,{signal});
+  if(response.status!==200 || !response.body) {
+    await response.body?.cancel();throw new Error('Water file unavailable');
+  }
+  return readPinnedBody(response,length,sha256,signal);
 }
