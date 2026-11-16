@@ -1,3 +1,4 @@
+import {ServiceStopDiagram} from './ServiceStopDiagram';
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {EndpointConnection} from "./destinationJoin";
@@ -88,7 +89,7 @@ export function RouteCandidatePreview({entityLabel="路線",editRoute,defaultNam
   {error&&<p role="alert">{error}</p>}
   {result?.status==="no_path"&&<p role="status">接続する経路がありません。</p>}
   {(result?.truncated||result?.status==="incomplete")&&<p role="status">探索上限に達しました。経由駅を追加してください。</p>}
-  {membership&&<p>{entityLabel==="系統"?"停車駅":"所属駅"}: {membership.member_stations.map(stationName).join(" → ")}</p>}
+  {membership&&(entityLabel==="系統"?<ServiceStopDiagram label="停車駅" controlLabel={i=>`地図選択の停車駅 ${i+1}`} disabled onChange={()=>{}} rows={membership.member_stations.map((id,i)=>({key:String(i),name:stationName(id),stopping:true}))}/>:<p>所属駅: {membership.member_stations.map(stationName).join(" → ")}</p>)}
   {result&&!result.truncated&&result.status!=="incomplete"&&result.candidates.length>1&&<button disabled={!enabled||saving} onClick={()=>setShowChoices(true)}>経路を選択</button>}
   <div><button disabled={!enabled||!canApply||!membership||loading||saving||stale||!name.trim()||!onSave} onClick={()=>void finish()}>編集終了</button><button className="secondary" disabled={saving} onClick={()=>{invalidate();onMapPick?.(null);onDirty?.(false);onCancelEdit?.();}}>キャンセル</button></div>
   {showChoices&&result&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label={`${entityLabel}の経路を選択`}><h3>経路を選択</h3>
