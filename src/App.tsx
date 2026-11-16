@@ -1,3 +1,5 @@
+import {constructionRoadBounds,constructionRoadAttachment,type SavedRoadSnapshot} from './constructionRoads';
+import {RoadCrossings,useRoadAssessments} from './RoadCrossings';
 import {useAutomaticRoad} from './useAutomaticRoad';
 import {useAutomaticRail} from './useAutomaticRail';
 import {AutomaticRailControls} from './AutomaticRailControls';
@@ -94,6 +96,7 @@ type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
 type RoutePath = { route_id: string; segments: Segment[]; member_stations: string[] };
 type World = {
+  road_snapshots?:SavedRoadSnapshot[];
   service_route_bindings?:ServiceRouteBindingRecord[];
   alignment_connections?: EndpointConnection[];
   construction_plans?: ConstructionPlans | null;
@@ -1197,6 +1200,18 @@ export function App() {
   const requests=buildPaths.map(path=>({name:alignmentName,points:path.line,anchorIndices:anchorIndices(path.points,path.line),trackType:path.trackType,designSpeedKmh:path.designSpeedKmh,infrastructure:path.infrastructure??DEFAULT_INFRASTRUCTURE,startLevel:path.startLevel,anchorLevels:path.anchorLevels,junctionSource:path.junctionSource,extension:path.extension??undefined,destination:path.destination,reference:path.reference?{sourceRecord:path.reference.sourceRecord,provenance:path.reference.provenance}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===path.id).map(item=>({name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}))}));
   const stations=currentStations.filter(item=>item.station.alignmentId).map(item=>({alignmentId:item.station.alignmentId!,name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}));
   const constructionRequest={alignments:requests,stations};
+  const roadCheckAbort=useRef<AbortController|null>(null);
+  const [roadCheckPending,setRoadCheckPending]=useState(false);
+  const buildIdentity=JSON.stringify(constructionRequest);
+  const latestBuild=useRef({world,key:buildIdentity});latestBuild.current={world,key:buildIdentity};
+  const constructionRoad=useAutomaticRoad(constructionRoadBounds(buildPaths,bounds),status==="ready"&&buildPaths.length>0,worldEpoch);
+  const roadAttachment=useMemo(()=>constructionRoadAttachment(constructionRoad.snapshot,world),[constructionRoad.snapshot,world]);
+  const roadChecks=useRoadAssessments(world,status==="ready");
+  const roadCoverageUnknown=roadChecks.value.filter(([,r])=>!r.roads_ready).length;
+  const roadHeightUnknown=roadChecks.value.filter(([,r])=>r.unknown_road_height).length;
+  const constructionRoadReason=buildPaths.length>0&&(constructionRoad.status!=='ready'||roadAttachment.roads.some(r=>!r.coverage_verified))?(constructionRoad.status==='ready'?roadAttachment.reason:constructionRoad.message):'';
+  const crossingCount=roadChecks.value.reduce((n,[,r])=>n+r.crossings.length,0);
+  const roadStatusReason=constructionRoadReason||(roadChecks.error?`踏切判定未取得：${roadChecks.error}`:roadHeightUnknown?'道路の高さを確認できない区間があります':roadCoverageUnknown?'道路範囲を確認できない線路があります':alignments.length&&!world?.road_snapshots?.length?'道路参照が未保存のため踏切未確認です':'');
   const cursorPreviewActive=!planHover&&activeTool==="tracks"&&mapMode==="draw"&&!parallelMode&&!referenceCopy.active&&previewAnchors!==draftPoints&&previewAnchors.length>=2&&!previewError;
   const cursorDestination=cursorPreviewActive&&hoverPoint&&cursorPosition?destinationTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
   const previewRequests=cursorPreviewActive?requests.map((request,index)=>buildPaths[index].id!==activePathId?request:{...request,points:previewLine,anchorIndices:anchorIndices(previewAnchors,previewLine),anchorLevels:[...anchorHeights(draftPoints.length,draftAnchorLevels,startLevel,infrastructure.level),cursorDestination?endpointInfrastructure(cursorDestination.alignment,cursorDestination.endpoint).level:infrastructure.level],destination:cursorDestination?{alignmentId:cursorDestination.alignment.id,endpoint:cursorDestination.endpoint}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===activePathId).map(item=>({name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:nearestOnAlignment(previewLine,item.station.point).position,lengthM:item.station.lengthM,widthM:12}))}):requests;
@@ -1210,7 +1225,21 @@ export function App() {
       const {alignments:requests,stations}=constructionRequest;
       const first=requests[0];
       const batch=stations.length>0||requests.length>1||requests.some(request=>request.extension||request.destination||request.reference||request.junctionSource);
-      const snapshot=await invoke<World>(batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,anchorIndices:first.anchorIndices,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh,infrastructure:first.infrastructure,startLevel:first.startLevel,anchorLevels:first.anchorLevels});
+      let attachment=roadAttachment;
+      let roadConfirmation='';
+      if(requests.length){
+        setNotice("道路を確認中（最大25秒）。未取得の場合も通常建設を続行します。");
+        const controller=new AbortController();roadCheckAbort.current=controller;setRoadCheckPending(true);
+        let loaded:Awaited<ReturnType<typeof constructionRoad.ensureCurrent>>;
+        try{loaded=await constructionRoad.ensureCurrent(controller.signal);}
+        finally{roadCheckAbort.current=null;setRoadCheckPending(false);}
+        if(controller.signal.aborted){setNotice("着工を取り消しました。下書きは保持しています。");return;}
+        if(loaded.status==='stale'||latestBuild.current.world!==world||latestBuild.current.key!==buildIdentity)throw Error("計画またはワールドが変更されたため着工を中止しました。");
+        attachment=constructionRoadAttachment(loaded.status==='ready'?loaded.snapshot:undefined,world);
+        roadConfirmation=loaded.status==='unavailable'?`踏切未確認：${loaded.reason.replace(/^道路未確認：/,'')}。後から道路を取得しただけでは既設線路へ反映されません。`:attachment.reason;
+      }
+      const roads=attachment.roads;
+      const snapshot=await invoke<World>(roads.length?"build_plan_with_roads":batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",roads.length?{alignments:requests,stations,roads}:batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,anchorIndices:first.anchorIndices,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh,infrastructure:first.infrastructure,startLevel:first.startLevel,anchorLevels:first.anchorLevels});
       const extendedIds=new Set(requests.flatMap(request=>request.extension?[request.extension.alignmentId]:[]));
       const keepHistory=(entry:StationHistoryEntry)=>Boolean(entry.planned)||!entry.placement||!extendedIds.has(entry.placement.alignment_id);
       setStationUndo(history=>history.filter(keepHistory));setStationRedo(history=>history.filter(keepHistory));
@@ -1218,11 +1247,11 @@ export function App() {
       const created=snapshot.alignments?.find(a=>!alignments.some(old=>old.id===a.id));
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftAnchorLevels(undefined);setRedoAnchorLevels([]);setHeightAnchor(null);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);
       const saved=savedPlanFingerprint,nextPlans=removeConstructionPlan(constructionPlans,activePlanId);restoreConstructionPlans(nextPlans);setSavedPlanFingerprint(saved);
-      if(requests.some(request=>request.junctionSource)){setTrackDeleteUndo({kind:"built",world:snapshot,plans:constructionPlanFingerprint(nextPlans),command:"build_plan",args:{alignments:requests,stations}});setTrackDeleteRedo(null);}
+      if(requests.some(request=>request.junctionSource)){setTrackDeleteUndo({kind:"built",world:snapshot,plans:constructionPlanFingerprint(nextPlans),command:roads.length?"build_plan_with_roads":"build_plan",args:roads.length?{alignments:requests,stations,roads}:{alignments:requests,stations}});setTrackDeleteRedo(null);}
       if(created)setAlignmentId(created.id);
       const builtStations=snapshot.stations.filter(station=>!world?.stations.some(old=>old.id===station.id)).map(station=>({station,placement:snapshot.station_placements?.find(p=>p.station_id===station.id)}));
       setStationUndo(history=>[...history,...builtStations].slice(-50));setStationRedo([]);
-      changeMapMode(activeTool==="stations"?"place":"draw");setNotice(requests.length?"線路を建設しました。計画駅も反映しました。":"計画駅を建設しました。");
+      changeMapMode(activeTool==="stations"?"place":"draw");setNotice((requests.length?"線路を建設しました。計画駅も反映しました。":"計画駅を建設しました。")+(roadConfirmation?` ${roadConfirmation}`:""));
     });
   }
   function renamePlannedStation(id:string,name:string) {
@@ -1589,6 +1618,7 @@ export function App() {
 </div>}
             {activeTool === "tracks" && mapMode==="draw" && !parallelMode && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && (draftPoints.length>0 || roadFollowingBlocked || !!previewError) && <div className="construction-tooltip drawing-tooltip drawing-metrics" role="status" style={{left:Math.max(8,Math.min(mapSize.width-210,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-90,cursorPosition.y+18))}}>
               {(roadFollowingBlocked || previewError || nativeConstructionPreview?.error)&&<strong>{roadFollowingBlocked?(!graphBundle?automaticRoad.message:"道路追従を開始するか、道路に合わせるをOFFにしてください"):`敷設不可：${previewError??nativeConstructionPreview?.error}`}</strong>}
+              {draftPoints.length>0&&!roadFollowing&&constructionRoadReason&&<small>{constructionRoadReason}</small>}
               {draftPoints.length>0&&<><div>長さ {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div>{!previewError&&<div>速度上限 <span className="drawing-speed">{Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh)} km/h</span>{circleGuide&&<small>（暫定）</small>}</div>}</>}
             </div>}
             {anchorPreview?.preview&&(anchorPreview.error || anchorPreview.snapped)&&cursorPosition&&<div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{anchorPreview.error??"位置合わせ（接続は変更しません）"}</div>}
@@ -1634,6 +1664,7 @@ export function App() {
                 <path d={drawPath(alignment.points)} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && activeTool!=="select" && !suppressSelectionClick.current) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
               </g>)}
               {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} lines={alignments} selectedId={referenceCopy.active?(referenceExtension?.alignment.id??""):alignmentId}/>}
+              <RoadCrossings assessments={roadChecks.value} camera={camera}/>
               <g className="route-assignment-overlays" pointerEvents="none">{alignments.flatMap(alignment=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
               {(mainTab==="routes"||mainTab==="services")&&serviceMapSections.map((section,index)=><g key={section.alignmentId+":"+index} className="service-map-section" data-alignment-id={section.alignmentId} data-service-count={section.bands.length} pointerEvents="none">
                 <title>{section.bands.map(b=>b.name).join(" / ")}</title>
@@ -1688,7 +1719,7 @@ export function App() {
             </svg>
             <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
           </div>
-          <MapCredits derivedOsmVisible={(roadFollowing&&!!graphBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>!!path.reference&&path.line.length>1)||!!(referenceCopy.active&&referenceCopy.plan.build&&referenceCopy.plan.build.points.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
+          <MapCredits openFreeMapVisible={!!graphBundle?.graph.dataset.id.startsWith("ofm-tiles/")||!!constructionRoad.snapshot?.tileSnapshots?.length||!!world?.road_snapshots?.some(s=>s.source_url.startsWith("https://tiles.openfreemap.org/planet/"))||!!world?.source_records?.some(s=>s.dataset_id.startsWith("ofm-tiles/"))} derivedOsmVisible={crossingCount>0||(roadFollowing&&!!graphBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>!!path.reference&&path.line.length>1)||!!(referenceCopy.active&&referenceCopy.plan.build&&referenceCopy.plan.build.points.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
         </section>
         <aside className={panelCollapsed ? "side-panel collapsed" : "side-panel"}>
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
@@ -1707,6 +1738,10 @@ export function App() {
             <div className="plan-heading"><label htmlFor="construction-plan-name">計画</label><input id="construction-plan-name" autoComplete="off" aria-label="計画名（任意）" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled||referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/><button type="button" className="secondary" aria-label="別の線路計画を追加" title="新しい計画" disabled={!enabled||referenceCopy.active||!(currentPaths.some(path=>path.points.length>0)||currentStations.length>0)} onClick={newIndependentPlan}>＋</button></div>
             {(plans.length>1||currentPaths.some(path=>path.points.length>0)||currentStations.length>0)&&<div className="plan-switcher" role="group" aria-label="計画を選択">{plans.map(plan=><button key={plan.id} className="secondary" aria-pressed={plan.id===activePlanId} disabled={!enabled||referenceCopy.active} onClick={()=>choosePlan(plan.id)}>{plan.name.trim()||`計画 ${plan.id}`}{plan.id!==activePlanId&&<span className="sr-only"> を編集</span>}</button>)}</div>}
             <div className="plan-totals"><span>{currentPaths.filter(path=>path.points.length>0).length}経路 · {new Set(currentStations.map(p=>stationDisplayGroup(p.station.id)?.id??p.station.id)).size}駅</span><span title="費用計算は未実装です">建設費 — / 維持費 —</span></div>
+            {(roadCheckPending||roadChecks.pending||roadStatusReason)&&<div role="status" aria-label="踏切・道路確認状態" className="field-hint">
+              {roadCheckPending?<button type="button" className="secondary" onClick={()=>roadCheckAbort.current?.abort()}>着工を取り消す</button>:<span title={roadStatusReason}>{roadChecks.pending||constructionRoad.status==='loading'?'道路確認中':'踏切未確認'}</span>}
+              {!roadCheckPending&&buildPaths.length>0&&constructionRoad.status!=='loading'&&roadStatusReason&&<button type="button" className="secondary" aria-label="道路再取得" title="道路再取得" onClick={constructionRoad.retry}>↻</button>}
+            </div>}
             <details className="plan-breakdown" open={currentStations.some(item=>!item.valid)||undefined}><summary>内訳</summary><p className="muted">建設費・維持費は未計算</p><div role="group" aria-label="計画内の経路" hidden>{currentPaths.map(path=><button key={path.id} className="secondary" disabled={!enabled||referenceCopy.active||path.id===activePathId||!!path.reference} aria-pressed={path.id===activePathId} onClick={()=>selectPath(path.id)}>経路 {path.id}{path.reference?"（実在形状）":""}</button>)}</div><ul aria-label="計画中の駅">{currentStations.map(({station,valid})=><li className="planned-station-row" key={station.id}><input aria-label="計画駅名" maxLength={80} readOnly={stationDisplayGroup(station.id)?.members.some(m=>!m.planned)} value={stationDisplayGroup(station.id)?.name??station.name} disabled={!enabled} onChange={event=>renamePlannedStation(station.id,event.target.value)} onBlur={()=>{if(!station.name.trim())renamePlannedStation(station.id,"新駅");}} />{!valid&&<span role="status"> 線路に収まらないため着工不可</span>}<button type="button" className="secondary" aria-label={`計画駅 ${station.name} を削除`} disabled={!enabled} onClick={()=>{setPlannedStations(items=>items.filter(item=>item.id!==station.id));setStationUndo(items=>items.filter(item=>item.planned?.id!==station.id));setStationRedo(items=>items.filter(item=>item.planned?.id!==station.id));}}>×</button></li>)}</ul></details>
             {deletePlanConfirm&&<PlanDeleteDialog name={planName.trim()||`計画 ${activePlanId}`} onCancel={()=>setDeletePlanConfirm(false)} onDelete={deleteCurrentPlan}/>}
             <div className="plan-actions"><button className="secondary" disabled={!enabled||referenceCopy.active} onClick={()=>setDeletePlanConfirm(true)}>計画を削除</button><button className="secondary" disabled={!enabled||referenceCopy.active||!planHasContent} onClick={clearCurrentPlan}>下書きを消去</button><button disabled={!enabled||referenceCopy.active||!planBuildable} onClick={commitAlignment}>計画を着工</button></div>
@@ -1722,7 +1757,7 @@ export function App() {
           </section>
           <section className="track-editor" role="tabpanel" id="panel-tracks" aria-labelledby="tab-tracks" hidden={activeTool !== "tracks" && activeTool !== "inactive"}>
 
-            <details className="reference-tools" hidden={!referencePanel&&!referenceCopy.active} open><summary>実在線路・道路に沿う</summary>{roadFollowing&&<div role="status" aria-label="道路データ状態">{automaticRoad.message}<button type="button" className="secondary" disabled={referenceCopy.active} onClick={automaticRoad.retry}>再取得</button><small>道路追従のみ対応。踏切自動作成・水域建設判定は未実装です。</small></div>}{automaticRailSelected?<AutomaticRailControls copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;if(roadFollowing)setFrozenRoadBundle(graphBundle);newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} status={automaticRail.status} retry={automaticRail.retry} enabled={enabled} canStart={copyCanStart} zoom={camera.zoom} truncated={automaticRail.view.truncated}/>:<ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>{referenceExtensionLabel(candidate)}</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;if(roadFollowing)setFrozenRoadBundle(graphBundle);newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/> }</details>
+            <details className="reference-tools" hidden={!referencePanel&&!referenceCopy.active} open><summary>実在線路・道路に沿う</summary>{roadFollowing&&<div role="status" aria-label="道路データ状態">{automaticRoad.message}<button type="button" className="secondary" disabled={referenceCopy.active} onClick={automaticRoad.retry}>再取得</button></div>}{automaticRailSelected?<AutomaticRailControls copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;if(roadFollowing)setFrozenRoadBundle(graphBundle);newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} status={automaticRail.status} retry={automaticRail.retry} enabled={enabled} canStart={copyCanStart} zoom={camera.zoom} truncated={automaticRail.view.truncated}/>:<ReferenceCopyControls extensionError={referenceExtensionError} extensionControls={<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>{referenceExtensionLabel(candidate)}</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;if(roadFollowing)setFrozenRoadBundle(graphBundle);newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/> }</details>
 
             <ul className="construction-list" hidden={mapMode==="draw"}>{alignments.map((a) => <li key={a.id}><button className="secondary" aria-pressed={a.id === alignmentId} onClick={() => { setAlignmentId(a.id);setSelectedPlanPath(null);setTrackDeleteConfirm(false);changeMapMode("move"); changeCamera(cameraAt(a.points[0].latitude,a.points[0].longitude,camera.zoom)); }}>{a.name&&a.name!=="新しい線路"?a.name:"名前未設定の線路"}</button></li>)}</ul>
             {selectedAlignment&&world?.alignment_provenance?.some(p=>p.alignment_id===selectedAlignment.id)&&<AlignmentProvenance alignment={selectedAlignment} provenances={world?.alignment_provenance?.filter(p=>p.alignment_id===selectedAlignment.id)} sourceRecords={world?.source_records??[]}/>}
@@ -1780,7 +1815,7 @@ export function App() {
       {slotPicker&&<div className="company-setup-backdrop"><section className="company-setup save-slot-dialog" role="dialog" aria-modal="true" aria-label="ワールドを選択"><h2>セーブデータ</h2><SaveSlots slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy} canSave={false} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{}} onNew={()=>{setSlotPicker(false);setSlotName("");setSlotDialog("new");}}/><button disabled={busy} onClick={()=>setSlotPicker(false)}>閉じる</button>{error&&<p role="alert">{error}</p>}</section></div>}
       {slotDialog&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label={slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}><h2>{slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}</h2><form autoComplete="off" onSubmit={submitSlotName}><label>名前<input autoComplete="off" autoFocus maxLength={80} value={slotName} disabled={busy} onChange={event=>setSlotName(event.target.value)}/></label><button type="submit" disabled={busy||!slotName.trim()||confirmLoad}>{slotDialog==="new"?"作成":"保存"}</button><button type="button" disabled={busy} onClick={()=>{setSlotDialog(null);setSlotAction(null);setConfirmLoad(false);}}>キャンセル</button></form>{error&&<p role="alert">{error}</p>}</section></div>}
       {confirmLoad && <div className="banner load-confirm" style={{position:"fixed",zIndex:2000,left:"20%",right:"20%",top:"20%"}} role="alert"><p>{slotAction?.kind==="new"?"新しいワールドを作成すると、現在の未保存の変更と未適用の下書きは破棄されます。保存済みのワールドは変更しません。":"読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。"}</p><button className="secondary" disabled={busy} onClick={() => {setConfirmLoad(false);setSlotAction(null);}}>戻る</button><button disabled={busy} onClick={()=>slotAction?applySlotAction():load()}>{slotAction?.kind==="new"?"変更を破棄して作成":"読込を続ける"}</button></div>}
-      <footer className="app-footer"><p role="status" aria-live="polite">{busy ? "ワールドを更新しています。" : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>列車種別・ダイヤ・列車運行・旅客流動は未実装</span></footer>
+      <footer className="app-footer"><p role="status" aria-live="polite">{busy ? (roadCheckPending ? "道路を確認中（最大25秒）。未取得の場合も通常建設を続行します。" : "ワールドを更新しています。") : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>列車種別・ダイヤ・列車運行・旅客流動は未実装</span></footer>
     </main>
   );
 }

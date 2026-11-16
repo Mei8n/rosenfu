@@ -1,0 +1,10 @@
+import {afterEach,expect,it,vi} from 'vitest';
+import {invoke,isTauri} from '@tauri-apps/api/core';
+import {createNativeRoadFetcher} from './nativeRoadFetch';
+vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:vi.fn(()=>true)}));
+afterEach(()=>vi.clearAllMocks());
+const fetcher=createNativeRoadFetcher('http://tauri.localhost');
+it('passes only the fixed relative path to native and retains bytes',async()=>{vi.mocked(invoke).mockResolvedValue([123,125]);const r=await fetcher('http://tauri.localhost/road-data/index.json');expect(await r.text()).toBe('{}');expect(invoke).toHaveBeenCalledWith('road_delivery_read',{path:'index.json'});});
+it.each(['https://evil.test/road-data/index.json','http://tauri.localhost/road-data/index.json?url=x','http://tauri.localhost/road-data/packs/a/1_2/../secret.json','http://tauri.localhost/road-data/%2e%2e/x'])('rejects unsafe input %s',async url=>{await expect(fetcher(url)).rejects.toThrow();expect(invoke).not.toHaveBeenCalled();});
+it('does not turn invalid native data into a successful response',async()=>{vi.mocked(invoke).mockResolvedValue([256]);await expect(fetcher('http://tauri.localhost/road-data/index.json')).rejects.toThrow('応答');});
+it('cancels the consumer without cancelling other readers',async()=>{vi.mocked(invoke).mockReturnValue(new Promise(()=>{}));const controller=new AbortController();const p=fetcher('http://tauri.localhost/road-data/index.json',{signal:controller.signal});controller.abort();await expect(p).rejects.toThrow('Aborted');expect(invoke).toHaveBeenCalledTimes(1);});

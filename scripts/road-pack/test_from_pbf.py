@@ -2,9 +2,11 @@ import contextlib
 import importlib.util
 import io
 import json
+import multiprocessing
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import from_pbf
 import build
 
@@ -42,10 +44,15 @@ class PbfTests(unittest.TestCase):
             for ident,refs,tags in ways:
                 writer.add_way(self.osmium.osm.mutable.Way(id=ident,version=2,nodes=refs,tags=tags))
 
-    def run_pack(self):
+    def assert_no_temporary_files(self):
+        self.assertFalse(list(self.base.glob('road-input-*')))
+        self.assertFalse(list(self.base.glob('road-node-index-*')))
+        self.assertFalse(list(self.base.rglob('nodes.idx')))
+
+    def run_pack(self, **budgets):
         with contextlib.redirect_stdout(io.StringIO()):
             from_pbf.generate(self.pbf,self.poly,[134.04,34.32,134.08,34.34],
-                'https://download.geofabrik.de/fixture.osm.pbf',self.out)
+                'https://download.geofabrik.de/fixture.osm.pbf',self.out,**budgets)
         return json.loads((self.out/'manifest.json').read_text())
 
     def test_roundoff_extra_cell_keeps_road_and_full_crossing_way(self):
@@ -59,9 +66,43 @@ class PbfTests(unittest.TestCase):
         self.assertEqual(crossing['node_ids'],['3','4'])
         self.assertEqual(m['source']['parent_timestamp'],m['revision'])
         self.assertEqual(m['source']['pyosmium'],'4.3.2')
+        self.assert_no_temporary_files()
 
     def test_missing_source_node_never_publishes(self):
         self.write([(1,134.03,34.33)],[(10,[1,2],{'highway':'service'})])
         with self.assertRaises((ValueError,RuntimeError)):
             self.run_pack()
         self.assertFalse(self.out.exists())
+        self.assert_no_temporary_files()
+
+    def test_source_node_budget_failure_cleans_index_and_leaves_no_worker(self):
+        self.write([(1,134.03,34.33),(2,134.035,34.33)],[(10,[1,2],{'highway':'service'})])
+        children={child.pid for child in multiprocessing.active_children()}
+        with self.assertRaisesRegex(ValueError,'source node cache limit'):
+            self.run_pack(max_source_nodes=1)
+        self.assertFalse(self.out.exists())
+        self.assert_no_temporary_files()
+        self.assertEqual({child.pid for child in multiprocessing.active_children()},children)
+
+    def test_extraction_timeout_joins_worker_before_cleanup_and_does_not_publish(self):
+        self.write([(1,134.03,34.33),(2,134.035,34.33)],[(10,[1,2],{'highway':'service'})])
+        children={child.pid for child in multiprocessing.active_children()}
+        with patch.object(from_pbf,'EXTRACT_TIMEOUT_SECONDS',0):
+            with self.assertRaisesRegex(ValueError,'extraction process timeout'):
+                self.run_pack()
+        self.assertFalse(self.out.exists())
+        self.assert_no_temporary_files()
+        self.assertEqual({child.pid for child in multiprocessing.active_children()},children)
+        # Same paths can be reused immediately: no retained named-index handle.
+        self.run_pack()
+        self.assert_no_temporary_files()
+
+    def test_named_index_is_released_before_cell_generation(self):
+        self.write([(1,134.03,34.33),(2,134.035,34.33)],[(10,[1,2],{'highway':'service'})])
+        original=build.generate
+        def checked(*args, **kwargs):
+            self.assertFalse(list(self.base.rglob('nodes.idx')))
+            return original(*args, **kwargs)
+        with patch.object(build,'generate',side_effect=checked):
+            self.run_pack()
+        self.assert_no_temporary_files()

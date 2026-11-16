@@ -298,19 +298,35 @@ test("tile result metadata is discarded when tiles leave the viewport and zoom r
   expect(invoke).not.toHaveBeenCalled();
 });
 
-test("camera changes do not edit world IDs/coordinates and legacy reload restores default view", async () => {
-  desktop(); renderStationEditor(); await screen.findByText(/test-version/);
+test.each([false,true])("camera changes do not edit world IDs/coordinates and legacy reload restores default view (delayed slot refresh=%s)", async (delayedSlots) => {
+  desktop();
+  const original=vi.mocked(invoke).getMockImplementation()!;
+  let slotReads=0,finishRefresh!:()=>void;
+  const refreshed=new Promise(resolve=>{finishRefresh=()=>resolve({active_slot_id:"test-slot",slots:[]});});
+  vi.mocked(invoke).mockImplementation((command,args)=>{
+    if(command==="list_save_slots"&&++slotReads===2&&delayedSlots)return refreshed;
+    return original(command,args);
+  });
+  renderStationEditor(); await screen.findByText(/test-version/);
   const originalSnapshot = JSON.stringify(populated);
   fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
   await screen.findByText("新駅を配置しました。");
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
+  const saveButton=screen.getByRole("button",{name:"保存"}) as HTMLButtonElement;
+  if(delayedSlots){await waitFor(()=>expect(slotReads).toBe(2));expect(saveButton.disabled).toBe(true);await act(async()=>finishRefresh());}
   await screen.findByText("ワールドと未着工計画を保存しました。");
+  const beforeReadiness=vi.mocked(invoke).mock.calls.length;
+  // The save starts a new epoch's read-only autosave check. This wait may
+  // admit that read only; it must not conceal writes or any other command.
+  await waitFor(()=>expect(saveButton.disabled).toBe(false));
+  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="autosave_status")).toHaveLength(2));
+  expect(vi.mocked(invoke).mock.calls.slice(beforeReadiness).every(([command])=>command==="autosave_status")).toBe(true);
   const count = vi.mocked(invoke).mock.calls.length;
   fireEvent.change(screen.getByLabelText("中心緯度"), { target: { value: "43.06" } });
   fireEvent.change(screen.getByLabelText("中心経度"), { target: { value: "141.35" } });
   fireEvent.click(screen.getByRole("button", { name: "座標へ移動" }));
   fireEvent.click(screen.getByRole("button", { name: "拡大" }));
-  expect(vi.mocked(invoke).mock.calls).toHaveLength(count);
+  expect(vi.mocked(invoke).mock.calls, JSON.stringify(vi.mocked(invoke).mock.calls)).toHaveLength(count);
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   fireEvent.click(screen.getByRole("button", { name: "読込を続ける" }));

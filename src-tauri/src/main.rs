@@ -185,6 +185,40 @@ fn build_plan(
         .build_construction_plan(alignments, stations.unwrap_or_default())
 }
 #[tauri::command]
+fn build_plan_with_roads(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignments: Vec<session::PlannedAlignment>,
+    stations: Option<Vec<session::PlannedBuiltStation>>,
+    roads: Vec<rosenfu_core::world::RoadSnapshot>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .build_construction_plan_with_roads(alignments, stations.unwrap_or_default(), roads)
+}
+#[tauri::command]
+fn preview_plan_with_roads(
+    editor: State<'_, Mutex<WorldEditor>>,
+    alignments: Vec<session::PlannedAlignment>,
+    stations: Option<Vec<session::PlannedBuiltStation>>,
+    roads: Vec<rosenfu_core::world::RoadSnapshot>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .clone()
+        .build_construction_plan_with_roads(alignments, stations.unwrap_or_default(), roads)
+}
+#[tauri::command]
+fn road_assessments(
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<Vec<(AlignmentId, rosenfu_core::world::RoadAssessment)>, String> {
+    Ok(editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .road_assessments())
+}
+#[tauri::command]
 fn place_station_on_alignment(
     editor: State<'_, Mutex<WorldEditor>>,
     name: String,
@@ -648,6 +682,9 @@ fn main() {
             build_alignment_with_stations,
             build_plan,
             preview_construction_plan,
+            build_plan_with_roads,
+            preview_plan_with_roads,
+            road_assessments,
             update_station_placement,
             place_station_on_alignment,
             rename_station,

@@ -7,6 +7,9 @@ import { App } from "./App";
 import { project, DEFAULT_CAMERA } from "./map";
 import { alignmentLength, pointOnAlignment } from "./alignment";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
+// Geometry/type tests deliberately have no road reference. Road acquisition and
+// its deadline are covered by ConstructionRoadAcceptance, not real network calls.
+vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'unavailable fixture',load:async()=>{throw Error('road reference unavailable in geometry fixture');}})}));
 afterEach(() => { localStorage.removeItem("rosenfu.display-settings"); cleanup(); vi.resetAllMocks(); });
 const alignment = { id:"3",owner:"2",name:"試験線",points:[{latitude:35.67504,longitude:139.72},{latitude:35.67504,longitude:139.78}] };
 const empty = {next_id:"3",players:[{id:"1",name:"Player"}],companies:[{id:"2",owner:"1",name:"Railway"}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
@@ -34,9 +37,10 @@ test("track kind survives independent plans, undo, failed construction and is se
  fireEvent.click(map,{clientX:320,clientY:200});fireEvent.click(map,{clientX:360,clientY:200});
  fireEvent.click(panel().getByRole("button",{name:/計画 1 を編集/}));expect(kind().getAttribute("aria-pressed")).toBe("true");
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(kind().getAttribute("aria-pressed")).toBe("true");
- vi.mocked(invoke).mockRejectedValueOnce(Error("kind build rejected"));fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/kind build rejected/);expect(kind().getAttribute("aria-pressed")).toBe("true");
+ const original=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{if(command==="build_alignment")throw Error("kind build rejected");return original(command,args);});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/kind build rejected/);expect(kind().getAttribute("aria-pressed")).toBe("true");
  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="build_alignment")?.[1]).toMatchObject({trackType:"high_speed"});
- vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"high_speed"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);expect(panel().queryByRole("button",{name:"試験線"})).toBeNull();fireEvent.click(screen.getByRole("button",{name:"選択"}));expect(panel().getByRole("button",{name:"試験線"})).toBeTruthy();
+ vi.mocked(invoke).mockImplementation(async (command,args)=>command==="build_alignment"?{...built,alignments:[{...alignment,track_type:"high_speed"}]}:original(command,args));fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);expect(panel().queryByRole("button",{name:"試験線"})).toBeNull();fireEvent.click(screen.getByRole("button",{name:"選択"}));expect(panel().getByRole("button",{name:"試験線"})).toBeTruthy();
 });
 test("tram defaults road following on, blocks unsupported drawing and construction, permits explicit off",async()=>{
  const map=await start();const kind=screen.getByRole("button",{name:"トラム"});

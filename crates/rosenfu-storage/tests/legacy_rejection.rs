@@ -7,7 +7,7 @@ use std::fs;
 
 #[test]
 fn every_old_schema_is_rejected_before_world_parsing_without_touching_files() {
-    assert_eq!(SCHEMA_VERSION, 22);
+    assert_eq!(SCHEMA_VERSION, 24);
     assert!(matches!(
         decode(include_bytes!("fixtures/schema-1-world.json")),
         Err(StorageError::UnsupportedVersion(1))

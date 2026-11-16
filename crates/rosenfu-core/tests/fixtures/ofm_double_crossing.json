@@ -1,0 +1,70 @@
+{
+  "seam": 139.76806640625,
+  "rail": [
+    [
+      139.76806640625,
+      35.68434327496442
+    ],
+    [
+      139.76806640625,
+      35.6863489711398
+    ]
+  ],
+  "roads": [
+    {
+      "properties": {
+        "surface": "paved",
+        "class": "tertiary"
+      },
+      "points": [
+        [
+          139.76768016815186,
+          35.68439832439155
+        ],
+        [
+          139.76773381233215,
+          35.68449854010686
+        ],
+        [
+          139.7684097290039,
+          35.68621525933351
+        ]
+      ]
+    },
+    {
+      "properties": {
+        "surface": "paved",
+        "class": "tertiary"
+      },
+      "points": [
+        [
+          139.7677230834961,
+          35.6844767540925
+        ],
+        [
+          139.76843655109406,
+          35.68628933014392
+        ],
+        [
+          139.76865112781525,
+          35.68686010878784
+        ]
+      ]
+    }
+  ],
+  "intersection_latitudes": [
+    35.68534327496442,
+    35.6853489711398
+  ],
+  "separation_m": 0.6340982439243703,
+  "source": {
+    "revision": "20261101_080013_pt",
+    "urls": [
+      "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14552/6451.pbf",
+      "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14553/6451.pbf"
+    ],
+    "license": "ODbL-1.0",
+    "attribution": "© OpenMapTiles © OpenStreetMap contributors",
+    "note": "Small observed quantized road geometries. Rail is a synthetic regression line, not surveyed rail. Geometric correspondence is a hypothesis, not a shared OSM way identity."
+  }
+}

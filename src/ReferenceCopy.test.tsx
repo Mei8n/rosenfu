@@ -10,6 +10,8 @@ import {App} from './App';
 import {invoke} from '@tauri-apps/api/core';
 import {DEFAULT_CAMERA,project} from './map';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
+// Reference-copy geometry tests do not depend on live road acquisition.
+vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'unavailable fixture',load:async()=>{throw Error('road reference unavailable in copy fixture');}})}));
 vi.mock('./referenceGraphBundle',()=>({readReferenceGraphBundle:vi.fn()}));
 afterEach(()=>{cleanup();vi.resetAllMocks();vi.unstubAllGlobals();localStorage.clear();});
 function fixture(){const graph=syntheticReferenceGraph();graph.edges[1].osmWayId='101';graph.edges[1].segmentIndex=1;graph.nodes[2].latitude=35.0005;return {graph,graphSha256:'a'.repeat(64),sourceSha256:'b'.repeat(64),source:{source:'synthetic',sourceDate:null,license:'ODbL-1.0',attribution:'© OpenStreetMap contributors'}};}
