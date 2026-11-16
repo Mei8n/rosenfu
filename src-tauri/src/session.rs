@@ -90,6 +90,9 @@ pub struct PlannedAlignment {
     pub destination: Option<PlannedAlignmentExtension>,
 }
 
+// Legacy single-file replacement helpers are retained only for regression tests.
+// Production saves use the slot-aware methods below.
+#[cfg(test)]
 #[derive(Clone)]
 struct PendingManualReplacement {
     path: PathBuf,
@@ -107,6 +110,7 @@ pub struct ManualSaveResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replacement_required: Option<ManualReplacementRequired>,
 }
+#[cfg(test)]
 fn next_manual_token() -> Result<String, String> {
     static NEXT: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
     let mut sequence = NEXT.lock().map_err(|_| "保存確認番号を作成できません。")?;
@@ -133,6 +137,7 @@ pub struct WorldEditor {
     autosave_blocked: bool,
     autosave_replace_allowed: bool,
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
+    #[cfg(test)]
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
 impl Default for WorldEditor {
@@ -253,6 +258,7 @@ impl WorldEditor {
             .preview_service_path(start, segments)
             .map_err(|e| e.to_string())
     }
+    #[cfg(test)]
     pub fn create_service_path(
         &mut self,
         name: String,
@@ -262,6 +268,7 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.create_service_path_with_source_route(name, start, segments, stops, None)
     }
+    #[cfg(test)]
     pub fn create_service_path_with_source_route(
         &mut self,
         name: String,
@@ -333,6 +340,7 @@ impl WorldEditor {
             .preview_service_path_replacement(self.company, service_id, start, segments)
             .map_err(|e| e.to_string())
     }
+    #[cfg(test)]
     pub fn replace_service_path(
         &mut self,
         service_id: ServiceId,
@@ -354,6 +362,7 @@ impl WorldEditor {
     }
     // Keep the established session/IPC call shape; all arguments form one atomic edit.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn replace_service_path_with_source_route(
         &mut self,
         service_id: ServiceId,
@@ -484,6 +493,7 @@ impl WorldEditor {
             autosave_blocked: false,
             autosave_replace_allowed: false,
             deleted_alignment: None,
+            #[cfg(test)]
             pending_manual_replacement: None,
         }
     }
@@ -567,6 +577,7 @@ impl WorldEditor {
             .map_err(|e| e.to_string())?;
         Ok(self.snapshot())
     }
+    #[cfg(test)]
     pub fn build_alignment_from_reference(
         &mut self,
         name: String,
@@ -582,6 +593,7 @@ impl WorldEditor {
             rosenfu_core::world::TrackType::Normal,
         )
     }
+    #[cfg(test)]
     pub fn build_alignment_from_reference_typed(
         &mut self,
         name: String,
@@ -675,6 +687,7 @@ impl WorldEditor {
         Ok(self.snapshot())
     }
 
+    #[cfg(test)]
     pub fn build_alignment(
         &mut self,
         name: String,
@@ -682,6 +695,7 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.build_alignment_typed(name, points, rosenfu_core::world::TrackType::Normal)
     }
+    #[cfg(test)]
     pub fn build_alignment_typed(
         &mut self,
         name: String,
@@ -697,6 +711,7 @@ impl WorldEditor {
         Ok(self.snapshot())
     }
     /// Publish the alignment and all planned stations together, or change nothing.
+    #[cfg(test)]
     pub fn build_alignment_with_stations(
         &mut self,
         name: String,
@@ -730,6 +745,7 @@ impl WorldEditor {
     }
     /// Read-only preview runs the exact construction pipeline on an isolated
     /// editor clone; neither IDs, undo state nor saved data are changed.
+    #[cfg(test)]
     pub fn preview_construction_plan(
         &self,
         alignments: Vec<PlannedAlignment>,
@@ -1966,6 +1982,7 @@ impl WorldEditor {
 
     /// A fresh world may replace an existing healthy save only after approval of
     /// this exact observed version. Loaded-session conflicts stay ordinary errors.
+    #[cfg(test)]
     pub fn request_manual_save(
         &mut self,
         path: &Path,
@@ -2009,6 +2026,7 @@ impl WorldEditor {
             replacement_required: None,
         })
     }
+    #[cfg(test)]
     pub fn cancel_manual_save(&mut self, token: &str) {
         if self
             .pending_manual_replacement
@@ -2018,6 +2036,7 @@ impl WorldEditor {
             self.pending_manual_replacement = None;
         }
     }
+    #[cfg(test)]
     pub fn confirm_manual_save(
         &mut self,
         path: &Path,
@@ -2062,6 +2081,7 @@ impl WorldEditor {
         })
     }
     /// Save a candidate atomically: a failed validation/write leaves editor state unchanged.
+    #[cfg(test)]
     pub fn save_with_plans(
         &mut self,
         path: &Path,
@@ -2110,7 +2130,10 @@ impl WorldEditor {
             rosenfu_storage::save_world_if_version(path, &self.world, expected)
         };
         let (_, version) = result.map_err(|e| e.to_string())?;
-        self.pending_manual_replacement = None;
+        #[cfg(test)]
+        {
+            self.pending_manual_replacement = None;
+        }
         self.loaded_path = Some(path.to_owned());
         self.manual_version = Some(version);
         self.manual_repair_allowed = false;
@@ -2272,7 +2295,10 @@ impl WorldEditor {
         self.world = candidate;
         self.company = company;
         self.company_setup_required = false;
-        self.pending_manual_replacement = None;
+        #[cfg(test)]
+        {
+            self.pending_manual_replacement = None;
+        }
         self.loaded_path = Some(path.to_owned());
         self.active_slot_id = None;
         self.manual_version = Some(version);
