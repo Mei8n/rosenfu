@@ -53,6 +53,34 @@ test('preview transport failure is not a placement refusal',async()=>{
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',expect.anything()));
  await act(async()=>{});
  fireEvent.click(map,{clientX:300,clientY:100});
- expect(map.querySelectorAll('[data-anchor-index]').length).toBe(2);
+ await waitFor(()=>expect(map.querySelectorAll('[data-anchor-index]').length).toBe(2));
  expect(screen.queryByText(/敷設不可：.*offline/)).toBeNull();
+});
+test('a quick click waits for its own verdict and rejects invalid placement',async()=>{
+ const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
+ let complete!:(value:unknown)=>void;
+ vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?('roads' in (args as object)?new Promise(resolve=>{complete=resolve;}):Promise.resolve({validationError:null})):original(command,args));
+ fireEvent.click(map,{clientX:100,clientY:100});fireEvent.click(map,{clientX:300,clientY:100});
+ expect(map.querySelectorAll('[data-anchor-index]').length).toBe(1);
+ await act(async()=>complete({validationError:'急勾配'}));
+ expect(map.querySelectorAll('[data-anchor-index]').length).toBe(1);
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='preview_construction_plan')).toBe(true);
+});
+test('successful delayed click cannot insert after switching tools',async()=>{
+ const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
+ let complete!:(value:unknown)=>void;
+ vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?('roads' in (args as object)?new Promise(resolve=>{complete=resolve;}):Promise.resolve({validationError:null})):original(command,args));
+ fireEvent.click(map,{clientX:100,clientY:100});fireEvent.click(map,{clientX:300,clientY:100});
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));
+ await act(async()=>complete({validationError:null}));
+ expect(map.querySelectorAll('[data-anchor-index]').length).toBe(1);
+});
+test('delayed valid double click adds the anchor and ends editing',async()=>{
+ const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
+ let complete!:(value:unknown)=>void;
+ vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?('roads' in (args as object)?new Promise(resolve=>{complete=resolve;}):Promise.resolve({validationError:null})):original(command,args));
+ fireEvent.click(map,{clientX:100,clientY:100});fireEvent.click(map,{clientX:300,clientY:100,detail:1});fireEvent.click(map,{clientX:300,clientY:100,detail:2});
+ expect(map.querySelectorAll('[data-anchor-index]').length).toBe(1);
+ await act(async()=>complete({validationError:null}));
+ expect(map.querySelectorAll('[data-anchor-index]').length).toBe(2);
 });

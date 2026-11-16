@@ -35,9 +35,9 @@ async function start(snapshot: unknown = empty) {
   return map;
 }
 test('first anchor height stays fixed while destination changes through undo save reload and build request',async()=>{
- let map=await start();fireEvent.click(map,{clientX:120,clientY:100});
+ let map=await start();await act(async()=>{fireEvent.click(map,{clientX:120,clientY:100});});
  const elevated=screen.getByRole('button',{name:LEVEL_LABELS.elevated});expect(elevated.hasAttribute('disabled')).toBe(false);fireEvent.click(elevated);
- fireEvent.click(map,{clientX:300,clientY:100});fireEvent.click(map,{clientX:300,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:300,clientY:100});});await act(async()=>{fireEvent.click(map,{clientX:300,clientY:100});});
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});
  await act(async()=>{fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});});
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?Promise.resolve({saved:true}):original(command,args));
@@ -52,11 +52,11 @@ test('first anchor height stays fixed while destination changes through undo sav
 
 test('individual anchor levels survive edits Undo Redo save and reload',async()=>{
  let map=await start();
- fireEvent.click(map,{clientX:100,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:100,clientY:100});});
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
- fireEvent.click(map,{clientX:220,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:220,clientY:100});});
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.ground}));
- fireEvent.click(map,{clientX:340,clientY:100});fireEvent.click(map,{clientX:340,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:340,clientY:100});});await act(async()=>{fireEvent.click(map,{clientX:340,clientY:100});});
  fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}));
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
@@ -89,7 +89,7 @@ test('native cursor preview carries per-anchor heights without building',async()
  if(!window.PointerEvent)window.PointerEvent=MouseEvent as typeof PointerEvent;
  const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
  vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?Promise.resolve(empty):original(command,args));
- fireEvent.click(map,{clientX:100,clientY:100});fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
+ await act(async()=>{fireEvent.click(map,{clientX:100,clientY:100});});fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
  fireEvent.pointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({anchorLevels:['ground','elevated']})])})));
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='build_plan'||command==='build_alignment')).toBe(false);
