@@ -1147,3 +1147,23 @@ fn existing_path_provenance_survives_plain_append_prepend_and_forbids_ui_removal
         assert!(world.replace_retaining_road_evidence(forged).is_err());
     }
 }
+#[test]
+fn portable_session_fixture_matches_validated_synthetic_world() {
+    let (world, _, path) = staged_road_world();
+    let store = &world.snapshot().runtime_road_evidence;
+    let value = serde_json::json!({"rawEvidence":store.blobs().map(|(sha,raw)|serde_json::json!({"sha256":sha,"bytes":raw})).collect::<Vec<_>>(),"tileBindings":store.bindings().collect::<Vec<_>>(),"path":path,"plans":world.snapshot().construction_plans});
+    if std::env::var_os("OFM_UPDATE_SESSION_FIXTURE").is_some() {
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/ofm_session_synthetic.json"
+            ),
+            serde_json::to_string_pretty(&value).unwrap() + "\n",
+        )
+        .unwrap();
+        return;
+    }
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/ofm_session_synthetic.json")).unwrap();
+    assert_eq!(value, expected);
+}
