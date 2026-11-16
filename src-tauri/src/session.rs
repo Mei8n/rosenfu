@@ -930,6 +930,19 @@ impl WorldEditor {
                     .or(alignment.start_level)
                     .map(|level| level.height_m())
             };
+            // A source-derived path may meet an existing endpoint at its end
+            // without extending an existing alignment. Keep it independent and
+            // let the shared physical connection validator check exact geometry,
+            // height, tangent and grade rather than silently moving its points.
+            if ofm_path.is_some()
+                && alignment.destination.is_some()
+                && alignment.extension.is_none()
+            {
+                let height =
+                    start_height.unwrap_or_else(|| alignment.infrastructure.level.height_m());
+                candidate.build_sloped_plan(alignment, height)?;
+                continue;
+            }
             if let Some(levels) = &alignment.anchor_levels {
                 let count = alignment.anchor_indices.as_ref().map_or(2, |a| a.len());
                 if levels.len() != count {

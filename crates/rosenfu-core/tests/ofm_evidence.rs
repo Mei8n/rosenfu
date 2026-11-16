@@ -1167,3 +1167,137 @@ fn portable_session_fixture_matches_validated_synthetic_world() {
         serde_json::from_str(include_str!("fixtures/ofm_session_synthetic.json")).unwrap();
     assert_eq!(value, expected);
 }
+
+#[test]
+fn road_path_height_profiles_keep_provenance_and_reject_excess_grade_atomically() {
+    use rosenfu_core::world::{TrackType, VerticalProfile};
+    for track in [TrackType::Normal, TrackType::Tram, TrackType::HighSpeed] {
+        let store = seam_store(
+            &[[3000, 2000], [5000, 2000]],
+            &[vec![[-1000, 2001], [1000, 2001]]],
+            None,
+            None,
+        );
+        let (keys, start, end) = seam_picks(&store);
+        let path = reconstruct_path(&store, &keys, &start, &end)
+            .unwrap()
+            .descriptor;
+        let mut world = rosenfu_core::world::World::new(
+            rosenfu_core::world::WorldDraft::default()
+                .with_road_evidence(store)
+                .unwrap(),
+        )
+        .unwrap();
+        let player = world.add_player("p".into()).unwrap();
+        let owner = world.add_company(player, "c".into()).unwrap();
+        let id = world
+            .build_alignment_from_road_path(owner, "seam".into(), track, path)
+            .unwrap();
+        let provenance = world.snapshot().road_path_provenance.clone();
+        let mut draft = world.snapshot().clone();
+        let a = draft.alignments.iter_mut().find(|a| a.id == id).unwrap();
+        a.anchor_indices = Some(vec![0, a.points.len() - 1]);
+        a.section_profiles = vec![VerticalProfile {
+            start_height_m: 0.,
+            end_height_m: 6.,
+            start_tangent_m: 0.,
+            end_tangent_m: 0.,
+        }];
+        world.replace(draft).unwrap();
+        assert_eq!(world.snapshot().road_path_provenance, provenance);
+        let before = world.clone();
+        let mut bad = world.snapshot().clone();
+        let a = bad.alignments.iter_mut().find(|a| a.id == id).unwrap();
+        a.section_profiles[0].end_height_m = a.length_m();
+        assert!(world.replace(bad).is_err());
+        assert_eq!(world, before);
+        assert_eq!(
+            track.maximum_construction_gradient_per_mille(),
+            if track == TrackType::HighSpeed {
+                30.
+            } else {
+                45.
+            }
+        );
+    }
+}
+
+#[test]
+fn road_path_exact_endpoint_connection_requires_actual_height_and_preserves_assets() {
+    use rosenfu_core::world::{
+        AlignmentEndpoint, AlignmentEndpointRef, GeoPoint, TrackType, VerticalProfile,
+    };
+    let (mut world, owner, path) = staged_road_world();
+    let id = world
+        .build_alignment_from_road_path(owner, "seam".into(), TrackType::Normal, path)
+        .unwrap();
+    let a = world
+        .snapshot()
+        .alignments
+        .iter()
+        .find(|a| a.id == id)
+        .unwrap();
+    let p = a.points[0];
+    let next = a.points[1];
+    let outside = GeoPoint {
+        longitude: p.longitude + (p.longitude - next.longitude) * 10.,
+        latitude: p.latitude + (p.latitude - next.latitude) * 10.,
+    };
+    let base = world
+        .build_alignment(owner, "existing".into(), vec![outside, p])
+        .unwrap();
+    let mut elevated = world.snapshot().clone();
+    elevated
+        .alignments
+        .iter_mut()
+        .find(|a| a.id == id)
+        .unwrap()
+        .vertical_profile = Some(VerticalProfile {
+        start_height_m: 6.,
+        end_height_m: 6.,
+        start_tangent_m: 0.,
+        end_tangent_m: 0.,
+    });
+    world.replace(elevated).unwrap();
+    let source = AlignmentEndpointRef {
+        alignment_id: base,
+        endpoint: AlignmentEndpoint::End,
+    };
+    let target = AlignmentEndpointRef {
+        alignment_id: id,
+        endpoint: AlignmentEndpoint::Start,
+    };
+    let before = world.clone();
+    assert!(world
+        .connect_alignment_endpoints(owner, source, target)
+        .is_err());
+    assert_eq!(world, before);
+    let mut aligned = world.snapshot().clone();
+    aligned
+        .alignments
+        .iter_mut()
+        .find(|a| a.id == base)
+        .unwrap()
+        .vertical_profile = Some(VerticalProfile {
+        start_height_m: 6.,
+        end_height_m: 6.,
+        start_tangent_m: 0.,
+        end_tangent_m: 0.,
+    });
+    world.replace(aligned).unwrap();
+    let before = world.snapshot().clone();
+    world
+        .connect_alignment_endpoints(owner, source, target)
+        .unwrap();
+    assert_eq!(world.snapshot().alignments, before.alignments);
+    assert_eq!(
+        world.snapshot().road_path_provenance,
+        before.road_path_provenance
+    );
+    assert_eq!(
+        world.snapshot().station_placements,
+        before.station_placements
+    );
+    assert_eq!(world.snapshot().route_paths, before.route_paths);
+    assert_eq!(world.snapshot().service_paths, before.service_paths);
+}

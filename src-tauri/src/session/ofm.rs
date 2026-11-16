@@ -257,6 +257,45 @@ mod tests {
     }
 
     #[test]
+    fn seam_destination_only_connects_without_changing_existing_line() {
+        use rosenfu_core::world::{AlignmentEndpoint, TrackType};
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let points: Vec<GeoPoint> =
+            serde_json::from_value(fixture()["plans"]["parkedPaths"][0]["points"].clone()).unwrap();
+        let end = *points.last().unwrap();
+        let target = editor
+            .build_alignment_typed_unchecked(
+                "接続先".into(),
+                vec![
+                    end,
+                    GeoPoint {
+                        longitude: end.longitude + 0.002,
+                        latitude: end.latitude,
+                    },
+                ],
+                TrackType::Normal,
+            )
+            .unwrap();
+        let original = editor.snapshot().alignments[0].clone();
+        let mut r = request();
+        r.destination = Some(PlannedAlignmentExtension {
+            alignment_id: target,
+            endpoint: AlignmentEndpoint::Start,
+        });
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        assert_eq!(built.alignments.len(), 2);
+        assert_eq!(built.alignments[0], original);
+        assert_eq!(built.alignment_connections.len(), 1);
+        assert_eq!(built.road_path_provenance.len(), 1);
+        assert_eq!(
+            rosenfu_storage::decode(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap(),
+            editor.world
+        );
+    }
+
+    #[test]
     fn seam_anchor_heights_preserve_provenance_save_and_undo() {
         use rosenfu_core::world::InfrastructureLevel;
         let mut editor = WorldEditor::new();
