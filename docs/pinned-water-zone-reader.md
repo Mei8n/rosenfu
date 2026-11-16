@@ -32,7 +32,9 @@ This is a deliberately simplified game model, not all real waterways.
 Observed responses: exact 206 Content-Range for the 16-byte probe, ACAO `*`, immutable cache,
 ETag. No Access-Control-Expose-Headers was observed. Browser code therefore cannot rely on
 reading Content-Range; future acquisition should use a bounded native fixed-URL client.
-An ETag is not a cryptographic payload pin. A complete water payload SHA is **not yet obtained**.
+An ETag is not a cryptographic payload pin. The follow-up fetched exactly the 443,536-byte water range (no other binary layers).
+Payload SHA256: `588d24c63b44ebe4cb004583b2c22cdc3691dc7fec101966adffb605f2fcb0b4`.
+This is a local integrity pin, not a provider signature. The payload is not committed.
 
 ## Pure API and limits
 
@@ -45,8 +47,10 @@ only after length/hash checks; dense cells are never allocated. Limit: 16 MiB pa
 Rows must start at zero, end at run count, increase monotonically in even pairs; runs must
 be ordered, non-overlapping and within width. Coordinates and bounds must be finite.
 
-`verify_header` checks integrity only. It does not derive grid/offset fields from JSON or
-prove a supplied pin matches the header. A future audited pin generator must do that.
+`verify_header` checks integrity only. `verify_header_spec` additionally parses the bounded
+header and checks the exact origin, grid, row/run dtype, water category, counts and contiguous
+offsets. Duplicate consumed JSON fields or duplicate water arrays reject. Unrelated mixed-pack
+fields are discarded. This binds the specification to pinned bytes, not real-world completeness.
 `urls` cannot form arbitrary hosts/paths but does not assert a zone is published: the caller
 must select an audited allowlist entry. No caller-supplied pin should be exposed as IPC trust.
 
@@ -63,3 +67,32 @@ The fixed reference registry lists 45 Japanese zones, not proof every Japanese l
 covered. Keep registry boxes and actual raster footprints separate. Unchecked/missing zones
 must not be promoted to normal nonprovision. Overlap resolution needs an explicit same-version
 policy. Save-model revision/migration and full path construction integration remain separate.
+
+
+## Acquisition state machine checkpoint
+
+`water_zone::acquisition::Acquisition` is a native transport-independent adapter, **not an
+HTTP client**. It emits fixed-host/version request URL, Range and expected byte count after
+header hash/spec validation. Chunk accumulation is bounded; every push/finish checks a 30-second
+monotonic deadline. Tokens reject canceled or replaced attempts. The successful immutable
+Arc cache is replaced only after complete response/hash/decode verification; failures preserve it.
+An audited registry must select the pin. Repeated begin invalidates older attempts, rather than
+sharing network work. No background tasks or sockets are started by this module.
+
+The future HTTP owner must bound the separate header request, disable redirects, apply socket
+cancellation/deadlines and invoke finish with actual HTTP status and Content-Range. The adapter
+cannot stop a transport that never returns. No Tauri IPC/runtime/provider switch is included.
+Reqwest exists transitively in the desktop lock, but no direct HTTPS client dependency/configuration
+is added in this checkpoint. This avoids coupling an experimental provider to the debug build.
+
+External verification (opt-in, real payload stays outside git):
+
+```sh
+TW_WATER_HEADER=/path/to/tyo.json TW_WATER_PAYLOAD=/path/to/water-only.bin \
+  cargo test -p rosenfu-core --lib water_zone -- --include-ignored --nocapture
+```
+
+The external test pins both hashes, checks header-to-grid/offset binding, decodes every RLE row
+and compares the total wet-cell fraction against the provider header. It does not demonstrate
+all 45 zones, browser behavior, provider permission for indefinite production dependence, or
+correct real-world water boundaries.

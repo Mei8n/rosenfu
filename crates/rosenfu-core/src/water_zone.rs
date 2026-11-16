@@ -361,3 +361,6 @@ mod tests {
         assert_eq!(z.at(139., 35.).unwrap(), Cell::ModelDry);
     }
 }
+
+pub mod acquisition;
+mod header;
