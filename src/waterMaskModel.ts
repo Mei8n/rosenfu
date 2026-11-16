@@ -187,3 +187,45 @@ export async function fetchWaterFile(url:string,length:number,sha256:string,sign
   }
   return readPinnedBody(response,length,sha256,signal);
 }
+
+/** Acquisition succeeds only after the entire coarse format decodes. A corrupt
+ * but correctly hashed file rejects; there is no success-with-null state. */
+export async function fetchWorldWaterMask(sourceId:string,url:string,length:number,sha256:string,
+  signal:AbortSignal,fetcher:typeof fetch=fetch):Promise<CoarseWaterMask> {
+  if(typeof sourceId!=='string' || !sourceId || sourceId.length>256)throw new Error('Invalid world water source');
+  const bytes=await fetchWaterFile(url,length,sha256,signal,fetcher);
+  return decodeWorldWaterMask(sourceId,bytes);
+}
+
+/** Only an authoritative catalog's explicit absence may use not_provided.
+ * A 404 for a listed object, failed decode or observations_only gap is unavailable. */
+export type WaterNotProvided = {state:'not_provided';catalogRevision:string};
+export type FineWaterAvailability = WaterNotProvided | {state:'unavailable'} |
+  {state:'ready';catalog:readonly FineWaterSpec[];loaded:ReadonlyMap<string,FineWaterMask>};
+export type CoarseWaterAvailability = WaterNotProvided | {state:'unavailable'} |
+  {state:'ready';mask:CoarseWaterMask};
+export type ConstructionWaterLookup =
+  {state:WaterCell;basis:'fine'|'coarse'|'not_provided';sourceIds:string[];resolutionM?:number} |
+  {state:'unknown';reason:'invalid_coordinate'|'fine_unavailable'|'fine_incomplete'|'coarse_unavailable'};
+function declaredAbsence(value:WaterNotProvided):boolean {
+  return typeof value.catalogRevision==='string' && value.catalogRevision.length>0 && value.catalogRevision.length<=256;
+}
+/** Construction's adopted map model: fine coverage wins; outside fine, use coarse;
+ * if neither is provided, model land. This is NOT a real-world dry-land guarantee.
+ * Unknown/error and deliberately incomplete observation coverage never become land. */
+export function lookupConstructionWater(lon:number,lat:number,fine:FineWaterAvailability,
+  coarse:CoarseWaterAvailability):ConstructionWaterLookup {
+  if(!coordinate(lon,lat))return {state:'unknown',reason:'invalid_coordinate'};
+  if(fine.state==='ready') {
+    const result=lookupWaterModel(lon,lat,fine.catalog,fine.loaded,null);
+    if(result.state==='model_water'||result.state==='model_land')return {...result,basis:'fine'};
+    if(result.state!=='unknown'||result.reason!=='outside_fine')return {state:'unknown',reason:result.state==='unknown'&&result.reason==='fine_incomplete'?'fine_incomplete':'fine_unavailable'};
+  } else if(fine.state!=='not_provided'||!declaredAbsence(fine))return {state:'unknown',reason:'fine_unavailable'};
+  if(coarse.state==='ready') {
+    const water=coarse.mask.waterAt(lon,lat);
+    if(typeof water!=='boolean')return {state:'unknown',reason:'coarse_unavailable'};
+    return {state:water?'model_water':'model_land',basis:'coarse',sourceIds:[coarse.mask.sourceId]};
+  }
+  if(coarse.state!=='not_provided'||!declaredAbsence(coarse))return {state:'unknown',reason:'coarse_unavailable'};
+  return {state:'model_land',basis:'not_provided',sourceIds:[]};
+}

@@ -1,5 +1,5 @@
 import {describe,it,expect,vi} from 'vitest';
-import {decodeFineWaterMask,decodeWorldWaterMask,lookupWaterModel,fetchWaterRange,fetchFineWaterMask,fetchWaterFile,type FineWaterSpec} from './waterMaskModel';
+import {decodeFineWaterMask,decodeWorldWaterMask,lookupWaterModel,fetchWaterRange,fetchFineWaterMask,fetchWaterFile,fetchWorldWaterMask,lookupConstructionWater,type FineWaterSpec} from './waterMaskModel';
 const spec:FineWaterSpec={id:'test',revision:'fixed-v1',coverage:'complete_model',originLongitude:139,originLatitude:35,x0:0,y0:0,cellM:25,width:2,height:2};
 function ints(values:number[],size:2|4) {const b=new Uint8Array(values.length*size);const v=new DataView(b.buffer);values.forEach((n,i)=>size===4?v.setUint32(i*size,n,true):v.setUint16(i*size,n,true));return b;}
 const lon=(m:number)=>139+m/(6371008.8*Math.cos(35*Math.PI/180))*180/Math.PI;
@@ -103,4 +103,48 @@ it('requires an exact complete file and does not accept partial or failed downlo
  }
  const c=new AbortController(),cancel=vi.fn(),f=vi.fn().mockResolvedValue(new Response(new ReadableStream({cancel}),{status:200}));
  const pending=fetchWaterFile('https://example.org/water.bin',3,hash,c.signal,f);await Promise.resolve();c.abort();await expect(pending).rejects.toThrow();expect(cancel).toHaveBeenCalled();
+});
+
+it('rejects correctly hashed corrupt world files and permits a later valid retry',async()=>{
+ const valid=world(),bad=valid.slice();bad[16]=1;
+ const digest=async(bytes:Uint8Array<ArrayBuffer>)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),b=>b.toString(16).padStart(2,'0')).join('');
+ const f=vi.fn().mockResolvedValueOnce(response([...bad],200)).mockResolvedValueOnce(response([...valid],200));
+ await expect(fetchWorldWaterMask('world-v1','https://example.org/world.water',bad.length,await digest(bad),new AbortController().signal,f)).rejects.toThrow('Invalid world water row');
+ const coarse=await fetchWorldWaterMask('world-v1','https://example.org/world.water',valid.length,await digest(valid),new AbortController().signal,f);
+ expect(f).toHaveBeenCalledTimes(2);
+ expect(lookupWaterModel(-179.5,35,[],new Map(),coarse).state).toBe('coarse_water');
+ expect(lookupWaterModel(139,35,[],new Map(),coarse)).toEqual({state:'unknown',reason:'outside_fine'});
+ const nofetch=vi.fn();await expect(fetchWorldWaterMask('','https://example.org/world.water',valid.length,await digest(valid),new AbortController().signal,nofetch)).rejects.toThrow();expect(nofetch).not.toHaveBeenCalled();
+});
+
+describe('adopted construction map availability policy',()=>{
+ const absent={state:'not_provided' as const,catalogRevision:'catalog-v1'};
+ const unavailable={state:'unavailable' as const};
+ const wet={state:'ready' as const,mask:{sourceId:'world-v1',waterAt:()=>true}};
+ const dry={state:'ready' as const,mask:{sourceId:'world-v1',waterAt:()=>false}};
+ it('uses coarse water/dry only when fine is not provided',()=>{
+  expect(lookupConstructionWater(139,35,absent,wet)).toEqual({state:'model_water',basis:'coarse',sourceIds:['world-v1']});
+  expect(lookupConstructionWater(139,35,absent,dry)).toEqual({state:'model_land',basis:'coarse',sourceIds:['world-v1']});
+ });
+ it('permits model land when both catalogs explicitly provide no model',()=>{
+  expect(lookupConstructionWater(139,35,absent,absent)).toEqual({state:'model_land',basis:'not_provided',sourceIds:[]});
+  expect(lookupConstructionWater(139,35,{...absent,catalogRevision:''},absent).state).toBe('unknown');
+ });
+ it('does not hide failed fine or coarse acquisition behind absence',()=>{
+  for(const coarse of [wet,dry,absent,unavailable])expect(lookupConstructionWater(139,35,unavailable,coarse)).toEqual({state:'unknown',reason:'fine_unavailable'});
+  expect(lookupConstructionWater(139,35,absent,unavailable)).toEqual({state:'unknown',reason:'coarse_unavailable'});
+  expect(lookupConstructionWater(139,35,absent,{state:'ready',mask:{sourceId:'bad',waterAt:()=>null}}).state).toBe('unknown');
+ });
+ it('fine model land overrides coarse water; fine water needs no coarse fallback',()=>{
+  const ready={state:'ready' as const,catalog:[spec],loaded:new Map([[spec.id,fine()]])};
+  expect(lookupConstructionWater(lon(40),lat(10),ready,wet)).toMatchObject({state:'model_land',basis:'fine'});
+  expect(lookupConstructionWater(lon(10),lat(10),ready,unavailable)).toMatchObject({state:'model_water',basis:'fine'});
+  expect(lookupConstructionWater(140,35,ready,wet)).toMatchObject({state:'model_water',basis:'coarse'});
+ });
+ it('missing listed fine and observation gaps are not normal absence',()=>{
+  expect(lookupConstructionWater(lon(10),lat(10),{state:'ready',catalog:[spec],loaded:new Map()},dry)).toEqual({state:'unknown',reason:'fine_unavailable'});
+  const s:FineWaterSpec={...spec,coverage:'observations_only'};
+  for(const coarse of [dry,absent])expect(lookupConstructionWater(lon(40),lat(10),{state:'ready',catalog:[s],loaded:new Map([[s.id,fine(s)]])},coarse)).toEqual({state:'unknown',reason:'fine_incomplete'});
+  expect(lookupConstructionWater(NaN,35,absent,absent).state).toBe('unknown');
+ });
 });
