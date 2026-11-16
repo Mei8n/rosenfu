@@ -1366,7 +1366,7 @@ export function App() {
   const roadCursorPreview=roadFollowing&&!draftFinished&&draftPoints.length>0&&roadDrawing.preview?.kind==='route'?roadDrawing.preview:null;
   const cursorLine=roadCursorPreview?[...draftLine,...roadCursorPreview.line.slice(1)]:previewLine;
   const cursorAnchors=roadCursorPreview?[...draftPoints,roadCursorPreview.point]:previewAnchors;
-  const roadPreviewGeometry=roadCursorPreview?plannedGeometry(cursorAnchors,{version:1,anchors:cursorAnchors,line:cursorLine},previousPoint):null;
+  const roadPreviewGeometry=useMemo(()=>{if(!roadCursorPreview)return null;const anchors=[...draftPoints,roadCursorPreview.point],line=[...draftLine,...roadCursorPreview.line.slice(1)];return plannedGeometry(anchors,{version:1,anchors,line},previousPoint);},[roadCursorPreview,draftPoints,draftLine,previousPoint]);
   const drawingPreviewError=roadPreviewGeometry?.error??(roadCursorPreview?null:previewError);
   const drawingPreviewSpeed=roadPreviewGeometry?Math.min(designSpeedKmh,...roadPreviewGeometry.arcs.map(arc=>provisionalCurveSpeed(arc.radiusM)??0)):Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh);
   const cursorPreviewActive=!!roadCursorPreview||!planHover&&activeTool==="tracks"&&mapMode==="draw"&&!parallelMode&&!referenceCopy.active&&previewAnchors!==draftPoints&&previewAnchors.length>=2&&!previewError;
