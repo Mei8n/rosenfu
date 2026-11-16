@@ -1,3 +1,5 @@
+import {mapRenderMetrics} from './mapRenderMetrics';
+import {DEFAULT_DISPLAY_SETTINGS} from './displaySettings';
 // @vitest-environment jsdom
 import React from "react";
 import {settledMapClick} from "./testMapClick";
@@ -276,7 +278,7 @@ test("rapid pan throttles new tile URLs while keeping shared DOM and existing ti
   expect(Number(original.get(first.id)!.getAttribute("x"))).toBeCloseTo(positionTile(first,camera).x,8);
   const marker = map.querySelector(".station-marker")!;
   const station = project(35.685,139.735,camera);
-  expect(Number(marker.querySelector("text")?.getAttribute("x"))).toBeCloseTo(station.x + 18);
+  expect(Number(marker.querySelector("text")?.getAttribute("x"))).toBeCloseTo(station.x + mapRenderMetrics(camera.zoom,DEFAULT_DISPLAY_SETTINGS.lineWidth,1).stationLabelOffset);
   // The second movement must not restart the first 250 ms window.
   act(()=>vi.advanceTimersByTime(149));
   expect(Array.from(map.querySelectorAll("image")).map(image=>image.getAttribute("data-tile-id"))).toEqual(Array.from(original.keys()));
