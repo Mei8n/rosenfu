@@ -211,3 +211,115 @@ fn water_ground_all_changed_paths_and_legacy_levels_are_accounted() {
         vec![candidate.alignments[1].id]
     );
 }
+
+#[test]
+fn water_ground_profile_interior_crossing_and_tangency_are_candidates_only() {
+    use rosenfu_core::world::VerticalProfile;
+    let (mut area, _) = fixture();
+    area.rings = vec![ring(139.009, 34.999, 139.011, 35.001)];
+    let editor = WorldEditor::new();
+    let before = editor.snapshot();
+    let mut candidate = editor
+        .preview_construction_plan(vec![request(&[p(139., 35.), p(139.02, 35.)])], vec![])
+        .unwrap();
+    for profile in [
+        VerticalProfile {
+            start_height_m: -6.,
+            end_height_m: 6.,
+            start_tangent_m: 0.,
+            end_tangent_m: 0.,
+        },
+        VerticalProfile {
+            start_height_m: 6.,
+            end_height_m: 6.,
+            start_tangent_m: -24.,
+            end_tangent_m: 24.,
+        },
+    ] {
+        candidate.alignments[0].section_profiles.clear();
+        candidate.alignments[0].vertical_profile = Some(profile);
+        let r = observe_ground_water(&before, &candidate, std::slice::from_ref(&area)).unwrap();
+        assert!(r.contacts.is_empty());
+        assert_eq!(r.possible_ground_contacts.len(), 1);
+        assert_eq!(r.unevaluated_profiles, vec![candidate.alignments[0].id]);
+        assert_eq!(serde_json::to_value(r).unwrap()["coverage"], "unknown");
+    }
+    // Same-sign endpoints must not hide an interior tangency. A raised minimum
+    // beyond the stated tolerance is not reported as a zero-height candidate.
+    candidate.alignments[0]
+        .vertical_profile
+        .as_mut()
+        .unwrap()
+        .start_height_m += 1e-7;
+    candidate.alignments[0]
+        .vertical_profile
+        .as_mut()
+        .unwrap()
+        .end_height_m += 1e-7;
+    let r = observe_ground_water(&before, &candidate, &[area]).unwrap();
+    assert!(r.possible_ground_contacts.is_empty());
+    assert_eq!(r.unevaluated_profiles.len(), 1);
+}
+#[test]
+fn water_ground_cubic_three_roots_and_nonuniform_polyline_use_arc_length() {
+    let (mut area, _) = fixture();
+    let editor = WorldEditor::new();
+    let before = editor.snapshot();
+    // Two collinear segments of unequal lengths; t=.2 is longitude 139.004,
+    // not the fraction .2 of the segment-index count.
+    let mut candidate = editor
+        .preview_construction_plan(
+            vec![request(&[p(139., 35.), p(139.001, 35.), p(139.02, 35.)])],
+            vec![],
+        )
+        .unwrap();
+    candidate.alignments[0].section_profiles.clear();
+    candidate.alignments[0].vertical_profile = Some(rosenfu_core::world::VerticalProfile {
+        start_height_m: -4.8,
+        end_height_m: 4.8,
+        start_tangent_m: 39.6,
+        end_tangent_m: 39.6,
+    });
+    for longitude in [139.004, 139.01, 139.016] {
+        area.rings = vec![ring(
+            longitude - 0.00001,
+            34.999,
+            longitude + 0.00001,
+            35.001,
+        )];
+        let r = observe_ground_water(&before, &candidate, std::slice::from_ref(&area)).unwrap();
+        assert_eq!(r.possible_ground_contacts.len(), 1);
+        assert!(r.contacts.is_empty());
+        assert_eq!(r.unevaluated_profiles.len(), 1);
+    }
+}
+#[test]
+fn water_ground_anchor_flat_portion_survives_ramp_and_rejects_instant_step() {
+    use rosenfu_core::world::InfrastructureLevel::{Elevated, Ground};
+    let (mut area, _) = fixture();
+    area.rings = vec![ring(139.002, 34.999, 139.004, 35.001)];
+    let editor = WorldEditor::new();
+    let before = editor.snapshot();
+    let mut req = request(&[p(139., 35.), p(139.01, 35.), p(139.03, 35.)]);
+    req.anchor_indices = Some(vec![0, 1, 2]);
+    req.anchor_levels = Some(vec![Ground, Ground, Elevated]);
+    let mut candidate = editor.preview_construction_plan(vec![req], vec![]).unwrap();
+    assert_eq!(candidate.alignments[0].section_profiles.len(), 2);
+    let r = observe_ground_water(&before, &candidate, std::slice::from_ref(&area)).unwrap();
+    assert_eq!(r.contacts.len(), 1);
+    assert!(r.possible_ground_contacts.is_empty());
+    assert_eq!(r.unevaluated_profiles.len(), 1);
+    candidate.alignments[0].section_profiles.clear();
+    candidate.alignments[0].vertical_profile = None;
+    candidate.alignments[0].infrastructure = vec![
+        rosenfu_core::world::SectionInfrastructure {
+            track_count: 1,
+            level: Ground,
+        },
+        rosenfu_core::world::SectionInfrastructure {
+            track_count: 1,
+            level: Elevated,
+        },
+    ];
+    assert!(observe_ground_water(&before, &candidate, &[area]).is_err());
+}

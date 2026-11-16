@@ -2,11 +2,11 @@
 
 `rosenfu_core::water_observations::observe_ground_water(before, candidate, areas)` は、既存native sessionのpreviewが生成した候補worldに対する観測APIである。候補と変更前worldをcoreでvalidateし、全ての変更alignmentを抽出する。承認・拒否・完全coverage・陸地の認定は返さず、保存データを変更しない。
 
-区間別Hermite profile、全体profile、legacy infrastructureの順に確認し、全区間がcoreの平坦判定を満たし、開始高さが0である線路だけを面と照合する。非平坦・非地上は`unevaluated_profiles`へ返す。途中0接触・環状/分岐の連続水域30km・-2/-3免除の判定を実装したものではない。地上の平坦線路でも無接触は陸地の証明ではなく、coverageは常にUnknownである。
+区間別Hermite profile、全体profile、legacy infrastructureの順に確認し、各アンカー区間の平坦地上部分を面と照合する。非平坦・非地上は`unevaluated_profiles`へ返す。Hermiteの導関数の根で単調区間を分け、符号変化を二分法で探索する。途中0高さの近似点と接線接触候補（高さ許容差1e-9m）は possible_ground_contacts に分離し、確定した地上位置とは扱わない。経緯度はcoreと同じ累積水平距離で補間し、頂点番号の割合を使わない。環状/分岐の連続水域30km・-2/-3免除の判定は未実装。地上の平坦線路でも無接触は陸地の証明ではなく、coverageは常にUnknownである。
 
 海域productの原典URLと`source_dataset`が一致する面を`MappedMarineSurface`という原典の主張として区別する。covered/tunnel/bridgeや非0のlayer/level/eleは高さ未解決、basinは湛水状態未解決、その他の内水面は地表分類未解決として扱う。layerを6mに変換せず、属性欠落を地上と認定しない。URL/tagだけで原典を認証するAPIではないため、呼出側で固定descriptorとpayload hashを検証することが前提。
 
-形状照合は保存された経緯度平面の辺接触（数値許容差を含む）と内外判定。穴を保持し、両端が外でも途中を横断する線路を検出する。自己交差や穴の包含の完全な位相検証はこのAPIでは行わず、呼出側の検証が前提。観測10000、座標100000、辺比較2000000、接触出力1024の上限を持ち、超過時は部分結果を返さない。
+形状照合は保存された経緯度平面の辺接触（数値許容差を含む）と内外判定。穴を保持し、両端が外でも途中を横断する線路を検出する。自己交差や穴の包含の完全な位相検証はこのAPIでは行わず、呼出側の検証が前提。観測10000、座標100000、辺比較2000000、確定/候補を合計した接触出力1024の上限を持ち、超過時は部分結果を返さない。
 
 ## 実データと縦断検証
 
@@ -23,3 +23,7 @@ storage crateの専用integration testが既存`src-tauri/src/session.rs`を読�
 - `MappedMarineSurface`も原典観測であり最終建設拒否ではない。分類・位置精度・原典時点の許容条件を決める必要がある。非地上/非flatを許可に読み替えず、完全な物理判定へ接続する。
 - 水域が不明でも道路取得・参考追従を停止させない。全国地上建設を一律停止するgateは導入しない。既存小ウィンドウへ理由を渡す際も、観測/未評価と着工不可の確定判定を混同しない。
 - source issue・線の幅不明・原典の未掲載水域・海域/内水面の版差は、この面照合で解消しない。登録するIPC、共有session配線、保存形式の扱いは道路/統合担当との調整が必要。
+
+斜面の接触候補が空でも、非平坦・非地上の unevaluated_profiles は残る。近似ゼロ位置には位置誤差があり、面境界付近の厳密な物理判定・完全性を保証しない。coverage は常にUnknownで、今回もsession/IPC/着工拒否は未接続。
+
+contacts と possible_ground_contacts は alignment/原典面ごとの接触要約で、全接触点の列挙ではない。同一面で平坦地上接触も見つかった場合はcontactsへまとめる。

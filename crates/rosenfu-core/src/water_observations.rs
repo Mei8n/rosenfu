@@ -1,6 +1,8 @@
 //! Source observations for an already validated construction candidate.
 //! This never certifies dry land, complete coverage, or permission to build.
-use crate::world::{AlignmentId, GeoPoint, InfrastructureLevel, WorldDraft};
+use crate::world::{
+    Alignment, AlignmentId, GeoPoint, InfrastructureLevel, VerticalProfile, WorldDraft,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -39,6 +41,8 @@ pub struct GroundWaterObservations {
     /// Always unknown. No-hit is not evidence of dry land.
     pub coverage: UnknownCoverage,
     pub contacts: Vec<ObservedGroundContact>,
+    /// Approximate zero-height roots, never certified ground locations.
+    pub possible_ground_contacts: Vec<ObservedGroundContact>,
     /// Non-flat or non-ground profiles need the full physical water evaluator.
     pub unevaluated_profiles: Vec<AlignmentId>,
 }
@@ -179,9 +183,134 @@ fn contact(
     }
     Ok(false)
 }
+// Matches the core's horizontal arc-length metric (world/alignment.rs).
+fn length(a: GeoPoint, b: GeoPoint) -> f64 {
+    let x = (b.longitude - a.longitude).to_radians()
+        * ((a.latitude + b.latitude) / 2.).to_radians().cos();
+    let y = (b.latitude - a.latitude).to_radians();
+    6_371_000. * x.hypot(y)
+}
+fn point_at(points: &[GeoPoint], position: f64) -> GeoPoint {
+    let total: f64 = points.windows(2).map(|p| length(p[0], p[1])).sum();
+    let mut remaining = total * position;
+    for pair in points.windows(2) {
+        let len = length(pair[0], pair[1]);
+        if remaining <= len && len > 0. {
+            let t = (remaining / len).clamp(0., 1.);
+            return GeoPoint {
+                longitude: pair[0].longitude + t * (pair[1].longitude - pair[0].longitude),
+                latitude: pair[0].latitude + t * (pair[1].latitude - pair[0].latitude),
+            };
+        }
+        remaining -= len;
+    }
+    *points.last().expect("validated path")
+}
+/// Split the cubic at derivative roots, then bracket zero on each monotone span.
+/// Tangencies/near tangencies are candidates within 1e-9 m; neither these nor
+/// the 64-step bisection results are exact ground-location certificates.
+fn zero_candidates(p: VerticalProfile) -> Vec<f64> {
+    let a =
+        6. * p.start_height_m + 3. * p.start_tangent_m - 6. * p.end_height_m + 3. * p.end_tangent_m;
+    let b = -6. * p.start_height_m - 4. * p.start_tangent_m + 6. * p.end_height_m
+        - 2. * p.end_tangent_m;
+    let c = p.start_tangent_m;
+    let mut cuts = vec![0., 1.];
+    if a == 0. {
+        if b != 0. {
+            cuts.push(-c / b);
+        }
+    } else {
+        let discriminant = b * b - 4. * a * c;
+        if discriminant >= 0. {
+            // Stable quadratic formula, including the zero-double-root case.
+            let q = -0.5 * (b + discriminant.sqrt().copysign(b));
+            if q == 0. {
+                cuts.push(-b / (2. * a));
+            } else {
+                cuts.extend([q / a, c / q]);
+            }
+        }
+    }
+    cuts.retain(|t| t.is_finite() && *t >= 0. && *t <= 1.);
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup();
+    let mut roots: Vec<_> = cuts
+        .iter()
+        .copied()
+        .filter(|t| p.height_at(*t).abs() <= 1e-9)
+        .collect();
+    for span in cuts.windows(2) {
+        let (mut lo, mut hi) = (span[0], span[1]);
+        let start = p.height_at(lo);
+        let finish = p.height_at(hi);
+        if start == 0. || finish == 0. || start.is_sign_positive() == finish.is_sign_positive() {
+            continue;
+        }
+        for _ in 0..64 {
+            let mid = (lo + hi) / 2.;
+            let value = p.height_at(mid);
+            if value == 0. {
+                lo = mid;
+                hi = mid;
+                break;
+            }
+            if value.is_sign_positive() == start.is_sign_positive() {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        roots.push((lo + hi) / 2.);
+    }
+    roots.sort_by(f64::total_cmp);
+    roots.dedup();
+    roots
+}
+fn ground_pieces(path: &Alignment) -> (Vec<&[GeoPoint]>, Vec<GeoPoint>) {
+    let anchors = path
+        .anchor_indices
+        .clone()
+        .unwrap_or_else(|| vec![0, path.points.len() - 1]);
+    let mut flat = vec![];
+    let mut possible = vec![];
+    let mut add = |points, profile: VerticalProfile| {
+        if profile.is_flat() {
+            if profile.start_height_m == 0. {
+                flat.push(points);
+            }
+        } else {
+            possible.extend(
+                zero_candidates(profile)
+                    .into_iter()
+                    .map(|t| point_at(points, t)),
+            );
+        }
+    };
+    if !path.section_profiles.is_empty() {
+        for (indices, profile) in anchors.windows(2).zip(&path.section_profiles) {
+            add(&path.points[indices[0]..=indices[1]], *profile);
+        }
+    } else if let Some(profile) = path.vertical_profile {
+        add(&path.points, profile);
+    } else {
+        for (i, indices) in anchors.windows(2).enumerate() {
+            if path
+                .section_infrastructure(i)
+                .expect("validated section")
+                .level
+                == InfrastructureLevel::Ground
+            {
+                flat.push(&path.points[indices[0]..=indices[1]]);
+            }
+        }
+    }
+    (flat, possible)
+}
+
 /// Assess all changed candidate alignments, never a caller-selected subset.
-/// Uses the core's anchor/profile model. Only wholly flat ground is evaluated;
-/// transitions and elevated/underground paths are explicitly unevaluated.
+/// Flat ground portions and approximate zero-height candidates are observed.
+/// Non-wholly-ground paths remain unevaluated for complete physical constraints.
 /// Contacts include boundary/near-boundary contacts in stored lon/lat coordinates.
 /// Rings require upstream topology validation: this checks structure and bounds,
 /// not self-intersection or real-world accuracy. Source hashes are provenance;
@@ -204,6 +333,7 @@ pub fn observe_ground_water(
     let mut result = GroundWaterObservations {
         coverage: UnknownCoverage::Unknown,
         contacts: vec![],
+        possible_ground_contacts: vec![],
         unevaluated_profiles: vec![],
     };
     let mut work_budget = 2_000_000;
@@ -229,7 +359,6 @@ pub fn observe_ground_water(
         };
         if !ground {
             result.unevaluated_profiles.push(path.id);
-            continue;
         }
         if path.points.iter().any(|p| !point_valid(*p))
             || path
@@ -239,12 +368,32 @@ pub fn observe_ground_water(
         {
             return Err("unsupported ground path coordinates".into());
         }
+        let (flat, possible) = ground_pieces(path);
         for area in areas {
-            if contact(&path.points, &area.rings, &mut work_budget)? {
-                if result.contacts.len() >= 1024 {
+            let mut exact_contact = false;
+            for points in &flat {
+                if contact(points, &area.rings, &mut work_budget)? {
+                    exact_contact = true;
+                    break;
+                }
+            }
+            let mut possible_contact = false;
+            for point in &possible {
+                if contact(&[*point, *point], &area.rings, &mut work_budget)? {
+                    possible_contact = true;
+                    break;
+                }
+            }
+            if exact_contact || possible_contact {
+                if result.contacts.len() + result.possible_ground_contacts.len() >= 1024 {
                     return Err("water contact output limit".into());
                 }
-                result.contacts.push(ObservedGroundContact {
+                let output = if exact_contact {
+                    &mut result.contacts
+                } else {
+                    &mut result.possible_ground_contacts
+                };
+                output.push(ObservedGroundContact {
                     alignment_id: path.id,
                     source_key: area.source_key.clone(),
                     observation_id: area.observation_id.clone(),
