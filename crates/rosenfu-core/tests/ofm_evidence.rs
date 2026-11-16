@@ -370,3 +370,155 @@ fn complete_request_is_all_or_nothing() {
     );
     assert!(decode_tile(&good, &raw).is_ok());
 }
+fn raw_entry(raw: &[u8]) -> RawEvidence {
+    RawEvidence {
+        sha256: raw_sha256(raw),
+        bytes: raw.to_vec(),
+    }
+}
+#[test]
+fn store_shares_raw_but_binds_decoded_context_to_each_tile() {
+    let raw = tile(LINE, None);
+    let a = binding(&raw);
+    let mut b = a.clone();
+    b.x += 1;
+    b.canonical_url = b.canonical_url.replace("14553", "14554");
+    let store =
+        EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![a.clone(), b.clone()]).unwrap();
+    assert_eq!(store.blobs().count(), 1);
+    assert_eq!(store.bindings().count(), 2);
+    assert_ne!(
+        store.decoded(&a.canonical_url).unwrap().canonical_sha256,
+        store.decoded(&b.canonical_url).unwrap().canonical_sha256
+    );
+    let clone = store.clone();
+    assert!(std::ptr::eq(
+        store.raw(&a.raw_sha256).unwrap(),
+        clone.raw(&a.raw_sha256).unwrap()
+    ));
+    assert!(std::ptr::eq(
+        store.decoded(&a.canonical_url).unwrap(),
+        clone.decoded(&a.canonical_url).unwrap()
+    ));
+    let again = store
+        .with_additions(vec![raw_entry(&raw)], vec![a.clone()])
+        .unwrap();
+    assert_eq!(again.descriptors(), store.descriptors());
+    assert!(std::ptr::eq(
+        store.raw(&a.raw_sha256).unwrap(),
+        again.raw(&a.raw_sha256).unwrap()
+    ));
+    assert!(std::ptr::eq(
+        store.decoded(&a.canonical_url).unwrap(),
+        again.decoded(&a.canonical_url).unwrap()
+    ));
+}
+#[test]
+fn store_rejects_conflicts_missing_or_orphan_raw_without_mutating_prior_state() {
+    let raw = tile(LINE, None);
+    let b = binding(&raw);
+    let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b.clone()]).unwrap();
+    let before = store.descriptors();
+    let mut forged = raw_entry(&raw);
+    forged.bytes[0] ^= 1;
+    assert!(store.with_additions(vec![forged], vec![]).is_err());
+    let other = tile(LINE, Some(("oneway", field(1, b"yes"))));
+    let mut new = b.clone();
+    new.raw_sha256 = raw_sha256(&other);
+    assert!(store
+        .with_additions(vec![raw_entry(&other)], vec![new.clone()])
+        .is_err());
+    assert!(EvidenceStore::from_parts(vec![], vec![new]).is_err());
+    assert!(store
+        .with_additions(vec![raw_entry(&other)], vec![])
+        .is_err());
+    assert!(store.decoded("missing").is_err());
+    assert!(store.raw("missing").is_err());
+    assert_eq!(before, store.descriptors());
+    assert_eq!(store.raw(&b.raw_sha256).unwrap(), raw);
+}
+#[test]
+fn store_restoration_redecodes_raw_instead_of_trusting_modified_descriptors() {
+    let raw = tile(LINE, None);
+    let b = binding(&raw);
+    let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b.clone()]).unwrap();
+    let mut dto = store.descriptors();
+    dto[0].canonical_sha256 = "forged".into();
+    let restored = EvidenceStore::from_parts(
+        store
+            .blobs()
+            .map(|(sha, bytes)| RawEvidence {
+                sha256: sha.into(),
+                bytes: bytes.into(),
+            })
+            .collect(),
+        dto.into_iter().map(|d| d.binding).collect(),
+    )
+    .unwrap();
+    assert_eq!(restored.descriptors(), store.descriptors());
+    let mut bindings: Vec<_> = store.bindings().cloned().collect();
+    bindings[0].revision = "tampered".into();
+    assert!(EvidenceStore::from_parts(vec![raw_entry(&raw)], bindings).is_err());
+}
+#[test]
+fn store_addition_is_atomic_and_counts_reused_blob_bytes_and_tiles() {
+    let mut raw = tile(LINE, None);
+    raw.extend(field(20, &vec![0; MAX_REQUEST_BYTES / 2]));
+    let b = binding(&raw);
+    let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b.clone()]).unwrap();
+    let mut c = b.clone();
+    c.x += 1;
+    c.canonical_url = c.canonical_url.replace("14553", "14554");
+    assert!(matches!(
+        store.with_additions(vec![], vec![c]),
+        Err(Error::Limit)
+    ));
+    assert_eq!(store.bindings().count(), 1);
+    let raw = tile(LINE, None);
+    let b = binding(&raw);
+    let bindings: Vec<_> = (0..16)
+        .map(|x| {
+            let mut v = b.clone();
+            v.x = x;
+            v.canonical_url = format!(
+                "https://tiles.openfreemap.org/planet/{}/14/{}/{}.pbf",
+                v.revision, x, v.y
+            );
+            v
+        })
+        .collect();
+    let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], bindings).unwrap();
+    assert!(matches!(
+        store.with_additions(vec![], vec![b]),
+        Err(Error::Limit)
+    ));
+    assert_eq!(store.bindings().count(), 16);
+    assert_eq!(EvidenceStore::empty().bindings().count(), 0);
+}
+#[test]
+fn store_rejects_mixed_versions_and_partial_batch_publication() {
+    let raw = tile(LINE, None);
+    let b = binding(&raw);
+    let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b.clone()]).unwrap();
+    let before = store.descriptors();
+    let mut next = b.clone();
+    next.revision = "next".into();
+    next.canonical_url = next.canonical_url.replace(&b.revision, "next");
+    assert!(matches!(
+        store.with_additions(vec![], vec![next]),
+        Err(Error::Binding)
+    ));
+    let malformed = vec![26, 255];
+    let mut bad = b.clone();
+    bad.x = 1;
+    bad.canonical_url = bad.canonical_url.replace("14553", "1");
+    bad.raw_sha256 = raw_sha256(&malformed);
+    let mut good = b.clone();
+    good.x = 2;
+    good.canonical_url = good.canonical_url.replace("14553", "2");
+    assert!(store
+        .with_additions(vec![raw_entry(&malformed)], vec![good, bad])
+        .is_err());
+    assert_eq!(store.descriptors(), before);
+    assert_eq!(store.bindings().count(), 1);
+}

@@ -1,9 +1,11 @@
 //! Immutable raw evidence can be shared by SHA, but decoding is bound to tile coordinates
 //! and a pinned rule. Hashes prove byte consistency, not supplier authenticity or coverage.
 //! No network, decompression, world mutation, or implicit repair is performed here.
+mod store;
 mod wire;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+pub use store::{EvidenceDescriptor, EvidenceStore, RawEvidence};
 use wire::{bytes, once, var, Field, Reader};
 
 pub const DECODER_RULE: &str = "ofm_transportation_z14_v1";

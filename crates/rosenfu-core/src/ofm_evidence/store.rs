@@ -1,0 +1,192 @@
+//! In-memory immutable evidence table. Persistence must reconstruct this through
+//! `from_parts`; neither descriptors nor caller-supplied decoded objects are proof.
+use super::{
+    decode_request, raw_sha256, DecodedTile, Error, EvidenceInput, Result, TileBinding,
+    MAX_REQUEST_BYTES, MAX_TILES, MAX_TILE_BYTES,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+/// Untrusted transport input. Base64 and document-size checks belong to storage.
+#[derive(Debug)]
+pub struct RawEvidence {
+    pub sha256: String,
+    pub bytes: Vec<u8>,
+}
+/// Small output metadata, without raw blobs or decoded geometry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceDescriptor {
+    pub binding: TileBinding,
+    pub byte_length: usize,
+    /// Computed by Rust from raw evidence, never accepted as constructor input.
+    pub canonical_sha256: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DecodeKey {
+    raw_sha256: String,
+    revision: String,
+    z: u8,
+    x: u32,
+    y: u32,
+    decoder_rule: String,
+}
+impl From<&TileBinding> for DecodeKey {
+    fn from(b: &TileBinding) -> Self {
+        Self {
+            raw_sha256: b.raw_sha256.clone(),
+            revision: b.revision.clone(),
+            z: b.z,
+            x: b.x,
+            y: b.y,
+            decoder_rule: b.decoder_rule.clone(),
+        }
+    }
+}
+#[derive(Debug, Default)]
+struct State {
+    blobs: BTreeMap<String, Arc<[u8]>>,
+    bindings: BTreeMap<String, TileBinding>,
+    decoded: BTreeMap<DecodeKey, Arc<DecodedTile>>,
+}
+/// Cheap clones share immutable raw and decoded data. No Deserialize implementation:
+/// reloading arbitrary DTOs must go through `from_parts` and the bounded decoder.
+#[derive(Debug, Clone, Default)]
+pub struct EvidenceStore {
+    state: Arc<State>,
+}
+impl EvidenceStore {
+    /// Empty evidence cannot attest to any tile or coverage.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+    /// Validates all supplied bindings and raw bytes before publishing any state.
+    pub fn from_parts(raw: Vec<RawEvidence>, bindings: Vec<TileBinding>) -> Result<Self> {
+        Self::empty().with_additions(raw, bindings)
+    }
+    /// Returns a new store, never mutating self, including on conflict or decode failure.
+    /// Reused inputs count toward the complete candidate's decoder request budget.
+    /// The initial store capacity is deliberately <=16 bindings and <=8 MiB including
+    /// repeated blob use; larger persisted-world stores need a separately reviewed API.
+    pub fn with_additions(
+        &self,
+        raw: Vec<RawEvidence>,
+        bindings: Vec<TileBinding>,
+    ) -> Result<Self> {
+        if raw.len() > MAX_TILES || bindings.len() > MAX_TILES {
+            return Err(Error::Limit);
+        }
+        let mut submitted = 0usize;
+        for r in &raw {
+            submitted = submitted.checked_add(r.bytes.len()).ok_or(Error::Limit)?;
+            if r.bytes.len() > MAX_TILE_BYTES || submitted > MAX_REQUEST_BYTES {
+                return Err(Error::Limit);
+            }
+            if raw_sha256(&r.bytes) != r.sha256 {
+                return Err(Error::Hash);
+            }
+        }
+        let mut blobs = self.state.blobs.clone();
+        for r in raw {
+            if let Some(old) = blobs.get(&r.sha256) {
+                if old.as_ref() != r.bytes.as_slice() {
+                    return Err(Error::Hash);
+                }
+            } else {
+                blobs.insert(r.sha256, Arc::from(r.bytes));
+            }
+        }
+        let mut candidate = self.state.bindings.clone();
+        for binding in bindings {
+            binding.validate()?;
+            if let Some(old) = candidate.get(&binding.canonical_url) {
+                if old != &binding {
+                    return Err(Error::Binding);
+                }
+            } else {
+                candidate.insert(binding.canonical_url.clone(), binding);
+            }
+        }
+        if candidate.len() > MAX_TILES || blobs.len() > MAX_TILES {
+            return Err(Error::Limit);
+        }
+        let mut used = BTreeSet::new();
+        let mut inputs = Vec::with_capacity(candidate.len());
+        for binding in candidate.values() {
+            let raw = blobs.get(&binding.raw_sha256).ok_or(Error::Hash)?;
+            used.insert(binding.raw_sha256.as_str());
+            inputs.push(EvidenceInput { binding, raw });
+        }
+        // Reject orphan material rather than accumulating invisible payloads.
+        if used.len() != blobs.len() {
+            return Err(Error::Binding);
+        }
+        if inputs.is_empty() {
+            return Ok(Self::empty());
+        }
+        // Mandatory whole-context validation, also for reused/cached evidence.
+        let validated = decode_request(&inputs)?;
+        let mut decoded = BTreeMap::new();
+        for value in validated {
+            let key = DecodeKey::from(&value.binding);
+            let shared = match self.state.decoded.get(&key) {
+                Some(old) if old.as_ref() == &value => Arc::clone(old),
+                _ => Arc::new(value),
+            };
+            decoded.insert(key, shared);
+        }
+        Ok(Self {
+            state: Arc::new(State {
+                blobs,
+                bindings: candidate,
+                decoded,
+            }),
+        })
+    }
+    pub fn descriptors(&self) -> Vec<EvidenceDescriptor> {
+        self.state
+            .bindings
+            .values()
+            .map(|binding| {
+                // Internal state is built only by the validated constructor above.
+                let decoded = &self.state.decoded[&DecodeKey::from(binding)];
+                EvidenceDescriptor {
+                    binding: binding.clone(),
+                    byte_length: self.state.blobs[&binding.raw_sha256].len(),
+                    canonical_sha256: decoded.canonical_sha256.clone(),
+                }
+            })
+            .collect()
+    }
+    /// Resolve a required binding; absence is an error, not an empty road context.
+    pub fn decoded(&self, canonical_url: &str) -> Result<&DecodedTile> {
+        let b = self
+            .state
+            .bindings
+            .get(canonical_url)
+            .ok_or(Error::Binding)?;
+        self.state
+            .decoded
+            .get(&DecodeKey::from(b))
+            .map(AsRef::as_ref)
+            .ok_or(Error::Binding)
+    }
+    pub fn raw(&self, sha256: &str) -> Result<&[u8]> {
+        self.state
+            .blobs
+            .get(sha256)
+            .map(AsRef::as_ref)
+            .ok_or(Error::Hash)
+    }
+    /// Read-only export for a future bounded, atomic save envelope.
+    pub fn blobs(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.state
+            .blobs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_ref()))
+    }
+    pub fn bindings(&self) -> impl Iterator<Item = &TileBinding> {
+        self.state.bindings.values()
+    }
+}
