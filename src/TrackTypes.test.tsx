@@ -120,3 +120,13 @@ test('undo of a transient parallel start leaves the existing draft untouched',as
   expect(tip?.textContent?.length).toBeGreaterThan(name.length);
  }
 });
+
+test('track type selection stays exclusive across all three kinds',async()=>{
+ await start();
+ const group=screen.getByRole('group',{name:'線路種別'});
+ for(const name of ['通常','高速','トラム','通常']){
+  fireEvent.click(within(group).getByRole('button',{name}));
+  expect(within(group).getAllByRole('button',{pressed:true})).toHaveLength(1);
+  expect(within(group).getByRole('button',{pressed:true}).textContent).toBe(name);
+ }
+});
