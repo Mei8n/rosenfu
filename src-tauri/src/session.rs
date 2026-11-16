@@ -532,6 +532,8 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.add_station_unchecked(name, latitude, longitude)?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -1504,6 +1506,8 @@ impl WorldEditor {
             length_m,
             width_m,
         )?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -1538,6 +1542,8 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.update_station_placement_unchecked(station_id, length_m, width_m)?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -2203,6 +2209,69 @@ mod tests {
         let mut editor = WorldEditor::new();
         editor.rename_company(name.into()).unwrap();
         editor
+    }
+    #[test]
+    fn station_water_add_resize_and_plan_refusals_are_atomic() {
+        use rosenfu_core::world::{InfrastructureLevel, SectionInfrastructure};
+        let mut editor = WorldEditor::new();
+        let points = vec![
+            GeoPoint {
+                longitude: 140.,
+                latitude: 33.,
+            },
+            GeoPoint {
+                longitude: 140.02,
+                latitude: 33.,
+            },
+        ];
+        // A legacy ground alignment over water may be loaded, but new stations
+        // must still respect today's construction model.
+        let id = editor
+            .world
+            .build_alignment(editor.company, "legacy".into(), points)
+            .unwrap();
+        let before = editor.snapshot();
+        assert!(editor
+            .place_station_on_alignment("new".into(), id, 0.5, 100., 10.)
+            .unwrap_err()
+            .contains("地上駅"));
+        assert_eq!(editor.snapshot(), before);
+        assert!(editor
+            .add_station("legacy point".into(), 33., 140.)
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let station = editor
+            .world
+            .place_station_on_alignment(editor.company, "old".into(), id, 0.5, 100., 10.)
+            .unwrap();
+        editor.rename_station(station, "renamed".into()).unwrap();
+        let before = editor.snapshot();
+        assert!(editor.update_station_placement(station, 200., 10.).is_err());
+        assert_eq!(editor.snapshot(), before);
+        let planned = || PlannedBuiltStation {
+            alignment_id: id,
+            name: "planned".into(),
+            position: 0.8,
+            length_m: 100.,
+            width_m: 10.,
+        };
+        assert!(editor
+            .preview_construction_plan(vec![], vec![planned()])
+            .is_err());
+        assert!(editor
+            .build_construction_plan(vec![], vec![planned()])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        // An elevated physical platform is allowed; station metadata is unchanged.
+        let mut elevated = editor.snapshot();
+        elevated.alignments[0].infrastructure = vec![SectionInfrastructure {
+            level: InfrastructureLevel::Elevated,
+            ..Default::default()
+        }];
+        editor.world.replace(elevated).unwrap();
+        editor
+            .place_station_on_alignment("bridge".into(), id, 0.8, 100., 10.)
+            .unwrap();
     }
     #[test]
     fn national_water_requests_include_remote_existing_tracks_after_load_and_keep_provider_on_new_world(
@@ -3348,7 +3417,12 @@ mod tests {
             ("南西端", 20.0, 122.0),
             ("北東端", 46.0, 154.0),
         ] {
-            editor.add_station(name.into(), lat, lon).unwrap();
+            // This is a persistence/extent fixture, including ocean boundary
+            // coordinates, not permission to construct new ground stations there.
+            editor
+                .world
+                .add_station(editor.company, name.into(), lat, lon)
+                .unwrap();
         }
         let expected = editor.snapshot();
         let dir = tempfile::tempdir().unwrap();
