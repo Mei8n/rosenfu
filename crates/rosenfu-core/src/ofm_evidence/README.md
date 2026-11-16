@@ -231,3 +231,45 @@ WorldDraft mutation, atomic file save, Undo, and frontend/IPC integration remain
 separate required stages. The polyline blend is quantized derived reference
 geometry, not a surveyed road or a physical-feasibility certificate. Neither the
 DTO nor the returned path bypasses later physical validation.
+
+## World and complete save envelope, checkpoint 5
+
+Schema **25** stores the raw table outside the world payload, in the same bounded
+atomic JSON document: `road_evidence {raw_blobs:[{sha256,byte_length,base64}],
+bindings:[TileBinding]}`. Base64 is canonical and decoded only after count/length
+preflight; SHA and all context are revalidated through EvidenceStore::from_parts.
+A required envelope is written even for an empty store. Schema 24 and all earlier
+versions are rejected before world parsing, without changing files or backups.
+No automatic migration, deletion, external blob file, or additional save path is
+introduced. The existing 16 MiB pretty-JSON cap includes the entire envelope.
+The initial 16-binding / 8 MiB raw context limits remain in force.
+
+WorldDraft contains runtime_road_evidence with serde(skip), plus the lightweight
+road_evidence_descriptors manifest. Validation requires exact correspondence of
+that manifest to the entire validated runtime store. Plain WorldDraft JSON is an
+IPC projection, **not a complete backup**; a nonempty manifest deserialized without
+evidence cannot enter World::new. Arc clones retain runtime evidence. PartialEq
+has an Arc fast path and compares full contents (including raw bytes) on reload,
+so independently decoded equivalent worlds do not become dirty by identity alone.
+
+APIs:
+- `draft.with_road_evidence(store)` explicitly constructs a new validated manifest
+  and runtime table. It does not create alignment/path provenance or authorize build.
+- `draft.restore_road_evidence(store)` injects runtime data without overwriting the
+  serialized manifest, validates the entire candidate, and mutates only on success.
+- `world.replace_retaining_road_evidence(candidate_draft)` requires an unchanged
+  manifest, preserves the current store rather than trusting an IPC DTO, validates,
+  and returns a new World. It never mutates the current world on failure.
+
+Storage encode/decode, regular/versioned save/load and save-slot creation all use
+this complete envelope. Export/import via encode/decode use the same format.
+Existing manual/autosave session paths call the same storage entrypoints; no UI or
+session change is part of this checkpoint. Their future replacement/build commands
+must call the explicit preservation/attachment API. Registering evidence separately
+before a build is not the intended transaction: future preview/build must validate
+raw evidence and light descriptors inside the same candidate transaction, regenerate
+backend geometry, and commit evidence plus actual alignments only after all checks.
+
+Still absent: alignment-to-PathDescriptor provenance, physical path construction,
+source license metadata binding, UI/IPC integration, and seam build/Undo acceptance.
+The manifest reference checks here are table integrity, not physical track approval.

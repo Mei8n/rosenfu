@@ -16,7 +16,8 @@ pub struct RawEvidence {
     pub bytes: Vec<u8>,
 }
 /// Small output metadata, without raw blobs or decoded geometry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceDescriptor {
     pub binding: TileBinding,
     pub byte_length: usize,
@@ -190,3 +191,15 @@ impl EvidenceStore {
         self.state.bindings.values()
     }
 }
+
+// Pointer fast path for ordinary snapshots; content equality after independently
+// decoded reloads. Compare raw bytes too, never treating claimed hashes as equality.
+impl PartialEq for EvidenceStore {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+            || (self.state.bindings == other.state.bindings
+                && self.state.blobs == other.state.blobs
+                && self.state.decoded == other.state.decoded)
+    }
+}
+impl Eq for EvidenceStore {}

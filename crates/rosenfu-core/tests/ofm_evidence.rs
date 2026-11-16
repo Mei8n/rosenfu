@@ -887,3 +887,35 @@ fn whole_covered_source_segment_budget_is_not_bypassed_by_small_blend() {
         Err(Error::Limit)
     );
 }
+#[test]
+fn world_runtime_evidence_is_not_an_ipc_or_plain_json_backup() {
+    use rosenfu_core::world::{World, WorldDraft};
+    let raw = tile(LINE, None);
+    let b = binding(&raw);
+    let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b.clone()]).unwrap();
+    let draft = WorldDraft::default()
+        .with_road_evidence(store.clone())
+        .unwrap();
+    let world = World::new(draft).unwrap();
+    let before = world.clone();
+    let json = serde_json::to_string(world.snapshot()).unwrap();
+    assert!(!json.contains("runtime_road_evidence"));
+    assert!(!json.contains("coordinates"));
+    assert!(json.contains("road_evidence_descriptors"));
+    let mut detached: WorldDraft = serde_json::from_str(&json).unwrap();
+    assert!(World::new(detached.clone()).is_err());
+    assert!(detached
+        .restore_road_evidence(EvidenceStore::empty())
+        .is_err());
+    assert_eq!(detached.runtime_road_evidence, EvidenceStore::empty());
+    let restored_store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b]).unwrap();
+    assert_eq!(store, restored_store);
+    detached.restore_road_evidence(restored_store).unwrap();
+    assert_eq!(World::new(detached).unwrap(), world);
+    let ipc: WorldDraft = serde_json::from_str(&json).unwrap();
+    assert_eq!(world.replace_retaining_road_evidence(ipc).unwrap(), world);
+    let mut forged: WorldDraft = serde_json::from_str(&json).unwrap();
+    forged.road_evidence_descriptors.clear();
+    assert!(world.replace_retaining_road_evidence(forged).is_err());
+    assert_eq!(world, before);
+}
