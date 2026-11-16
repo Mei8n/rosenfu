@@ -261,6 +261,7 @@ async fn preview_construction_plan(
     alignments: Vec<session::PlannedAlignment>,
     stations: Option<Vec<session::PlannedBuiltStation>>,
     roads: Option<Vec<rosenfu_core::world::RoadSnapshot>>,
+    validation_only: Option<bool>,
 ) -> Result<session::ConstructionPreview, String> {
     let snapshot = editor
         .lock()
@@ -268,6 +269,13 @@ async fn preview_construction_plan(
         .clone();
     // Validation can be expensive: never run it on the UI event-loop thread.
     tauri::async_runtime::spawn_blocking(move || {
+        if validation_only.unwrap_or(false) {
+            return snapshot.validate_construction_placement(
+                alignments,
+                stations.unwrap_or_default(),
+                roads.unwrap_or_default(),
+            );
+        }
         snapshot.preview_construction_summary(
             alignments,
             stations.unwrap_or_default(),

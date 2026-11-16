@@ -1224,7 +1224,7 @@ export function App() {
         const placementToken=++anchorPlacementToken.current;
         const waitingTimer=setTimeout(()=>{if(anchorPlacementToken.current===placementToken)setAnchorPlacementWaiting(true);},300);
         try{
-          const result=await invoke('preview_construction_plan',{alignments:[request],stations:[],roads:roadAttachment.roads});
+          const result=await invoke('preview_construction_plan',{alignments:[request],stations:[],roads:roadAttachment.roads,validationOnly:true});
           if(anchorPlacementToken.current!==placementToken||anchorPlacementContext.current.world!==context.world||anchorPlacementContext.current.key!==context.key)return false;
           if(!hasConstructionValidation(result))throw Error('Incomplete placement verdict');
           const refusal=constructionValidationError(result);
