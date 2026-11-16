@@ -114,3 +114,21 @@ fine一覧はこれら3地点のobservations_onlyで、coarseはこの試験配�
 全国の通常敷設を有効にする設定ではない。check-delivery.mjsは取得APIで実水域点・富士山Unknown・
 区域外Unknownも確認する。App/IPCへ接続するには、建設候補全区間に必要な固定モデルを集め、
 保存版・共通物理評価・既存小ウィンドウ理由表示と結ぶ必要がある。地点取得成功だけで着工を許可しない。
+
+## 日本域の広域モデル
+
+`data/water-japan-coarse-20261114/` は日本を含む経度[122,154)・緯度[20,46)の広域モデル。
+取得済みOSM海域1,125形状とNatural Earth 1:10m大湖7形状を使い、1/60度セルの4×4中心点の
+半数以上が水域なら水域とした。重複面はunion、島の穴を保持。不正面は自動修復せず生成を失敗させる。
+299万5,200セルの水域255万9,355・モデル陸地43万5,845、TWW1は29,975bytes。
+緯度方向約1.85kmの粗さで、小河川・小池・狭水道・小島を省略し得る。現実の全水域の保証ではない。
+
+この建設用配信のfine一覧は空（未提供）、coarseは明示提供。3地点の観測専用データは別用途として維持する。
+TWW1のglobal container内の範囲外ゼロを陸地と読んではならず、生成scopeを超えないcatalogを作る。
+その拡大拒否と、区域外ではasset取得前にUnknownになる回帰を追加した。
+原典URL・ZIP/component hash・異なる原典日付・ODbL/公有domainの扱い・再現方法はデータREADMEに記載。
+
+catalogは443bytes、SHA256 `2ea1581bd7dab2889627f5dfe123dceb7aa905505a92b82d02dae19199de8cda`。
+`node scripts/water-mask/check-coarse-delivery.mjs PUBLISHED_COMMIT_SHA` で実HTTPS例を確認する。
+東京・富士山・大阪・札幌・那覇はモデル陸地、琵琶湖・太平洋・関門の指定点は水域となる回帰を固定。
+これらはモデルの再現確認であり、実測による正確性評価ではない。App/IPC・建設物理判定との結合は別途必要。

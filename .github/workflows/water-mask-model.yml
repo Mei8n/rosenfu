@@ -6,8 +6,10 @@ on:
       - 'src/waterMaskModel.test.ts'
       - 'src/waterModelCatalog.ts'
       - 'src/waterModelCatalog.test.ts'
+      - 'src/waterJapanCoarse.test.mjs'
       - 'scripts/water-mask/**'
       - 'data/water-mask-trial-20261114/**'
+      - 'data/water-japan-coarse-20261114/**'
       - 'package-lock.json'
       - '.github/workflows/water-mask-model.yml'
 permissions:
@@ -29,7 +31,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
-      - run: npm test -- src/waterMaskModel.test.ts src/waterModelCatalog.test.ts
+      - run: npm test -- src/waterMaskModel.test.ts src/waterModelCatalog.test.ts src/waterJapanCoarse.test.mjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
