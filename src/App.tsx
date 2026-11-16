@@ -7,6 +7,7 @@ import type {DraftTileSnapshot} from './ofmReferenceDraft';
 import {parseOfmPathDescriptor} from './ofmPlannedReference';
 import {constructionRoadBounds,constructionRoadAttachment,type SavedRoadSnapshot} from './constructionRoads';
 import {RoadCrossings,useRoadAssessments} from './RoadCrossings';
+import {CrossingEstimate} from './CrossingEstimate';
 import {useAutomaticRoad} from './useAutomaticRoad';
 import {useAutomaticRail} from './useAutomaticRail';
 import {AutomaticRailControls} from './AutomaticRailControls';
@@ -1286,7 +1287,7 @@ export function App() {
   const previewRequests=cursorPreviewActive?requests.map((request,index)=>buildPaths[index].id!==activePathId?request:{...request,points:previewLine,anchorIndices:anchorIndices(previewAnchors,previewLine),anchorLevels:[...anchorHeights(draftPoints.length,draftAnchorLevels,startLevel,infrastructure.level),cursorDestination?endpointInfrastructure(cursorDestination.alignment,cursorDestination.endpoint).level:infrastructure.level],destination:cursorDestination?{alignmentId:cursorDestination.alignment.id,endpoint:cursorDestination.endpoint}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===activePathId).map(item=>({name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:nearestOnAlignment(previewLine,item.station.point).position,lengthM:item.station.lengthM,widthM:12}))}):requests;
   const previewRequestValid=cursorPreviewActive?previewRequests.every(request=>request.points.length>=2):planBuildable;
   const waterModelRevision=useWaterModelAcquisition(status==="ready",world,waterAcquisitionBounds(previewRequests.flatMap(r=>r.points),camera));
-  const nativeConstructionPreview=useConstructionPreview(world,status==="ready"&&previewRequestValid?{alignments:previewRequests,stations}:null,waterModelRevision);
+  const nativeConstructionPreview=useConstructionPreview(world,status==="ready"&&previewRequestValid?{alignments:previewRequests,stations,roads:roadAttachment.roads}:null,waterModelRevision);
   function commitAlignment() {
     if (!enabled || !planBuildable || anchorGesture.current) return;
     void perform(async () => {
@@ -1690,6 +1691,7 @@ export function App() {
             {activeTool === "tracks" && mapMode==="draw" && !parallelMode && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && (draftPoints.length>0 || roadFollowingBlocked || !!previewError) && <div className="construction-tooltip drawing-tooltip drawing-metrics" role="status" style={{left:Math.max(8,Math.min(mapSize.width-210,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-90,cursorPosition.y+18))}}>
               {(roadFollowingBlocked || previewError || nativeConstructionPreview?.error)&&<strong>{roadFollowingBlocked?(!graphBundle?automaticRoad.message:"道路追従を開始するか、道路に合わせるをOFFにしてください"):`敷設不可：${previewError??nativeConstructionPreview?.error}`}</strong>}
               {draftPoints.length>0&&!roadFollowing&&constructionRoadReason&&<small>{constructionRoadReason}</small>}
+              {draftPoints.length>0&&!roadFollowing&&!previewError&&!nativeConstructionPreview?.error&&<CrossingEstimate value={nativeConstructionPreview?.value} pending={!nativeConstructionPreview||constructionRoad.status==="loading"}/>}
               {draftPoints.length>0&&<><div>長さ {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!previewError?` ＋ ${Math.round(alignmentLength(candidateLine))} m`:""}</div>{!previewError&&<div>速度上限 <span className="drawing-speed">{Math.min(designSpeedKmh,circleGuide?(provisionalCurveSpeed(circleGuide.radiusM)??designSpeedKmh):designSpeedKmh)} km/h</span>{circleGuide&&<small>（暫定）</small>}</div>}</>}
             </div>}
             {anchorPreview?.preview&&(anchorPreview.error || anchorPreview.snapped)&&cursorPosition&&<div className="construction-tooltip drawing-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-256,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{anchorPreview.error??"位置合わせ（接続は変更しません）"}</div>}
