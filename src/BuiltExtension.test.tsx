@@ -286,3 +286,4 @@ test('reconnected split pieces render a shared D coordinate and report its conne
  expect(screen.getByText('この端点は接続済みです')).toBeTruthy();
  expect(screen.queryByText('他社の線路は延伸できません')).toBeNull();
 });
+

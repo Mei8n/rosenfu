@@ -8,6 +8,7 @@ import { App } from "./App";
 import { project, DEFAULT_CAMERA, unproject } from "./map";
 import { alignmentLength, pointOnAlignment } from "./alignment";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
+window.PointerEvent=MouseEvent as typeof PointerEvent;
 HTMLDialogElement.prototype.showModal=function(){this.setAttribute("open","");};
 HTMLDialogElement.prototype.close=function(){this.removeAttribute("open");};
 afterEach(() => { localStorage.removeItem("rosenfu.display-settings"); cleanup(); vi.resetAllMocks(); });
@@ -66,4 +67,16 @@ test('successful branch construction uses guarded world Undo and exact build Red
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(1);expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');
  await act(async()=>{fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});});expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(3);
  const calls=vi.mocked(invoke).mock.calls.filter(([c])=>c==='build_plan');expect(calls).toHaveLength(2);expect(calls[1][1]).toEqual(calls[0][1]);
+});
+
+test('branch hover marks the exact allowed connection before click and clears when drawing starts',async()=>{
+ const source={id:'3',owner:'2',name:'本線',track_type:'normal',points:[unproject(100,300),unproject(900,300)],anchor_indices:[0,1]};
+ const map=await start({...empty,next_id:'4',alignments:[source]});
+ fireEvent.pointerMove(map,{clientX:200,clientY:152});
+ const ring=map.querySelector('.junction-snap-ring')!;expect(ring).toBeTruthy();
+ expect(Number(ring.getAttribute('cy'))).toBeCloseTo(300,6);
+ expect(map.querySelector('.junction-snap-preview')?.textContent).toBe('ここから分岐');
+ fireEvent.click(map,{clientX:200,clientY:152});
+ expect(map.querySelector('.junction-snap-ring')).toBeNull();
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
 });
