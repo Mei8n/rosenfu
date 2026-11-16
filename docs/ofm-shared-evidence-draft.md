@@ -20,3 +20,5 @@ Two observed dense Tokyo tiles total 1,509,801 raw bytes (~2.01MB base64); the p
 ## Backend contract coordination
 
 The isolated Rust decoder takes raw bytes plus canonical URL/revision/z/x/y/raw SHA/decoder rule. It will produce canonical decoded content hashes from domain-separated, length-prefixed typed integer-coordinate geometry and raw attributes. JavaScript graph JSON hashes are **not** substitutes for that canonical digest. The draft retains a decoder rule name but does not invent a backend canonical hash. Introduce that digest only after independently verified decoder parity. Coordinate binding aliases and same-SHA tile reuse explicitly.
+
+`verifyRawTileEvidence` separately verifies SHA-256 after canonical decoding. `reconcileSharedEvidence` snapshots inputs, rehashes unique evidence, rejects same-SHA differing content and same-URL conflicting bindings, resolves bindings only to present raw evidence, and returns a new table without mutating existing state. It does not validate MVT semantics or prove a successful save. The whole-world budget check remains mandatory after reconciliation, not just a subtraction of an estimated evidence increment.

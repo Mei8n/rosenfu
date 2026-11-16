@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import type {DraftTileInput,DraftTileLine} from './ofmReferenceDraft';
-import {prepareSharedOfmEvidenceDraft as prepare,decodeCanonicalTileEvidence,assertProposedWorldBudget,OFM_WORLD_JSON_LIMIT} from './ofmSharedEvidenceDraft';
+import {prepareSharedOfmEvidenceDraft as prepare,decodeCanonicalTileEvidence,assertProposedWorldBudget,OFM_WORLD_JSON_LIMIT,reconcileSharedEvidence,verifyRawTileEvidence} from './ofmSharedEvidenceDraft';
 const seam=139.76806640625;
 async function hash(data:Uint8Array){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',Uint8Array.from(data)))).map(n=>n.toString(16).padStart(2,'0')).join('');}
 async function fixture(x:number):Promise<DraftTileInput>{
@@ -17,4 +17,8 @@ describe('shared evidence proposal',()=>{
  it('rejects noncanonical padding bits, whitespace and length mismatches',()=>{const e={sha256:'a'.repeat(64),byteLength:1,base64:'AA=='};expect(decodeCanonicalTileEvidence(e)).toEqual(new Uint8Array([0]));for(const base64 of ['AB==','AA==\n','AA','AAA='])expect(()=>decodeCanonicalTileEvidence({...e,base64})).toThrow('raw-base64');});
  it('checks complete proposed world at the exact 16MiB JSON boundary',()=>{expect(assertProposedWorldBudget('a'.repeat(OFM_WORLD_JSON_LIMIT-2))).toBe(OFM_WORLD_JSON_LIMIT);expect(()=>assertProposedWorldBudget('a'.repeat(OFM_WORLD_JSON_LIMIT-1))).toThrow('world-json-budget');});
  it('retains the 8MiB raw input guard even for requested reuse',async()=>{const a=await fixture(14552);a.rawTileBytes=new Uint8Array(8*1024*1024+1);await expect(prepare([a,await fixture(14553)],needed,start,end,[a.snapshot.bundle.sourceSha256])).rejects.toThrow('raw-budget');});
+ it('verifies raw digest rather than accepting a second caller-supplied hash',async()=>{const p=(await prepare([await fixture(14552),await fixture(14553)],needed,start,end)).persistentProposal;await expect(verifyRawTileEvidence({...p.newRawEvidence[0],sha256:'f'.repeat(64)})).rejects.toThrow('raw-evidence-hash');});
+ it('rejects conflicting evidence and binding without changing the existing table',async()=>{const p=(await prepare([await fixture(14552),await fixture(14553)],needed,start,end)).persistentProposal;const table={rawEvidence:p.newRawEvidence,tileBindings:p.tileBindings};const before=JSON.stringify(table);const bad={...p.newRawEvidence[0],base64:p.newRawEvidence[1].base64};await expect(reconcileSharedEvidence(table,{rawEvidence:[bad],tileBindings:[]})).rejects.toThrow('raw-evidence-conflict');await expect(reconcileSharedEvidence(table,{rawEvidence:[],tileBindings:[{...p.tileBindings[0],rawSha256:p.newRawEvidence[1].sha256}]})).rejects.toThrow('evidence-binding-conflict');expect(JSON.stringify(table)).toBe(before);expect(await reconcileSharedEvidence(table,table)).toEqual(table);});
+ it('counts pre-existing World content rather than only the evidence increment',()=>{const existing={unrelated:'x'.repeat(OFM_WORLD_JSON_LIMIT-100)};expect(assertProposedWorldBudget(existing)).toBeLessThan(OFM_WORLD_JSON_LIMIT);expect(()=>assertProposedWorldBudget({...existing,newEvidence:'y'.repeat(100)})).toThrow('world-json-budget');});
+
 });
