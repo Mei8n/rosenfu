@@ -5927,6 +5927,67 @@ mod road_snapshot_transaction_tests {
         assert_eq!(preview.new_crossing_count, Some(0));
     }
     #[test]
+    fn preview_shared_anchor_crossing_count_matches_commit_once() {
+        let mut editor = WorldEditor::new();
+        let split = || {
+            let mut split = plan();
+            split.points = vec![point(-0.01, 0.0), point(0.0, 0.0), point(0.01, 0.0)];
+            split.anchor_indices = Some(vec![0, 1, 2]);
+            split
+        };
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![split()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(preview.validation_error, None);
+        assert_eq!(preview.new_crossing_count, Some(1));
+        editor
+            .build_construction_plan_with_roads(vec![split()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(
+            editor
+                .road_assessments()
+                .iter()
+                .map(|(_, a)| a.crossings.len())
+                .sum::<usize>(),
+            1
+        );
+    }
+    #[test]
+    fn preview_extension_keeps_existing_crossing_count_zero() {
+        let mut editor = WorldEditor::new();
+        editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        let original = editor.snapshot().alignments[0].clone();
+        let extension = || {
+            let mut extension = plan();
+            extension.points = vec![*original.points.last().unwrap(), point(0.02, 0.0)];
+            extension.extension = Some(PlannedAlignmentExtension {
+                alignment_id: original.id,
+                endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+            });
+            extension
+        };
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![extension()], vec![], vec![])
+            .unwrap();
+        assert_eq!(preview.validation_error, None);
+        assert_eq!(preview.new_crossing_count, Some(0));
+        editor
+            .build_construction_plan_with_roads(vec![extension()], vec![], vec![])
+            .unwrap();
+        assert_eq!(
+            editor
+                .road_assessments()
+                .iter()
+                .map(|(_, a)| a.crossings.len())
+                .sum::<usize>(),
+            1
+        );
+    }
+    #[test]
     fn road_snapshot_and_alignment_commit_atomically_and_survive_serialization() {
         let mut editor = WorldEditor::new();
         let old = editor.snapshot();
