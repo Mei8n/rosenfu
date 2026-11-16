@@ -168,3 +168,49 @@ fn through_creation_rebinding_and_failed_replacement_are_atomic() {
         ServiceRouteBindingKind::Route { route_id: r }
     );
 }
+
+#[test]
+fn map_created_independent_service_omits_through_binding_and_roundtrips() {
+    let (mut e, line, [a, b, c]) = super::tests::alignment_fixture();
+    let segments = vec![super::tests::span(line, a, c)];
+    let stops = e
+        .preview_service_path(a, segments.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .map(|o| o.reference)
+        .collect::<Vec<_>>();
+    // Empty/singleton arrays are malformed through bindings, not independent services.
+    let before = e.snapshot();
+    for routes in [vec![], vec![RouteId(1)], vec![RouteId(1), RouteId(1)]] {
+        assert!(e
+            .create_service_path_with_source_routes(
+                "invalid".into(),
+                a,
+                segments.clone(),
+                stops.clone(),
+                None,
+                Some(routes)
+            )
+            .is_err());
+        assert_eq!(e.snapshot(), before);
+    }
+    let created = e
+        .create_service_path_with_source_routes(
+            "地図から".into(),
+            a,
+            segments,
+            stops.clone(),
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(created.routes, before.routes);
+    assert_eq!(created.services.len(), before.services.len() + 1);
+    assert_eq!(created.service_paths.last().unwrap().stops, stops);
+    assert!(created.service_paths.last().unwrap().stops.len() >= 3);
+    assert!(created.station_placements.iter().any(|p| p.station_id == b));
+    let world = World::new(created.clone()).unwrap();
+    let restored = rosenfu_storage::decode(&rosenfu_storage::encode(&world).unwrap()).unwrap();
+    assert_eq!(restored.snapshot(), &created);
+}

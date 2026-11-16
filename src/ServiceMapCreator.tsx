@@ -15,7 +15,7 @@ export function ServiceMapCreator({world,stations,enabled,defaultName,onDirty,on
   if(!Array.isArray(preview.legs)||preview.legs.length!==segments.length||preview.legs.some((leg,i)=>leg.key!==String(i+1)||!sameSegment(leg.segment,segments[i]))||!Array.isArray(preview.occurrences))throw Error('停車駅を確認できませんでした。');
   const expected=resolveServicePath(start,preview.legs,world);
   if(expected.length!==preview.occurrences.length||expected.some((entry,i)=>!sameOccurrence(entry,preview.occurrences[i])))throw Error('停車駅を確認できませんでした。');
-  await onSave({name,start,segments,sourceRouteIds:[],stops:preview.occurrences.map(o=>o.reference)});
+  await onSave({name,start,segments,stops:preview.occurrences.map(o=>o.reference)});
  }
  return <RouteCandidatePreview entityLabel="系統" defaultName={defaultName} worldVersion={world} stations={stations} enabled={enabled} canApply={enabled} onSave={create} onDirty={onDirty} onCancelEdit={onCancel} onMapPick={onMapPick} mapPickTarget={mapPickTarget} startSequenceKey={startSequenceKey}/>;
 }
