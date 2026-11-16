@@ -1,9 +1,11 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 /** One native validation at a time; replace queued cursor positions with the latest.
  * Results still belong to the exact request and world that produced them. */
-export function useConstructionPreview(world:unknown,request:{alignments:unknown[];stations:unknown[]}|null,waterRevision=0){
- const key=request?JSON.stringify(request):null;
+export function useConstructionPreview(world:unknown,request:{alignments:unknown[];stations:unknown[];roads?:unknown[]}|null,waterRevision=0){
+ const roads=request?.roads;
+ const roadKey=useMemo(()=>JSON.stringify(roads??[]),[roads]);
+ const key=request?`{"alignments":${JSON.stringify(request.alignments)},"stations":${JSON.stringify(request.stations)},"roads":${roadKey}}`:null;
  const [state,setState]=useState<{world:unknown;key:string;waterRevision:number;error:string|null;value:unknown}|null>(null);
  const running=useRef(false);
  const queued=useRef<null|(()=>Promise<void>)>(null);

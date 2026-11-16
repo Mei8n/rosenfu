@@ -10,3 +10,8 @@ export function matchingPlacementError(error:string|null,active:boolean,preview:
  if(!error||!active||preview.length!==candidate.length)return null;
  return preview.every((point,index)=>point.latitude===candidate[index].latitude&&point.longitude===candidate[index].longitude)?error:null;
 }
+
+export function hasConstructionValidation(value:unknown):boolean{
+ if(!value||typeof value!=='object'||!('validationError' in value))return false;
+ return value.validationError===null||(typeof value.validationError==='string'&&value.validationError.length>0);
+}

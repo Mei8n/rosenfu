@@ -9,7 +9,7 @@ test('preview uses complete request and ignores delayed old-world results',async
  let oldResolve:(value:unknown)=>void=()=>{};const old={},next={},request={alignments:[{anchorLevels:['ground','elevated','ground']}],stations:[]};
  vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>oldResolve=resolve)).mockResolvedValueOnce({ok:true});
  const {result,rerender}=renderHook(({world})=>useConstructionPreview(world,request),{initialProps:{world:old}});
- await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',request));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',{...request,roads:[]}));
  rerender({world:next});expect(result.current).toBeNull();
  await act(async()=>oldResolve({stale:true}));
  await waitFor(()=>expect(result.current?.value).toEqual({ok:true}));
@@ -40,7 +40,7 @@ test('slow native preview never queues every intermediate cursor position',async
   expect(invoke).toHaveBeenCalledTimes(1);
   await act(async()=>finish({old:true}));
   expect(invoke).toHaveBeenCalledTimes(2);
-  expect(invoke).toHaveBeenLastCalledWith('preview_construction_plan',make('D'));
+  expect(invoke).toHaveBeenLastCalledWith('preview_construction_plan',{...make('D'),roads:[]});
   expect(result.current?.value).toEqual({ok:true});
  }finally{unmount();vi.useRealTimers();}
 });

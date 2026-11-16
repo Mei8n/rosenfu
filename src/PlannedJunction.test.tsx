@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 import {LEVEL_LABELS} from './sectionInfrastructure';
 // @vitest-environment jsdom
 import React from "react";
@@ -18,7 +19,7 @@ const built = {...empty,next_id:"4",alignments:[alignment]};
 const placed = {...built,next_id:"5",stations:[{id:"4",owner:"2",name:"新駅",latitude:35.67504,longitude:139.75}],station_placements:[{station_id:"4",alignment_id:"3",position:.5,length_m:200,width_m:12}]};
 async function start(snapshot: unknown = empty) {
   vi.mocked(isTauri).mockReturnValue(true);
-  vi.mocked(invoke).mockImplementation(async command => {
+  vi.mocked(invoke).mockImplementation(async command => {if(command==="preview_construction_plan")return {validationError:null};
     if(command==="engine_info") return {name:"Rosenfu",version:"construction-test"};
     if(command==="world_snapshot") return snapshot;
     if(command==="list_save_slots") return {active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]};
@@ -37,9 +38,9 @@ async function start(snapshot: unknown = empty) {
 test('midline click creates planned exact source without mutating built track, then sends atomic source snapshot',async()=>{
  const source={id:'3',owner:'2',name:'本線',track_type:'normal',points:[unproject(100,300),unproject(900,300)],anchor_indices:[0,1]};
  const map=await start({...empty,next_id:'4',alignments:[source]});
- fireEvent.click(map,{clientX:200,clientY:151});fireEvent.pointerMove(map,{clientX:300,clientY:170});fireEvent.click(map,{clientX:300,clientY:170});fireEvent.click(map,{clientX:300,clientY:170});
+ await settledMapClick(map,{clientX:200,clientY:151});fireEvent.pointerMove(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});
  expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(1);
- expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','water_mask_requests','list_save_slots','autosave_status']);
+ expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','water_mask_requests','list_save_slots','autosave_status','preview_construction_plan']);
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((c,a)=>c==='build_plan'?Promise.reject(Error('junction inspected')):original(c,a));
  fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/junction inspected/);
  const args=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as {alignments:{junctionSource:{fraction:number;expectedAlignment:unknown;reverse:boolean};points:unknown[]}[]};
@@ -49,7 +50,7 @@ test('midline click creates planned exact source without mutating built track, t
 test('junction source survives Undo Redo and save reload without changing original infrastructure',async()=>{
  const source={id:'3',owner:'2',name:'本線',track_type:'normal',points:[unproject(100,300),unproject(900,300)],anchor_indices:[0,1]};
  let map=await start({...empty,next_id:'4',alignments:[source]});
- fireEvent.click(map,{clientX:200,clientY:150});fireEvent.click(map,{clientX:100,clientY:170});fireEvent.click(map,{clientX:100,clientY:170});
+ await settledMapClick(map,{clientX:200,clientY:150});await settledMapClick(map,{clientX:100,clientY:170});await settledMapClick(map,{clientX:100,clientY:170});
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});await act(async()=>{fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});});
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((c,a)=>c==='save_world'?Promise.resolve({saved:true}):original(c,a));
  fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText('ワールドと未着工計画を保存しました。');
@@ -60,7 +61,7 @@ test('junction source survives Undo Redo and save reload without changing origin
 test('successful branch construction uses guarded world Undo and exact build Redo',async()=>{
  const source={id:'3',owner:'2',name:'本線',track_type:'normal',points:[unproject(100,300),unproject(900,300)],anchor_indices:[0,1]};
  const before={...empty,next_id:'4',alignments:[source]},after={...before,next_id:'6',alignments:[source,{...source,id:'4'},{...source,id:'5'}]};
- const map=await start(before);fireEvent.click(map,{clientX:200,clientY:150});fireEvent.click(map,{clientX:300,clientY:170});fireEvent.click(map,{clientX:300,clientY:170});
+ const map=await start(before);await settledMapClick(map,{clientX:200,clientY:150});await settledMapClick(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});
  vi.mocked(invoke).mockImplementation(async c=>c==='build_plan'?after:c==='undo_alignment_deletion'?before:{});
  await act(async()=>{fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));});expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(3);
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(1);expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');

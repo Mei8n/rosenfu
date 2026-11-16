@@ -18,7 +18,7 @@ const built = {...empty,next_id:"4",alignments:[alignment]};
 const placed = {...built,next_id:"5",stations:[{id:"4",owner:"2",name:"新駅",latitude:35.67504,longitude:139.75}],station_placements:[{station_id:"4",alignment_id:"3",position:.5,length_m:200,width_m:12}]};
 async function start(snapshot: unknown = empty) {
   vi.mocked(isTauri).mockReturnValue(true);
-  vi.mocked(invoke).mockImplementation(async command => {
+  vi.mocked(invoke).mockImplementation(async command => {if(command==="preview_construction_plan")return {validationError:null};
     if(command==="engine_info") return {name:"Rosenfu",version:"construction-test"};
     if(command==="world_snapshot") return snapshot;
     if(command==="list_save_slots") return {active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]};
@@ -45,7 +45,7 @@ test('first anchor height stays fixed while destination changes through undo sav
  const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
  expect(saved.startLevel).toBe('ground');expect(saved.infrastructure?.level).toBe('elevated');
  cleanup();map=await start({...empty,construction_plans:saved});expect(screen.queryByText('未保存の変更あり')).toBeNull();
- vi.mocked(invoke).mockImplementation(async command=>{if(command==='build_alignment')throw Error('inspect grade');return {};});
+ vi.mocked(invoke).mockImplementation(async command=>{if(command==="preview_construction_plan")return {validationError:null};if(command==='build_alignment')throw Error('inspect grade');return {};});
  fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/inspect grade/);
  expect(invoke).toHaveBeenCalledWith('build_alignment',expect.objectContaining({startLevel:'ground',infrastructure:{track_count:1,level:'elevated'}}));
 });
