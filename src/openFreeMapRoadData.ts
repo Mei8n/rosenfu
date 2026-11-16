@@ -43,8 +43,81 @@ export function roadFragmentIntersects(points:readonly {longitude:number;latitud
  }return false;
 }
 export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:()=>number=Date.now){
- let template:Promise<{template:string;revision:string}>|undefined;let metadataRetryAfter=0;let queue:Promise<unknown>=Promise.resolve(),usedBytes=0,usedTiles=0;const cache=new Map<string,OpenFreeMapTileSnapshot>(),pending=new Map<string,Promise<OpenFreeMapTileSnapshot>>(),failures=new Map<string,number>();
- async function request(url:string){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),OFM_LIMITS.timeout);try{const r=await fetcher(url,{signal:controller.signal,credentials:'omit',referrerPolicy:'no-referrer'});if((r.url && new URL(r.url).origin!=='https://tiles.openfreemap.org')||!r.ok||!r.body)throw Error(`道路タイルを取得できません（HTTP ${r.status}）。`);const reader=r.body.getReader();let size=0;const chunks:Uint8Array[]=[];try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;usedBytes+=value.length;if(size>OFM_LIMITS.bytes||usedBytes>OFM_LIMITS.sessionBytes){await reader.cancel();throw Error('道路データ取得容量上限です。');}chunks.push(value);}}finally{reader.releaseLock();}const result=new Uint8Array(size);let off=0;for(const c of chunks){result.set(c,off);off+=c.length;}return result;}finally{clearTimeout(timer);}}
- async function tile(x:number,y:number){if(!template && now()<metadataRetryAfter)throw Error('道路タイル情報再試行待機中です。');if(!template)template=request(OFM_METADATA).then(b=>parseRoadTileTemplate(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(b)))).catch(e=>{template=undefined;metadataRetryAfter=now()+OFM_LIMITS.retry;throw e;});const meta=await template,key=`${meta.revision}/${x}/${y}`;const hit=cache.get(key);if(hit)return hit;const active=pending.get(key);if(active)return active;if(pending.size>=32)throw Error('道路タイル待機上限です。');if(now()-(failures.get(key)??-Infinity)<OFM_LIMITS.retry)throw Error('道路タイル再試行待機中です。');const task=queue.then(async()=>{if(usedTiles>=OFM_LIMITS.sessionTiles||usedBytes>=OFM_LIMITS.sessionBytes)throw Error('道路タイル取得予算上限です。');usedTiles++;return decodeOpenFreeMapRoadTile(await request(meta.template.replace('{z}','14').replace('{x}',String(x)).replace('{y}',String(y))),x,y,meta.revision,now());}).then(s=>{cache.set(key,s);while(cache.size>OFM_LIMITS.cacheEntries)cache.delete(cache.keys().next().value!);return s;}).catch(e=>{failures.set(key,now());while(failures.size>128)failures.delete(failures.keys().next().value!);throw e;}).finally(()=>pending.delete(key));pending.set(key,task);queue=task.catch(()=>undefined);return task;}
- return {async load(bounds:GraphBounds):Promise<OpenFreeMapRoadSnapshot>{const snapshots=await Promise.all(roadTilesOf(bounds).map(([x,y])=>tile(x,y)));const wanted=new Set(snapshots.flatMap(s=>s.roads.filter(r=>roadFragmentIntersects(r.points,bounds)).map(r=>r.id)));const edges=snapshots.flatMap(s=>s.bundle.graph.edges.filter(e=>wanted.has(e.osmWayId)));const nodeIds=new Set(edges.flatMap(e=>[e.from,e.to]));const nodes=snapshots.flatMap(s=>s.bundle.graph.nodes.filter(n=>nodeIds.has(n.osmId)));const extent=snapshots.reduce((b,s)=>({west:Math.min(b.west,s.bundle.graph.dataset.bounds.west),east:Math.max(b.east,s.bundle.graph.dataset.bounds.east),south:Math.min(b.south,s.bundle.graph.dataset.bounds.south),north:Math.max(b.north,s.bundle.graph.dataset.bounds.north)}),{...bounds});const revision=snapshots[0].bundle.graph.dataset.revision;const graph=validateReferenceGraph({format:'rosenfu-reference-graph',version:1,dataset:{id:`ofm-tiles/${revision}`,revision,source:OFM_METADATA,license:'ODbL-1.0',bounds:extent},nodes,edges});return {bounds:{...bounds},fetchedAt:now(),coverageVerified:false,tileSnapshots:snapshots,tileLines:snapshots.flatMap(s=>s.tileLines),roads:snapshots.flatMap(s=>s.roads),bundle:{graph,roadWays:Object.fromEntries(snapshots.flatMap(s=>Object.entries(s.bundle.roadWays??{}).filter(([id])=>wanted.has(id)))),graphSha256:await hash(new TextEncoder().encode(JSON.stringify(graph))),sourceSha256:await hash(new TextEncoder().encode(snapshots.map(s=>s.bundle.sourceSha256).join(','))),source:{source:OFM_METADATA,sourceDate:null,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION}}};}};
+ type Task={promise:Promise<OpenFreeMapTileSnapshot>;users:Set<symbol>;controller:AbortController};
+ let template:Promise<{template:string;revision:string}>|undefined;
+ let metadataRetryAfter=0,usedBytes=0,usedTiles=0,activeLoads=0;let metadataController:AbortController|undefined;let metadataReady=false;
+ let queue:Promise<unknown>=Promise.resolve();
+ const cache=new Map<string,OpenFreeMapTileSnapshot>(),pending=new Map<string,Task>(),failures=new Map<string,number>();
+ const cancelled=()=>new DOMException('道路取得を取り消しました。','AbortError');
+ const check=(signal:AbortSignal)=>{if(signal.aborted)throw cancelled();};
+ // A load may stop waiting without cancelling work used by another load.
+ async function wait<T>(promise:Promise<T>,signal:AbortSignal):Promise<T>{
+  check(signal);let abort:()=>void=()=>{};
+  const stopped=new Promise<never>((_,reject)=>{abort=()=>reject(cancelled());signal.addEventListener('abort',abort,{once:true});});
+  try{return await Promise.race([promise,stopped]);}finally{signal.removeEventListener('abort',abort);}
+ }
+ async function request(url:string,shared?:AbortSignal){
+  const controller=new AbortController(),abort=()=>controller.abort();
+  shared?.addEventListener('abort',abort,{once:true});if(shared?.aborted)controller.abort();
+  const timer=setTimeout(abort,OFM_LIMITS.timeout);
+  try{
+   check(controller.signal);
+   const r=await fetcher(url,{signal:controller.signal,credentials:'omit',referrerPolicy:'no-referrer'});
+   check(controller.signal);
+   if((r.url&&new URL(r.url).origin!=='https://tiles.openfreemap.org')||!r.ok||!r.body)throw Error(`道路タイルを取得できません（HTTP ${r.status}）。`);
+   const reader=r.body.getReader(),chunks:Uint8Array[]=[];let size=0;
+   const cancelReader=()=>{void reader.cancel().catch(()=>undefined);};controller.signal.addEventListener('abort',cancelReader,{once:true});
+   try{for(;;){check(controller.signal);const {done,value}=await reader.read();check(controller.signal);if(done)break;size+=value.length;usedBytes+=value.length;if(size>OFM_LIMITS.bytes||usedBytes>OFM_LIMITS.sessionBytes){await reader.cancel();throw Error('道路データ取得容量上限です。');}chunks.push(value);}}
+   finally{controller.signal.removeEventListener('abort',cancelReader);reader.releaseLock();}
+   const result=new Uint8Array(size);let off=0;for(const c of chunks){result.set(c,off);off+=c.length;}return result;
+  }finally{clearTimeout(timer);shared?.removeEventListener('abort',abort);}
+ }
+ function metadata(){
+  if(metadataController?.signal.aborted&&!metadataReady)template=undefined;
+  if(!template){if(now()<metadataRetryAfter)return Promise.reject(Error('道路タイル情報再試行待機中です。'));
+   const ctrl=new AbortController();metadataController=ctrl;metadataReady=false;
+   const task=request(OFM_METADATA,ctrl.signal).then(b=>{const result=parseRoadTileTemplate(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(b)));check(ctrl.signal);metadataReady=true;return result;}).catch(e=>{if(template===task){template=undefined;if(!ctrl.signal.aborted)metadataRetryAfter=now()+OFM_LIMITS.retry;}throw e;});template=task;
+  }return template;
+ }
+ function acquire(x:number,y:number,meta:{template:string;revision:string},user:symbol,owned:Set<Task>):Promise<OpenFreeMapTileSnapshot>{
+  const key=`${meta.revision}/${x}/${y}`,hit=cache.get(key);if(hit)return Promise.resolve(hit);
+  let task=pending.get(key);
+  if(task?.controller.signal.aborted){if(pending.get(key)===task)pending.delete(key);task=undefined;}
+  if(!task){
+   if(pending.size>=32)return Promise.reject(Error('道路タイル待機上限です。'));
+   if(now()-(failures.get(key)??-Infinity)<OFM_LIMITS.retry)return Promise.reject(Error('道路タイル再試行待機中です。'));
+   const controller=new AbortController();const created:Task={controller,users:new Set(),promise:Promise.resolve(null as unknown as OpenFreeMapTileSnapshot)};
+   const work=queue.then(async()=>{
+    check(controller.signal); // queued work with no subscribers performs no fetch
+    if(usedTiles>=OFM_LIMITS.sessionTiles||usedBytes>=OFM_LIMITS.sessionBytes)throw Error('道路タイル取得予算上限です。');
+    usedTiles++;const bytes=await request(meta.template.replace('{z}','14').replace('{x}',String(x)).replace('{y}',String(y)),controller.signal);check(controller.signal);
+    const snapshot=await decodeOpenFreeMapRoadTile(bytes,x,y,meta.revision,now());check(controller.signal);return snapshot;
+   }).then(snapshot=>{cache.set(key,snapshot);while(cache.size>OFM_LIMITS.cacheEntries)cache.delete(cache.keys().next().value!);return snapshot;}).catch(e=>{
+    if(!controller.signal.aborted){failures.set(key,now());while(failures.size>128)failures.delete(failures.keys().next().value!);}throw e;
+   }).finally(()=>{if(pending.get(key)===created)pending.delete(key);});
+   created.promise=work;task=created;pending.set(key,task);queue=work.catch(()=>undefined);
+  }
+  task.users.add(user);owned.add(task);return task.promise;
+ }
+ return {async load(bounds:GraphBounds,signal?:AbortSignal):Promise<OpenFreeMapRoadSnapshot>{
+  const tiles=roadTilesOf(bounds),user=Symbol('road-consumer'),owned=new Set<Task>(),controller=new AbortController();
+  const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
+  const timer=setTimeout(abort,25000);activeLoads++;
+  try{
+   check(controller.signal);const meta=await wait(metadata(),controller.signal);check(controller.signal);
+   const snapshots=await wait(Promise.all(tiles.map(([x,y])=>acquire(x,y,meta,user,owned))),controller.signal);check(controller.signal);
+   const wanted=new Set(snapshots.flatMap(s=>s.roads.filter(r=>roadFragmentIntersects(r.points,bounds)).map(r=>r.id)));
+   const edges=snapshots.flatMap(s=>s.bundle.graph.edges.filter(e=>wanted.has(e.osmWayId))),nodeIds=new Set(edges.flatMap(e=>[e.from,e.to]));
+   const nodes=snapshots.flatMap(s=>s.bundle.graph.nodes.filter(n=>nodeIds.has(n.osmId)));
+   const extent=snapshots.reduce((b,s)=>({west:Math.min(b.west,s.bundle.graph.dataset.bounds.west),east:Math.max(b.east,s.bundle.graph.dataset.bounds.east),south:Math.min(b.south,s.bundle.graph.dataset.bounds.south),north:Math.max(b.north,s.bundle.graph.dataset.bounds.north)}),{...bounds});
+   const revision=snapshots[0].bundle.graph.dataset.revision;
+   const graph=validateReferenceGraph({format:'rosenfu-reference-graph',version:1,dataset:{id:`ofm-tiles/${revision}`,revision,source:OFM_METADATA,license:'ODbL-1.0',bounds:extent},nodes,edges});
+   const graphSha256=await hash(new TextEncoder().encode(JSON.stringify(graph))),sourceSha256=await hash(new TextEncoder().encode(snapshots.map(s=>s.bundle.sourceSha256).join(',')));check(controller.signal);
+   return {bounds:{...bounds},fetchedAt:now(),coverageVerified:false,tileSnapshots:snapshots,tileLines:snapshots.flatMap(s=>s.tileLines),roads:snapshots.flatMap(s=>s.roads),bundle:{graph,roadWays:Object.fromEntries(snapshots.flatMap(s=>Object.entries(s.bundle.roadWays??{}).filter(([id])=>wanted.has(id)))),graphSha256,sourceSha256,source:{source:OFM_METADATA,sourceDate:null,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION}}};
+  }finally{
+   activeLoads--;if(activeLoads===0&&!metadataReady)metadataController?.abort();
+   clearTimeout(timer);signal?.removeEventListener('abort',abort);
+   for(const task of owned){task.users.delete(user);if(task.users.size===0)task.controller.abort();}
+  }
+ }};
 }
