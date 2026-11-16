@@ -409,7 +409,7 @@ impl WorldEditor {
             .map_err(|e| e.to_string())?;
         self.validate_section_selection(&selections, &expected_alignments)?;
         for selection in selections {
-            // Collapse adjacent selected intervals before removing them: temporary
+            // Remove adjacent selected intervals together: temporary
             // sub-20m fragments must not reject a valid final contiguous removal.
             let mut indices = selection.section_indices;
             indices.sort_unstable();
@@ -422,21 +422,16 @@ impl WorldEditor {
             }
             // Removing from the end keeps the original prefix ID and lower indices stable.
             for (start, end) in ranges.into_iter().rev() {
-                if start != end {
-                    let current = candidate.snapshot();
-                    let alignment = current
-                        .alignments
-                        .iter()
-                        .find(|a| a.id == selection.alignment_id)
-                        .ok_or("選択した線路がありません。")?;
-                    let mut anchors = alignment
-                        .anchor_indices
-                        .clone()
-                        .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
-                    anchors.drain(start + 1..=end);
-                    candidate.set_anchor_indices(selection.alignment_id, anchors)?;
-                }
-                candidate.delete_alignment_section(selection.alignment_id, start, plans.clone())?;
+                let current_plans = candidate
+                    .snapshot()
+                    .construction_plans
+                    .unwrap_or_else(|| plans.clone());
+                candidate.delete_alignment_section_range(
+                    selection.alignment_id,
+                    start,
+                    end,
+                    current_plans,
+                )?;
             }
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
@@ -485,6 +480,16 @@ impl WorldEditor {
         section_index: usize,
         plans: rosenfu_core::world::ConstructionPlans,
     ) -> Result<WorldDraft, String> {
+        self.delete_alignment_section_range(id, section_index, section_index, plans)
+    }
+
+    fn delete_alignment_section_range(
+        &mut self,
+        id: AlignmentId,
+        section_index: usize,
+        last_section_index: usize,
+        plans: rosenfu_core::world::ConstructionPlans,
+    ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         let mut before = candidate.snapshot();
         before.construction_plans = Some(plans);
@@ -507,12 +512,12 @@ impl WorldEditor {
             .ok_or("削除する区間がありません。")?;
         let end = *boundaries
             .get(
-                section_index
+                last_section_index
                     .checked_add(1)
                     .ok_or("削除する区間がありません。")?,
             )
             .ok_or("削除する区間がありません。")?;
-        if boundaries.len() == 2 {
+        if section_index == 0 && last_section_index + 2 == boundaries.len() {
             // Disconnect only this alignment. Validation rejects route/service paths
             // that still require the link; equipment and plans retain their guards.
             let mut disconnected = before.clone();
@@ -591,18 +596,18 @@ impl WorldEditor {
             if end < original.points.len() - 1 {
                 pieces.push((
                     original.points[end..].to_vec(),
-                    boundaries[section_index + 1..]
+                    boundaries[last_section_index + 1..]
                         .iter()
                         .map(|i| i - end)
                         .collect(),
-                    original.effective_infrastructure()[section_index + 1..].to_vec(),
+                    original.effective_infrastructure()[last_section_index + 1..].to_vec(),
                     original
                         .vertical_profile
                         .and_then(|p| p.clip(cut_end / old_length, 1.0)),
                     if original.section_profiles.is_empty() {
                         vec![]
                     } else {
-                        original.section_profiles[section_index + 1..].to_vec()
+                        original.section_profiles[last_section_index + 1..].to_vec()
                     },
                 ));
             }
@@ -1768,6 +1773,149 @@ mod tests {
             };
             assert_eq!(updated.infrastructure, expected);
         }
+    }
+
+    #[test]
+    fn batch_adjacent_sections_preserve_anchor_height_profiles() {
+        for indices in [vec![0, 1], vec![1, 2], vec![0, 1, 2]] {
+            let (mut editor, id) = setup();
+            let mut before = editor.snapshot();
+            before.alignments[0].section_profiles = vec![
+                rosenfu_core::world::VerticalProfile {
+                    start_height_m: 6.,
+                    end_height_m: 6.,
+                    start_tangent_m: 0.,
+                    end_tangent_m: 0.,
+                };
+                3
+            ];
+            before.alignments[0].infrastructure = [1, 2, 4]
+                .into_iter()
+                .map(|track_count| rosenfu_core::world::SectionInfrastructure {
+                    level: rosenfu_core::world::InfrastructureLevel::Elevated,
+                    track_count,
+                })
+                .collect();
+            before.construction_plans = Some(plans());
+            editor.world.replace(before.clone()).unwrap();
+            let after = editor
+                .delete_alignment_sections(
+                    vec![AlignmentSectionSelection {
+                        alignment_id: id,
+                        section_indices: indices.clone(),
+                    }],
+                    before.alignments.clone(),
+                    plans(),
+                )
+                .unwrap();
+            if indices.len() == 2 {
+                let kept = if indices[0] == 0 { 2 } else { 0 };
+                assert_eq!(
+                    after.alignments[0].section_profiles,
+                    vec![before.alignments[0].section_profiles[kept]]
+                );
+                assert_eq!(
+                    after.alignments[0].infrastructure,
+                    vec![before.alignments[0].infrastructure[kept]]
+                );
+                assert_eq!(after.alignments[0].section_count(), 1);
+            } else {
+                assert!(after.alignments.is_empty());
+            }
+            assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+            assert_eq!(
+                editor
+                    .delete_alignment_sections(
+                        vec![AlignmentSectionSelection {
+                            alignment_id: id,
+                            section_indices: indices,
+                        }],
+                        before.alignments.clone(),
+                        plans()
+                    )
+                    .unwrap(),
+                after
+            );
+        }
+    }
+
+    #[test]
+    fn batch_multiple_alignments_and_middle_ranges_preserve_profiles_and_atomicity() {
+        let (mut editor, id) = setup();
+        let original = editor.snapshot().alignments[0].clone();
+        let other = editor
+            .build_alignment(
+                "other".into(),
+                original
+                    .points
+                    .iter()
+                    .map(|p| GeoPoint {
+                        latitude: p.latitude + 0.01,
+                        longitude: p.longitude,
+                    })
+                    .collect(),
+            )
+            .unwrap()
+            .alignments
+            .last()
+            .unwrap()
+            .id;
+        let mut before = editor.snapshot();
+        for alignment in &mut before.alignments {
+            alignment.anchor_indices = Some((0..7).collect());
+            alignment.infrastructure.clear();
+            alignment.section_profiles = vec![
+                rosenfu_core::world::VerticalProfile {
+                    start_height_m: 0.,
+                    end_height_m: 0.,
+                    start_tangent_m: 0.,
+                    end_tangent_m: 0.,
+                };
+                6
+            ];
+        }
+        before.construction_plans = Some(plans());
+        editor.world.replace(before.clone()).unwrap();
+        let selections = || {
+            vec![
+                AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1, 2, 4],
+                },
+                AlignmentSectionSelection {
+                    alignment_id: other,
+                    section_indices: vec![2, 3],
+                },
+            ]
+        };
+        let after = editor
+            .delete_alignment_sections(selections(), before.alignments.clone(), plans())
+            .unwrap();
+        assert_eq!(after.alignments.len(), 5);
+        for alignment in &after.alignments {
+            assert_eq!(alignment.section_count(), alignment.section_profiles.len());
+        }
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        let temp = tempfile::tempdir().unwrap();
+        let after = editor
+            .delete_alignment_sections(selections(), before.alignments.clone(), plans())
+            .unwrap();
+        let path = temp.path().join("multi.json");
+        editor.save(&path).unwrap();
+        assert_eq!(
+            WorldEditor::new().load(&path).unwrap().alignments,
+            after.alignments
+        );
+
+        editor.world = World::new(before.clone()).unwrap();
+        editor
+            .place_station_on_alignment("guard".into(), other, 0.5, 40., 12.)
+            .unwrap();
+        let guarded = editor.snapshot();
+        assert!(editor
+            .delete_alignment_sections(selections(), guarded.alignments.clone(), plans())
+            .is_err());
+        assert_eq!(editor.snapshot(), guarded);
     }
 
     #[test]
