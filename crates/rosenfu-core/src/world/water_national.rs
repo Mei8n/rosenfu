@@ -29,6 +29,16 @@ impl NationalWaterModel {
             .map(|p| p.zone_id.clone())
             .collect())
     }
+    pub fn missing_many(
+        &self,
+        areas: impl IntoIterator<Item = [f64; 4]>,
+    ) -> Result<Vec<String>, String> {
+        Ok(registry::intersecting_many(areas)?
+            .into_iter()
+            .filter(|p| !self.zones.contains_key(&p.zone_id))
+            .map(|p| p.zone_id.clone())
+            .collect())
+    }
     pub fn install(&mut self, zone: Arc<WaterZone>) -> Result<(), String> {
         let trusted = self
             .pins

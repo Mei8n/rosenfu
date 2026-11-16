@@ -504,27 +504,27 @@ impl WorldEditor {
         self.water_model.national_enabled()
     }
     pub fn missing_water_zones(&self, bounds: [f64; 4]) -> Result<Vec<String>, String> {
-        // Existing connected track can be validated far beyond a newly edited endpoint.
-        // Query each existing segment, not one country-spanning world bounding box.
-        let mut ids: std::collections::BTreeSet<String> = self
-            .water_model
-            .missing_zones(bounds)?
-            .into_iter()
-            .collect();
-        for line in &self.world.snapshot().alignments {
-            for pair in line.points.windows(2) {
+        // Preserve connected-track coverage, but query the immutable region
+        // registry once instead of allocating a result for every track segment.
+        let segments = self.world.snapshot().alignments.iter().flat_map(|line| {
+            line.points.windows(2).map(|pair| {
                 let a = pair[0];
                 let b = pair[1];
-                ids.extend(self.water_model.missing_zones([
+                [
                     a.longitude.min(b.longitude),
                     a.latitude.min(b.latitude),
                     a.longitude.max(b.longitude),
                     a.latitude.max(b.latitude),
-                ])?);
-            }
-        }
-        Ok(ids.into_iter().collect())
+                ]
+            })
+        });
+        let mut ids = self
+            .water_model
+            .missing_zones_many(std::iter::once(bounds).chain(segments))?;
+        ids.sort();
+        Ok(ids)
     }
+
     pub fn install_water_zone(
         &mut self,
         zone: std::sync::Arc<rosenfu_core::water_zone::WaterZone>,
