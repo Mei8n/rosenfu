@@ -61,7 +61,8 @@ impl WorldDraft {
             let (b, other, bi) = ends[1];
             // Connections require equal actual elevation, not merely equal map coordinates.
             if a.owner != b.owner
-                || a.track_type != b.track_type
+                || (a.track_type != b.track_type
+                    && (a.track_type == TrackType::Tram || b.track_type == TrackType::Tram))
                 || point != other
                 || (a.endpoint_height_m(connection.a.endpoint)
                     - b.endpoint_height_m(connection.b.endpoint))
