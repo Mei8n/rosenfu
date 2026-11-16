@@ -1,5 +1,5 @@
 import type {OpenFreeMapEvidenceRequest,OpenFreeMapEvidenceBatch} from './openFreeMapRoadData';
-import {useEffect,useRef,useState} from 'react';
+import {useCallback,useEffect,useRef,useState} from 'react';
 import {createRoadProvider,type RoadProvider} from './roadProvider';
 import {roadBoundsKey,ROAD_LIMITS,type RoadDataState,type RoadSnapshot} from './automaticRoadData';
 import type {GraphBounds} from './referenceGraph';
@@ -56,7 +56,7 @@ export function useAutomaticRoad(bounds:GraphBounds,enabled:boolean,world:unknow
    const reason=`道路未確認：${String(error)}`;setResult({key,world,state:{status:'error',message:reason}});return {status:'unavailable',reason};
   }finally{if(timer!==undefined)clearTimeout(timer);if(abort)signal?.removeEventListener('abort',abort);}
  }
- async function readTileEvidenceBatch(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal):Promise<CurrentRoadEvidenceResult>{
+ const readTileEvidenceBatch=useCallback(async(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal):Promise<CurrentRoadEvidenceResult>=>{
   const matches=()=>!signal?.aborted&&current.current.enabled&&current.current.key===key&&current.current.world===world;
   if(!matches())return {status:'stale'};
   // Reuse the exact provider that observed these tiles. A new repository would
@@ -64,6 +64,6 @@ export function useAutomaticRoad(bounds:GraphBounds,enabled:boolean,world:unknow
   if(!provider)return {status:'unavailable',reason:'道路原データはまだ取得されていません。'};
   try{const evidence=await provider.readTileEvidenceBatch(refs,signal);return matches()?{status:'ready',evidence}:{status:'stale'};}
   catch(error){return matches()?{status:'unavailable',reason:`道路証拠未取得：${String(error)}`}:{status:'stale'};}
- }
+ },[key,world,enabled]);
  return {...state,readTileEvidenceBatch,retry:()=>setAttempt(n=>n+1),ensureCurrent};
 }
