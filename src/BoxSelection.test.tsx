@@ -59,3 +59,37 @@ test.each(['keyboard','wheel'])('zoom cancels in-flight rectangle before camera 
  if(kind==='keyboard')fireEvent.keyDown(document.body,{key:'+'});else fireEvent.wheel(map,{clientX:250,clientY:150,deltaY:-100});
  expect(map.querySelector('.selection-box')).toBeNull();fireEvent.pointerUp(map,{clientX:150,clientY:160});expect(map.querySelector('[data-selected-section]')).toBeNull();expect(screen.getByRole('button',{name:'選択区間を撤去'}).hasAttribute('disabled')).toBe(true);
 });
+test('Delete opens confirmation only for an idle selection and does not remove before confirmation',async()=>{
+ const map=await start();fireEvent.keyDown(document.body,{key:'Delete'});expect(screen.queryByRole('dialog')).toBeNull();
+ drag(map);
+ for(const options of [{ctrlKey:true},{altKey:true},{metaKey:true},{shiftKey:true},{repeat:true},{isComposing:true},{keyCode:229}]){fireEvent.keyDown(document.body,{key:'Delete',...options});expect(screen.queryByRole('dialog')).toBeNull();}
+ for(const tag of ['input','textarea','select']){const input=document.createElement(tag);document.body.append(input);fireEvent.keyDown(input,{key:'Delete'});input.remove();expect(screen.queryByRole('dialog')).toBeNull();}
+ fireEvent.keyDown(document.body,{key:'Delete'});expect(screen.getByRole('dialog')).toBeTruthy();expect(invoke).not.toHaveBeenCalledWith('delete_alignment_sections',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'キャンセル'}));expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(1);
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));fireEvent.keyDown(document.body,{key:'Delete'});expect(screen.queryByRole('dialog')).toBeNull();
+});
+function rectangle(map:HTMLElement,x:number,y:number,shiftKey=false){fireEvent.pointerDown(map,{clientX:x,clientY:y,button:0,shiftKey});fireEvent.pointerMove(map,{clientX:x+30,clientY:y+20,buttons:1});fireEvent.pointerUp(map,{clientX:x+30,clientY:y+20,button:0});}
+test('Shift adds distinct sections, preserves empty/canceled additions, and Delete targets the union',async()=>{
+ const map=await start();drag(map);rectangle(map,300,140,true);expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(2);
+ rectangle(map,100,140,true);rectangle(map,100,40,true);expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(2);
+ fireEvent.pointerDown(map,{clientX:100,clientY:40,button:0,shiftKey:true});fireEvent.pointerCancel(map);expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'Delete'});fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('delete_alignment_sections',expect.objectContaining({selections:[{alignmentId:'3',sectionIndices:[0,1]}]})));
+});
+test('normal rectangle replaces after Shift addition, and mode switch clears selection and gesture',async()=>{
+ const map=await start();drag(map);rectangle(map,300,140,true);rectangle(map,300,140);expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(1);expect(map.querySelector('[data-selected-section]')?.getAttribute('data-selected-section')).toBe('1');
+ rectangle(map,100,40);expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(0);
+ drag(map);fireEvent.pointerDown(map,{clientX:300,clientY:140,button:0,shiftKey:true});fireEvent.keyDown(document.body,{key:'Delete'});expect(screen.queryByRole('dialog')).toBeNull();
+ fireEvent.click(screen.getByRole('tab',{name:'線路'}));fireEvent.pointerUp(map,{clientX:330,clientY:160,button:0});fireEvent.click(screen.getByRole('tab',{name:'選択'}));expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(0);
+});
+
+test('Delete confirmation clears a previous action error just like the delete button',async()=>{
+ const map=await start();drag(map);
+ fireEvent.change(screen.getByLabelText('選択区間の線路数変更'),{target:{value:'4'}});
+ vi.mocked(invoke).mockImplementation(async command=>{throw Error(command==='update_alignment_section_infrastructure'?'更新競合':command);});
+ fireEvent.click(screen.getByRole('button',{name:'選択区間へ適用'}));
+ await screen.findByText(/更新競合/);
+ fireEvent.keyDown(document.body,{key:'Delete'});
+ expect(screen.getByRole('dialog')).toBeTruthy();expect(screen.queryByText(/更新競合/)).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('delete_alignment_sections',expect.anything());
+});

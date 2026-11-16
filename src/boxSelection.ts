@@ -18,3 +18,14 @@ export function selectAlignmentSections(lines:{id:string;owner:string;points:Geo
   return sectionIndices.length?[{alignmentId:line.id,sectionIndices}]:[];
  });
 }
+
+// Keep each physical section once when Shift adds another rectangle.
+export function mergeSectionSelections(previous:SectionSelection[],added:SectionSelection[]):SectionSelection[]{
+ const sections=new Map<string,Set<number>>();
+ for(const row of [...previous,...added]){
+  const indices=sections.get(row.alignmentId)??new Set<number>();
+  for(const index of row.sectionIndices)indices.add(index);
+  sections.set(row.alignmentId,indices);
+ }
+ return [...sections].map(([alignmentId,indices])=>({alignmentId,sectionIndices:[...indices].sort((a,b)=>a-b)}));
+}
