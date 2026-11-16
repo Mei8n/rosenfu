@@ -97,3 +97,67 @@ test('alternative window defaults to the certified shortest and can return to ma
  expect(screen.queryByRole('dialog')).toBeNull();expect(h.onSave).not.toHaveBeenCalled();
  await h.click('2');expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'2',viaStationIds:['3']});
 });
+
+test('editing extends from the existing endpoint without rerouting saved segments',async()=>{
+ let pick:((id:string)=>void)|undefined;
+ const extension:Candidate={stations:['3','4'],segments:[{kind:'alignment',alignment_id:'a',from:'3',to:'4'}]};
+ const combined:Membership={path:{stations:['1','2','3','4'],segments:[...path.segments,...extension.segments]},member_stations:['1','2','3','4'],excluded_stations:[]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='preview_route_candidates'?{status:'unique',candidates:[extension],truncated:false,shortest_candidate_index:0}:combined);
+ const onSave=vi.fn().mockResolvedValue(undefined);
+ render(<RouteCandidatePreview editRoute={{id:'r',name:'本線',path}} stations={[...stations,{id:'4',name:'延伸先'}]} worldVersion={world} enabled canApply onSave={onSave} startSequenceKey={1} mapPickTarget="sequence" onMapPick={(_,cb)=>{pick=cb;}}/>);
+ await act(async()=>pick?.('4'));
+ expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'3',end:'4'});
+ expect(invoke).toHaveBeenCalledWith('preview_route_membership',{start:'1',segments:combined.path.segments,excludedStations:[]});
+ fireEvent.click(finish());await waitFor(()=>expect(onSave).toHaveBeenCalledWith('本線',combined));
+});
+test('selected station sequence is published for map markers and cleared on reset/unmount',async()=>{
+ let pick:((id:string)=>void)|undefined;
+ const onSelectionChange=vi.fn();
+ const onMapPick=vi.fn((_target:unknown,callback?:((id:string)=>void))=>{pick=callback;});
+ const props={stations,worldVersion:world,enabled:true,canApply:true,onMapPick,onSelectionChange,startSequenceKey:1};
+ const h=render(<RouteCandidatePreview {...props} resetKey={1}/>);
+ expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+ await act(async()=>pick?.('1'));
+ expect(onSelectionChange).toHaveBeenLastCalledWith(['1']);
+ await act(async()=>pick?.('1'));
+ expect(onSelectionChange).toHaveBeenLastCalledWith(['1']);
+ h.rerender(<RouteCandidatePreview {...props} resetKey={2}/>);
+ expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+ h.unmount();
+ expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+});
+
+test('candidate overlay follows validated choice and clears while exploring, resetting and unmounting',async()=>{
+ let pick:((id:string)=>void)|undefined;
+ const onCandidateChange=vi.fn();
+ vi.mocked(invoke).mockImplementation(async(command)=>command==='preview_route_candidates'?unique:{path,member_stations:path.stations,excluded_stations:[]});
+ const props={stations,worldVersion:world,enabled:true,canApply:true,onCandidateChange,startSequenceKey:1,onMapPick:(_target:unknown,cb?:((id:string)=>void))=>{pick=cb;}};
+ const h=render(<RouteCandidatePreview {...props} resetKey={1}/>);
+ expect(onCandidateChange).toHaveBeenLastCalledWith(null);
+ await act(async()=>pick?.('1'));
+ await act(async()=>pick?.('3'));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(path);
+ let finishSearch!:(value:Candidates)=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(r=>{finishSearch=r;}));
+ await act(async()=>pick?.('2'));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(null);
+ await act(async()=>finishSearch(unique));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(path);
+ h.rerender(<RouteCandidatePreview {...props} resetKey={2}/>);
+ expect(onCandidateChange).toHaveBeenLastCalledWith(null);
+ h.unmount();
+ expect(onCandidateChange).toHaveBeenLastCalledWith(null);
+});
+test('switching alternative candidate updates map overlay only after validation',async()=>{
+ const alternate:Candidate={stations:['1','2','3'],segments:[{kind:'alignment',alignment_id:'other',from:'1',to:'3'}]};
+ const response:Candidates={status:'ambiguous',candidates:[path,alternate],truncated:false,shortest_candidate_index:0};
+ let pick:((id:string)=>void)|undefined;
+ const onCandidateChange=vi.fn();
+ vi.mocked(invoke).mockImplementation(async(command,args)=>command==='preview_route_candidates'?response:{path:response.candidates.find(c=>JSON.stringify(c.segments)===JSON.stringify((args as {segments:unknown}).segments)),member_stations:path.stations,excluded_stations:[]});
+ render(<RouteCandidatePreview stations={stations} worldVersion={world} enabled canApply onCandidateChange={onCandidateChange} startSequenceKey={1} onMapPick={(_,cb)=>{pick=cb;}}/>);
+ await act(async()=>pick?.('1'));await act(async()=>pick?.('3'));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(path);
+ const choices=screen.getAllByRole('radio');
+ await act(async()=>fireEvent.click(choices[1]));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(alternate);
+});

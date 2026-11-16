@@ -1,3 +1,5 @@
+import { EditingMapFrame } from "./EditingMapFrame";
+import {RouteStationSelection} from './RouteStationSelection';
 import {ServiceFromRoute} from './ServiceFromRoute';
 import {ServiceMapCreator} from './ServiceMapCreator';
 import {StationDirectory} from './StationDirectory';
@@ -68,7 +70,7 @@ import { useSmoothZoom, wheelZoomDelta } from "./useSmoothZoom";
 import {UnsavedCloseDialog} from "./UnsavedCloseDialog";
 import {useUnsavedCloseGuard} from "./useUnsavedCloseGuard";
 import { ErrorNotice } from "./ErrorNotice";
-import { routeAppearance } from "./routeAppearance";
+import { routeAppearance, routeSegmentSections } from "./routeAppearance";
 import {useReferenceCopy} from "./useReferenceCopy";
 import {ReferenceCopyControls} from "./ReferenceCopyControls";
 import type {ReferenceBuild} from "./referenceCopy";
@@ -90,7 +92,8 @@ import { ReferenceStationControls } from "./ReferenceStationControls";
 import { createReferenceRepository } from "./referenceStations";
 import type { ReferencePack } from "./referenceStations";
 import { PlatformLengthInput } from "./PlatformLengthInput";
-import type { Segment, Membership } from "./RouteCandidatePreview";
+import type { Segment, Membership, Candidate } from "./RouteCandidatePreview";
+import {ServiceRouteExtension} from "./ServiceRouteExtension";
 import { RouteCandidatePreview } from "./RouteCandidatePreview";
 import { MAP_PROVIDERS } from "./mapProviders";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -270,12 +273,14 @@ export function App() {
   const [railLoadEpoch,setRailLoadEpoch]=useState(0);
   const [restoredAutosaveEpoch,setRestoredAutosaveEpoch]=useState(-1);
   const [mainTab,setMainTab]=useState<WorkspaceTab>("construction");
-  const [routeMapEdit,setRouteMapEdit]=useState<{id:string;name:string}|null>(null);
+  const [routeMapEdit,setRouteMapEdit]=useState<{id:string;name:string;path?:import("./RouteCandidatePreview").Candidate}|null>(null);
   const [routeSequenceKey,setRouteSequenceKey]=useState(0);
   const [routeCreating,setRouteCreating]=useState(false);
   const [routeServiceDirty,setRouteServiceDirty]=useState(false);
   const [serviceCreating,setServiceCreating]=useState(false);
   const [serviceSequenceKey,setServiceSequenceKey]=useState(0);
+  const [routeSelectedCandidate,setRouteSelectedCandidate]=useState<Candidate|null>(null);
+  const [routeSelectedStations,setRouteSelectedStations]=useState<string[]>([]);
   const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|"sequence"|null>(null);
   const routeMapSelect=useRef<((id:string)=>void)|null>(null);
   function cancelRouteMapPick(){routeMapSelect.current=null;setRouteMapPick(null);}
@@ -409,6 +414,7 @@ export function App() {
     const alignment=world?.alignments?.find(a=>a.id===placement.alignment_id);
     return [placement.station_id,alignment?stationPolygon(alignment.points,placement.position,placement.length_m,placement.width_m):null];
   })),[world]);
+  const selectedRouteSections = useMemo(()=>world&&routeSelectedCandidate?routeSegmentSections(world,routeSelectedCandidate.segments):new Map(),[world,routeSelectedCandidate]);
   const routeVisual = useMemo(() => routeAppearance(world), [world]);
   const serviceMapSections=useMemo(()=>sharedServiceSections(world),[world]);
   const selectedAlignment = alignments.find((a) => a.id === alignmentId);
@@ -585,7 +591,9 @@ export function App() {
   const [serviceAppearanceDirty,setServiceAppearanceDirty]=useState(false);
   const [serviceDirty, setServiceDirty] = useState(false);
   const [bindingDirty,setBindingDirty]=useState(false);
-  const [pathServiceDirty,setPathServiceDirty]=useState(false);
+  const [pathServiceEditingDirty,setPathServiceDirty]=useState(false);
+  const [extensionServiceDirty,setExtensionServiceDirty]=useState(false);
+  const pathServiceDirty=pathServiceEditingDirty||extensionServiceDirty;
   const [pathDraftEpoch,setPathDraftEpoch]=useState(0);
   const [serviceHint, setServiceHint] = useState("");
   const [pendingServiceChoice, setPendingServiceChoice] = useState<{ id: string | null } | null>(null);
@@ -903,6 +911,7 @@ export function App() {
       if (!enabled || !stationsById.has(id)) return;
       const select=routeMapSelect.current;if(routeMapPick!=="sequence")cancelRouteMapPick();select(id);return;
     }
+    clearTrackSelection();
     if (stationSettingsDirty && id !== selected) { setPendingStation({ id }); return; }
     if (id === selected) { setMainTab("stations"); setActiveTool("station-management"); setPanelCollapsed(false); return; }
     setMainTab("stations"); setActiveTool("station-management");
@@ -1356,10 +1365,18 @@ export function App() {
     applyAnchorEdit(activePathId,after);setAnchorUndo(history=>[...history,{kind:'point' as const,id:activePathId,before,after}].slice(-50));setAnchorRedo([]);setDraftFinished(!!targetRef||roadFinishAfterPlacement.current);roadFinishAfterPlacement.current=false;setHoverPoint(null);setError('');roadDrawing.cancel();
   }
 
+  function clearTrackSelection() {
+    setAlignmentId("");setSelectedPlanPath(null);setTrackDeleteConfirm(false);
+  }
+
   function mapClick(event: MouseEvent<SVGSVGElement>) {
     if(anchorPlacementPending.current){const at=pendingPlacementPoint.current;if(event.detail>=2&&at&&Math.hypot(event.clientX-at.x,event.clientY-at.y)<=8){finishPendingPlacement.current=true;if(roadFollowing)roadFinishAfterPlacement.current=true;}return;}
     smoothZoom.cancel();
-    if (!enabled || suppressMapClick.current || mapMode === "move") return;
+    if (!enabled || suppressSelectionClick.current) return;
+    // Track hit targets stop propagation in selection mode. A background click
+    // clears only the highlight, without consuming drawing/placement clicks.
+    clearTrackSelection();
+    if (suppressMapClick.current || mapMode === "move") return;
     const rect = event.currentTarget.getBoundingClientRect();
     const rawCoordinates = coordinatesFromClient(event.clientX, event.clientY, rect, camera);
     if (!rawCoordinates) return;
@@ -1583,7 +1600,8 @@ export function App() {
         else if(event.shiftKey)redoStation();else undoStation();return;
       }
       if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
-      if (event.key === "Escape") {roadDrawing.cancel();cancelParallel(); if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
+      if (event.key === "Escape" && (event.defaultPrevented || event.isComposing || event.keyCode === 229 || document.querySelector('dialog[open], [role="dialog"]'))) return;
+      if (event.key === "Escape") {clearTrackSelection();roadDrawing.cancel();cancelParallel(); if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   });
@@ -1645,10 +1663,11 @@ export function App() {
       const snapshot=await invoke<World>("save_planned_route",{routeId:routeMapEdit?.id??null,name,start:membership.path.stations[0],segments:membership.path.segments,excludedStations:membership.excluded_stations});
       const created=routeMapEdit?snapshot.routes.find(route=>route.id===routeMapEdit.id):snapshot.routes.find(route=>!world?.routes.some(old=>old.id===route.id));
       setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);
-      setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetRoute(created);setNotice("路線と所属駅を適用しました。ファイルへの保存は「保存」で行います。");
+      setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetRoute(created);setNotice("路線と所属駅を適用しました。延伸した区間は、系統タブの「路線の延伸を系統に追加」で確認できます。ファイルへの保存は「保存」で行います。");
     } finally {busyRef.current=false;setBusy(false);}
   }
   function resetService(service?: OperatingService) {
+    setExtensionServiceDirty(false);
     setServiceCreating(false);setRouteServiceDirty(false);cancelRouteMapPick();
     setServiceAppearanceDirty(false);
     setBindingDirty(false);
@@ -1820,6 +1839,7 @@ export function App() {
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
             <div className="map-surface">
+            <EditingMapFrame enabled={status==="ready"&&!companySetupRequired} tab={mainTab} tool={activeTool} mapMode={mapMode} pickingStations={routeMapPick!==null}/>
             {trackRender.error&&<div role="status" className="field-error">ポイント形状を表示できません: {trackRender.error}</div>}
             {confirmRangeDelete&&<DeletionDialog defaultDelete label={`選択した${rangeCount}区間`} busy={busy} blocked={unapplied?"編集中の変更を適用または取り消してください":rangeCount?"":"区間が選択されていません"} error={error} onCancel={()=>setConfirmRangeDelete(false)} onDelete={deleteRange}/>}
             {deleteTarget&&<DeletionDialog defaultDelete={deleteTarget.kind==='built-section'||deleteTarget.kind==='plan-section'} label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
@@ -1890,6 +1910,7 @@ export function App() {
                 <path d={drawPath(section.points)} fill="none" stroke="white" strokeWidth="10"/>
                 {serviceBandPaths(section.points.map(p=>project(p.latitude,p.longitude,camera)),section.bands).map(band=><path key={band.serviceId} data-service-id={band.serviceId} d={band.d} fill="none" stroke={band.color} strokeWidth={band.width}/>)}
               </g>)}
+              {mainTab==="routes"&&(routeCreating||routeMapEdit)&&<g className="route-candidate-selection" pointerEvents="none" aria-label="選択した経路">{[...selectedRouteSections].flatMap(([id,sections])=>sections.map((points:GeoPoint[],index:number)=><path key={id+":"+index} d={drawPath(points)} fill="none" stroke="#18a6a6" strokeWidth={7/viewport.scale} strokeOpacity=".65" strokeLinecap="round" strokeLinejoin="round"/>))}</g>}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {roadFollowing&&(roadDrawing.preview?.kind==='point'||roadDrawing.preview?.kind==='route')&&focusMarker(roadDrawing.preview.point,'anchor','road-snap-point')}
               {roadFollowing&&roadDrawing.preview?.kind==='route'&&<TrackStroke d={drawInfrastructurePath(roadDrawing.preview.line,infrastructure)} className={'draft-path road-drawing-preview'+(constructionValidationError(nativeConstructionPreview?.value)?' invalid-candidate':'')} pointerEvents="none"/>}
@@ -1928,6 +1949,7 @@ export function App() {
                   <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations ? <circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r="5" className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" style={mergedStationIds.has(station.id)?{fill:"transparent",stroke:"none"}:undefined} /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}{stationNamesVisible&&(!stationDisplayGroup(station.id)||stationDisplayGroup(station.id)?.id===station.id)&&<text x={x + 18} y={y + 5}>{station.name}</text>}
                 </g>;
               })}
+              {mainTab==="routes"&&(routeCreating||routeMapEdit)&&<RouteStationSelection stations={world?.stations??[]} ordered={routeSelectedStations} camera={camera} scale={viewport.scale}/>}
               {activeTool==="select"&&<g className="range-selection-layer" pointerEvents="none">{rangeSelection.flatMap(row=>{const line=alignments.find(line=>line.id===row.alignmentId);return line?deletionSections(line).filter(section=>row.sectionIndices.includes(section.index)).map(section=><path key={row.alignmentId+":"+section.index} data-selected-alignment={row.alignmentId} data-selected-section={section.index} className="selected-built-section" strokeWidth={8/viewport.scale} d={drawPath(section.points)}/>):[];})}{selectionBox&&(()=>{const b=selectionBounds(selectionBox);return <rect className="selection-box" x={b.left} y={b.top} width={b.right-b.left} height={b.bottom-b.top}/>;})()}</g>}
               {activeTool==="delete"&&enabled&&<g className="deletion-layer">
                 {alignments.flatMap(line=>deletionSections(line).map(section=>{const target:DeleteTarget={kind:"built-section",alignmentId:line.id,sectionIndex:section.index};return <path key={line.id+":"+section.index} data-delete-alignment={line.id} data-delete-section={section.index} d={drawPath(section.points)} {...deleteHitProps(target)}/>;}))}
@@ -2002,9 +2024,9 @@ export function App() {
           <section className="route-editor" role="tabpanel" id="workspace-panel-routes" aria-labelledby="workspace-tab-routes" hidden={activeTool !== "routes"}>
             <h3>路線</h3>
             <RouteDirectory key={`routes-${worldEpoch}`} onRename={renameSavedRoute} onDirty={setRouteRenameDirty} world={world??previewWorld} enabled={enabled&&!candidateDirty&&!routeCreating&&!routeMapEdit} selected={routeId} onChoose={id=>{if(candidateDirty||routeMapEdit){chooseRoute(id);return;}chooseRoute(id);cancelRouteMapPick();setRouteCreating(id===null);if(id===null)setRouteSequenceKey(key=>key+1);}}/>
-            {(routeCreating||routeMapEdit)&&<RouteCandidatePreview key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} defaultName={(()=>{let n=1;while(world?.routes.some(r=>r.name===`路線${n}`))n++;return `路線${n}`;})()} onCancelEdit={()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);setCandidateDirty(false);}} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={true} onSave={applyPlannedRoute} />}
+            {(routeCreating||routeMapEdit)&&<RouteCandidatePreview onCandidateChange={setRouteSelectedCandidate} onSelectionChange={setRouteSelectedStations} key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} defaultName={(()=>{let n=1;while(world?.routes.some(r=>r.name===`路線${n}`))n++;return `路線${n}`;})()} onCancelEdit={()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);setCandidateDirty(false);}} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={true} onSave={applyPlannedRoute} />}
 
-            {routeId && <button type="button" className="secondary" disabled={!enabled||candidateDirty||routeRenameDirty||!!routeMapEdit} onClick={()=>{const route=world?.routes.find(r=>r.id===routeId);if(!route)return;cancelRouteMapPick();setRouteMapEdit({id:route.id,name:route.name});setRouteSequenceKey(key=>key+1);}}>地図で路線の経路を選び直す</button>}
+            {routeId && <button type="button" className="secondary" disabled={!enabled||candidateDirty||routeRenameDirty||!!routeMapEdit} onClick={()=>{const route=world?.routes.find(r=>r.id===routeId);if(!route)return;cancelRouteMapPick();const path=world?.route_paths?.find(p=>p.route_id===route.id);setRouteMapEdit({id:route.id,name:route.name,...(path?{path:{stations:[route.start,...path.segments.map(s=>s.to)],segments:path.segments}}:{})});setRouteSequenceKey(key=>key+1);}}>地図で路線の経路を選び直す</button>}
             {selectedRoutePath && <section aria-label="保存済み路線の経路"><h4>{routeName}</h4><p>所属駅: {selectedRoutePath.member_stations.map(id=>stationsById.get(id)?.name ?? id).join(" → ")}</p><ol>{selectedRoutePath.segments.map((segment,index)=><li key={index}>{(segment.kind==="alignment"?"建設線形 " + (alignments.find(a=>a.id===segment.alignment_id)?.name ?? segment.alignment_id):"接続経路") + ": " + (stationsById.get(segment.from)?.name ?? segment.from) + " → " + (stationsById.get(segment.to)?.name ?? segment.to)}</li>)}</ol></section>}
           </section>
           <section className="service-editor" role="tabpanel" id="workspace-panel-services" aria-labelledby="workspace-tab-services" hidden={activeTool !== "services"}>
@@ -2019,7 +2041,8 @@ export function App() {
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
             {serviceId&&world&&<ServiceRouteBindingEditor key={`binding-${serviceId}-${worldEpoch}`} binding={world.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding} routes={world.routes.filter(r=>r.owner===world.services.find(s=>s.id===serviceId)?.owner)} enabled={enabled&&!serviceDirty&&!pathServiceDirty&&!serviceAppearanceDirty} onDirty={setBindingDirty} onSave={async binding=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty)throw Error("別の系統編集を適用または破棄してください。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("set_service_route_binding",{serviceId,binding});const saved=snapshot.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding;if(!sameRouteBinding(saved,binding))throw Error("関連付けの保存結果を確認できません。");setWorld(snapshot);setDirty(true);setConfirmLoad(false);setBindingDirty(false);}finally{busyRef.current=false;setBusy(false);}}}/>}
-            {selectedServicePath&&world&&<ServicePathCreator key={`replace-${serviceId}-${pathDraftEpoch}`} routes={world.routes} routePaths={world.route_paths??[]} stations={world.stations} world={world} enabled={enabled} canStart={!serviceDirty&&!bindingDirty&&!serviceAppearanceDirty} onDirty={setPathServiceDirty} replaceService={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,path:selectedServicePath}} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("経路と停車設定を更新しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/>}
+            {selectedServicePath&&serviceId&&world&&(()=>{const binding=world.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding;const route=binding?.kind==="route"?world.routes.find(r=>r.id===binding.route_id):undefined;const path=route&&world.route_paths?.find(p=>p.route_id===route.id);const service=world.services.find(s=>s.id===serviceId);return route&&path&&service?<ServiceRouteExtension key={`extend-${serviceId}-${pathDraftEpoch}`} service={service} path={selectedServicePath} route={{...route,segments:path.segments}} world={world} stations={world.stations} enabled={enabled&&!serviceDirty&&!bindingDirty&&!serviceAppearanceDirty&&!pathServiceEditingDirty} onDirty={setExtensionServiceDirty} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("経路と停車設定を更新しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/>:null;})()}
+            {selectedServicePath&&world&&<ServicePathCreator key={`replace-${serviceId}-${pathDraftEpoch}`} routes={world.routes} routePaths={world.route_paths??[]} stations={world.stations} world={world} enabled={enabled} canStart={!extensionServiceDirty&&!serviceDirty&&!bindingDirty&&!serviceAppearanceDirty} onDirty={setPathServiceDirty} replaceService={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,path:selectedServicePath}} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("経路と停車設定を更新しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}}}/>}
             {serviceId&&selectedServicePath&&world&&<ServiceAppearanceControls key={`appearance-${serviceId}`} color={world.service_appearances?.find(row=>row.service_id===serviceId)?.color??null} serviceName={world.services.find(s=>s.id===serviceId)?.name??''} appearance={world.service_appearances?.find(row=>row.service_id===serviceId)} onSaveAppearance={async(color,shape,symbol)=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty||bindingDirty)throw Error("別の系統編集を適用または取り消してください。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("set_service_appearance",{serviceId,color,shape,symbol,expectedAppearance:world.service_appearances?.find(row=>row.service_id===serviceId)??null});setWorld(snapshot);setDirty(true);setServiceAppearanceDirty(false);setNotice("系統色を適用しました。記号と形も保存対象です。");}finally{busyRef.current=false;setBusy(false);}}} enabled={enabled&&!serviceDirty&&!pathServiceDirty&&!bindingDirty} onDirty={setServiceAppearanceDirty} onDuplicate={async()=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty)throw Error("編集中の変更を適用または取り消してください。");const source=world.services.find(s=>s.id===serviceId);if(!source)throw Error("系統が見つかりません。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("duplicate_service",{serviceId,expectedPath:selectedServicePath,expectedName:source.name});const created=snapshot.services.find(s=>!world.services.some(old=>old.id===s.id));setWorld(snapshot);setDirty(true);setPathServiceDirty(false);resetService(created);setNotice("別の系統として複製しました。元の系統は変更していません。");}finally{busyRef.current=false;setBusy(false);}}}/>}
             {selectedServicePath&&world&&<ServicePathEditor key={serviceId!} service={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,start:serviceStart}} path={selectedServicePath} world={world} stations={world.stations} enabled={enabled&&!pathServiceDirty&&!bindingDirty&&!serviceAppearanceDirty} onDirty={setServiceDirty} onSaved={()=>setNotice("系統名と停車設定を適用しました。ファイルへは保存してください。")} onSave={async(name,stops)=>{if(!enabled||busyRef.current)throw Error("処理中です");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("update_service_path",{serviceId,name,stops});setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));}finally{busyRef.current=false;setBusy(false);}}}/> }
           </section>

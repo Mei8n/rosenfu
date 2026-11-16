@@ -8,7 +8,9 @@ export type Candidates = { shortest_candidate_index?: number | null; status: "no
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };
 type Props = {
   entityLabel?: string;
-  editRoute?: {id:string;name:string}; defaultName?:string;
+  onCandidateChange?: (candidate:Candidate|null) => void;
+  onSelectionChange?: (stationIds: string[]) => void;
+  editRoute?: {id:string;name:string;path?:Candidate}; defaultName?:string;
   onCancelEdit?: () => void;
   startSequenceKey?: number;
   mapPickTarget?: "start" | "end" | "via" | "sequence" | null;
@@ -19,14 +21,20 @@ type Props = {
   onSave?: (name: string, membership: Membership) => Promise<void>;
 };
 /** Station clicks define ordered constraints; only explicit Finish persists the route. */
-export function RouteCandidatePreview({entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave}:Props){
+export function RouteCandidatePreview({onCandidateChange,onSelectionChange,entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave}:Props){
  const initialName=editRoute?.name??defaultName;
  const [name,setName]=useState(initialName);
  const [ordered,setOrdered]=useState<string[]>([]);
+ const [extending,setExtending]=useState(false);
+ const extension=useRef<Candidate|null>(null);
  const orderedRef=useRef<string[]>([]);
+ useEffect(()=>{onSelectionChange?.(ordered);},[ordered,onSelectionChange]);
+ useEffect(()=>()=>{onSelectionChange?.([]);},[onSelectionChange]);
  const [result,setResult]=useState<Candidates|null>(null);
  const [chosen,setChosen]=useState<number|null>(null);
  const [membership,setMembership]=useState<Membership|null>(null);
+ useEffect(()=>{onCandidateChange?.(membership?.path??null);},[membership,onCandidateChange]);
+ useEffect(()=>()=>{onCandidateChange?.(null);},[onCandidateChange]);
  const [error,setError]=useState("");
  const [loading,setLoading]=useState(false);
  const [saving,setSaving]=useState(false);
@@ -40,7 +48,7 @@ export function RouteCandidatePreview({entityLabel="路線",editRoute,defaultNam
  useEffect(()=>{generation.current++;setLoading(false);setMembership(null);setShowChoices(false);setStale(orderedRef.current.length>1);return()=>{generation.current++;};},[worldVersion]);
  useEffect(()=>{onDirty?.(ordered.length>0||name!==initialName);},[ordered,name,initialName,onDirty]);
  async function validate(candidate:Candidate,token:number){
-  const next=await invoke<Membership>("preview_route_membership",{start:candidate.stations[0],segments:candidate.segments,excludedStations:[]});
+  const next=await invoke<Membership>("preview_route_membership",{start:extension.current?.stations[0]??candidate.stations[0],segments:[...(extension.current?.segments??[]),...candidate.segments],excludedStations:[]});
   if(token===generation.current)setMembership(next);
  }
  async function search(ids:string[]){
@@ -65,7 +73,13 @@ export function RouteCandidatePreview({entityLabel="路線",editRoute,defaultNam
    const next=[...orderedRef.current,id];orderedRef.current=next;setOrdered(next);void search(next);
   });
  }
- useEffect(()=>{if(startSequenceKey)beginSequence();},[startSequenceKey]);
+ function beginExtension(){
+  const path=editRoute?.path;if(!path?.segments.length)return;
+  invalidate();extension.current=path;setExtending(true);
+  const ids=[path.stations.at(-1)!];orderedRef.current=ids;setOrdered(ids);beginSequence();
+ }
+ function restart(){invalidate();extension.current=null;setExtending(false);orderedRef.current=[];setOrdered([]);beginSequence();}
+ useEffect(()=>{if(startSequenceKey){if(editRoute?.path)beginExtension();else beginSequence();}},[startSequenceKey]);
  async function selectCandidate(index:number){
   if(!enabled||saving||!result||result.truncated||result.status==="incomplete"||!result.candidates[index])return;
   const token=++generation.current;setChosen(index);setMembership(null);setLoading(true);setError("");
@@ -82,6 +96,8 @@ export function RouteCandidatePreview({entityLabel="路線",editRoute,defaultNam
  return <section className="route-candidate-preview" aria-label={editRoute?`${entityLabel}を編集`:`${entityLabel}を作成`}>
   <h4>{name||initialName}</h4>
   <label>{entityLabel}名<input autoComplete="off" value={name} maxLength={80} disabled={!enabled||saving} onChange={e=>setName(e.target.value)}/></label>
+  {editRoute?.path&&<div><button disabled={!enabled||saving} onClick={beginExtension}>終点から延伸</button><button className="secondary" disabled={!enabled||saving} onClick={restart}>経路を選び直す</button></div>}
+  {extending&&<p>既存の経路を保ったまま、終点から追加する駅を選んでください。系統は自動では変更しません。</p>}
   <ol aria-label="選択した駅">{ordered.map((id,i)=><li key={id}>{stationName(id)}{i===0?"（始点）":i===ordered.length-1?"（終点）":"（経由）"}</li>)}</ol>
   {mapPickTarget!=="sequence"&&<button disabled={!enabled||saving} onClick={beginSequence}>駅の選択を再開</button>}
   {stale&&<button disabled={!enabled||loading||saving} onClick={()=>void search([...orderedRef.current])}>経路を再確認</button>}

@@ -1,0 +1,29 @@
+/* A narrow edge wash, not a full-map tint: geometry and labels retain their colours.
+   No layout changes, hit targets, animation or per-pointer computations. */
+.editing-map-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  user-select: none;
+}
+.editing-map-frame[data-mode] {
+  box-shadow: inset 0 0 0 2px var(--editing-edge), inset 0 0 12px 2px var(--editing-wash);
+}
+.editing-map-frame[data-mode="track"] { --editing-edge: #287ac49c; --editing-wash: #287ac447; }
+.editing-map-frame[data-mode="station"] { --editing-edge: #24865d9c; --editing-wash: #24865d47; }
+.editing-map-frame[data-mode="delete"] { --editing-edge: #c547479c; --editing-wash: #c5474747; }
+.editing-map-frame[data-mode="select"] { --editing-edge: #b67b219c; --editing-wash: #b67b2147; }
+.editing-map-frame[data-mode="route"] { --editing-edge: #8956bd9c; --editing-wash: #8956bd47; }
+.editing-map-frame[data-mode="service"] { --editing-edge: #1687949c; --editing-wash: #16879447; }
+.editing-map-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@media (forced-colors: active) {
+  .editing-map-frame[data-mode] { box-shadow: none; outline: 2px solid Highlight; outline-offset: -2px; }
+}
