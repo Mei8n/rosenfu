@@ -385,52 +385,67 @@ fn rename_station(
         .map_err(|_| "world state unavailable")?
         .rename_station(station_id, name)
 }
+// Keep the atomic editor transaction and its mutex on a blocking worker.
+// Demolition validates/remaps references and snapshots undo state; none of that
+// work, including waiting for another editor operation, belongs on the UI thread.
+async fn run_demolition(
+    app: tauri::AppHandle,
+    operation: impl FnOnce(&mut WorldEditor) -> Result<WorldDraft, String> + Send + 'static,
+) -> Result<WorldDraft, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<WorldEditor>>();
+        let mut editor = state.lock().map_err(|_| "world state unavailable")?;
+        operation(&mut editor)
+    })
+    .await
+    .map_err(|error| format!("撤去処理を完了できませんでした: {error}"))?
+}
 #[tauri::command]
-fn delete_station(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn delete_station(
+    app: tauri::AppHandle,
     station_id: StationId,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
 ) -> Result<WorldDraft, String> {
-    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
-    match construction_plans {
+    run_demolition(app, move |editor| match construction_plans {
         Some(plans) => editor.delete_station_with_plans(station_id, plans),
         None => editor.delete_station(station_id),
-    }
+    })
+    .await
 }
 #[tauri::command]
-fn delete_alignment(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn delete_alignment(
+    app: tauri::AppHandle,
     alignment_id: AlignmentId,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .delete_alignment_with_plans(alignment_id, construction_plans)
+    run_demolition(app, move |editor| {
+        editor.delete_alignment_with_plans(alignment_id, construction_plans)
+    })
+    .await
 }
 #[tauri::command]
-fn delete_alignment_section(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn delete_alignment_section(
+    app: tauri::AppHandle,
     alignment_id: AlignmentId,
     section_index: usize,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .delete_alignment_section(alignment_id, section_index, construction_plans)
+    run_demolition(app, move |editor| {
+        editor.delete_alignment_section(alignment_id, section_index, construction_plans)
+    })
+    .await
 }
 #[tauri::command]
-fn delete_alignment_sections(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn delete_alignment_sections(
+    app: tauri::AppHandle,
     selections: Vec<session::AlignmentSectionSelection>,
     expected_alignments: Vec<rosenfu_core::world::Alignment>,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .delete_alignment_sections(selections, expected_alignments, construction_plans)
+    run_demolition(app, move |editor| {
+        editor.delete_alignment_sections(selections, expected_alignments, construction_plans)
+    })
+    .await
 }
 #[tauri::command]
 fn update_alignment_anchor_height(
@@ -473,11 +488,8 @@ fn update_alignment_section_infrastructure(
         )
 }
 #[tauri::command]
-fn undo_alignment_deletion(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .undo_alignment_deletion()
+async fn undo_alignment_deletion(app: tauri::AppHandle) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| editor.undo_alignment_deletion()).await
 }
 
 #[tauri::command]
