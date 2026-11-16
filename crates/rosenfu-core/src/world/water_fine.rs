@@ -155,6 +155,13 @@ impl ConstructionWaterModel {
     pub fn missing_zones(&self, bounds: [f64; 4]) -> Result<Vec<String>, String> {
         self.national.as_ref().ok_or(UNKNOWN)?.missing(bounds)
     }
+    /// Batch independent regions without repeated per-segment allocations.
+    pub fn missing_zones_many(
+        &self,
+        bounds: impl IntoIterator<Item = [f64; 4]>,
+    ) -> Result<Vec<String>, String> {
+        self.national.as_ref().ok_or(UNKNOWN)?.missing_many(bounds)
+    }
     pub fn install_zone(&mut self, zone: Arc<crate::water_zone::WaterZone>) -> Result<(), String> {
         self.national.as_mut().ok_or(UNKNOWN)?.install(zone)
     }
