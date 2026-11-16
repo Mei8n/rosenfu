@@ -90,6 +90,9 @@ pub struct PlannedAlignment {
     pub destination: Option<PlannedAlignmentExtension>,
 }
 
+// Legacy single-file replacement helpers are retained only for regression tests.
+// Production saves use the slot-aware methods below.
+#[cfg(test)]
 #[derive(Clone)]
 struct PendingManualReplacement {
     path: PathBuf,
@@ -107,6 +110,7 @@ pub struct ManualSaveResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replacement_required: Option<ManualReplacementRequired>,
 }
+#[cfg(test)]
 fn next_manual_token() -> Result<String, String> {
     static NEXT: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
     let mut sequence = NEXT.lock().map_err(|_| "保存確認番号を作成できません。")?;
@@ -133,6 +137,7 @@ pub struct WorldEditor {
     autosave_blocked: bool,
     autosave_replace_allowed: bool,
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
+    #[cfg(test)]
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
 impl Default for WorldEditor {
@@ -253,6 +258,7 @@ impl WorldEditor {
             .preview_service_path(start, segments)
             .map_err(|e| e.to_string())
     }
+    #[cfg(test)]
     pub fn create_service_path(
         &mut self,
         name: String,
@@ -262,6 +268,7 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.create_service_path_with_source_route(name, start, segments, stops, None)
     }
+    #[cfg(test)]
     pub fn create_service_path_with_source_route(
         &mut self,
         name: String,
@@ -333,6 +340,7 @@ impl WorldEditor {
             .preview_service_path_replacement(self.company, service_id, start, segments)
             .map_err(|e| e.to_string())
     }
+    #[cfg(test)]
     pub fn replace_service_path(
         &mut self,
         service_id: ServiceId,
@@ -354,6 +362,7 @@ impl WorldEditor {
     }
     // Keep the established session/IPC call shape; all arguments form one atomic edit.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn replace_service_path_with_source_route(
         &mut self,
         service_id: ServiceId,
@@ -484,6 +493,7 @@ impl WorldEditor {
             autosave_blocked: false,
             autosave_replace_allowed: false,
             deleted_alignment: None,
+            #[cfg(test)]
             pending_manual_replacement: None,
         }
     }
@@ -494,27 +504,27 @@ impl WorldEditor {
         self.water_model.national_enabled()
     }
     pub fn missing_water_zones(&self, bounds: [f64; 4]) -> Result<Vec<String>, String> {
-        // Existing connected track can be validated far beyond a newly edited endpoint.
-        // Query each existing segment, not one country-spanning world bounding box.
-        let mut ids: std::collections::BTreeSet<String> = self
-            .water_model
-            .missing_zones(bounds)?
-            .into_iter()
-            .collect();
-        for line in &self.world.snapshot().alignments {
-            for pair in line.points.windows(2) {
+        // Preserve connected-track coverage, but query the immutable region
+        // registry once instead of allocating a result for every track segment.
+        let segments = self.world.snapshot().alignments.iter().flat_map(|line| {
+            line.points.windows(2).map(|pair| {
                 let a = pair[0];
                 let b = pair[1];
-                ids.extend(self.water_model.missing_zones([
+                [
                     a.longitude.min(b.longitude),
                     a.latitude.min(b.latitude),
                     a.longitude.max(b.longitude),
                     a.latitude.max(b.latitude),
-                ])?);
-            }
-        }
-        Ok(ids.into_iter().collect())
+                ]
+            })
+        });
+        let mut ids = self
+            .water_model
+            .missing_zones_many(std::iter::once(bounds).chain(segments))?;
+        ids.sort();
+        Ok(ids)
     }
+
     pub fn install_water_zone(
         &mut self,
         zone: std::sync::Arc<rosenfu_core::water_zone::WaterZone>,
@@ -567,6 +577,7 @@ impl WorldEditor {
             .map_err(|e| e.to_string())?;
         Ok(self.snapshot())
     }
+    #[cfg(test)]
     pub fn build_alignment_from_reference(
         &mut self,
         name: String,
@@ -582,6 +593,7 @@ impl WorldEditor {
             rosenfu_core::world::TrackType::Normal,
         )
     }
+    #[cfg(test)]
     pub fn build_alignment_from_reference_typed(
         &mut self,
         name: String,
@@ -675,6 +687,7 @@ impl WorldEditor {
         Ok(self.snapshot())
     }
 
+    #[cfg(test)]
     pub fn build_alignment(
         &mut self,
         name: String,
@@ -682,6 +695,7 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.build_alignment_typed(name, points, rosenfu_core::world::TrackType::Normal)
     }
+    #[cfg(test)]
     pub fn build_alignment_typed(
         &mut self,
         name: String,
@@ -697,6 +711,7 @@ impl WorldEditor {
         Ok(self.snapshot())
     }
     /// Publish the alignment and all planned stations together, or change nothing.
+    #[cfg(test)]
     pub fn build_alignment_with_stations(
         &mut self,
         name: String,
@@ -730,12 +745,34 @@ impl WorldEditor {
     }
     /// Read-only preview runs the exact construction pipeline on an isolated
     /// editor clone; neither IDs, undo state nor saved data are changed.
+    #[cfg(test)]
     pub fn preview_construction_plan(
         &self,
         alignments: Vec<PlannedAlignment>,
         stations: Vec<PlannedBuiltStation>,
     ) -> Result<WorldDraft, String> {
         self.clone().build_construction_plan(alignments, stations)
+    }
+    /// Click placement needs only the exact build verdict, not world-wide crossing
+    /// totals. Keep all build/water/saveability checks, without computing those totals.
+    pub fn validate_construction_placement(
+        mut self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+        roads: Vec<rosenfu_core::world::RoadSnapshot>,
+    ) -> Result<ConstructionPreview, String> {
+        for snapshot in roads {
+            self.world
+                .add_road_snapshot(snapshot)
+                .map_err(|e| e.to_string())?;
+        }
+        let validation_error = self.build_construction_plan(alignments, stations).err();
+        Ok(ConstructionPreview {
+            // Not computed, rather than falsely reporting zero/verified.
+            new_crossing_count: None,
+            roads_unverified: None,
+            validation_error,
+        })
     }
     /// Use the same road snapshots and construction pipeline as commit, without
     /// changing the live editor. Existing crossings are not charged again.
@@ -1945,6 +1982,7 @@ impl WorldEditor {
 
     /// A fresh world may replace an existing healthy save only after approval of
     /// this exact observed version. Loaded-session conflicts stay ordinary errors.
+    #[cfg(test)]
     pub fn request_manual_save(
         &mut self,
         path: &Path,
@@ -1988,6 +2026,7 @@ impl WorldEditor {
             replacement_required: None,
         })
     }
+    #[cfg(test)]
     pub fn cancel_manual_save(&mut self, token: &str) {
         if self
             .pending_manual_replacement
@@ -1997,6 +2036,7 @@ impl WorldEditor {
             self.pending_manual_replacement = None;
         }
     }
+    #[cfg(test)]
     pub fn confirm_manual_save(
         &mut self,
         path: &Path,
@@ -2041,6 +2081,7 @@ impl WorldEditor {
         })
     }
     /// Save a candidate atomically: a failed validation/write leaves editor state unchanged.
+    #[cfg(test)]
     pub fn save_with_plans(
         &mut self,
         path: &Path,
@@ -2089,7 +2130,10 @@ impl WorldEditor {
             rosenfu_storage::save_world_if_version(path, &self.world, expected)
         };
         let (_, version) = result.map_err(|e| e.to_string())?;
-        self.pending_manual_replacement = None;
+        #[cfg(test)]
+        {
+            self.pending_manual_replacement = None;
+        }
         self.loaded_path = Some(path.to_owned());
         self.manual_version = Some(version);
         self.manual_repair_allowed = false;
@@ -2251,7 +2295,10 @@ impl WorldEditor {
         self.world = candidate;
         self.company = company;
         self.company_setup_required = false;
-        self.pending_manual_replacement = None;
+        #[cfg(test)]
+        {
+            self.pending_manual_replacement = None;
+        }
         self.loaded_path = Some(path.to_owned());
         self.active_slot_id = None;
         self.manual_version = Some(version);
@@ -5871,6 +5918,82 @@ mod road_snapshot_transaction_tests {
             reference: None,
             extension: None,
             destination: None,
+        }
+    }
+    #[test]
+    fn placement_verdict_matches_summary_without_reporting_uncomputed_crossings() {
+        let editor = WorldEditor::new();
+        let before = editor.snapshot();
+        for valid in [true, false] {
+            let make_path = || {
+                let mut path = plan();
+                if !valid {
+                    path.points.truncate(1);
+                }
+                path
+            };
+            let summary = editor
+                .clone()
+                .preview_construction_summary(vec![make_path()], vec![], vec![roads()])
+                .unwrap();
+            let verdict = editor
+                .clone()
+                .validate_construction_placement(vec![make_path()], vec![], vec![roads()])
+                .unwrap();
+            assert_eq!(verdict.validation_error, summary.validation_error);
+            assert_eq!(verdict.validation_error.is_none(), valid);
+            assert_eq!(verdict.new_crossing_count, None);
+            assert_eq!(verdict.roads_unverified, None);
+            assert_eq!(editor.snapshot(), before);
+        }
+        let mut invalid_roads = roads();
+        invalid_roads.source_sha256 = "invalid".into();
+        assert!(editor
+            .clone()
+            .validate_construction_placement(vec![plan()], vec![], vec![invalid_roads])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+    #[test]
+    #[ignore = "manual latency measurement"]
+    fn measure_anchor_preview_latency() {
+        let mut editor = WorldEditor::new();
+        for i in 0..20 {
+            let mut path = plan();
+            let y = i as f64 * 0.0001;
+            path.points = vec![point(-0.01, y), point(0.01, y)];
+            editor.build_construction_plan(vec![path], vec![]).unwrap();
+        }
+        let mut data = roads();
+        let base = data.roads[0].clone();
+        data.roads = (0..100)
+            .map(|i| {
+                let mut road = base.clone();
+                road.id = format!("way/{i}");
+                let x = -0.009 + i as f64 * 0.000018;
+                road.points = vec![point(x, -0.01), point(x, 0.02)];
+                road
+            })
+            .collect();
+        editor.world.add_road_snapshot(data).unwrap();
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            let result = editor
+                .clone()
+                .preview_construction_summary(vec![plan()], vec![], vec![])
+                .unwrap();
+            assert!(result.validation_error.is_none());
+            eprintln!("summary_ms={:.3}", start.elapsed().as_secs_f64() * 1000.0);
+            let start = std::time::Instant::now();
+            let fast = editor
+                .clone()
+                .validate_construction_placement(vec![plan()], vec![], vec![])
+                .unwrap();
+            assert_eq!(fast.validation_error, result.validation_error);
+            eprintln!(
+                "validation_ms={:.3}",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
         }
     }
     #[test]

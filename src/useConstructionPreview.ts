@@ -18,14 +18,14 @@ export function useConstructionPreview(world:unknown,request:{alignments:unknown
    try{while(queued.current){const next=queued.current;queued.current=null;await next();}}
    finally{running.current=false;}
   }
-  const timer=setTimeout(()=>{
-   queued.current=async()=>{
+  queued.current=async()=>{
     try{const value=await invoke('preview_construction_plan',JSON.parse(key));if(alive)setState({world,key,waterRevision,error:null,value});}
     catch(error){if(alive)setState({world,key,waterRevision,error:String(error),value:null});}
-   };
-   void drain();
-  },150);
-  return()=>{alive=false;queued.current=null;clearTimeout(timer);};
+  };
+  // Start immediately when idle. While native work is running, retain only the
+  // newest candidate rather than waiting for the pointer to stop moving.
+  void drain();
+  return()=>{alive=false;queued.current=null;};
  },[world,key,waterRevision]);
  return state&&state.world===world&&state.key===key&&state.waterRevision===waterRevision?state:null;
 }

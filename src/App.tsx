@@ -26,7 +26,7 @@ import {JunctionPoints} from './JunctionPoints';
 import {nearestJunctionSource,junctionDirection,junctionPrevious,type JunctionSource} from './junctionSelection';
 import {constructionPlanFingerprint} from './constructionPlans';
 import {DEFAULT_INFRASTRUCTURE,COUNT_LABELS,LEVEL_LABELS,endpointInfrastructure,displayInfrastructureSections,schematicTrackPaths,type SectionInfrastructure} from './sectionInfrastructure';
-import {selectAlignmentSections,selectionBounds,type SelectionBox,type SectionSelection} from "./boxSelection";
+import {mergeSectionSelections,selectAlignmentSections,selectionBounds,type SelectionBox,type SectionSelection} from "./boxSelection";
 import "./boxSelection.css";
 import {HeightControls} from './HeightControls';
 import {SaveSlots,type SaveSlot} from "./SaveSlots";
@@ -156,7 +156,7 @@ export function App() {
   const [pixelRatio, setPixelRatio] = useState(() => window.devicePixelRatio || 1);
   const [mapSize, setMapSize] = useState<{width:number;height:number}>(MAP_VIEWBOX);
   const gestureRef = useRef<{ pointerId: number; startX: number; startY: number; camera: Camera; scale: number; dragged: boolean; mayPlace: boolean } | null>(null);
-  const boxGesture=useRef<{pointerId:number;startX:number;startY:number;box:SelectionBox;camera:Camera}|null>(null);
+  const boxGesture=useRef<{pointerId:number;startX:number;startY:number;box:SelectionBox;camera:Camera;additive:boolean}|null>(null);
   const [selectionBox,setSelectionBox]=useState<SelectionBox|null>(null);
   const [rangeSelection,setRangeSelection]=useState<SectionSelection[]>([]);
   const [confirmRangeDelete,setConfirmRangeDelete]=useState(false);
@@ -1050,7 +1050,7 @@ export function App() {
     if(event.button===0&&activeTool==="select"&&enabled){
       const p=coordinatesFromClient(event.clientX,event.clientY,event.currentTarget.getBoundingClientRect(),cameraRef.current);if(!p)return;
       const point=project(p.latitude,p.longitude,cameraRef.current),box={start:point,end:point};
-      boxGesture.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,box,camera:cameraRef.current};setSelectionBox(box);setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);
+      boxGesture.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,box,camera:cameraRef.current,additive:event.shiftKey};setSelectionBox(box);if(!event.shiftKey)setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);
       suppressMapClick.current=true;suppressSelectionClick.current=true;event.currentTarget.setPointerCapture?.(event.pointerId);return;
     }
     suppressMapClick.current = true;
@@ -1091,7 +1091,7 @@ export function App() {
     const selecting=boxGesture.current;
     if(selecting&&selecting.pointerId===event.pointerId){
       if(!canceled)pointerMove(event);
-      if(!canceled&&Math.hypot(event.clientX-selecting.startX,event.clientY-selecting.startY)>=5)setRangeSelection(selectAlignmentSections(alignments,world?.companies[0]?.id,selecting.box,selecting.camera));
+      if(!canceled&&Math.hypot(event.clientX-selecting.startX,event.clientY-selecting.startY)>=5)setRangeSelection(previous=>{const selected=selectAlignmentSections(alignments,world?.companies[0]?.id,selecting.box,selecting.camera);return selecting.additive?mergeSectionSelections(previous,selected):selected;});
       boxGesture.current=null;setSelectionBox(null);suppressMapClick.current=true;suppressSelectionClick.current=true;
       if(event.currentTarget.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);return;
     }
@@ -1224,7 +1224,7 @@ export function App() {
         const placementToken=++anchorPlacementToken.current;
         const waitingTimer=setTimeout(()=>{if(anchorPlacementToken.current===placementToken)setAnchorPlacementWaiting(true);},300);
         try{
-          const result=await invoke('preview_construction_plan',{alignments:[request],stations:[],roads:roadAttachment.roads});
+          const result=await invoke('preview_construction_plan',{alignments:[request],stations:[],roads:roadAttachment.roads,validationOnly:true});
           if(anchorPlacementToken.current!==placementToken||anchorPlacementContext.current.world!==context.world||anchorPlacementContext.current.key!==context.key)return false;
           if(!hasConstructionValidation(result))throw Error('Incomplete placement verdict');
           const refusal=constructionValidationError(result);
@@ -1532,6 +1532,12 @@ export function App() {
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete)return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
+      if (event.key === "Delete" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && !event.repeat && !event.defaultPrevented) {
+        if (mainTab === "construction" && activeTool === "select" && enabled && !busyRef.current && !unapplied && rangeCount > 0 && !boxGesture.current && !gestureRef.current && !anchorGesture.current && !document.querySelector('dialog[open], [role="dialog"]')) {
+          event.preventDefault();setError("");setConfirmRangeDelete(true);
+        }
+        return;
+      }
       if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing && (event.key === "+" || event.key === "-" || event.code === "NumpadAdd" || event.code === "NumpadSubtract")) {
         event.preventDefault();
         zoomFromControls(event.key === "+" || event.code === "NumpadAdd" ? 1 : -1);
