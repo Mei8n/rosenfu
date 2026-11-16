@@ -1,3 +1,4 @@
+import {TrackStroke} from './TrackStroke';
 import {useEffect,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {project,type Camera} from './map';
@@ -21,6 +22,6 @@ export function TrackGeometryLayer({geometry,camera,lines,selectedId}:{geometry:
  const path=(points:GeoPoint[])=>points.map((point,index)=>{const p=project(point.latitude,point.longitude,camera);return `${index?'L':'M'}${p.x},${p.y}`;}).join(' ');
  return <g className="physical-track-geometry" pointerEvents="none">{geometry.lanes.map((lane,index)=>{
   const infrastructure=lines.find(line=>line.id===lane.alignment_id)?.infrastructure?.[lane.section_index];
-  return <path key={index} data-physical-alignment={lane.alignment_id} data-lane-index={lane.lane_index} d={path(lane.points)} className={selectedId===lane.alignment_id?'alignment-path alignment-selected':'alignment-path'} style={{strokeWidth:1.5,strokeDasharray:infrastructure?.level.startsWith('underground')?'5 4':undefined,opacity:infrastructure?.level.startsWith('underground')?.65:1}}/>;
- })}{geometry.movements.filter((_,index)=>index%2===0).map((movement,index)=><path key={'movement'+index} data-track-movement={index} d={path(movement.points)} className="alignment-path turnout-lane" style={{strokeWidth:1.5}}/>)}{(geometry.internal_movements??[]).filter((_,index)=>index%2===0).map((movement,index)=><path key={"internal"+index} data-internal-track-movement={index} d={path(movement.points)} className="alignment-path turnout-lane" style={{strokeWidth:1.5}}/>)}</g>;
+  return <TrackStroke key={index} data-physical-alignment={lane.alignment_id} data-lane-index={lane.lane_index} d={path(lane.points)} className={selectedId===lane.alignment_id?'alignment-path alignment-selected':'alignment-path'} style={{strokeDasharray:infrastructure?.level.startsWith('underground')?'5 4':undefined,opacity:1}}/>;
+ })}{geometry.movements.filter((_,index)=>index%2===0).map((movement,index)=><TrackStroke key={'movement'+index} data-track-movement={index} d={path(movement.points)} className="alignment-path turnout-lane"/>)}{(geometry.internal_movements??[]).filter((_,index)=>index%2===0).map((movement,index)=><TrackStroke key={"internal"+index} data-internal-track-movement={index} d={path(movement.points)} className="alignment-path turnout-lane"/>)}</g>;
 }
