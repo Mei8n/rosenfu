@@ -13,8 +13,10 @@ fn plans() -> ConstructionPlans {
 }
 #[test]
 fn plans_roundtrip_with_multiple_plans_paths_and_stations() {
-    let mut draft = WorldDraft::default();
-    draft.construction_plans = Some(plans());
+    let draft = WorldDraft {
+        construction_plans: Some(plans()),
+        ..WorldDraft::default()
+    };
     let world = World::new(draft).unwrap();
     assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
     let dir = tempfile::tempdir().unwrap();
@@ -50,13 +52,17 @@ fn edited_plan_shape_roundtrips_without_reconstruction() {
     let mid = json!({"latitude":35.0006,"longitude":139.001});
     payload["draftPoints"] = json!([a, b]);
     payload["draftEditedGeometry"] = json!({"version":1,"anchors":[a,b],"line":[a,mid,b]});
-    let mut draft = WorldDraft::default();
-    draft.construction_plans = Some(serde_json::from_value(payload.clone()).unwrap());
+    let draft = WorldDraft {
+        construction_plans: Some(serde_json::from_value(payload.clone()).unwrap()),
+        ..WorldDraft::default()
+    };
     let world = World::new(draft).unwrap();
     assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
     payload["draftEditedGeometry"]["version"] = json!(999);
-    let mut invalid = WorldDraft::default();
-    invalid.construction_plans = Some(serde_json::from_value(payload).unwrap());
+    let invalid = WorldDraft {
+        construction_plans: Some(serde_json::from_value(payload).unwrap()),
+        ..WorldDraft::default()
+    };
     assert!(World::new(invalid).is_err());
 }
 
@@ -120,8 +126,10 @@ fn anchor_height_arrays_roundtrip_and_reject_mismatched_draft_lengths() {
     plan.redo_anchor_levels = Some(vec![]);
     plan.parked_paths[0].anchor_levels = Some(vec![InfrastructureLevel::Underground]);
     plan.parked_paths[0].redo_anchor_levels = Some(vec![]);
-    let mut draft = WorldDraft::default();
-    draft.construction_plans = Some(plan.clone());
+    let draft = WorldDraft {
+        construction_plans: Some(plan.clone()),
+        ..WorldDraft::default()
+    };
     let world = World::new(draft).unwrap();
     assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
     plan.draft_anchor_levels = Some(vec![]);

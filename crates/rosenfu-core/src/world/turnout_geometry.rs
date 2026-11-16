@@ -42,7 +42,7 @@ impl World {
     ) -> Result<Vec<TrackMovementGeometry>, WorldError> {
         let movements = self.alignment_lane_movements();
         let mut result = Vec::new();
-        for pair in movements.chunks_exact(2) {
+        for pair in movements.as_chunks::<2>().0 {
             let movement = pair[0];
             if movement.point.is_none() {
                 continue;
@@ -319,7 +319,7 @@ impl World {
         evaluate_properties: bool,
     ) -> Result<Vec<InternalTrackMovementGeometry>, WorldError> {
         let mut result = Vec::new();
-        for pair in self.internal_lane_movements().chunks_exact(2) {
+        for pair in self.internal_lane_movements().as_chunks::<2>().0 {
             let movement = pair[0];
             if movement.point.is_none() {
                 continue;

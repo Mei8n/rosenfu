@@ -1,8 +1,8 @@
 # 保存仕様
 
-## 現行候補形式：schema 20
+## 現行形式：schema 25
 
-PR #120 の候補は `format: "rosenfu-world"` と `schema_version: 20` を読み書きする。旧1〜19と未来の形式は、ワールドの復元前に非対応として拒否する。18読込・19保存の旧方針は廃止。自動移行や旧版との往復互換はない。本人のアルファ期の互換破棄承認に基づき、新規ワールドを作成する。これは旧ファイルの削除許可ではなく、読込失敗・通常保存拒否では本体と既存バックアップを変更しない。
+開発統合 `9e1aa5c1` は `format: "rosenfu-world"` と `schema_version: 25` を読み書きする。旧1〜24と未来の形式は、ワールドの復元前に非対応として拒否する。18読込・19保存の旧方針は廃止。自動移行や旧版との往復互換はない。本人のアルファ期の互換破棄承認に基づき、新規ワールドを作成する。これは旧ファイルの削除許可ではなく、読込失敗・通常保存拒否では本体と既存バックアップを変更しない。
 
 設備は Alignment と端点接続。すべての路線・系統に RoutePath / ServicePath が必要で、旧 Track、Route.tracks、OperatingService.tracks/stops は非対応。旧データを現形式番号に書き換えただけの偽装も拒否する。
 
@@ -86,8 +86,14 @@ Current-format storage tests cover independent labels/files/backups, incomplete
 creation visibility, invalid IDs and directory symlink rejection. Full session,
 UI and real-device acceptance remain separate verification gates.
 
-### schema 20 の拡張メタデータ
+### 現行形式の拡張メタデータ（schema 20で導入）
 
 `service_appearances` は系統ID、`#RRGGBB` 色、丸/四角/ひし形、任意記号を保持する。記号は名前の先頭文字から初期化し、本人編集後は名称変更で上書きしない。複製は新しい系統IDへ経路・停車・binding・色・形・記号をコピーし、その後は独立する。
 
 `service_route_bindings` の `routes` は複数の明示的関連路線を保持する。形状からの暗黙推測ではない。線形区間の線路数・7段階の高さ・縦断と分岐の追加もこの候補形式で扱う。モデルの保存対応、最終統合CI、GUI受入は別判定とする。
+
+### schema 25 の OFM 根拠データ
+
+OFM境界を跨ぐ道路参照経路は、軽量な経路記述と、元MVTバイト列・SHA・タイル座標/版/規則を含む必須の保存envelopeで保持する。読込時は全根拠を再decodeし経路を再生成して照合する。通常の `World` JSONだけは復元用バックアップにならない。内部runtime storeは直接serializeしない。原典の正確さや全国coverageまで証明するものではない。
+
+現上限はstore全体16bindings/8 MiB（再利用blobもbindingごとに計数）、計画と建設済みOFM経路の合計32件、保存envelope全体16 MiB。超過や欠落・改変は失敗として扱い、元ファイルを保持する。容量を全国規模の保証としない。

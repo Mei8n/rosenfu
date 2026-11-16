@@ -125,6 +125,12 @@ pub struct WorldEditor {
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
+impl Default for WorldEditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WorldEditor {
     pub fn set_service_appearance(
         &mut self,
@@ -336,6 +342,8 @@ impl WorldEditor {
             None,
         )
     }
+    // Keep the established session/IPC call shape; all arguments form one atomic edit.
+    #[allow(clippy::too_many_arguments)]
     pub fn replace_service_path_with_source_route(
         &mut self,
         service_id: ServiceId,
