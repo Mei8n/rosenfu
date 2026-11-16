@@ -97,3 +97,19 @@ test('alternative window defaults to the certified shortest and can return to ma
  expect(screen.queryByRole('dialog')).toBeNull();expect(h.onSave).not.toHaveBeenCalled();
  await h.click('2');expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'2',viaStationIds:['3']});
 });
+test('selected station sequence is published for map markers and cleared on reset/unmount',async()=>{
+ let pick:((id:string)=>void)|undefined;
+ const onSelectionChange=vi.fn();
+ const onMapPick=vi.fn((_target:unknown,callback?:((id:string)=>void))=>{pick=callback;});
+ const props={stations,worldVersion:world,enabled:true,canApply:true,onMapPick,onSelectionChange,startSequenceKey:1};
+ const h=render(<RouteCandidatePreview {...props} resetKey={1}/>);
+ expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+ await act(async()=>pick?.('1'));
+ expect(onSelectionChange).toHaveBeenLastCalledWith(['1']);
+ await act(async()=>pick?.('1'));
+ expect(onSelectionChange).toHaveBeenLastCalledWith(['1']);
+ h.rerender(<RouteCandidatePreview {...props} resetKey={2}/>);
+ expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+ h.unmount();
+ expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+});
