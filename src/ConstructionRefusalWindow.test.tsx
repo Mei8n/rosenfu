@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from 'react';
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
@@ -8,13 +9,14 @@ vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
 const world={next_id:'3',players:[{id:'1',name:'Player'}],companies:[{id:'2',owner:'1',name:'Railway'}],stations:[],alignments:[],routes:[],services:[],station_placements:[]};
 afterEach(()=>{cleanup();vi.resetAllMocks();vi.unstubAllGlobals();localStorage.clear();});
 async function start(preview:()=>Promise<unknown>){
+ let laying=true;
  vi.stubGlobal('PointerEvent',MouseEvent);
  vi.mocked(invoke).mockImplementation(async command=>{
   if(command==='engine_info')return {name:'Rosenfu',version:'refusal-window-test'};
   if(command==='world_snapshot')return world;
   if(command==='list_save_slots')return {active_slot_id:'test',slots:[]};
   if(command==='autosave_status')return {available:false};
-  if(command==='preview_construction_plan')return preview();
+  if(command==='preview_construction_plan')return laying?{validationError:null}:preview().then(()=>({validationError:null}),error=>({validationError:String(error)}));
   if(command==='save_world')return {saved:true};
   throw Error('unexpected '+command);
  });
@@ -22,7 +24,8 @@ async function start(preview:()=>Promise<unknown>){
  await screen.findByText(/refusal-window-test/);
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
- fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:320,clientY:130});
+ await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:320,clientY:130});
+ laying=false;
  return map;
 }
 test('native refusal uses the one positioned drawing window and clears when pointer leaves',async()=>{
@@ -49,8 +52,8 @@ test('old cursor refusal cannot overwrite a newer accepted hovered plan',async()
  await waitFor(()=>expect(calls).toBe(1));
  fireEvent.keyDown(document.body,{key:'Escape'});
  fireEvent.pointerEnter(map.querySelector('.plan-hover-hit')!,{clientX:250,clientY:130});
- await waitFor(()=>expect(calls).toBe(2));await act(async()=>{});
  await act(async()=>rejectOld('古い水域拒否'));
+ await waitFor(()=>expect(calls).toBe(2));await act(async()=>{});
  expect(document.querySelector('.plan-hover-tooltip')?.textContent).not.toContain('古い水域拒否');
  expect(document.querySelectorAll('.construction-tooltip')).toHaveLength(1);
 });

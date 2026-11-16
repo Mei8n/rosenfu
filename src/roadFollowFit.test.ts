@@ -1,0 +1,3 @@
+import {expect,test} from 'vitest';import {fitRoadFollow} from './roadFollowFit';import {sampledGeometry} from './editedGeometry';
+test('rounds a right angle while preserving exact endpoints',()=>{const points=[{longitude:135,latitude:35},{longitude:135.001,latitude:35},{longitude:135.001,latitude:35.001}];const fit=fitRoadFollow(points);expect(fit.length).toBeGreaterThan(10);expect(fit[0]).toEqual(points[0]);expect(fit.at(-1)).toEqual(points.at(-1));expect(sampledGeometry(fit).error).toBeNull();});
+test('rejects insufficient room rather than inventing a sharp bend',()=>{expect(()=>fitRoadFollow([{longitude:135,latitude:35},{longitude:135.00001,latitude:35},{longitude:135.00001,latitude:35.00001}])).toThrow('長さ');});

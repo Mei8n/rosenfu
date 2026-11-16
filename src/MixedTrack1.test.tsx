@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
+import {settledMapClick} from "./testMapClick";
 import {afterEach,expect,test,vi} from "vitest";
 import {act,cleanup,fireEvent,render,screen} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
@@ -14,7 +15,7 @@ const line={id:"3",owner:"2",name:"既存",track_type:"normal",points:[point(180
 const world={next_id:"4",players:[{id:"1",name:"P"}],companies:[{id:"2",owner:"1",name:"C"}],stations:[],tracks:[],routes:[],services:[],alignments:[line],station_placements:[]};
 async function start(extra={}){
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
- if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};throw Error("unexpected "+command);
+ if(command==="preview_construction_plan")return {validationError:null,newCrossingCount:0,newCrossings:[],roadsVerified:false};if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};throw Error("unexpected "+command);
  });render(<App/>);fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));await screen.findByText(/extension-test/);
  // Startup also restores plans and camera; finish those effects before injecting pointer input.
  await act(async()=>{});
@@ -26,15 +27,15 @@ for(const [sourceCount,targetCount] of [[1,2],[1,4]])for(const fresh of [false,t
  const target={...line,id:'4',points:targetEnd==='start'?[point(x,130),point(far,130)]:[point(far,130),point(x,130)],infrastructure:[{level:'ground',track_count:targetCount}]};
  const map=await start({alignments:fresh?[target]:[source,target]});
  fireEvent.change(screen.getByLabelText('敷設する線路数'),{target:{value:String(sourceCount)}});
- fireEvent.click(map,{clientX:startX,clientY:130});
+ await settledMapClick(map,{clientX:startX,clientY:130});
  fireEvent.pointerMove(map,{clientX:x+2,clientY:131});
  expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('true');
- fireEvent.click(map,{clientX:x+2,clientY:131});
+ await settledMapClick(map,{clientX:x+2,clientY:131});
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
- vi.mocked(invoke).mockRejectedValueOnce(Error('inspect mixed-track request'));
+ const previous=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==='build_plan'?Promise.reject(Error('inspect mixed-track request')):previous(command,args));
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText(/inspect mixed-track request/);
  const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as any;
  expect(request.alignments[0].destination).toEqual({alignmentId:'4',endpoint:targetEnd});

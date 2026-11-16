@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,expect,test,vi} from 'vitest';
@@ -12,7 +13,7 @@ const empty={view_state:{latitude:35.67504,longitude:139.75,zoom:16},next_id:'3'
 afterEach(()=>{cleanup();vi.useRealTimers();vi.resetAllMocks();vi.unstubAllGlobals();localStorage.clear();});
 async function start(snapshot:unknown=empty,draw=true){
  vi.stubGlobal('PointerEvent',MouseEvent);vi.stubGlobal('fetch',vi.fn().mockRejectedValue(Error('offline')));
- vi.mocked(invoke).mockImplementation(async(command,args)=>{
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{if(command==="preview_construction_plan")return {validationError:null};
   if(command==='engine_info')return {name:'Rosenfu',version:'crossing-test'};
   if(command==='world_snapshot')return snapshot;
   if(command==='build_alignment')return empty;
@@ -28,7 +29,7 @@ async function start(snapshot:unknown=empty,draw=true){
  render(<App/>);fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));await screen.findByText(/crossing-test/);
  expect(screen.getByRole('button',{name:'道路に合わせる'}).getAttribute('aria-pressed')).toBe('false');
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
- if(draw){fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:320,clientY:130});fireEvent.keyDown(document.body,{key:'Escape'});}return map;
+ if(draw){await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:320,clientY:130});fireEvent.keyDown(document.body,{key:'Escape'});}return map;
 }
 test('road following OFF still loads construction roads and atomically attaches immutable facts',async()=>{
  provider.load.mockImplementation(async bounds=>parseRoadResponse({osm3s:{timestamp_osm_base:'2026-11-14T21:20:41Z'},elements:[{type:'way',id:'1',nodes:['1','2'],geometry:[{lat:35.67,lon:139.75},{lat:35.68,lon:139.75}],tags:{highway:'service'}}]},bounds,0));
@@ -52,10 +53,10 @@ test('junction Undo and Redo use exactly the same road snapshot payload',async()
  const source={id:'3',owner:'2',name:'Main',track_type:'normal',points:[unproject(100,300,empty.view_state),unproject(900,300,empty.view_state)],anchor_indices:[0,1]};
  const before={...empty,next_id:'4',alignments:[source]};
  const map=await start(before,false);
- fireEvent.click(map,{clientX:200,clientY:150});fireEvent.click(map,{clientX:300,clientY:170});fireEvent.click(map,{clientX:300,clientY:170});
+ await settledMapClick(map,{clientX:200,clientY:150});await settledMapClick(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});
  await waitFor(()=>expect(screen.getByRole('status',{name:'踏切・道路確認状態'}).querySelector('[title]')?.getAttribute('title')).toContain('出典の範囲保証は未検証'));
  const original=vi.mocked(invoke).getMockImplementation()!;
- vi.mocked(invoke).mockImplementation(async(command,args)=>{
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{if(command==="preview_construction_plan")return {validationError:null};
   if(command==='undo_alignment_deletion')return before;
   if(command==='build_plan_with_roads')return {...before,next_id:'5',road_snapshots:(args as {roads:unknown[]}).roads,alignments:[source,{...source,id:'4'}]};
   return original(command,args);

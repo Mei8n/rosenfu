@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -15,7 +16,7 @@ const built = {...empty,next_id:"4",alignments:[alignment]};
 const placed = {...built,next_id:"5",stations:[{id:"4",owner:"2",name:"新駅",latitude:35.67504,longitude:139.75}],station_placements:[{station_id:"4",alignment_id:"3",position:.5,length_m:200,width_m:12}]};
 async function start(snapshot: unknown = empty) {
   vi.mocked(isTauri).mockReturnValue(true);
-  vi.mocked(invoke).mockImplementation(async command => {
+  vi.mocked(invoke).mockImplementation(async command => {if(command==="preview_construction_plan")return {validationError:null};
     if(command==="engine_info") return {name:"Rosenfu",version:"construction-test"};
     if(command==="world_snapshot") return snapshot;
     if(command==="list_save_slots") return {active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]};
@@ -34,7 +35,7 @@ test("construction starts with tracks and drafts retain points after failed buil
   expect(screen.getByRole("tab",{name:"線路"}).getAttribute("aria-selected")).toBe("true");
   expect(screen.queryByLabelText("建設する線路名")).toBeNull();
 
-  fireEvent.click(map,{clientX:180,clientY:130}); fireEvent.click(map,{clientX:250,clientY:160}); fireEvent.click(map,{clientX:320,clientY:130});
+  await settledMapClick(map,{clientX:180,clientY:130}); await settledMapClick(map,{clientX:250,clientY:160}); await settledMapClick(map,{clientX:320,clientY:130});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
   expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false);
   vi.mocked(invoke).mockRejectedValueOnce(Error("build rejected"));
@@ -53,7 +54,7 @@ test("construction starts with tracks and drafts retain points after failed buil
 test("draft undo, cancel and load confirmation preserve intentional construction",async()=>{
   const map=await start();
 
-  fireEvent.click(map,{clientX:200,clientY:130});fireEvent.click(map,{clientX:300,clientY:170});
+  await settledMapClick(map,{clientX:200,clientY:130});await settledMapClick(map,{clientX:300,clientY:170});
   fireEvent.keyDown(document.body,{key:"Backspace"});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
   expect(screen.queryByText("Backspace")).toBeNull();
@@ -67,7 +68,7 @@ test("draft undo, cancel and load confirmation preserve intentional construction
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
   fireEvent.keyDown(drawButton,{key:"z",ctrlKey:true});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
-  fireEvent.keyDown(document.body,{key:"Escape"});fireEvent.click(map,{clientX:300,clientY:170});
+  fireEvent.keyDown(document.body,{key:"Escape"});await settledMapClick(map,{clientX:300,clientY:170});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button",{name:"読込"}));
   expect(screen.getByRole("button",{name:"読込を続ける"})).toBeTruthy();
@@ -86,7 +87,7 @@ test("line-constrained station previews then commits metric platform dimensions"
   expect(map.querySelector(".station-platform")).toBeTruthy();
   expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
   vi.mocked(invoke).mockResolvedValueOnce({...placed,station_placements:[{...placed.station_placements[0],length_m:240}]});
-  fireEvent.click(map,{clientX:250,clientY:150});
+  await settledMapClick(map,{clientX:250,clientY:150});
   fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText("計画駅を建設しました。");
   expect(invoke).toHaveBeenCalledWith("build_plan",expect.objectContaining({stations:[expect.objectContaining({alignmentId:"3",lengthM:240,widthM:12})]}));
   expect(map.querySelector(".station-marker circle.station-dot")).toBeTruthy();
@@ -96,7 +97,7 @@ test("line-constrained station previews then commits metric platform dimensions"
 });
 test("placement rejects distant clicks and keeps station operation uncalled",async()=>{
  const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
- fireEvent.click(map,{clientX:250,clientY:20});await screen.findByText(/処理できませんでした: 駅は線路上に置いてください/);
+ await settledMapClick(map,{clientX:250,clientY:20});await screen.findByText(/処理できませんでした: 駅は線路上に置いてください/);
  expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
  fireEvent.click(screen.getByRole("button",{name:"エラー通知を閉じる"}));
  expect(screen.queryByText(/処理できませんでした/)).toBeNull();
@@ -131,10 +132,10 @@ test("keyboard position previews a platform and too-long platform is blocked",as
 
 test("plan redo, duplicate rejection and display controls",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:250,clientY:160});
+ await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:250,clientY:160});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(map,{clientX:250,clientY:160});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ await settledMapClick(map,{clientX:250,clientY:160});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect(screen.queryByText("敷設不可：重複する点があります")).toBeNull();
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
  fireEvent.click(screen.getByRole("button",{name:"ダークに切替"}));expect(document.querySelector("main")?.getAttribute("data-theme")).toBe("dark");
@@ -188,7 +189,7 @@ test("reference name is automatic and does not place or rename until confirmed",
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:500,text:()=>Promise.resolve(JSON.stringify(pack))}]}});await screen.findByText("names / 1 / 1件");
  const hover=project(35.67504,139.756,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
  expect(await screen.findByText("参考中央",{selector:"strong"})).toBeTruthy();expect((screen.getByLabelText("選択駅の名前") as HTMLInputElement).value).toBe("新駅");expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="place_station_on_alignment"||command==="rename_station")).toBe(false);
- vi.mocked(invoke).mockResolvedValueOnce(placed);fireEvent.click(map,{clientX:hover.x/2,clientY:hover.y/2});
+ vi.mocked(invoke).mockResolvedValueOnce(placed);await settledMapClick(map,{clientX:hover.x/2,clientY:hover.y/2});
  fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith("build_plan",expect.objectContaining({stations:[expect.objectContaining({name:"参考中央"})]})));
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="rename_station")).toBe(false);
 });
@@ -203,13 +204,13 @@ test("reference name distance uses corrected platform center at both alignment e
 
 test("clicking the last point again finishes a draft once without building or duplicate anchors",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});
- fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});
+ await settledMapClick(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:300,clientY:170,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect(map.classList.contains("placement-enabled")).toBe(true);
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
- fireEvent.click(map,{clientX:350,clientY:180,detail:1});
+ await settledMapClick(map,{clientX:350,clientY:180,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==="build_alignment")).toBe(false);
@@ -218,13 +219,13 @@ test("clicking the last point again finishes a draft once without building or du
 
 test("double clicking an existing endpoint does not duplicate it; one point cannot finish",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});
- fireEvent.click(map,{clientX:180,clientY:130,detail:2});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:2});
  expect(map.classList.contains("placement-enabled")).toBe(true);
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
- fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:300,clientY:170,detail:2});
+ await settledMapClick(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:300,clientY:170,detail:2});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect(map.classList.contains("placement-enabled")).toBe(true);
 });
@@ -232,13 +233,13 @@ test("double clicking an existing endpoint does not duplicate it; one point cann
 
 test("returning near the endpoint snaps in CSS pixels without a foldback anchor",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});await settledMapClick(map,{clientX:300,clientY:170,detail:1});
  fireEvent.pointerMove(map,{clientX:350,clientY:180});fireEvent.pointerMove(map,{clientX:296,clientY:168});
- fireEvent.click(map,{clientX:296,clientY:168,detail:1});
+ await settledMapClick(map,{clientX:296,clientY:168,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(map,{clientX:296,clientY:168,detail:2});
+ await settledMapClick(map,{clientX:296,clientY:168,detail:2});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(map,{clientX:100,clientY:240,detail:1});
+ await settledMapClick(map,{clientX:100,clientY:240,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
  expect(screen.queryByText(/敷設不可：線路が折り返しています/)).toBeNull();
@@ -246,65 +247,65 @@ test("returning near the endpoint snaps in CSS pixels without a foldback anchor"
 
 test("invalid curve remains diagnostic and cannot add an anchor",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:200,clientY:160,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});await settledMapClick(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:200,clientY:160,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect(map.querySelector(".confirmed-draft")).toBeTruthy();
  expect(map.querySelector(".invalid-candidate")?.getAttribute("d")).toContain("L");
- fireEvent.click(map,{clientX:390,clientY:190,detail:1});
+ await settledMapClick(map,{clientX:390,clientY:190,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
  expect(map.querySelector(".invalid-candidate")).toBeNull();
 });
 
 test("invalid double click does not finish; selecting a parked plan waits for an explicit endpoint click",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:200,clientY:160,detail:1});fireEvent.click(map,{clientX:200,clientY:160,detail:2});
- fireEvent.click(map,{clientX:390,clientY:190,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});await settledMapClick(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:200,clientY:160,detail:1});await settledMapClick(map,{clientX:200,clientY:160,detail:2});
+ await settledMapClick(map,{clientX:390,clientY:190,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
  expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
  fireEvent.click(screen.getByRole("button",{name:"別の線路計画を追加"}));
  fireEvent.click(screen.getByRole("button",{name:/計画 1 を編集/}));
- fireEvent.click(map,{clientX:390,clientY:190,detail:1});
- fireEvent.click(map,{clientX:450,clientY:200,detail:1});
+ await settledMapClick(map,{clientX:390,clientY:190,detail:1});
+ await settledMapClick(map,{clientX:450,clientY:200,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(4);
 });
 
 test("automatic drawing snaps the last anchor to finish and keeps drawing enabled",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:296,clientY:168,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(map,{clientX:296,clientY:168,detail:2});fireEvent.click(map,{clientX:100,clientY:240,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});await settledMapClick(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:296,clientY:168,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ await settledMapClick(map,{clientX:296,clientY:168,detail:2});await settledMapClick(map,{clientX:100,clientY:240,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
 });
 
 test("endpoint snap tolerance stays in CSS pixels after the map resizes",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});await settledMapClick(map,{clientX:300,clientY:170,detail:1});
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
- fireEvent.click(map,{clientX:595,clientY:337,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(map,{clientX:595,clientY:337,detail:2});expect(map.classList.contains("placement-enabled")).toBe(true);
- fireEvent.click(map,{clientX:100,clientY:400,detail:1});expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
+ await settledMapClick(map,{clientX:595,clientY:337,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+ await settledMapClick(map,{clientX:595,clientY:337,detail:2});expect(map.classList.contains("placement-enabled")).toBe(true);
+ await settledMapClick(map,{clientX:100,clientY:400,detail:1});expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
 });
 
  test("empty redo preserves a finished draft before starting another path", async () => {
  const map = await start();
- fireEvent.click(map, {clientX:180, clientY:130, detail:1});
- fireEvent.click(map, {clientX:300, clientY:170, detail:1});
- fireEvent.click(map, {clientX:300, clientY:170, detail:1});
+ await settledMapClick(map, {clientX:180, clientY:130, detail:1});
+ await settledMapClick(map, {clientX:300, clientY:170, detail:1});
+ await settledMapClick(map, {clientX:300, clientY:170, detail:1});
  fireEvent.keyDown(document.body, {key:"Z", ctrlKey:true, shiftKey:true});
- fireEvent.click(map, {clientX:390, clientY:190, detail:1});
+ await settledMapClick(map, {clientX:390, clientY:190, detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  expect(map.querySelectorAll(".parked-plan")).toHaveLength(1);
  });
 
 test("automatic drawing single endpoint finish can resume the same plan without an extra point",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
- fireEvent.click(map,{clientX:298,clientY:169,detail:1});
- fireEvent.click(map,{clientX:298,clientY:169,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});await settledMapClick(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:298,clientY:169,detail:1});
+ await settledMapClick(map,{clientX:298,clientY:169,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(map,{clientX:390,clientY:190,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
+ await settledMapClick(map,{clientX:390,clientY:190,detail:1});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
  expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);
@@ -312,11 +313,11 @@ test("automatic drawing single endpoint finish can resume the same plan without 
 
 test("automatic drawing dragging at the endpoint never finishes or adds an anchor",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:180,clientY:130,detail:1});fireEvent.click(map,{clientX:300,clientY:170,detail:1});
+ await settledMapClick(map,{clientX:180,clientY:130,detail:1});await settledMapClick(map,{clientX:300,clientY:170,detail:1});
  const pointer=(type:string,x:number,y:number)=>{const e=new MouseEvent(type,{bubbles:true,clientX:x,clientY:y,button:0});Object.defineProperty(e,"pointerId",{value:1});fireEvent(map,e);};
- pointer("pointerdown",300,170);pointer("pointermove",315,170);pointer("pointerup",315,170);fireEvent.click(map,{clientX:315,clientY:170,detail:1});
+ pointer("pointerdown",300,170);pointer("pointermove",315,170);pointer("pointerup",315,170);await settledMapClick(map,{clientX:315,clientY:170,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- pointer("pointerdown",390,190);pointer("pointerup",390,190);fireEvent.click(map,{clientX:390,clientY:190,detail:1});
+ pointer("pointerdown",390,190);pointer("pointerup",390,190);await settledMapClick(map,{clientX:390,clientY:190,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
 });
 

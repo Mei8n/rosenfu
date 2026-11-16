@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
@@ -13,7 +14,7 @@ const point=(x:number,y:number)=>coordinatesFromClient(x,y,rect,DEFAULT_CAMERA)!
 const line={id:"3",owner:"2",name:"既存",track_type:"normal",points:[point(180,130),point(250,130)]};
 const world={next_id:"4",players:[{id:"1",name:"P"}],companies:[{id:"2",owner:"1",name:"C"}],stations:[],tracks:[],routes:[],services:[],alignments:[line],station_placements:[]};
 async function start(extra={}){
- vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{if(command==="preview_construction_plan")return {validationError:null};
  if(command==="engine_info")return {name:"Rosenfu",version:"extension-test"};if(command==="world_snapshot")return {...world,...extra};throw Error("unexpected "+command);
  });render(<App/>);fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));await screen.findByText(/extension-test/);
  const map=screen.getByRole("img",{name:"駅配置用サンプル地図"});map.getBoundingClientRect=()=>rect;return map;
@@ -22,11 +23,11 @@ async function start(extra={}){
 
 test.each([false,true])('full Undo then plan switch preserves the completed-segment Redo step (extension=%s)',async extension=>{
  const map=await start();
- const click=(x:number,y=200)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
- if(extension){click(250,130);click(350,130);click(350,130);}else{click(120);click(240);click(240);}
+ const click=async (x:number,y=200)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
+ if(extension){await click(250,130);await click(350,130);await click(350,130);}else{await click(120);await click(240);await click(240);}
  const before=Array.from(map.querySelectorAll('.draft-anchor')).map(node=>[node.getAttribute('x'),node.getAttribute('y')]);
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
- fireEvent.click(map,{clientX:100,clientY:60,detail:1});
+ await settledMapClick(map,{clientX:100,clientY:60,detail:1});
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
@@ -40,7 +41,7 @@ test.each([false,true])('full Undo then plan switch preserves the completed-segm
 
 test('switching preserves drag geometry Redo and does not automatically resume drawing',async()=>{
  const map=await start({alignments:[]});
- for(const x of [150,250,350])fireEvent.click(map,{clientX:x,clientY:150});
+ for(const x of [150,250,350])await settledMapClick(map,{clientX:x,clientY:150});
  const shape=()=>map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d');
  const before=shape(),anchor=map.querySelector('[data-anchor-index="1"]')!;
  fireEvent.pointerDown(anchor,{clientX:250,clientY:150,button:0});
@@ -56,12 +57,12 @@ test('switching preserves drag geometry Redo and does not automatically resume d
 
 test('histories remain separate across repeated switches between plans',async()=>{
  const map=await start({alignments:[]});
- const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
+ const click=async (x:number,y:number)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  const undo=()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  const redo=()=>fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
- click(120,200);click(240,200);click(240,200);
+ await click(120,200);await click(240,200);await click(240,200);
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
- click(120,80);click(240,80);click(240,80);undo();
+ await click(120,80);await click(240,80);await click(240,80);undo();
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));undo();undo();
  fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));redo();
