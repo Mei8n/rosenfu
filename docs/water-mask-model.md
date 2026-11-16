@@ -40,3 +40,19 @@ catalog自体の真正性・入力PBFと境界の版整合・地域抽出の完�
 固定関門composite `8057fde2778c8af3208c82f7306218382665aebbc8f2b672186de77b660a322e` の9部品についてmanifest/payloadのhashを確認し、属性で選別した観測面から25mのセル中心所属マスクを生成した。入力のsource issue 1件、非面の線/海岸線109観測、属性未確定等で除外した面2観測を記録し、coverageは空・geographic_completenessはunknownを維持した。これは旧固定試験compositeの読込確認で、全国stage更新ではない。
 
 本番TypeScriptデコーダで全59,496セルを読み、水域15,691・Unknown43,805・model_land 0として生成側と一致した。2,620bytes、SHA256 `906aaa77adb59cb7baef692646564c59498f5d26e4c0789f177ea1f8122c3b92`。source issueや幅不明を、この成功で解決済みにしない。再現スクリプトはクラウドの `rosenfu-water-pack-artifacts/build-kanmon-mask-check.py` と `read-kanmon-mask-check.mjs`、結果は `kanmon-observation-raster-v1/`。生成物は本リポジトリへ収録・配信していない。
+
+## 再現可能な観測マスク生成
+
+`scripts/water-mask/build.py` は固定hashの既存compositeと全partのmanifest/payloadを検証し、観測面をセル中心で分類する。幅不明の線を面へ拡張しない。覆蓋・地下・高さ未確定・季節水域・basin属性の面は除外し、除外数、元のsource issue、原典hash/版/帰属を出力に保持する。`observations_only`専用で、非水域セルは常にUnknown。空セルを陸地とするcoverage証明は生成しない。25mセルより小さい水域や境界の正確性は保証しない。
+
+原典集合と解釈規則 `observed-surface-centres-v2` から共通revisionを計算する。地域boundsだけでは版が変わらない。v2ではbasin矛盾属性も除外し、旧試作v1と混在させない。入力path/hash/サイズ、格子寸法、丸め後の緯経度範囲と面形状を検査し、既存出力は上書きしない。原典の完全性や全属性schemaの認証を代替するものではない。
+
+```sh
+python -m pip install -r scripts/water-mask/requirements.txt
+python scripts/water-mask/build.py INPUT_COMPOSITE_DIRECTORY --pin COMPOSITE_SHA256 --output NEW_OUTPUT_DIRECTORY
+python -m unittest discover -s scripts/water-mask -p 'test_*.py' -v
+```
+
+固定試験入力の富士山・関門・高松を再生成し、本番TypeScriptデコーダで全セルを照合した。富士山は水域0/Unknown25,988、関門は15,691/43,805、高松は15,847/33,881。全てmodel_landは0、source issueは各1件を保持した。これらは旧9part試験compositeであり、全国coverageや最新stageの反映を示さない。生成物はクラウド検証領域だけに保存し、HTTPS配信catalogへはまだ登録していない。
+
+Python 8回帰（空入力、除外、版、hash/形状、上書き防止/上限、path、四境界、矛盾basin）を専用3 OS CIに追加した。公開済み読込コードの11試験に加えて生成器を検証する。
