@@ -1,6 +1,6 @@
 import {describe,it,expect,vi} from 'vitest';
 import {decodeFineWaterMask,decodeWorldWaterMask,lookupWaterModel,fetchWaterRange,type FineWaterSpec} from './waterMaskModel';
-const spec:FineWaterSpec={id:'test',revision:'fixed-v1',originLongitude:139,originLatitude:35,x0:0,y0:0,cellM:25,width:2,height:2};
+const spec:FineWaterSpec={id:'test',revision:'fixed-v1',coverage:'complete_model',originLongitude:139,originLatitude:35,x0:0,y0:0,cellM:25,width:2,height:2};
 function ints(values:number[],size:2|4) {const b=new Uint8Array(values.length*size);const v=new DataView(b.buffer);values.forEach((n,i)=>size===4?v.setUint32(i*size,n,true):v.setUint16(i*size,n,true));return b;}
 const lon=(m:number)=>139+m/(6371008.8*Math.cos(35*Math.PI/180))*180/Math.PI;
 const lat=(m:number)=>35+m/6371008.8*180/Math.PI;
@@ -70,4 +70,17 @@ it('checks exact half-open edges and metadata scalar types',()=>{
  expect(m.at(0,0)).toBe('model_water');expect(m.at(0.001,0)).toBeNull();expect(m.at(0,0.001)).toBeNull();expect(m.at(-0.001,0)).toBeNull();
  for(const s of [{...spec,id:5},{...spec,revision:7}])expect(()=>decodeFineWaterMask(s as unknown as FineWaterSpec,ints([0,2,2],4),ints([0,1],2))).toThrow();
  expect(()=>decodeWorldWaterMask(5 as unknown as string,world())).toThrow();
+});
+
+it('keeps observations-only empty cells unknown even with a complete coarse mask',()=>{
+ const s:FineWaterSpec={...spec,coverage:'observations_only'};const m=fine(s);
+ expect(m.at(lon(10),lat(10))).toBe('model_water');expect(m.at(lon(40),lat(10))).toBeNull();
+ expect(lookupWaterModel(lon(40),lat(10),[s],new Map([[s.id,m]]),{sourceId:'coarse',waterAt:()=>true})).toEqual({state:'unknown',reason:'fine_incomplete'});
+ expect(()=>decodeFineWaterMask({...s,coverage:undefined} as unknown as FineWaterSpec,ints([0,2,2],4),ints([0,1],2))).toThrow();
+});
+
+it('refuses externally implemented model land for an observations-only spec',()=>{
+ const s:FineWaterSpec={...spec,coverage:'observations_only'};
+ const forged={spec:s,at:()=> 'model_land' as const};
+ expect(lookupWaterModel(lon(10),lat(10),[s],new Map([[s.id,forged]]),null)).toEqual({state:'unknown',reason:'fine_incomplete'});
 });

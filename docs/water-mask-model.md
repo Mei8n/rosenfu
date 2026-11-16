@@ -21,7 +21,7 @@
 
 ## 分類契約
 
-- `model_water` / `model_land`: catalogで要求された細密格子が全て存在し、格子仕様と版が一致した地点。その解像度・選別規則でのモデル分類で、現実の未収録小河川がない証明ではない。使用した全source IDと最大セル幅を返す。
+- `model_water` / `model_land`: catalogで要求された細密格子が全て存在し、格子仕様と版が一致した地点。その解像度・選別規則でのモデル分類で、現実の未収録小河川がない証明ではない。使用した全source IDと最大セル幅を返す。`coverage=complete_model`が必要。`observations_only`は観測された水域セルだけを返し、空セルは`unknown/fine_incomplete`として陸地に昇格させない。coverage指定欠落は拒否する。
 - `unknown/fine_missing`: 必要格子の欠落、spec違い、格子照会のnull。不足を重複する別格子や粗密水域で隠さない。
 - `coarse_water`: 細密catalog範囲外で粗密マスクに水域がある。地上判定に使える精密境界の保証ではない。
 - `unknown/outside_fine`: 細密範囲外で粗密水域の根拠もない。陸地へ変換しない。
@@ -33,4 +33,10 @@ catalog自体の真正性・入力PBFと境界の版整合・地域抽出の完�
 
 実データ配信、認証済みcatalog、保存するモデル版/出典、Rustとの格子入力契約、線路に沿う水域区間の計算、6m Hermite高さ、30km超・環状/分岐・-2/-3免除の共通評価が必要。previewとbuildは同じ候補と固定マスク版を使い、build直前にも検証する。未取得は既存小ウィンドウへ理由を返し、道路の参考追従を水域取得失敗で停止させない。未評価を許可へ読み替えず、全面停止する未完成gateも導入しない。
 
-ローカル9試験・TypeScript型検査成功。境界、重複、欠落、版混合、壊れた行ラン、Range/hash/取消を検証した。実配信取得成功・WebView・建設拒否E2Eは未検証。2026-11-16のTW world.water取得試行はHTTP403で、空データとして扱っていない。
+ローカル11試験・TypeScript型検査成功。境界、重複、欠落、版混合、壊れた行ラン、Range/hash/取消を検証した。実配信取得成功・WebView・建設拒否E2Eは未検証。2026-11-16のTW world.water取得試行はHTTP403で、空データとして扱っていない。
+
+## 実データ読込の確認
+
+固定関門composite `8057fde2778c8af3208c82f7306218382665aebbc8f2b672186de77b660a322e` の9部品についてmanifest/payloadのhashを確認し、属性で選別した観測面から25mのセル中心所属マスクを生成した。入力のsource issue 1件、非面の線/海岸線109観測、属性未確定等で除外した面2観測を記録し、coverageは空・geographic_completenessはunknownを維持した。これは旧固定試験compositeの読込確認で、全国stage更新ではない。
+
+本番TypeScriptデコーダで全59,496セルを読み、水域15,691・Unknown43,805・model_land 0として生成側と一致した。2,620bytes、SHA256 `906aaa77adb59cb7baef692646564c59498f5d26e4c0789f177ea1f8122c3b92`。source issueや幅不明を、この成功で解決済みにしない。再現スクリプトはクラウドの `rosenfu-water-pack-artifacts/build-kanmon-mask-check.py` と `read-kanmon-mask-check.mjs`、結果は `kanmon-observation-raster-v1/`。生成物は本リポジトリへ収録・配信していない。

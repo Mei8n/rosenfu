@@ -4,9 +4,10 @@
 export type WaterCell = 'model_water' | 'model_land';
 export type WaterLookup = {state: WaterCell; resolutionM: number; sourceIds: string[]} |
   {state: 'coarse_water'; sourceId: string} |
-  {state: 'unknown'; reason: 'fine_missing' | 'outside_fine' | 'invalid_coordinate'};
+  {state: 'unknown'; reason: 'fine_missing' | 'fine_incomplete' | 'outside_fine' | 'invalid_coordinate'};
 export interface FineWaterSpec {
   id: string; revision: string;
+  coverage: 'complete_model' | 'observations_only';
   originLongitude: number; originLatitude: number;
   x0: number; y0: number; cellM: number; width: number; height: number;
 }
@@ -18,6 +19,7 @@ function coordinate(lon: number, lat: number) {
 }
 function checkSpec(s: FineWaterSpec): void {
   if (typeof s.id !== 'string' || !s.id || s.id.length > 256 || typeof s.revision !== 'string' || !s.revision || s.revision.length > 256 ||
+      !['complete_model','observations_only'].includes(s.coverage) ||
       !coordinate(s.originLongitude,s.originLatitude) ||
       ![s.x0,s.y0,s.cellM].every(Number.isFinite) || s.cellM <= 0 || s.cellM > 1000 ||
       !Number.isInteger(s.width) || !Number.isInteger(s.height) ||
@@ -65,7 +67,7 @@ export function decodeFineWaterMask(spec: FineWaterSpec, rowBytes: Uint8Array, r
   }
   const s=Object.freeze({...spec});
   return Object.freeze({spec:s,at:(lon:number,lat:number)=>{
-    const c=gridCell(s,lon,lat);return c ? wet(rows,edges,c[0],c[1])?'model_water':'model_land' : null;
+    const c=gridCell(s,lon,lat);return c ? wet(rows,edges,c[0],c[1])?'model_water':s.coverage==='complete_model'?'model_land':null : null;
   }});
 }
 export interface CoarseWaterMask { readonly sourceId: string; waterAt(lon:number,lat:number): boolean | null }
@@ -116,7 +118,7 @@ export function lookupWaterModel(lon:number,lat:number,catalog:readonly FineWate
     if(!mask || Object.keys(spec).some(k=>spec[k as keyof FineWaterSpec]!==mask.spec[k as keyof FineWaterSpec]))return {state:'unknown',reason:'fine_missing'};
     if(revision!==null && revision!==spec.revision)throw new Error('Mixed fine water revisions');
     const cell=mask.at(lon,lat);
-    if(cell!=='model_water' && cell!=='model_land')return {state:'unknown',reason:'fine_missing'};
+    if((cell!=='model_water' && cell!=='model_land') || (spec.coverage==='observations_only' && cell==='model_land'))return {state:'unknown',reason:spec.coverage==='observations_only'?'fine_incomplete':'fine_missing'};
     revision=spec.revision;sourceIds.push(spec.id);resolutionM=Math.max(resolutionM,spec.cellM);water ||= cell==='model_water';
   }
   if(sourceIds.length)return {state:water?'model_water':'model_land',resolutionM,sourceIds};
