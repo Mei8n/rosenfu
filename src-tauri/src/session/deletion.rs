@@ -1825,6 +1825,85 @@ mod tests {
     }
 
     #[test]
+    fn batch_multiple_alignments_and_middle_ranges_preserve_profiles_and_atomicity() {
+        let (mut editor, id) = setup();
+        let original = editor.snapshot().alignments[0].clone();
+        let other = editor
+            .build_alignment(
+                "other".into(),
+                original
+                    .points
+                    .iter()
+                    .map(|p| GeoPoint {
+                        latitude: p.latitude + 0.01,
+                        longitude: p.longitude,
+                    })
+                    .collect(),
+            )
+            .unwrap()
+            .alignments
+            .last()
+            .unwrap()
+            .id;
+        let mut before = editor.snapshot();
+        for alignment in &mut before.alignments {
+            alignment.anchor_indices = Some((0..7).collect());
+            alignment.infrastructure.clear();
+            alignment.section_profiles = vec![
+                rosenfu_core::world::VerticalProfile {
+                    start_height_m: 0.,
+                    end_height_m: 0.,
+                    start_tangent_m: 0.,
+                    end_tangent_m: 0.,
+                };
+                6
+            ];
+        }
+        before.construction_plans = Some(plans());
+        editor.world.replace(before.clone()).unwrap();
+        let selections = || {
+            vec![
+                AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1, 2, 4],
+                },
+                AlignmentSectionSelection {
+                    alignment_id: other,
+                    section_indices: vec![2, 3],
+                },
+            ]
+        };
+        let after = editor
+            .delete_alignment_sections(selections(), before.alignments.clone(), plans())
+            .unwrap();
+        assert_eq!(after.alignments.len(), 5);
+        for alignment in &after.alignments {
+            assert_eq!(alignment.section_count(), alignment.section_profiles.len());
+        }
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        let temp = tempfile::tempdir().unwrap();
+        let after = editor
+            .delete_alignment_sections(selections(), before.alignments.clone(), plans())
+            .unwrap();
+        let path = temp.path().join("multi.json");
+        editor.save(&path).unwrap();
+        assert_eq!(
+            WorldEditor::new().load(&path).unwrap().alignments,
+            after.alignments
+        );
+
+        editor.world = World::new(before.clone()).unwrap();
+        editor
+            .place_station_on_alignment("guard".into(), other, 0.5, 40., 12.)
+            .unwrap();
+        let guarded = editor.snapshot();
+        assert!(editor
+            .delete_alignment_sections(selections(), guarded.alignments.clone(), plans())
+            .is_err());
+        assert_eq!(editor.snapshot(), guarded);
+    }
+
+    #[test]
     fn batch_adjacent_short_sections_can_be_removed_as_one_range() {
         let (mut editor, id) = setup();
         let mut before = editor.snapshot();
