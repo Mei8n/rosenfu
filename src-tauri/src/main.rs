@@ -256,16 +256,26 @@ fn build_alignment_with_stations(
         }])
 }
 #[tauri::command]
-fn preview_construction_plan(
+async fn preview_construction_plan(
     editor: State<'_, Mutex<WorldEditor>>,
     alignments: Vec<session::PlannedAlignment>,
     stations: Option<Vec<session::PlannedBuiltStation>>,
-) -> Result<WorldDraft, String> {
+    roads: Option<Vec<rosenfu_core::world::RoadSnapshot>>,
+) -> Result<session::ConstructionPreview, String> {
     let snapshot = editor
         .lock()
         .map_err(|_| "world state unavailable")?
         .clone();
-    snapshot.preview_construction_plan(alignments, stations.unwrap_or_default())
+    // Validation can be expensive: never run it on the UI event-loop thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshot.preview_construction_summary(
+            alignments,
+            stations.unwrap_or_default(),
+            roads.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 fn build_plan(

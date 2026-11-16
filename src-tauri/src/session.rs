@@ -18,6 +18,15 @@ fn in_edit_extent(latitude: f64, longitude: f64) -> bool {
     (20.0..=46.0).contains(&latitude) && (122.0..=154.0).contains(&longitude)
 }
 
+/// Compact advisory result; no preview world is serialized across IPC.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstructionPreview {
+    pub new_crossing_count: Option<usize>,
+    pub roads_unverified: Option<bool>,
+    pub validation_error: Option<String>,
+}
+
 /// A station attached to the alignment being constructed, not an existing ID.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -727,6 +736,59 @@ impl WorldEditor {
         stations: Vec<PlannedBuiltStation>,
     ) -> Result<WorldDraft, String> {
         self.clone().build_construction_plan(alignments, stations)
+    }
+    /// Use the same road snapshots and construction pipeline as commit, without
+    /// changing the live editor. Existing crossings are not charged again.
+    pub fn preview_construction_summary(
+        mut self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+        roads: Vec<rosenfu_core::world::RoadSnapshot>,
+    ) -> Result<ConstructionPreview, String> {
+        for snapshot in roads {
+            self.world
+                .add_road_snapshot(snapshot)
+                .map_err(|e| e.to_string())?;
+        }
+        let before = self.snapshot();
+        let prior_crossings: Vec<_> = self
+            .road_assessments()
+            .into_iter()
+            .flat_map(|(_, assessment)| assessment.crossings)
+            .collect();
+        if let Err(error) = self.build_construction_plan(alignments, stations) {
+            return Ok(ConstructionPreview {
+                new_crossing_count: None,
+                roads_unverified: None,
+                validation_error: Some(error),
+            });
+        }
+        let after = self.snapshot();
+        let changed: std::collections::BTreeSet<_> = after
+            .alignments
+            .iter()
+            .filter(|line| !before.alignments.contains(line))
+            .map(|line| line.id)
+            .collect();
+        let assessments = self.road_assessments();
+        let roads_unverified = assessments
+            .iter()
+            .any(|(id, a)| changed.contains(id) && (!a.roads_ready || a.unknown_road_height));
+        // Endpoint splitting may change IDs or ownership, not the physical asset.
+        let new_crossing_count = assessments
+            .iter()
+            .flat_map(|(_, a)| &a.crossings)
+            .filter(|crossing| {
+                !prior_crossings
+                    .iter()
+                    .any(|old| old.road_id == crossing.road_id && old.point == crossing.point)
+            })
+            .count();
+        Ok(ConstructionPreview {
+            new_crossing_count: Some(new_crossing_count),
+            roads_unverified: Some(roads_unverified),
+            validation_error: None,
+        })
     }
     /// Reference snapshots and construction commit together; failures leave the
     /// current editor (including Undo state) untouched. Road coverage is advisory.
@@ -5810,6 +5872,120 @@ mod road_snapshot_transaction_tests {
             extension: None,
             destination: None,
         }
+    }
+    #[test]
+    fn preview_counts_crossings_without_mutating_editor() {
+        let mut editor = WorldEditor::new();
+        let old = editor.snapshot();
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(preview.new_crossing_count, Some(1));
+        assert!(preview.validation_error.is_none());
+        assert_eq!(preview.roads_unverified, Some(false));
+        assert_eq!(editor.snapshot(), old);
+        editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(
+            editor.road_assessments()[0].1.crossings.len(),
+            preview.new_crossing_count.unwrap()
+        );
+    }
+    #[test]
+    fn preview_missing_roads_stays_unknown_and_invalid_plan_keeps_world() {
+        let editor = WorldEditor::new();
+        let old = editor.snapshot();
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![plan()], vec![], vec![])
+            .unwrap();
+        assert_eq!(preview.new_crossing_count, Some(0));
+        assert_eq!(preview.roads_unverified, Some(true));
+        let mut invalid = plan();
+        invalid.points.clear();
+        assert!(editor
+            .clone()
+            .preview_construction_summary(vec![invalid], vec![], vec![roads()])
+            .unwrap()
+            .validation_error
+            .is_some());
+        assert_eq!(editor.snapshot(), old);
+    }
+    #[test]
+    fn preview_does_not_count_existing_crossings_again() {
+        let mut editor = WorldEditor::new();
+        editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        let mut next = plan();
+        next.points = vec![point(-0.01, 0.02), point(0.01, 0.02)];
+        let preview = editor
+            .preview_construction_summary(vec![next], vec![], vec![])
+            .unwrap();
+        assert_eq!(preview.new_crossing_count, Some(0));
+    }
+    #[test]
+    fn preview_shared_anchor_crossing_count_matches_commit_once() {
+        let mut editor = WorldEditor::new();
+        let split = || {
+            let mut split = plan();
+            split.points = vec![point(-0.01, 0.0), point(0.0, 0.0), point(0.01, 0.0)];
+            split.anchor_indices = Some(vec![0, 1, 2]);
+            split
+        };
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![split()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(preview.validation_error, None);
+        assert_eq!(preview.new_crossing_count, Some(1));
+        editor
+            .build_construction_plan_with_roads(vec![split()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(
+            editor
+                .road_assessments()
+                .iter()
+                .map(|(_, a)| a.crossings.len())
+                .sum::<usize>(),
+            1
+        );
+    }
+    #[test]
+    fn preview_extension_keeps_existing_crossing_count_zero() {
+        let mut editor = WorldEditor::new();
+        editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        let original = editor.snapshot().alignments[0].clone();
+        let extension = || {
+            let mut extension = plan();
+            extension.points = vec![*original.points.last().unwrap(), point(0.02, 0.0)];
+            extension.extension = Some(PlannedAlignmentExtension {
+                alignment_id: original.id,
+                endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+            });
+            extension
+        };
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![extension()], vec![], vec![])
+            .unwrap();
+        assert_eq!(preview.validation_error, None);
+        assert_eq!(preview.new_crossing_count, Some(0));
+        editor
+            .build_construction_plan_with_roads(vec![extension()], vec![], vec![])
+            .unwrap();
+        assert_eq!(
+            editor
+                .road_assessments()
+                .iter()
+                .map(|(_, a)| a.crossings.len())
+                .sum::<usize>(),
+            1
+        );
     }
     #[test]
     fn road_snapshot_and_alignment_commit_atomically_and_survive_serialization() {
