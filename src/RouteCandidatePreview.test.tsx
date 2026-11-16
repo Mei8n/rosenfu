@@ -113,3 +113,38 @@ test('selected station sequence is published for map markers and cleared on rese
  h.unmount();
  expect(onSelectionChange).toHaveBeenLastCalledWith([]);
 });
+
+test('candidate overlay follows validated choice and clears while exploring, resetting and unmounting',async()=>{
+ let pick:((id:string)=>void)|undefined;
+ const onCandidateChange=vi.fn();
+ vi.mocked(invoke).mockImplementation(async(command)=>command==='preview_route_candidates'?unique:{path,member_stations:path.stations,excluded_stations:[]});
+ const props={stations,worldVersion:world,enabled:true,canApply:true,onCandidateChange,startSequenceKey:1,onMapPick:(_target:unknown,cb?:((id:string)=>void))=>{pick=cb;}};
+ const h=render(<RouteCandidatePreview {...props} resetKey={1}/>);
+ expect(onCandidateChange).toHaveBeenLastCalledWith(null);
+ await act(async()=>pick?.('1'));
+ await act(async()=>pick?.('3'));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(path);
+ let finishSearch!:(value:Candidates)=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(r=>{finishSearch=r;}));
+ await act(async()=>pick?.('2'));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(null);
+ await act(async()=>finishSearch(unique));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(path);
+ h.rerender(<RouteCandidatePreview {...props} resetKey={2}/>);
+ expect(onCandidateChange).toHaveBeenLastCalledWith(null);
+ h.unmount();
+ expect(onCandidateChange).toHaveBeenLastCalledWith(null);
+});
+test('switching alternative candidate updates map overlay only after validation',async()=>{
+ const alternate:Candidate={stations:['1','2','3'],segments:[{kind:'alignment',alignment_id:'other',from:'1',to:'3'}]};
+ const response:Candidates={status:'ambiguous',candidates:[path,alternate],truncated:false,shortest_candidate_index:0};
+ let pick:((id:string)=>void)|undefined;
+ const onCandidateChange=vi.fn();
+ vi.mocked(invoke).mockImplementation(async(command,args)=>command==='preview_route_candidates'?response:{path:response.candidates.find(c=>JSON.stringify(c.segments)===JSON.stringify((args as {segments:unknown}).segments)),member_stations:path.stations,excluded_stations:[]});
+ render(<RouteCandidatePreview stations={stations} worldVersion={world} enabled canApply onCandidateChange={onCandidateChange} startSequenceKey={1} onMapPick={(_,cb)=>{pick=cb;}}/>);
+ await act(async()=>pick?.('1'));await act(async()=>pick?.('3'));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(path);
+ const choices=screen.getAllByRole('radio');
+ await act(async()=>fireEvent.click(choices[1]));
+ expect(onCandidateChange).toHaveBeenLastCalledWith(alternate);
+});

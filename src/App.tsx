@@ -69,7 +69,7 @@ import { useSmoothZoom, wheelZoomDelta } from "./useSmoothZoom";
 import {UnsavedCloseDialog} from "./UnsavedCloseDialog";
 import {useUnsavedCloseGuard} from "./useUnsavedCloseGuard";
 import { ErrorNotice } from "./ErrorNotice";
-import { routeAppearance } from "./routeAppearance";
+import { routeAppearance, routeSegmentSections } from "./routeAppearance";
 import {useReferenceCopy} from "./useReferenceCopy";
 import {ReferenceCopyControls} from "./ReferenceCopyControls";
 import type {ReferenceBuild} from "./referenceCopy";
@@ -91,7 +91,7 @@ import { ReferenceStationControls } from "./ReferenceStationControls";
 import { createReferenceRepository } from "./referenceStations";
 import type { ReferencePack } from "./referenceStations";
 import { PlatformLengthInput } from "./PlatformLengthInput";
-import type { Segment, Membership } from "./RouteCandidatePreview";
+import type { Segment, Membership, Candidate } from "./RouteCandidatePreview";
 import { RouteCandidatePreview } from "./RouteCandidatePreview";
 import { MAP_PROVIDERS } from "./mapProviders";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -277,6 +277,7 @@ export function App() {
   const [routeServiceDirty,setRouteServiceDirty]=useState(false);
   const [serviceCreating,setServiceCreating]=useState(false);
   const [serviceSequenceKey,setServiceSequenceKey]=useState(0);
+  const [routeSelectedCandidate,setRouteSelectedCandidate]=useState<Candidate|null>(null);
   const [routeSelectedStations,setRouteSelectedStations]=useState<string[]>([]);
   const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|"sequence"|null>(null);
   const routeMapSelect=useRef<((id:string)=>void)|null>(null);
@@ -411,6 +412,7 @@ export function App() {
     const alignment=world?.alignments?.find(a=>a.id===placement.alignment_id);
     return [placement.station_id,alignment?stationPolygon(alignment.points,placement.position,placement.length_m,placement.width_m):null];
   })),[world]);
+  const selectedRouteSections = useMemo(()=>world&&routeSelectedCandidate?routeSegmentSections(world,routeSelectedCandidate.segments):new Map(),[world,routeSelectedCandidate]);
   const routeVisual = useMemo(() => routeAppearance(world), [world]);
   const serviceMapSections=useMemo(()=>sharedServiceSections(world),[world]);
   const selectedAlignment = alignments.find((a) => a.id === alignmentId);
@@ -1887,6 +1889,7 @@ export function App() {
               </g>)}
               {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} lines={alignments} selectedId={referenceCopy.active?((manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id)??""):alignmentId}/>}
               <g className="route-assignment-overlays" pointerEvents="none">{alignments.flatMap(alignment=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
+              {mainTab==="routes"&&(routeCreating||routeMapEdit)&&<g className="route-candidate-selection" pointerEvents="none" aria-label="選択した経路">{[...selectedRouteSections].flatMap(([id,sections])=>sections.map((points:GeoPoint[],index:number)=><path key={id+":"+index} d={drawPath(points)} fill="none" stroke="#18a6a6" strokeWidth={7/viewport.scale} strokeOpacity=".65" strokeLinecap="round" strokeLinejoin="round"/>))}</g>}
               {(mainTab==="routes"||mainTab==="services")&&serviceMapSections.map((section,index)=><g key={section.alignmentId+":"+index} className="service-map-section" data-alignment-id={section.alignmentId} data-service-count={section.bands.length} pointerEvents="none">
                 <title>{section.bands.map(b=>b.name).join(" / ")}</title>
                 <path d={drawPath(section.points)} fill="none" stroke="white" strokeWidth="10"/>
@@ -2005,7 +2008,7 @@ export function App() {
           <section className="route-editor" role="tabpanel" id="workspace-panel-routes" aria-labelledby="workspace-tab-routes" hidden={activeTool !== "routes"}>
             <h3>路線</h3>
             <RouteDirectory key={`routes-${worldEpoch}`} onRename={renameSavedRoute} onDirty={setRouteRenameDirty} world={world??previewWorld} enabled={enabled&&!candidateDirty&&!routeCreating&&!routeMapEdit} selected={routeId} onChoose={id=>{if(candidateDirty||routeMapEdit){chooseRoute(id);return;}chooseRoute(id);cancelRouteMapPick();setRouteCreating(id===null);if(id===null)setRouteSequenceKey(key=>key+1);}}/>
-            {(routeCreating||routeMapEdit)&&<RouteCandidatePreview onSelectionChange={setRouteSelectedStations} key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} defaultName={(()=>{let n=1;while(world?.routes.some(r=>r.name===`路線${n}`))n++;return `路線${n}`;})()} onCancelEdit={()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);setCandidateDirty(false);}} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={true} onSave={applyPlannedRoute} />}
+            {(routeCreating||routeMapEdit)&&<RouteCandidatePreview onCandidateChange={setRouteSelectedCandidate} onSelectionChange={setRouteSelectedStations} key={routeMapEdit?.id??"new-route"} editRoute={routeMapEdit??undefined} defaultName={(()=>{let n=1;while(world?.routes.some(r=>r.name===`路線${n}`))n++;return `路線${n}`;})()} onCancelEdit={()=>{cancelRouteMapPick();setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);setCandidateDirty(false);}} startSequenceKey={routeSequenceKey} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="routes")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} resetKey={worldEpoch} onDirty={setCandidateDirty} stations={world?.stations ?? []} worldVersion={world} enabled={enabled} canApply={true} onSave={applyPlannedRoute} />}
 
             {routeId && <button type="button" className="secondary" disabled={!enabled||candidateDirty||routeRenameDirty||!!routeMapEdit} onClick={()=>{const route=world?.routes.find(r=>r.id===routeId);if(!route)return;cancelRouteMapPick();setRouteMapEdit({id:route.id,name:route.name});setRouteSequenceKey(key=>key+1);}}>地図で路線の経路を選び直す</button>}
             {selectedRoutePath && <section aria-label="保存済み路線の経路"><h4>{routeName}</h4><p>所属駅: {selectedRoutePath.member_stations.map(id=>stationsById.get(id)?.name ?? id).join(" → ")}</p><ol>{selectedRoutePath.segments.map((segment,index)=><li key={index}>{(segment.kind==="alignment"?"建設線形 " + (alignments.find(a=>a.id===segment.alignment_id)?.name ?? segment.alignment_id):"接続経路") + ": " + (stationsById.get(segment.from)?.name ?? segment.from) + " → " + (stationsById.get(segment.to)?.name ?? segment.to)}</li>)}</ol></section>}

@@ -8,6 +8,7 @@ export type Candidates = { shortest_candidate_index?: number | null; status: "no
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };
 type Props = {
   entityLabel?: string;
+  onCandidateChange?: (candidate:Candidate|null) => void;
   onSelectionChange?: (stationIds: string[]) => void;
   editRoute?: {id:string;name:string}; defaultName?:string;
   onCancelEdit?: () => void;
@@ -20,7 +21,7 @@ type Props = {
   onSave?: (name: string, membership: Membership) => Promise<void>;
 };
 /** Station clicks define ordered constraints; only explicit Finish persists the route. */
-export function RouteCandidatePreview({onSelectionChange,entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave}:Props){
+export function RouteCandidatePreview({onCandidateChange,onSelectionChange,entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave}:Props){
  const initialName=editRoute?.name??defaultName;
  const [name,setName]=useState(initialName);
  const [ordered,setOrdered]=useState<string[]>([]);
@@ -30,6 +31,8 @@ export function RouteCandidatePreview({onSelectionChange,entityLabel="路線",ed
  const [result,setResult]=useState<Candidates|null>(null);
  const [chosen,setChosen]=useState<number|null>(null);
  const [membership,setMembership]=useState<Membership|null>(null);
+ useEffect(()=>{onCandidateChange?.(membership?.path??null);},[membership,onCandidateChange]);
+ useEffect(()=>()=>{onCandidateChange?.(null);},[onCandidateChange]);
  const [error,setError]=useState("");
  const [loading,setLoading]=useState(false);
  const [saving,setSaving]=useState(false);
