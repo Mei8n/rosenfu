@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
+import {panMap} from './mapTestNavigation';
 import {act,cleanup,fireEvent,render,renderHook,screen,waitFor,within} from '@testing-library/react';
 import {afterEach,expect,test,vi} from 'vitest';
 import {useReferenceCopy} from './useReferenceCopy';
@@ -32,7 +33,7 @@ test('App drag does not select, explicit click choices preview the exact atomic 
  await copyPanel().findByText('地図をクリックして起点候補を表示してください。');expect(screen.getByLabelText('線路の種類').matches(':disabled')).toBe(true);const map=view.container.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
  fireEvent.pointerDown(map,{clientX:500,clientY:300,button:0});fireEvent.pointerMove(map,{clientX:510,clientY:300});fireEvent.pointerUp(map,{clientX:510,clientY:300});fireEvent.click(map,{clientX:510,clientY:300});expect(copyPanel().queryAllByRole('button',{hidden:true,name:/候補 \d/})).toHaveLength(0);
  // Restore camera after the pan, then select with a complete normal pointer sequence.
- fireEvent.click(screen.getByText('東京へ戻る',{selector:'button'}));
+ panMap(10);
  async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);fireEvent.pointerDown(map,{clientX:point.x,clientY:point.y,button:0});fireEvent.pointerUp(map,{clientX:point.x,clientY:point.y});fireEvent.click(map,{clientX:point.x,clientY:point.y});await copyPanel().findByRole('button',{hidden:true,name:new RegExp('候補 .*way 101 / 区間 '+id)});fireEvent.click(copyPanel().getByRole('button',{hidden:true,name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
  await pick(start,'0');await pick(end,'1');const preview=view.container.querySelector('.reference-copy-preview')?.getAttribute('d');expect(preview).toBeTruthy();fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));fireEvent.click(copyPanel().getByRole('button',{name:'選択中の計画に追加',hidden:true}));await waitFor(()=>expect(copyPanel().queryByRole('button',{name:'選択中の計画に追加',hidden:true})).toBeNull());fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_plan')).toBe(true));const payload=(vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as any).alignments[0];expect(payload.trackType).toBe('high_speed');expect(payload.points).toHaveLength(3);expect(payload.points[1]).toEqual({latitude:DEFAULT_CAMERA.latitude,longitude:DEFAULT_CAMERA.longitude});expect(payload.reference.sourceRecord.graph_sha256).toBe('a'.repeat(64));expect(payload.reference.provenance.method).toBe('osm_way_slice_v1');expect(preview).toBe(payload.points.map((p:any,i:number)=>{const projected=project(p.latitude,p.longitude,DEFAULT_CAMERA);return (i?'L':'M')+projected.x+','+projected.y;}).join(' '));await waitFor(()=>expect((screen.getByText('保存',{selector:'button'}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(screen.getByText('保存',{selector:'button'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world')).toBe(true));
 });

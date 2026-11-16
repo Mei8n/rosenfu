@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
+import {panMap} from "./mapTestNavigation";
 import {afterEach,expect,test,vi} from "vitest";
 import {act,cleanup,fireEvent,render,screen} from "@testing-library/react";
 import {App} from "./App";
@@ -17,8 +18,8 @@ test("map wheel animates fractional zoom without changing world data and cancels
  expect(Array.from(map.querySelectorAll('image')).map(i=>i.getAttribute('href'))).toEqual(initial);
  act(()=>vi.advanceTimersByTime(160));expect(screen.getByText('ZL 12.25 / Web Mercator')).toBeTruthy();
  wheel(-100);act(()=>vi.advanceTimersByTime(32));
- fireEvent.click(screen.getByRole('button',{name:'東京へ戻る'}));act(()=>vi.advanceTimersByTime(300));
- expect(screen.getByText('ZL 12 / Web Mercator')).toBeTruthy();
+ panMap(100);const stopped=document.querySelector('.background-controls')!.textContent;act(()=>vi.advanceTimersByTime(300));
+ expect(document.querySelector('.background-controls')!.textContent).toBe(stopped);
  wheel(-100);act(()=>vi.advanceTimersByTime(32));
  fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));
  const label=document.querySelector('.camera-controls')!.textContent;

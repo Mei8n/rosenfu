@@ -113,11 +113,6 @@ select:disabled { opacity: .55; }
 .map-attribution p { margin-top: 4px; max-width: 540px; }
 .map-surface { background: #33483f; }
 .camera-controls { padding: 8px 15px; border-top: 1px solid #42584c; background: #17271f; }
-.camera-buttons { display: flex; flex-wrap: wrap; gap: 5px; }
-.camera-buttons button, .camera-coordinate-form button { font-size: 11px; padding: 5px 9px; }
-.camera-coordinate-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.camera-coordinate-form label { margin: 0; font-size: 10px; }
-.camera-coordinate-form input { width: 96px; font-size: 11px; padding: 5px; }
 .camera-controls > p { font-size: 10px; color: #a4b7a8; margin-top: 7px; }
 .camera-controls > p[role="alert"] { color: #efbda6; }
 .map-surface svg { touch-action: none; user-select: none; }
@@ -182,11 +177,6 @@ h1 span { font-size: 10px; color: #92a6b3; }
 .background-controls, .camera-controls { background: transparent; padding: 10px 12px; border-color: var(--border); }
 .background-controls select { flex: 1; min-width: 0; background: #26353d; }
 .background-controls > span { width: 100%; color: #9bb0bb; }
-.camera-buttons { gap: 4px; }
-.camera-buttons button { padding: 5px 8px; }
-.camera-coordinate-form { display: grid; grid-template-columns: 70px 1fr; }
-.camera-coordinate-form input { width: 100%; }
-.camera-coordinate-form button { grid-column: 1 / -1; }
 .camera-controls > p { line-height: 1.6; }
 .map-mode-controls { gap: 5px; }
 .map-mode-controls span { width: 100%; }

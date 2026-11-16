@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import {panMap} from "./mapTestNavigation";
 import React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -60,8 +61,8 @@ test("manual offline fallback removes remote tiles and stays local through pan a
   fireEvent.click(screen.getByRole("button", { name: "サンプル背景に戻す" }));
   expect(screen.getByRole("img", { name: "駅配置用サンプル地図" })).toBeTruthy();
   expect(document.querySelectorAll("image")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "東へ移動" }));
-  fireEvent.click(screen.getByRole("button", { name: "拡大" }));
+  panMap(300);
+  fireEvent.keyDown(window,{key:"+"});
   expect(document.querySelectorAll("image")).toHaveLength(0);
   expect(screen.queryByText(/枚の読み込みに失敗しました/)).toBeNull();
   expect(fetchAttempt).not.toHaveBeenCalled();

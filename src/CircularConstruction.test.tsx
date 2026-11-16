@@ -163,7 +163,7 @@ test('tangent guide reaches past resized viewport edges at different zoom levels
      expect(end.x<viewport.x||end.x>viewport.x+viewport.width||end.y<viewport.y||end.y>viewport.y+viewport.height).toBe(true);
    };
    check();
-   fireEvent.click(screen.getByRole('button',{name:'拡大'}));check();
-   fireEvent.click(screen.getByRole('button',{name:'縮小'}));check();
+   fireEvent.keyDown(window,{key:"+"});check();
+   fireEvent.keyDown(window,{key:"-"});check();
  }
 });
