@@ -165,3 +165,14 @@ test('switching alternative candidate updates map overlay only after validation'
  await act(async()=>fireEvent.click(choices[1]));
  expect(onCandidateChange).toHaveBeenLastCalledWith(alternate);
 });
+test('after world revalidation map clicks use fresh station membership and distance function',async()=>{
+ let pick:((id:string)=>void)|undefined;
+ const oldLength=vi.fn(()=>1),newLength=vi.fn(()=>2);
+ vi.mocked(invoke).mockImplementation(async command=>command==='preview_route_candidates'?unique:{path,member_stations:path.stations,excluded_stations:[]});
+ const props={editRoute:{id:'r',name:'本線',path},stations,worldVersion:world,enabled:true,canApply:true,startSequenceKey:1,onMapPick:(_t:unknown,cb?:((id:string)=>void))=>{pick=cb;}};
+ const h=render(<RouteCandidatePreview {...props} candidateLength={oldLength}/>);
+ h.rerender(<RouteCandidatePreview {...props} stations={[...stations,{id:'4',name:'新駅'}]} worldVersion={{}} candidateLength={newLength}/>);
+ await act(async()=>{fireEvent.click(screen.getByText('経路を再確認'));});
+ await act(async()=>pick?.('4'));
+ await waitFor(()=>expect(newLength).toHaveBeenCalled());expect(oldLength).not.toHaveBeenCalled();
+});

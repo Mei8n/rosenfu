@@ -48,6 +48,7 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  const generation=useRef(0), pendingSave=useRef(false);
  const blocked=useRef(false);blocked.current=!enabled||stale;
  const names=new Map(stations.map(s=>[s.id,s.name]));
+ const editingInputs=useRef({names,candidateLength});editingInputs.current={names,candidateLength};
  const stationName=(id:string)=>names.get(id)??`駅 ${id}`;
  function invalidate(){generation.current++;setResult(null);setMembership(null);setChosen(null);setLoading(false);setStale(false);setShowChoices(false);setError("");}
  useEffect(()=>{invalidate();orderedRef.current=[];setOrdered([]);setName(initialName);},[resetKey]);
@@ -74,14 +75,15 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  }
  function beginSequence(){
   onMapPick?.("sequence",id=>{
-   if(pendingSave.current||blocked.current||!names.has(id))return;
+   if(pendingSave.current||blocked.current||!editingInputs.current.names.has(id))return;
    if(editingMap&&stationClick.current?.(id))return;
    if(editingMap){const session=generation.current;editQueue.current=editQueue.current.then(async()=>{
     if(session!==generation.current||pendingSave.current||blocked.current)return;
     setLoading(true);setError("");
     try{
-     if(!candidateLength)throw Error('経路の比較に必要な地図情報がありません');
-     const choice=await editStationOrder(orderedRef.current,id,ids=>invoke<Candidates>('preview_route_candidates',{start:ids[0],end:ids.at(-1),...(ids.length>2?{viaStationIds:ids.slice(1,-1)}:{})}),candidateLength);
+     const length=editingInputs.current.candidateLength;
+     if(!length)throw Error('経路の比較に必要な地図情報がありません');
+     const choice=await editStationOrder(orderedRef.current,id,ids=>invoke<Candidates>('preview_route_candidates',{start:ids[0],end:ids.at(-1),...(ids.length>2?{viaStationIds:ids.slice(1,-1)}:{})}),length);
      if(session!==generation.current)return;
      const next=await invoke<Membership>('preview_route_membership',{start:choice.result.candidates[choice.index].stations[0],segments:choice.result.candidates[choice.index].segments,excludedStations:[]});
      if(session!==generation.current)return;
