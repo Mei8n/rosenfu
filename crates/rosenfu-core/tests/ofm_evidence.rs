@@ -1301,3 +1301,43 @@ fn road_path_exact_endpoint_connection_requires_actual_height_and_preserves_asse
     assert_eq!(world.snapshot().route_paths, before.route_paths);
     assert_eq!(world.snapshot().service_paths, before.service_paths);
 }
+
+#[test]
+fn evidence_usage_separates_storage_bytes_from_binding_work() {
+    assert_eq!(EvidenceStore::empty().usage(), EvidenceUsage::default());
+    let raw = tile(LINE, None);
+    let first = binding(&raw);
+    let mut second = first.clone();
+    second.x += 1;
+    second.canonical_url = format!(
+        "https://tiles.openfreemap.org/planet/{}/{}/{}/{}.pbf",
+        second.revision, second.z, second.x, second.y
+    );
+    let store = EvidenceStore::from_parts(
+        vec![RawEvidence {
+            sha256: raw_sha256(&raw),
+            bytes: raw.clone(),
+        }],
+        vec![first.clone(), second],
+    )
+    .unwrap();
+    let before = store.descriptors();
+    assert_eq!(
+        store.usage(),
+        EvidenceUsage {
+            binding_count: 2,
+            unique_blob_count: 1,
+            unique_raw_bytes: raw.len(),
+            binding_raw_bytes: raw.len() * 2,
+            base64_payload_bytes: raw.len().div_ceil(3) * 4
+        }
+    );
+    let scope = store.scope(&[first.canonical_url]).unwrap();
+    assert_eq!(scope.usage().binding_raw_bytes, raw.len());
+    assert_eq!(
+        scope.usage().unique_raw_bytes,
+        store.usage().unique_raw_bytes
+    );
+    assert_eq!(store.descriptors(), before);
+    assert_eq!(store.clone().usage(), store.usage());
+}

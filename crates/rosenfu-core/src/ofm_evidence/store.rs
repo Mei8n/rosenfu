@@ -51,6 +51,17 @@ struct State {
     bindings: BTreeMap<String, TileBinding>,
     decoded: BTreeMap<DecodeKey, Arc<DecodedTile>>,
 }
+/// Exact accounting of validated evidence, not a capacity promise or a heap estimate.
+/// Per-binding bytes retain the decoder work charge even when raw blobs are shared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EvidenceUsage {
+    pub binding_count: usize,
+    pub unique_blob_count: usize,
+    pub unique_raw_bytes: usize,
+    pub binding_raw_bytes: usize,
+    /// Base64 payload bytes only; excludes JSON metadata and the rest of the world.
+    pub base64_payload_bytes: usize,
+}
 /// Cheap clones share immutable raw and decoded data. No Deserialize implementation:
 /// reloading arbitrary DTOs must go through `from_parts` and the bounded decoder.
 #[derive(Debug, Clone, Default)]
@@ -177,6 +188,26 @@ impl EvidenceStore {
         Ok(Self {
             state: Arc::new(state),
         })
+    }
+    /// Read-only accounting without decoding again or allocating encoded blobs.
+    pub fn usage(&self) -> EvidenceUsage {
+        EvidenceUsage {
+            binding_count: self.state.bindings.len(),
+            unique_blob_count: self.state.blobs.len(),
+            unique_raw_bytes: self.state.blobs.values().map(|raw| raw.len()).sum(),
+            binding_raw_bytes: self
+                .state
+                .bindings
+                .values()
+                .map(|binding| self.state.blobs[&binding.raw_sha256].len())
+                .sum(),
+            base64_payload_bytes: self
+                .state
+                .blobs
+                .values()
+                .map(|raw| raw.len().div_ceil(3) * 4)
+                .sum(),
+        }
     }
     pub fn descriptors(&self) -> Vec<EvidenceDescriptor> {
         self.state

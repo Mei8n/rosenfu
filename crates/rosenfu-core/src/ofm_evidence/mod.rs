@@ -12,7 +12,7 @@ pub use candidates::{boundary_candidates, validate_boundary_candidates, Boundary
 mod wire;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-pub use store::{EvidenceDescriptor, EvidenceStore, RawEvidence};
+pub use store::{EvidenceDescriptor, EvidenceStore, EvidenceUsage, RawEvidence};
 use wire::{bytes, once, var, Field, Reader};
 
 pub const DECODER_RULE: &str = "ofm_transportation_z14_v1";
