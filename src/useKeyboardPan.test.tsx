@@ -32,3 +32,10 @@ test.each(['blur','pointerdown','wheel','zoom','focus','blocked','unmount'])('mo
  else if(reason==='zoom')fireEvent.keyDown(window,{key:'+'});else if(reason==='blocked')block();else if(reason==='unmount')unmount();else fireEvent(window,new Event(reason));
  advance();expect(pan).not.toHaveBeenCalled();
 });
+
+test.each(['wheel','zoom'])('OS repeats cannot resume panning after %s interruption',reason=>{
+ const {pan}=setup();fireEvent.keyDown(window,{key:'ArrowRight'});advance();
+ if(reason==='wheel')fireEvent.wheel(window,{deltaY:-100});else fireEvent.keyDown(window,{key:'+'});
+ pan.mockClear();fireEvent.keyDown(window,{key:'ArrowRight',repeat:true});advance();expect(pan).not.toHaveBeenCalled();
+ fireEvent.keyUp(window,{key:'ArrowRight'});fireEvent.keyDown(window,{key:'ArrowRight'});advance();expect(pan).toHaveBeenCalled();
+});

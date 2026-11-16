@@ -27,6 +27,8 @@ export function useKeyboardPan(onPan:(dx:number,dy:number)=>void,isBlocked:()=>b
   const down=(event:KeyboardEvent)=>{
    if(event.defaultPrevented||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey||event.isComposing||ownsArrowKeys(event.target)||unavailable()){stop();return;}
    if(!(event.key in directions)){if(event.key==='+'||event.key==='-'||event.code==='NumpadAdd'||event.code==='NumpadSubtract')stop();return;}
+   // After an interrupt, wait for a fresh press instead of OS repeat resuming pan.
+   if(event.repeat&&!pressed.has(event.key))return;
    event.preventDefault();pressed.add(event.key);
    if(frame===null)frame=requestAnimationFrame(tick);
   };
