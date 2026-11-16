@@ -12,9 +12,35 @@ function requests(value:unknown):Request[]{
   ids.add(v.id);return {...v};
  });
 }
+// Native IPC cannot be cancelled. Bound outstanding calls across world changes,
+// while allowing each caller to stop waiting at its own deadline.
+const MAX_PENDING_IPC=8;
+let pendingIpc=0;
+const lateInstallListeners=new Set<()=>void>();
+function waterCall<T>(call:typeof invoke,command:string,args:Parameters<typeof invoke>[1],signal:AbortSignal):Promise<T>{
+ signal.throwIfAborted();
+ if(pendingIpc>=MAX_PENDING_IPC)return Promise.reject(Error('水域IPCの完了待ちが上限です。'));
+ pendingIpc++;
+ let native:Promise<T>;
+ // Preserve the established dispatch order; wrap synchronous transport errors too.
+ try{native=Promise.resolve(call<T>(command,args));}catch(error){native=Promise.reject(error);}
+ return new Promise<T>((resolve,reject)=>{
+  const abort=()=>reject(signal.reason??new Error('水域取得を中止しました。'));
+  signal.addEventListener('abort',abort,{once:true});
+  native.then(value=>{
+   pendingIpc--;signal.removeEventListener('abort',abort);
+   if(signal.aborted){
+    if(command==='install_water_mask')for(const notify of [...lateInstallListeners])notify();
+    return;
+   }
+   resolve(value);
+  },error=>{pendingIpc--;signal.removeEventListener('abort',abort);if(!signal.aborted)reject(error);});
+  if(signal.aborted)abort();
+ });
+}
 /** Downloads are independent: failure of one area never prevents installing another. */
 export async function acquireWaterMasks(signal:AbortSignal,installed:()=>void,call:typeof invoke=invoke,fetcher:typeof fetch=fetch):Promise<boolean>{
- const list=requests(await call('water_mask_requests'));
+ const list=requests(await waterCall(call,'water_mask_requests',undefined,signal));
  const outcomes=await Promise.allSettled(list.map(async item=>{
   let bytes:Uint8Array|undefined=cached.get(item.sha256);
   for(let attempt=0;!bytes&&attempt<2;attempt++){
@@ -24,7 +50,7 @@ export async function acquireWaterMasks(signal:AbortSignal,installed:()=>void,ca
   if(signal.aborted)throw signal.reason;
   cached.set(item.sha256,bytes!);
   let binary='';for(const b of bytes!)binary+=String.fromCharCode(b);
-  await call('install_water_mask',{id:item.id,bytesBase64:btoa(binary)});
+  await waterCall(call,'install_water_mask',{id:item.id,bytesBase64:btoa(binary)},signal);
   if(!signal.aborted)installed();
  }));
  if(signal.aborted)throw signal.reason;
@@ -33,12 +59,14 @@ export async function acquireWaterMasks(signal:AbortSignal,installed:()=>void,ca
 /** No new UI: native preview/build owns refusal reasons. Fixed bytes remain in the session cache. */
 export function useWaterModelAcquisition(enabled:boolean,world:unknown){
  const [revision,setRevision]=useState(0);
+ const [cacheChange,setCacheChange]=useState(0);
+ useEffect(()=>{if(!enabled)return;const notify=()=>setCacheChange(v=>v+1);lateInstallListeners.add(notify);return()=>{lateInstallListeners.delete(notify);};},[enabled]);
  useEffect(()=>{
   if(!enabled)return;let disposed=false;let timer:ReturnType<typeof setTimeout>|undefined;let active:AbortController|undefined;
   async function run(round:number){
-   active=new AbortController();const deadline=setTimeout(()=>active?.abort(new Error('水域取得がタイムアウトしました。')),30000);
+   const controller=new AbortController();active=controller;const deadline=setTimeout(()=>controller.abort(new Error('水域取得がタイムアウトしました。')),30000);
    let complete=false;
-   try{complete=await acquireWaterMasks(active.signal,()=>{if(!disposed)setRevision(v=>v+1);});}catch{/* Native retains unavailable rather than treating errors as absence. */}
+   try{complete=await acquireWaterMasks(controller.signal,()=>{if(!disposed)setRevision(v=>v+1);});}catch{/* Native retains unavailable rather than treating errors as absence. */}
    finally{clearTimeout(deadline);}
    // A previous effect may have completed its native install after cancellation.
    // A fresh empty missing-list is also evidence that preview must be refreshed.
@@ -47,6 +75,6 @@ export function useWaterModelAcquisition(enabled:boolean,world:unknown){
   }
   void run(0);
   return()=>{disposed=true;clearTimeout(timer);active?.abort();};
- },[enabled,world]);
+ },[enabled,world,cacheChange]);
  return revision;
 }
