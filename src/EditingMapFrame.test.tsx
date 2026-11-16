@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, expect, test } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import css from './EditingMapFrame.css?raw';
+// @ts-expect-error Node types are not included in the browser tsconfig.
+import { readFileSync } from 'node:fs';
+const css: string = readFileSync('src/EditingMapFrame.css', 'utf8');
 import { EditingMapFrame, editingMapMode } from './EditingMapFrame';
 const base = { enabled: true, tab: 'construction', tool: 'tracks', mapMode: 'draw' as const, pickingStations: false };
 afterEach(cleanup);
