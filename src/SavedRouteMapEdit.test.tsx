@@ -21,7 +21,7 @@ async function setup(fail=false,membershipGate?:Promise<void>){
   return world;
  });
  const view=render(<App/>);await screen.findByText(/saved-route-map-test/);await waitFor(()=>expect(invoke).toHaveBeenCalledWith('autosave_status',{slotId:'test-slot'}));await act(async()=>{});
- fireEvent.click(screen.getByRole('tab',{name:'路線'}));fireEvent.click(screen.getByRole('button',{name:'編集: 既存路線'}));fireEvent.click(screen.getByRole('button',{name:'地図で路線の経路を選び直す'}));
+ fireEvent.click(screen.getByRole('tab',{name:'路線'}));fireEvent.click(screen.getByRole('button',{name:'編集: 既存路線'}));fireEvent.click(screen.getByRole('button',{name:'地図で路線を編集'}));
  return view.container.querySelectorAll('.station-marker');
 }
 test('editing saved route sends original ID and preserves name until explicit apply',async()=>{
