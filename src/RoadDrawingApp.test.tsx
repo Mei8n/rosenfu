@@ -8,21 +8,22 @@ const mock=vi.hoisted(()=>({snapshot:null as any}));
 vi.mock('./useAutomaticRoad',()=>({useAutomaticRoad:()=>({status:'ready',snapshot:mock.snapshot,message:'fixture',retry:vi.fn(),ensureCurrent:vi.fn(async()=>({status:'unavailable',reason:'fixture'}))})}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
 class RoadWorker {
+ static delay=false;static queued:(()=>void)[]=[];
  onmessage:any;onerror:any;engine:any;closed=false;
- postMessage(request:any){if(request.kind==='load'){this.engine=createRoadDrawingEngine(request.bundle,request.tileLines);return;}void this.engine(request.query).then((result:any)=>{if(!this.closed)this.onmessage?.({data:{id:request.id,result}});});}
+ postMessage(request:any){if(request.kind==='load'){this.engine=createRoadDrawingEngine(request.bundle,request.tileLines);return;}void this.engine(request.query).then((result:any)=>{const deliver=()=>{if(!this.closed)this.onmessage?.({data:{id:request.id,result}});};if(RoadWorker.delay)RoadWorker.queued.push(deliver);else deliver();});}
  terminate(){this.closed=true;}
 }
 afterEach(()=>{cleanup();vi.clearAllMocks();vi.unstubAllGlobals();localStorage.clear();});
 const longitude=139.76806640625,latitude=35.684,camera={latitude,longitude,zoom:16};
 const world={view_state:camera,next_id:'3',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
 async function start(snapshot:any=world){
- vi.stubGlobal('Worker',RoadWorker);
+ RoadWorker.delay=false;RoadWorker.queued=[];vi.stubGlobal('Worker',RoadWorker);
  const bundle={graph:{format:'rosenfu-reference-graph',version:1,dataset:{id:'t',revision:'r',source:'t',license:'t',bounds:{west:139,east:140,south:35,north:36}},nodes:[{osmId:'1',longitude:longitude-.002,latitude},{osmId:'2',longitude:longitude+.002,latitude}],edges:[{id:'1',osmWayId:'1',segmentIndex:0,from:'1',to:'2',mode:'road',layer:0,level:null,bridge:false,tunnel:false}]},roadWays:{'1':{highway:'residential',access:null,motorVehicle:null,structureUnsupported:false}},graphSha256:'a'.repeat(64),sourceSha256:'b'.repeat(64),source:{source:'t',sourceDate:null,license:'t',attribution:'t'}};
  mock.snapshot={bundle,roads:[]};
  vi.mocked(invoke).mockImplementation(async(command)=>{if(command==='engine_info')return {name:'Rosenfu',version:'road-app'};if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};if(command==='autosave_status')return {available:false};if(command==='save_world')return {saved:true};if(command==='preview_construction_plan')return {validationError:null,newCrossingCount:0};return snapshot;});
  render(<App/>);await screen.findByText(/road-app/);fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
  const map=document.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
- const click=async(offset:number,ctrlKey=false)=>{const p=project(latitude,longitude+offset,camera);await act(async()=>{fireEvent.click(map,{clientX:p.x,clientY:p.y,ctrlKey});await new Promise(r=>setTimeout(r,0));});};return {map,click};
+ const click=async(offset:number,ctrlKey=false,detail=1)=>{const p=project(latitude,longitude+offset,camera);await act(async()=>{fireEvent.click(map,{clientX:p.x,clientY:p.y,ctrlKey,detail});await new Promise(r=>setTimeout(r,0));});};return {map,click};
 }
 test('road points form an editable continuous draft; undo and redo restore the exact road geometry',async()=>{
  const {click}=await start();await click(-.0008);await click(0);await click(.0008);
@@ -56,4 +57,32 @@ test('native refusal and transport failure never append the road anchor',async()
  vi.mocked(invoke).mockImplementation(async(c,a)=>c==='preview_construction_plan'?{validationError:'water refusal'}:base(c,a));await h.click(.0008);expect(document.querySelector('.confirmed-draft')).toBeNull();expect(screen.getByText(/water refusal/)).toBeTruthy();
  vi.mocked(invoke).mockImplementation(async(c,a)=>{if(c==='preview_construction_plan')throw Error('network');return base(c,a);});await h.click(.0008);expect(document.querySelector('.confirmed-draft')).toBeNull();expect(screen.getByText(/敷設判定を取得できません/)).toBeTruthy();
  vi.mocked(invoke).mockImplementation(base);await h.click(.0008);expect(document.querySelector('.confirmed-draft')).toBeTruthy();
+});
+
+test('Escape during exact native validation discards the delayed placement',async()=>{
+ const h=await start();await h.click(-.0008);const base=vi.mocked(invoke).getMockImplementation()!;let release!:(value:any)=>void;
+ vi.mocked(invoke).mockImplementation(async(c,a)=>c==='preview_construction_plan'&&a&&'roads' in a?new Promise(resolve=>{release=resolve;}):base(c,a));await h.click(.0008);await waitFor(()=>expect(release).toBeTruthy());
+ fireEvent.keyDown(window,{key:'Escape'});await act(async()=>release({validationError:null}));expect(document.querySelector('.confirmed-draft')).toBeNull();
+});
+test('double click during worker calculation adds the final road segment then finishes',async()=>{
+ const h=await start();await h.click(-.0008);RoadWorker.delay=true;await h.click(0);await h.click(0,false,2);
+ expect(document.querySelector('.confirmed-draft')).toBeNull();RoadWorker.delay=false;await act(async()=>{RoadWorker.queued.splice(0).forEach(deliver=>deliver());await new Promise(r=>setTimeout(r,0));});
+ expect(document.querySelector('.confirmed-draft')).toBeTruthy();await h.click(.0008);expect(document.querySelector('.parked-plan')).toBeTruthy();expect(document.querySelector('.confirmed-draft')).toBeNull();
+});
+test('speed change while the worker is pending invalidates its captured placement intent',async()=>{
+ const h=await start();await h.click(-.0008);RoadWorker.delay=true;await h.click(.0008);expect(RoadWorker.queued).toHaveLength(1);
+ fireEvent.change(screen.getByLabelText('線路の目標最高速度'),{target:{value:'180'}});
+ RoadWorker.delay=false;await act(async()=>{RoadWorker.queued.splice(0).forEach(deliver=>deliver());await new Promise(r=>setTimeout(r,0));});
+ expect(document.querySelector('.confirmed-draft')).toBeNull();expect((screen.getByLabelText('線路の目標最高速度') as HTMLInputElement).value).toBe('180');
+ await h.click(.0008);expect(document.querySelector('.confirmed-draft')).toBeTruthy();
+});
+test('Ctrl and off-road fallback cannot bypass the native placement guard',async()=>{
+ const h=await start();await h.click(-.0008);const base=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation(async(c,a)=>c==='preview_construction_plan'?{validationError:'placement refused'}:base(c,a));
+ await h.click(.0008,true);expect(document.querySelector('.confirmed-draft')).toBeNull();
+ const p=project(latitude+.001,longitude+.0008,camera);await act(async()=>{fireEvent.click(h.map,{clientX:p.x,clientY:p.y});await new Promise(r=>setTimeout(r,0));});expect(document.querySelector('.confirmed-draft')).toBeNull();expect(screen.getByText(/placement refused/)).toBeTruthy();
+});
+test('legacy OFM sources keep provider attribution even without drawn alignments',async()=>{
+ await start({...world,source_records:[{dataset_id:'ofm-tiles/legacy'}]});fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
+ expect(screen.getByRole('link',{name:'OpenFreeMap'})).toBeTruthy();expect(screen.getByRole('link',{name:'© OpenMapTiles'})).toBeTruthy();
 });

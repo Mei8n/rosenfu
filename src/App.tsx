@@ -661,7 +661,6 @@ export function App() {
   const roadDrawing=useRoadDrawing(graphBundle,enabled&&roadFollowing&&activeTool==="tracks"&&mapMode==="draw",roadDrawingTiles);
   useEffect(()=>{roadDrawing.cancel();},[draftPoints,draftFinished,infrastructure,world,activeTool,mapMode]);
   const roadFinishAfterPlacement=useRef(false);
-  const roadDrawingContext=useRef({world,activePathId,draftPoints,activeTool,mapMode,roadFollowing,infrastructure});roadDrawingContext.current={world,activePathId,draftPoints,activeTool,mapMode,roadFollowing,infrastructure};
   const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
   useEffect(()=>{setReferenceExtensionKey("");setSeamExtensionKey("");setSeamDestinationKey("");setSeamFocusKey("");if(!referenceCopy.active){setFrozenRoadBundle(null);setFrozenRoadTiles(old=>old.length?[]:old);}},[referenceCopy.active,graphBundle]);
   useEffect(()=>{
@@ -1231,7 +1230,7 @@ export function App() {
         return true;
   }
 
-  function placeTrackPoint(coordinates:GeoPoint,rect:{width:number;height:number},event:{detail:number;ctrlKey:boolean}) {
+  async function placeTrackPoint(coordinates:GeoPoint,rect:{width:number;height:number},event:{detail:number;ctrlKey:boolean}) {
       if(parallelMode){if(event.detail<2)placeParallel(coordinates);return;}
       if(referenceCopy.active){void referenceCopy.click(coordinates);return;}
       if(roadFollowingBlocked)return;
@@ -1282,6 +1281,14 @@ export function App() {
       if(!draftPoints.length)setStartLevel(infrastructure.level);
       const priorLevels=anchorHeights(draftPoints.length,draftPoints.length?draftAnchorLevels:undefined,startLevel,infrastructure.level),nextLevel=destination?endpointInfrastructure(destination.alignment,destination.endpoint).level:infrastructure.level;
       const nextLevels=[...priorLevels,nextLevel];
+      // Free/Ctrl placements while road assistance is selected must obey the
+      // same exact-candidate verdict, not bypass it through normal drawing.
+      if(roadFollowing&&draftPoints.length){
+        const activeRequest=requests.find((_request,index)=>buildPaths[index].id===activePathId);if(!activeRequest)return;
+        const request={...activeRequest,points:candidate.points,anchorIndices:anchorIndices([...draftPoints,coordinates],candidate.points),anchorLevels:nextLevels,destination:targetRef,junctionSource:draftJunctionSource&&draftPoints[0]?junctionDirection(draftJunctionSource,draftPoints[0],draftPoints[1]??coordinates):undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===activePathId).map(item=>({name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:nearestOnAlignment(candidate.points,item.station.point).position,lengthM:item.station.lengthM,widthM:12}))};
+        if(!await validatePlannedPlacement(request,event.detail>=2))return;
+      }
+      if(roadFollowing&&(roadFinishAfterPlacement.current||finishPendingPlacement.current)){setDraftFinished(true);roadFinishAfterPlacement.current=false;finishPendingPlacement.current=false;}
       setDraftAnchorLevels(nextLevels);setRedoAnchorLevels([]);setHeightAnchor(null);
       setAnchorUndo(items=>[...items,{kind:"point" as const,id:activePathId,before:{anchorLevels:priorLevels,redoAnchorLevels:[...redoAnchorLevels,nextLevel],points:draftPoints,geometry:draftEditedGeometry,redo:[...redoPoints,coordinates],destination:draftDestination,redoDestination:targetRef??draftRedoDestination},after:{anchorLevels:nextLevels,redoAnchorLevels:[],points:[...draftPoints,coordinates],geometry:editedForAppend,redo:[],destination:targetRef}}].slice(-50));setAnchorRedo([]);setDraftDestination(targetRef);setDraftRedoDestination(undefined);if(targetRef)setDraftFinished(true);setDraftEditedGeometry(editedForAppend);setDraftPoints((points) => [...points, coordinates]); setRedoPoints([]); setHoverPoint(null); return;
   }
@@ -1292,12 +1299,12 @@ export function App() {
     // Existing endpoints, planned endpoints, junction selection and finishing are
     // owned by normal construction, not inferred from road geometry.
     if(((!draftPoints.length||draftFinished)&&startTarget(point,rect.width,rect.height))||snappedEndpoint(point,rect.width,rect.height)) {placeTrackPoint(point,rect,event);roadDrawing.cancel();return;}
-    const captured=roadDrawingContext.current;
+    const captured=anchorPlacementContext.current;
     const nearEnd=(!draftFinished&&draftPoints.length)?startTarget(point,rect.width,rect.height):null;
     const destination=nearEnd?.kind==='built'?nearEnd:(!draftFinished&&draftPoints.length)?destinationTarget(point,rect.width,rect.height):null;
     const result=await roadDrawing.click({point:destination?.point??point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20});
-    const now=roadDrawingContext.current;
-    if(!result||Object.keys(captured).some(key=>captured[key as keyof typeof captured]!==now[key as keyof typeof now]))return;
+    const now=anchorPlacementContext.current;
+    if(!result||captured.world!==now.world||captured.key!==now.key)return;
     if(result.kind==='error'){setError(result.error);return;}
     if(result.kind==='free'){placeTrackPoint(point,rect,{...event,ctrlKey:true});return;}
     if(result.kind==='point'){placeTrackPoint(result.point,rect,{...event,ctrlKey:true});return;}
@@ -1885,7 +1892,7 @@ export function App() {
             </svg>
             <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
           </div>
-          <MapCredits waterModelVisible={status==="ready"} openFreeMapVisible={roadFollowing||!!draftEditedGeometry||parkedPaths.some(p=>!!p.editedGeometry)||!!world?.alignments?.length} derivedOsmVisible={!!world?.road_evidence_descriptors?.length||crossingCount>0||(roadFollowing&&!!graphBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>(!!path.reference||!!path.ofmPath)&&path.line.length>1)||!!(referenceCopy.active&&referencePreviewPoints&&referencePreviewPoints.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
+          <MapCredits waterModelVisible={status==="ready"} openFreeMapVisible={!!world?.road_evidence_descriptors?.length||parkedPaths.some(p=>!!p.ofmPath)||!!graphBundle?.graph.dataset.id.startsWith("ofm-tiles/")||!!constructionRoad.snapshot?.tileSnapshots?.length||!!world?.road_snapshots?.some(s=>s.source_url.startsWith("https://tiles.openfreemap.org/planet/"))||!!world?.source_records?.some(s=>s.dataset_id.startsWith("ofm-tiles/"))||roadFollowing||!!draftEditedGeometry||parkedPaths.some(p=>!!p.editedGeometry)||!!world?.alignments?.length} derivedOsmVisible={!!world?.road_evidence_descriptors?.length||crossingCount>0||(roadFollowing&&!!graphBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>(!!path.reference||!!path.ofmPath)&&path.line.length>1)||!!(referenceCopy.active&&referencePreviewPoints&&referencePreviewPoints.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
         </section>
         <aside className={panelCollapsed ? "side-panel collapsed" : "side-panel"}>
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
