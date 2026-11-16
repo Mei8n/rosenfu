@@ -19,7 +19,7 @@ async function start(snapshot:any=world){
  vi.stubGlobal('Worker',RoadWorker);
  const bundle={graph:{format:'rosenfu-reference-graph',version:1,dataset:{id:'t',revision:'r',source:'t',license:'t',bounds:{west:139,east:140,south:35,north:36}},nodes:[{osmId:'1',longitude:longitude-.002,latitude},{osmId:'2',longitude:longitude+.002,latitude}],edges:[{id:'1',osmWayId:'1',segmentIndex:0,from:'1',to:'2',mode:'road',layer:0,level:null,bridge:false,tunnel:false}]},roadWays:{'1':{highway:'residential',access:null,motorVehicle:null,structureUnsupported:false}},graphSha256:'a'.repeat(64),sourceSha256:'b'.repeat(64),source:{source:'t',sourceDate:null,license:'t',attribution:'t'}};
  mock.snapshot={bundle,roads:[]};
- vi.mocked(invoke).mockImplementation(async(command)=>{if(command==='engine_info')return {name:'Rosenfu',version:'road-app'};if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};if(command==='autosave_status')return {available:false};if(command==='save_world')return {saved:true};return snapshot;});
+ vi.mocked(invoke).mockImplementation(async(command)=>{if(command==='engine_info')return {name:'Rosenfu',version:'road-app'};if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};if(command==='autosave_status')return {available:false};if(command==='save_world')return {saved:true};if(command==='preview_construction_plan')return {validationError:null,newCrossingCount:0};return snapshot;});
  render(<App/>);await screen.findByText(/road-app/);fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
  const map=document.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
  const click=async(offset:number,ctrlKey=false)=>{const p=project(latitude,longitude+offset,camera);await act(async()=>{fireEvent.click(map,{clientX:p.x,clientY:p.y,ctrlKey});await new Promise(r=>setTimeout(r,0));});};return {map,click};
@@ -49,4 +49,11 @@ test('road continuation connects exact built endpoints and preserves their origi
  expect(screen.getByRole('button',{name:'道路に合わせる'}).getAttribute('aria-pressed')).toBe('true');expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
  fireEvent.click(screen.getByRole('tab',{name:'セーブデータ'}));fireEvent.click(screen.getByRole('button',{name:'ワールドを保存'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world')).toBe(true));
  const plans=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as any).constructionPlans;expect(plans.draftExtension).toEqual({alignmentId:'10',endpoint:'end'});expect(plans.draftDestination).toEqual({alignmentId:'11',endpoint:'start'});expect(plans.draftPoints[0]).toEqual(a);expect(plans.draftPoints.at(-1)).toEqual(b);expect(source.points[1]).toEqual(a);expect(target.points[0]).toEqual(b);
+});
+
+test('native refusal and transport failure never append the road anchor',async()=>{
+ const h=await start();await h.click(-.0008);const base=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation(async(c,a)=>c==='preview_construction_plan'?{validationError:'water refusal'}:base(c,a));await h.click(.0008);expect(document.querySelector('.confirmed-draft')).toBeNull();expect(screen.getByText(/water refusal/)).toBeTruthy();
+ vi.mocked(invoke).mockImplementation(async(c,a)=>{if(c==='preview_construction_plan')throw Error('network');return base(c,a);});await h.click(.0008);expect(document.querySelector('.confirmed-draft')).toBeNull();expect(screen.getByText(/敷設判定を取得できません/)).toBeTruthy();
+ vi.mocked(invoke).mockImplementation(base);await h.click(.0008);expect(document.querySelector('.confirmed-draft')).toBeTruthy();
 });
