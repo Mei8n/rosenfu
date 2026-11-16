@@ -12,7 +12,7 @@ export function useRoadDrawing(bundle:ReferenceGraphBundle|null,enabled:boolean,
  useEffect(()=>{
   if(!enabled||!bundle||typeof Worker==='undefined'){cancel();return;}
   const w=new Worker(new URL('./roadDrawing.worker.ts',import.meta.url),{type:'module'});worker.current=w;w.postMessage({kind:'load',bundle,tileLines});
-  w.onmessage=e=>{const task=inFlight.current;if(!task||task.id!==e.data.id)return;inFlight.current=null;task.resolve(e.data.result);if(!task.click&&task.id===hoverId.current)setPreview(e.data.result);dispatch();};
+  w.onmessage=e=>{const task=inFlight.current;if(!task||task.id!==e.data.id)return;inFlight.current=null;task.resolve(e.data.result);if(task.id===hoverId.current)setPreview(e.data.result);dispatch();};
   w.onerror=()=>{inFlight.current?.resolve({kind:'error',error:'道路経路を計算できませんでした'});inFlight.current=null;pending.current?.resolve(null);pending.current=null;};
   return()=>{w.terminate();worker.current=null;inFlight.current?.resolve(null);inFlight.current=null;cancel();};
  },[bundle,enabled,tileLines]);
@@ -25,5 +25,5 @@ export function useRoadDrawing(bundle:ReferenceGraphBundle|null,enabled:boolean,
   if(click&&(pending.current?.click||inFlight.current?.click)){resolve(null);return;}
   pending.current?.resolve(null);pending.current={id,query,click,resolve};dispatch();
  });
- return {preview,cancel,hover:(q:RoadDrawingQuery)=>{void query(q);},click:(q:RoadDrawingQuery)=>query(q,true)};
+ return {preview,cancel,clickPending:()=>!!(inFlight.current?.click||pending.current?.click),hover:(q:RoadDrawingQuery)=>{void query(q);},click:(q:RoadDrawingQuery)=>query(q,true)};
 }

@@ -28,6 +28,6 @@ export function createRoadDrawingEngine(bundle:ReferenceGraphBundle,tileLines:re
    // Existing rail endpoints and manually placed anchors remain exact. The short
    // lead onto the nearby road is drawn explicitly, never changes a built rail.
    path.points[0]=query.start;return {kind:'route',point,line:fitRoadFollow(path.points)};
-  }catch(error){return {kind:'error',error:error instanceof Error?error.message:String(error)};}
+  }catch(error){const message=error instanceof Error?error.message:String(error);return {kind:'error',error:/^[\x00-\x7f]*$/.test(message)?'道路のつながりを確認できません。区間を短くして選び直してください':message};}
  };
 }
