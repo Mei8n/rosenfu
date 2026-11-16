@@ -496,6 +496,24 @@ fn update_alignment_section_infrastructure(
         )
 }
 #[tauri::command]
+async fn update_alignment_section_track_type(
+    app: tauri::AppHandle,
+    selections: Vec<session::AlignmentSectionSelection>,
+    expected_alignments: Vec<rosenfu_core::world::Alignment>,
+    track_type: rosenfu_core::world::TrackType,
+    construction_plans: rosenfu_core::world::ConstructionPlans,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| {
+        editor.update_alignment_section_track_type(
+            selections,
+            expected_alignments,
+            track_type,
+            construction_plans,
+        )
+    })
+    .await
+}
+#[tauri::command]
 async fn undo_alignment_deletion(app: tauri::AppHandle) -> Result<WorldDraft, String> {
     run_demolition(app, move |editor| editor.undo_alignment_deletion()).await
 }
@@ -837,6 +855,7 @@ fn main() {
             delete_alignment_section,
             delete_alignment_sections,
             update_alignment_section_infrastructure,
+            update_alignment_section_track_type,
             update_alignment_anchor_height,
             undo_alignment_deletion,
             rename_company,

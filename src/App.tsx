@@ -161,6 +161,7 @@ export function App() {
   const [rangeSelection,setRangeSelection]=useState<SectionSelection[]>([]);
   const [confirmRangeDelete,setConfirmRangeDelete]=useState(false);
   const [rangeTrackCount,setRangeTrackCount]=useState<1|2|4|null>(null);
+  const [rangeTrackType,setRangeTrackType]=useState<"normal"|"high_speed"|null>(null);
   const [rangeLevel,setRangeLevel]=useState<SectionInfrastructure["level"]|null>(null);
   const suppressMapClick = useRef(false);
   const suppressSelectionClick = useRef(false);
@@ -778,7 +779,7 @@ export function App() {
       setWorld(snapshot);setDirty(true);setTrackDeleteUndo({...entry,world:snapshot});setTrackDeleteRedo(null);
     });
   }
-  useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);const selection=boxGesture.current;boxGesture.current=null;setSelectionBox(null);const svg=svgRef.current;if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);},[world,activeTool]);
+  useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);setRangeTrackType(null);const selection=boxGesture.current;boxGesture.current=null;setSelectionBox(null);const svg=svgRef.current;if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);},[world,activeTool]);
   useEffect(()=>{setBuiltHeightSelection(selection=>currentBuiltHeightSelection(selection,world?.alignments??[],activeTool==="select"));},[world,activeTool]);
   function updateBuiltAnchorHeight(level:SectionInfrastructure["level"]){
     if(!enabled||unapplied||!builtHeightSelection)return;
@@ -792,6 +793,11 @@ export function App() {
   const selectedInfrastructure=rangeSelection.flatMap(row=>row.sectionIndices.map(index=>alignments.find(line=>line.id===row.alignmentId)?.infrastructure?.[index]??DEFAULT_INFRASTRUCTURE));
   const selectedCountValues=new Set(selectedInfrastructure.map(value=>value.track_count));
   const selectedLevelValues=new Set(selectedInfrastructure.map(value=>value.level));
+  function updateRangeTrackType(){
+    if(!enabled||unapplied||!rangeCount||rangeTrackType===null)return;
+    const args={selections:rangeSelection,expectedAlignments:rangeSelection.map(row=>alignments.find(line=>line.id===row.alignmentId)!),constructionPlans,trackType:rangeTrackType};
+    void perform(async()=>{const snapshot=await invoke<World>("update_alignment_section_track_type",args);if(equalWorldSnapshots(snapshot,world))return;setWorld(snapshot);setDirty(true);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint,command:"update_alignment_section_track_type",args});});
+  }
   function updateRangeInfrastructure(){
     if(!enabled||unapplied||!rangeCount||(rangeTrackCount===null&&rangeLevel===null))return;
     const args={selections:rangeSelection,expectedAlignments:rangeSelection.map(row=>alignments.find(line=>line.id===row.alignmentId)!),constructionPlans,trackCount:rangeTrackCount,level:rangeLevel};
@@ -1050,7 +1056,7 @@ export function App() {
     if(event.button===0&&activeTool==="select"&&enabled){
       const p=coordinatesFromClient(event.clientX,event.clientY,event.currentTarget.getBoundingClientRect(),cameraRef.current);if(!p)return;
       const point=project(p.latitude,p.longitude,cameraRef.current),box={start:point,end:point};
-      boxGesture.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,box,camera:cameraRef.current,additive:event.shiftKey};setSelectionBox(box);if(!event.shiftKey)setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);
+      boxGesture.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,box,camera:cameraRef.current,additive:event.shiftKey};setSelectionBox(box);if(!event.shiftKey)setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);setRangeTrackType(null);
       suppressMapClick.current=true;suppressSelectionClick.current=true;event.currentTarget.setPointerCapture?.(event.pointerId);return;
     }
     suppressMapClick.current = true;
@@ -1942,7 +1948,7 @@ export function App() {
             {deletePlanConfirm&&<PlanDeleteDialog name={planName.trim()||`計画 ${activePlanId}`} onCancel={()=>setDeletePlanConfirm(false)} onDelete={deleteCurrentPlan}/>}
             <div className="plan-actions"><button className="secondary" disabled={!enabled||referenceCopy.active} onClick={()=>setDeletePlanConfirm(true)}>計画を削除</button><button className="secondary" disabled={!enabled||referenceCopy.active||!planHasContent} onClick={clearCurrentPlan}>下書きを消去</button><button disabled={!enabled||referenceCopy.active||anchorPlacementInProgress||!planBuildable} onClick={commitAlignment}>計画を着工</button></div>
           </section>
-          <section role="tabpanel" id="panel-select" aria-labelledby="tab-select" hidden={activeTool!=="select"}><div className="range-selection-actions"><span>{rangeCount}区間を選択</span>{rangeCount>0&&<><span aria-label="選択区間の線路数">{selectedCountValues.size>1?"線路数: 混在":COUNT_LABELS[selectedInfrastructure[0].track_count]}</span><span aria-label="選択区間の高さ">{selectedLevelValues.size>1?"高さ: 混在":LEVEL_LABELS[selectedInfrastructure[0].level]}</span><label>線路数<select aria-label="選択区間の線路数変更" value={rangeTrackCount??""} disabled={!enabled} onChange={event=>setRangeTrackCount(event.target.value?Number(event.target.value) as 1|2|4:null)}><option value="">変更しない</option>{Object.entries(COUNT_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><label>高さ<select aria-label="選択区間の高さ変更" value={rangeLevel??""} disabled={!enabled} onChange={event=>setRangeLevel(event.target.value?event.target.value as SectionInfrastructure["level"]:null)}><option value="">変更しない</option>{Object.entries(LEVEL_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><button disabled={!enabled||unapplied||(rangeTrackCount===null&&rangeLevel===null)} onClick={updateRangeInfrastructure}>選択区間へ適用</button></>}<button disabled={!enabled||!rangeCount||unapplied} onClick={()=>{setError("");setConfirmRangeDelete(true);}}>選択区間を撤去</button><button className="secondary" disabled={!rangeCount} onClick={()=>setRangeSelection([])}>選択解除</button></div></section>
+          <section role="tabpanel" id="panel-select" aria-labelledby="tab-select" hidden={activeTool!=="select"}><div className="range-selection-actions"><span>{rangeCount}区間を選択</span>{rangeCount>0&&<><span aria-label="選択区間の線路数">{selectedCountValues.size>1?"線路数: 混在":COUNT_LABELS[selectedInfrastructure[0].track_count]}</span><span aria-label="選択区間の高さ">{selectedLevelValues.size>1?"高さ: 混在":LEVEL_LABELS[selectedInfrastructure[0].level]}</span><label>線路数<select aria-label="選択区間の線路数変更" value={rangeTrackCount??""} disabled={!enabled} onChange={event=>setRangeTrackCount(event.target.value?Number(event.target.value) as 1|2|4:null)}><option value="">変更しない</option>{Object.entries(COUNT_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><label>高さ<select aria-label="選択区間の高さ変更" value={rangeLevel??""} disabled={!enabled} onChange={event=>setRangeLevel(event.target.value?event.target.value as SectionInfrastructure["level"]:null)}><option value="">変更しない</option>{Object.entries(LEVEL_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><button disabled={!enabled||unapplied||(rangeTrackCount===null&&rangeLevel===null)} onClick={updateRangeInfrastructure}>選択区間へ適用</button><label>線路種別<select aria-label="選択区間の線路種別変更" value={rangeTrackType??""} disabled={!enabled} onChange={event=>setRangeTrackType(event.target.value?event.target.value as "normal"|"high_speed":null)}><option value="">変更しない</option><option value="normal">通常</option><option value="high_speed">高速</option></select></label><button disabled={!enabled||unapplied||rangeTrackType===null} onClick={updateRangeTrackType}>線路種別を適用</button></>}<button disabled={!enabled||!rangeCount||unapplied} onClick={()=>{setError("");setConfirmRangeDelete(true);}}>選択区間を撤去</button><button className="secondary" disabled={!rangeCount} onClick={()=>setRangeSelection([])}>選択解除</button></div></section>
           <section role="tabpanel" id="panel-delete" aria-labelledby="tab-delete" hidden={activeTool!=="delete"} />
           <section className="station-editor" role="tabpanel" id="panel-stations" aria-labelledby="tab-stations" hidden={activeTool !== "stations"}>
 

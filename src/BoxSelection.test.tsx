@@ -93,3 +93,18 @@ test('Delete confirmation clears a previous action error just like the delete bu
  expect(screen.getByRole('dialog')).toBeTruthy();expect(screen.queryByText(/更新競合/)).toBeNull();
  expect(invoke).not.toHaveBeenCalledWith('delete_alignment_sections',expect.anything());
 });
+
+test('selected track category is applied explicitly and supports undo/redo',async()=>{
+ const map=await start();drag(map);
+ const apply=screen.getByRole('button',{name:'線路種別を適用'});expect(apply.hasAttribute('disabled')).toBe(true);
+ fireEvent.change(screen.getByLabelText('選択区間の線路種別変更'),{target:{value:'high_speed'}});
+ const changed={...built,alignments:[{...alignment,track_type:'high_speed'}]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='update_alignment_section_track_type'?changed:built);
+ await act(async()=>{fireEvent.click(apply);});
+ expect(invoke).toHaveBeenCalledWith('update_alignment_section_track_type',expect.objectContaining({trackType:'high_speed',selections:[{alignmentId:'3',sectionIndices:[0]}],expectedAlignments:[alignment]}));
+ expect(map.querySelector('[data-selected-section]')).toBeNull();
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});
+ expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});});
+ expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='update_alignment_section_track_type')).toHaveLength(2);
+});
