@@ -9,7 +9,7 @@ test('preview uses complete request and ignores delayed old-world results',async
  let oldResolve:(value:unknown)=>void=()=>{};const old={},next={},request={alignments:[{anchorLevels:['ground','elevated','ground']}],stations:[]};
  vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>oldResolve=resolve)).mockResolvedValueOnce({ok:true});
  const {result,rerender}=renderHook(({world})=>useConstructionPreview(world,request),{initialProps:{world:old}});
- await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',request));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',{...request,roads:[]}));
  rerender({world:next});await waitFor(()=>expect(result.current?.value).toEqual({ok:true}));
  await act(async()=>oldResolve({stale:true}));expect(result.current?.value).toEqual({ok:true});
 });
