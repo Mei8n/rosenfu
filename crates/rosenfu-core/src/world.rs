@@ -699,4 +699,5 @@ mod road_path;
 pub use road_path::AlignmentRoadPathProvenance;
 
 mod water_fine;
+mod water_national;
 pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskRequest};

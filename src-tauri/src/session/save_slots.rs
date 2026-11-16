@@ -14,6 +14,8 @@ impl WorldEditor {
     }
     pub fn create_new_world(&mut self, company_name: String) -> Result<WorldDraft, String> {
         let mut candidate = Self::new();
+        // Provider configuration and immutable data cache belong to the app, not a save slot.
+        candidate.water_model = self.water_model.clone();
         candidate.rename_company(company_name)?;
         *self = candidate;
         Ok(self.snapshot())

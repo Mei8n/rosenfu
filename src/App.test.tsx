@@ -326,7 +326,8 @@ test.each([false,true])("camera changes do not edit world IDs/coordinates and le
   fireEvent.change(screen.getByLabelText("中心経度"), { target: { value: "141.35" } });
   fireEvent.click(screen.getByRole("button", { name: "座標へ移動" }));
   fireEvent.click(screen.getByRole("button", { name: "拡大" }));
-  expect(vi.mocked(invoke).mock.calls, JSON.stringify(vi.mocked(invoke).mock.calls)).toHaveLength(count);
+  // Camera movement may request water metadata, but must never write the world.
+  expect(vi.mocked(invoke).mock.calls.slice(count)).toEqual([["water_mask_requests",{bounds:[141.3,43.05,141.4,43.1]}]]);
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   fireEvent.click(screen.getByRole("button", { name: "読込を続ける" }));

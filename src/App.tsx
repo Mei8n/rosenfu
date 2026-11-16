@@ -1,5 +1,6 @@
 import {ofmEndpointPick} from './ofmEndpointPick';
 import {useWaterModelAcquisition} from './useWaterModelAcquisition';
+import {waterAcquisitionBounds} from './waterAcquisitionBounds';
 import {useOfmSeamCopy} from './useOfmSeamCopy';
 import {buildTileRoadPath,type TilePathPick} from './ofmDerivedTilePath';
 import type {DraftTileSnapshot} from './ofmReferenceDraft';
@@ -1284,7 +1285,7 @@ export function App() {
   const cursorDestination=cursorPreviewActive&&hoverPoint&&cursorPosition?destinationTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
   const previewRequests=cursorPreviewActive?requests.map((request,index)=>buildPaths[index].id!==activePathId?request:{...request,points:previewLine,anchorIndices:anchorIndices(previewAnchors,previewLine),anchorLevels:[...anchorHeights(draftPoints.length,draftAnchorLevels,startLevel,infrastructure.level),cursorDestination?endpointInfrastructure(cursorDestination.alignment,cursorDestination.endpoint).level:infrastructure.level],destination:cursorDestination?{alignmentId:cursorDestination.alignment.id,endpoint:cursorDestination.endpoint}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===activePathId).map(item=>({name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:nearestOnAlignment(previewLine,item.station.point).position,lengthM:item.station.lengthM,widthM:12}))}):requests;
   const previewRequestValid=cursorPreviewActive?previewRequests.every(request=>request.points.length>=2):planBuildable;
-  const waterModelRevision=useWaterModelAcquisition(status==="ready",world);
+  const waterModelRevision=useWaterModelAcquisition(status==="ready",world,waterAcquisitionBounds(previewRequests.flatMap(r=>r.points),camera));
   const nativeConstructionPreview=useConstructionPreview(world,status==="ready"&&previewRequestValid?{alignments:previewRequests,stations}:null,waterModelRevision);
   function commitAlignment() {
     if (!enabled || !planBuildable || anchorGesture.current) return;
@@ -1789,7 +1790,7 @@ export function App() {
             </svg>
             <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
           </div>
-          <MapCredits openFreeMapVisible={!!world?.road_evidence_descriptors?.length||parkedPaths.some(p=>!!p.ofmPath)||!!graphBundle?.graph.dataset.id.startsWith("ofm-tiles/")||!!constructionRoad.snapshot?.tileSnapshots?.length||!!world?.road_snapshots?.some(s=>s.source_url.startsWith("https://tiles.openfreemap.org/planet/"))||!!world?.source_records?.some(s=>s.dataset_id.startsWith("ofm-tiles/"))} derivedOsmVisible={!!world?.road_evidence_descriptors?.length||crossingCount>0||(roadFollowing&&!!graphBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>(!!path.reference||!!path.ofmPath)&&path.line.length>1)||!!(referenceCopy.active&&referencePreviewPoints&&referencePreviewPoints.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
+          <MapCredits waterModelVisible={status==="ready"} openFreeMapVisible={!!world?.road_evidence_descriptors?.length||parkedPaths.some(p=>!!p.ofmPath)||!!graphBundle?.graph.dataset.id.startsWith("ofm-tiles/")||!!constructionRoad.snapshot?.tileSnapshots?.length||!!world?.road_snapshots?.some(s=>s.source_url.startsWith("https://tiles.openfreemap.org/planet/"))||!!world?.source_records?.some(s=>s.dataset_id.startsWith("ofm-tiles/"))} derivedOsmVisible={!!world?.road_evidence_descriptors?.length||crossingCount>0||(roadFollowing&&!!graphBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>(!!path.reference||!!path.ofmPath)&&path.line.length>1)||!!(referenceCopy.active&&referencePreviewPoints&&referencePreviewPoints.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
         </section>
         <aside className={panelCollapsed ? "side-panel collapsed" : "side-panel"}>
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
