@@ -38,3 +38,13 @@ test('rename cancel and blank draft never write',()=>{
  expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(rename).not.toHaveBeenCalled();expect(screen.queryByRole('textbox')).toBeNull();expect(dirty).toHaveBeenLastCalledWith(false);expect(dirty).toHaveBeenCalledWith(true);
 });
+
+test('route search is normalized and never exposes internal identifiers',()=>{
+ const onChoose=vi.fn();
+ const {container}=render(<RouteDirectory world={{routes:[{id:'private-route-id',name:'Express',start:'station-secret'}]}} enabled selected={null} onChoose={onChoose}/>);
+ fireEvent.change(screen.getByLabelText('路線を探す'),{target:{value:'ＥＸＰＲＥＳＳ'}});
+ fireEvent.click(screen.getByRole('button',{name:'編集: Express'}));expect(onChoose).toHaveBeenCalledWith('private-route-id');
+ expect(container.textContent).not.toContain('private-route-id');
+ fireEvent.change(screen.getByLabelText('路線を探す'),{target:{value:'なし'}});
+ expect(screen.getByText('一致する路線がありません')).toBeTruthy();
+});
