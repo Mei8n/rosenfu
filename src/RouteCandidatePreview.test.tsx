@@ -97,3 +97,16 @@ test('alternative window defaults to the certified shortest and can return to ma
  expect(screen.queryByRole('dialog')).toBeNull();expect(h.onSave).not.toHaveBeenCalled();
  await h.click('2');expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'2',viaStationIds:['3']});
 });
+
+test('editing extends from the existing endpoint without rerouting saved segments',async()=>{
+ let pick:((id:string)=>void)|undefined;
+ const extension:Candidate={stations:['3','4'],segments:[{kind:'alignment',alignment_id:'a',from:'3',to:'4'}]};
+ const combined:Membership={path:{stations:['1','2','3','4'],segments:[...path.segments,...extension.segments]},member_stations:['1','2','3','4'],excluded_stations:[]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='preview_route_candidates'?{status:'unique',candidates:[extension],truncated:false,shortest_candidate_index:0}:combined);
+ const onSave=vi.fn().mockResolvedValue(undefined);
+ render(<RouteCandidatePreview editRoute={{id:'r',name:'本線',path}} stations={[...stations,{id:'4',name:'延伸先'}]} worldVersion={world} enabled canApply onSave={onSave} startSequenceKey={1} mapPickTarget="sequence" onMapPick={(_,cb)=>{pick=cb;}}/>);
+ await act(async()=>pick?.('4'));
+ expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'3',end:'4'});
+ expect(invoke).toHaveBeenCalledWith('preview_route_membership',{start:'1',segments:combined.path.segments,excludedStations:[]});
+ fireEvent.click(finish());await waitFor(()=>expect(onSave).toHaveBeenCalledWith('本線',combined));
+});
