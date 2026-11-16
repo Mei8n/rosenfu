@@ -27,7 +27,8 @@ export function hasOfmPath<T extends {ofmPath?:unknown}>(path:T):path is T&{ofmP
 export function serializePlannedReference(path:{reference?:PlannedPath['reference'];ofmPath?:unknown;extension?:unknown;destination?:unknown}):{reference?:PlannedPath['reference'];ofmPath?:OfmPathDescriptor}{
  if(hasOfmPath(path)){
   if(path.reference!=null)throw Error('実在形状の単一区間参照とタイル境界参照は併用できません。');
-  if(path.extension!=null||path.destination!=null)throw Error('タイル境界を跨ぐ道路追従の既存線路への延伸・接続はまだ未対応です。独立した線路として計画してください。');
+  // Connection fields stay outside the source descriptor and are validated by the backend.
+  for(const endpoint of [path.extension,path.destination])if(endpoint!=null){const e=object(endpoint,['alignmentId','endpoint']);if(typeof e.alignmentId!=='string'||!e.alignmentId||(e.endpoint!=='start'&&e.endpoint!=='end'))error();}
   return {ofmPath:parseOfmPathDescriptor(path.ofmPath)};
  }
  return path.reference?{reference:path.reference}:{};
