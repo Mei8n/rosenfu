@@ -303,7 +303,7 @@ test("delayed slot discovery does not turn the early load picker into a world mu
  expect(screen.getByRole("dialog",{name:"ワールドを選択"})).toBeTruthy();
  await act(async()=>{resolveSlots({active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]});});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith("autosave_status",{slotId:"test-slot"}));
- expect(vi.mocked(invoke).mock.calls.every(([command])=>["engine_info","world_snapshot","list_save_slots","autosave_status"].includes(command))).toBe(true);
+ expect(vi.mocked(invoke).mock.calls.every(([command])=>["engine_info","world_snapshot","water_mask_requests","list_save_slots","autosave_status"].includes(command))).toBe(true);
 });
 
 test("plan name disables saved-info autocomplete while retaining edits across plan switches",async()=>{

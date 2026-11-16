@@ -31,7 +31,7 @@ test('middle drag pans instead of selecting or building and pointer cancel does 
  const map=await start();const before=map.querySelector('.alignment-hit')?.getAttribute('d');drag(map,1);
  expect(map.querySelector('.alignment-hit')?.getAttribute('d')).not.toBe(before);expect(map.querySelector('[data-selected-section]')).toBeNull();
  fireEvent.pointerDown(map,{clientX:100,clientY:140,button:0});fireEvent.pointerMove(map,{clientX:150,clientY:160});fireEvent.pointerCancel(map);expect(map.querySelector('[data-selected-section]')).toBeNull();
- expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','list_save_slots']);
+ expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','water_mask_requests','list_save_slots']);
 });
 test('infrastructure change keeps unspecified field, snapshots selected alignment, and retains rejected edits',async()=>{
  const map=await start();drag(map);
@@ -51,7 +51,7 @@ test('infrastructure change keeps unspecified field, snapshots selected alignmen
 test.each(['線路','駅設置','削除'])('middle pan does not place or delete in %s mode',async mode=>{
  const map=await start();fireEvent.click(screen.getByRole('tab',{name:mode}));const before=map.querySelector('.alignment-hit')?.getAttribute('d');drag(map,1);
  expect(map.querySelector('.alignment-hit')?.getAttribute('d')).not.toBe(before);expect(screen.queryByRole('dialog')).toBeNull();
- expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','list_save_slots']);
+ expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','water_mask_requests','list_save_slots']);
  if(mode==='削除')expect(map.classList.contains('map-delete-mode')).toBe(true);
 });
 test.each(['keyboard','wheel'])('zoom cancels in-flight rectangle before camera changes: %s',async kind=>{

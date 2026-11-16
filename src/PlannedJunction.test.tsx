@@ -39,7 +39,7 @@ test('midline click creates planned exact source without mutating built track, t
  const map=await start({...empty,next_id:'4',alignments:[source]});
  fireEvent.click(map,{clientX:200,clientY:151});fireEvent.pointerMove(map,{clientX:300,clientY:170});fireEvent.click(map,{clientX:300,clientY:170});fireEvent.click(map,{clientX:300,clientY:170});
  expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(1);
- expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','list_save_slots','autosave_status']);
+ expect(vi.mocked(invoke).mock.calls.map(([c])=>c)).toEqual(['engine_info','world_snapshot','water_mask_requests','list_save_slots','autosave_status']);
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((c,a)=>c==='build_plan'?Promise.reject(Error('junction inspected')):original(c,a));
  fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/junction inspected/);
  const args=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as {alignments:{junctionSource:{fraction:number;expectedAlignment:unknown;reverse:boolean};points:unknown[]}[]};

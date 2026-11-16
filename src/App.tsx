@@ -1,4 +1,5 @@
 import {ofmEndpointPick} from './ofmEndpointPick';
+import {useWaterModelAcquisition} from './useWaterModelAcquisition';
 import {useOfmSeamCopy} from './useOfmSeamCopy';
 import {buildTileRoadPath,type TilePathPick} from './ofmDerivedTilePath';
 import type {DraftTileSnapshot} from './ofmReferenceDraft';
@@ -1283,7 +1284,8 @@ export function App() {
   const cursorDestination=cursorPreviewActive&&hoverPoint&&cursorPosition?destinationTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null;
   const previewRequests=cursorPreviewActive?requests.map((request,index)=>buildPaths[index].id!==activePathId?request:{...request,points:previewLine,anchorIndices:anchorIndices(previewAnchors,previewLine),anchorLevels:[...anchorHeights(draftPoints.length,draftAnchorLevels,startLevel,infrastructure.level),cursorDestination?endpointInfrastructure(cursorDestination.alignment,cursorDestination.endpoint).level:infrastructure.level],destination:cursorDestination?{alignmentId:cursorDestination.alignment.id,endpoint:cursorDestination.endpoint}:undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===activePathId).map(item=>({name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:nearestOnAlignment(previewLine,item.station.point).position,lengthM:item.station.lengthM,widthM:12}))}):requests;
   const previewRequestValid=cursorPreviewActive?previewRequests.every(request=>request.points.length>=2):planBuildable;
-  const nativeConstructionPreview=useConstructionPreview(world,status==="ready"&&previewRequestValid?{alignments:previewRequests,stations}:null);
+  const waterModelRevision=useWaterModelAcquisition(status==="ready",world);
+  const nativeConstructionPreview=useConstructionPreview(world,status==="ready"&&previewRequestValid?{alignments:previewRequests,stations}:null,waterModelRevision);
   function commitAlignment() {
     if (!enabled || !planBuildable || anchorGesture.current) return;
     void perform(async () => {

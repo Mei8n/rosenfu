@@ -19,3 +19,10 @@ test('changed request immediately invalidates prior refusal',async()=>{
  await waitFor(()=>expect(result.current?.error).toContain('距離不足'));
  rerender({request:{alignments:[{name:'B'}],stations:[]}});expect(result.current).toBeNull();
 });
+
+test('newly installed water input invalidates the previous preview',async()=>{
+ vi.mocked(invoke).mockRejectedValueOnce('細密未取得').mockRejectedValueOnce('水域上に地上不可');const world={},request={alignments:[{}],stations:[]};
+ const {result,rerender}=renderHook(({revision})=>useConstructionPreview(world,request,revision),{initialProps:{revision:0}});
+ await waitFor(()=>expect(result.current?.error).toBe('細密未取得'));
+ rerender({revision:1});expect(result.current).toBeNull();await waitFor(()=>expect(result.current?.error).toBe('水域上に地上不可'));
+});

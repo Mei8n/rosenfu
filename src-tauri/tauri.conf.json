@@ -19,7 +19,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://tiles.openfreemap.org/planet https://tiles.openfreemap.org/planet/ ipc: http://ipc.localhost https://data.anita.garden/trainworld/2026-11-13/realgraph/; worker-src 'self'; style-src 'self'; img-src 'self' data: https://cyberjapandata.gsi.go.jp https://tile.openstreetmap.org"
+      "csp": "default-src 'self'; connect-src 'self' https://raw.githubusercontent.com/Mei8n/rosenfu/108195ed2fe57b5ab8ea4f787a560a5fa30362b4/data/water-mask-trial-20261114/ https://tiles.openfreemap.org/planet https://tiles.openfreemap.org/planet/ ipc: http://ipc.localhost https://data.anita.garden/trainworld/2026-11-13/realgraph/; worker-src 'self'; style-src 'self'; img-src 'self' data: https://cyberjapandata.gsi.go.jp https://tile.openstreetmap.org"
     }
   },
   "bundle": {

@@ -18,3 +18,4 @@ pub mod world;
 
 /// Bounded, offline OpenFreeMap tile evidence decoding (not yet world storage).
 pub mod ofm_evidence;
+pub mod water_observations;

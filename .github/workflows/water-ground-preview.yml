@@ -1,0 +1,32 @@
+name: Water ground observations
+on:
+  pull_request:
+    paths:
+      - 'crates/rosenfu-core/src/water_observations.rs'
+      - 'crates/rosenfu-core/src/lib.rs'
+      - 'crates/rosenfu-storage/tests/water_ground_preview.rs'
+      - 'crates/rosenfu-storage/tests/fixtures/kanmon-water-ground.json'
+      - 'src-tauri/src/session.rs'
+      - 'src-tauri/src/session/**'
+      - 'crates/rosenfu-core/src/world/vertical_profile.rs'
+      - 'crates/rosenfu-core/src/world/alignment.rs'
+      - 'crates/rosenfu-core/src/world.rs'
+      - '.github/workflows/water-ground-preview.yml'
+permissions:
+  contents: read
+jobs:
+  water-ground:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      TMPDIR: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo test --locked -p rosenfu-storage --test water_ground_preview water_ground_
