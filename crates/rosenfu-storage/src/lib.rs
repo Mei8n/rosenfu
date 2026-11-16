@@ -279,7 +279,7 @@ pub fn load_world_with_version(
 fn lock_save(path: &Path) -> Result<File, StorageError> {
     let mut name = path.as_os_str().to_os_string();
     name.push(".lock");
-    let lock_path = PathBuf::from(name);
+    let lock_path = slots::slot_lock_path(path).unwrap_or_else(|| PathBuf::from(name));
     regular_file_exists(&lock_path)?;
     let file = OpenOptions::new()
         .read(true)
@@ -451,4 +451,7 @@ mod tests {
 }
 
 mod slots;
-pub use slots::{create_save_slot, list_save_slots, save_slot_path, SaveSlot};
+pub use slots::{
+    create_save_slot, list_deleted_save_slots, list_save_slots, move_save_slot, save_slot_path,
+    SaveSlot,
+};

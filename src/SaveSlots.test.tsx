@@ -40,8 +40,8 @@ test('new world asks before discarding edits and never overwrites a slot',async(
  fireEvent.click(screen.getByRole('button',{name:'戻る'}));expect((document.getElementById('company-name') as HTMLInputElement).value).toBe('未適用会社');
  fireEvent.click(modal.getByRole('button',{name:'作成'}));fireEvent.click(screen.getByRole('button',{name:'変更を破棄して作成'}));await screen.findByText(/新しいワールドを作成しました/);
  expect(invoke).toHaveBeenCalledWith('create_new_world',{companyName:'新会社'});
- expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world'||c==='confirm_manual_save'||c==='save_world_as')).toBe(false);
- expect(screen.getByText('初回保存後に自動保存を開始します。')).toBeTruthy();
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world'||c==='confirm_manual_save')).toBe(false);
+ expect(invoke).toHaveBeenCalledWith('save_world_as',expect.objectContaining({name:'新会社'}));
 });
 test('save as creates a separate slot, keeps name on failure and never calls overwrite',async()=>{
  const state=await setup();fireEvent.click(screen.getByRole('button',{name:'別のセーブとして保存'}));const modal=within(screen.getByRole('dialog',{name:'別のセーブとして保存'}));
@@ -95,4 +95,17 @@ test('world name dialogs disable saved-info autocomplete without preventing inpu
   expect(input.value).toBe('試験セーブ');
   fireEvent.click(modal.getByRole('button',{name:'キャンセル'}));
  }
+});
+
+test('failed initial save detaches the old slot and leaves the new world editable',async()=>{
+ const state=await setup();state.failSave=true;
+ fireEvent.click(screen.getByRole('button',{name:'新しいワールド'}));
+ const modal=within(screen.getByRole('dialog',{name:'新しいワールド'}));
+ fireEvent.change(modal.getByLabelText('名前'),{target:{value:'未保存の新世界'}});
+ fireEvent.click(modal.getByRole('button',{name:'作成'}));
+ await screen.findByText(/処理できませんでした: 保存失敗/);
+ expect(screen.queryByRole('button',{name:'第一ワールド（現在）'})).toBeNull();
+ expect((document.getElementById('company-name') as HTMLInputElement).value).toBe('未保存の新世界');
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('save_world',expect.anything()));
 });

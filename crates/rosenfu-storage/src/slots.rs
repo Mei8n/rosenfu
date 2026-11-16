@@ -24,6 +24,21 @@ fn valid_id(id: &str) -> bool {
         && (11..=64).contains(&id.len())
         && id[5..].bytes().all(|b| b.is_ascii_alphanumeric())
 }
+// Keep locks outside the directory moved by archive/restore. Windows refuses
+// directory rename while any descendant file handle is open.
+pub(super) fn slot_lock_path(path: &Path) -> Option<PathBuf> {
+    let slot = path.parent()?;
+    let id = slot.file_name()?.to_str()?;
+    let saves = slot.parent()?;
+    if !valid_id(id) || saves.file_name()? != "saves" {
+        return None;
+    }
+    let mut name = std::ffi::OsString::from(id);
+    name.push(".");
+    name.push(path.file_name()?);
+    name.push(".lock");
+    Some(saves.join(name))
+}
 pub fn save_slot_path(root: &Path, id: &str) -> Result<PathBuf, StorageError> {
     directory(root)?;
     if id == "legacy" {
@@ -134,4 +149,56 @@ pub fn create_save_slot(
     let result = describe(id, name.into(), &path);
     let _ = slot.keep();
     Ok((result, bytes_version(&bytes)))
+}
+
+/// Recoverable removal. Move the whole slot (including autosave/backups) atomically;
+/// never recursively delete user files or replace an existing recovery entry.
+pub fn move_save_slot(root: &Path, id: &str, restore: bool) -> Result<(), StorageError> {
+    directory(root)?;
+    let trash = root.join("deleted-saves");
+    if !trash.exists() {
+        fs::create_dir(&trash)?;
+    }
+    directory(&trash)?;
+    let (source_root, target_root) = if restore {
+        (trash.as_path(), root)
+    } else {
+        (root, trash.as_path())
+    };
+    let file = save_slot_path(source_root, id)?;
+    if !regular_file_exists(&file)? {
+        return Err(StorageError::InvalidHeader);
+    }
+    let _manual_lock = lock_save(&file)?;
+    let _auto_lock = lock_save(&file.with_file_name("world.autosave.rosenfu.json"))?;
+    let (source, target) = if id == "legacy" {
+        (file, target_root.join("world.rosenfu.json"))
+    } else {
+        let saves = target_root.join("saves");
+        if !saves.exists() {
+            fs::create_dir(&saves)?;
+        }
+        directory(&saves)?;
+        (file.parent().unwrap().to_owned(), saves.join(id))
+    };
+    if fs::symlink_metadata(&target).is_ok() {
+        return Err(StorageError::FileChanged);
+    }
+    if id == "legacy" {
+        let _target_lock = lock_save(&target)?;
+        // hard_link fails if the destination exists, unlike Unix rename.
+        // Both directories are on the same volume; unlink only after a
+        // second name exists. A failed unlink preserves the original.
+        fs::hard_link(&source, &target)?;
+        if let Err(error) = fs::remove_file(&source) {
+            let _ = fs::remove_file(&target);
+            return Err(error.into());
+        }
+    } else {
+        fs::rename(source, target)?;
+    }
+    Ok(())
+}
+pub fn list_deleted_save_slots(root: &Path) -> Result<Vec<SaveSlot>, StorageError> {
+    list_save_slots(&root.join("deleted-saves"))
 }
