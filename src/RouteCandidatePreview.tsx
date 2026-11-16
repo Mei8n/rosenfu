@@ -1,3 +1,4 @@
+import {ServiceStopDiagram} from './ServiceStopDiagram';
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {EndpointConnection} from "./destinationJoin";
@@ -6,6 +7,7 @@ export type Candidate = { stations: string[]; segments: Segment[] };
 export type Candidates = { shortest_candidate_index?: number | null; status: "no_path" | "unique" | "ambiguous" | "incomplete"; candidates: Candidate[]; truncated: boolean };
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };
 type Props = {
+  entityLabel?: string;
   editRoute?: {id:string;name:string}; defaultName?:string;
   onCancelEdit?: () => void;
   startSequenceKey?: number;
@@ -17,7 +19,7 @@ type Props = {
   onSave?: (name: string, membership: Membership) => Promise<void>;
 };
 /** Station clicks define ordered constraints; only explicit Finish persists the route. */
-export function RouteCandidatePreview({editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave}:Props){
+export function RouteCandidatePreview({entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave}:Props){
  const initialName=editRoute?.name??defaultName;
  const [name,setName]=useState(initialName);
  const [ordered,setOrdered]=useState<string[]>([]);
@@ -77,9 +79,9 @@ export function RouteCandidatePreview({editRoute,defaultName="路線1",onCancelE
   catch(cause){setError(String(cause));}
   finally{pendingSave.current=false;setSaving(false);}
  }
- return <section className="route-candidate-preview" aria-label={editRoute?"路線を編集":"路線を作成"}>
+ return <section className="route-candidate-preview" aria-label={editRoute?`${entityLabel}を編集`:`${entityLabel}を作成`}>
   <h4>{name||initialName}</h4>
-  <label>路線名<input autoComplete="off" value={name} maxLength={80} disabled={!enabled||saving} onChange={e=>setName(e.target.value)}/></label>
+  <label>{entityLabel}名<input autoComplete="off" value={name} maxLength={80} disabled={!enabled||saving} onChange={e=>setName(e.target.value)}/></label>
   <ol aria-label="選択した駅">{ordered.map((id,i)=><li key={id}>{stationName(id)}{i===0?"（始点）":i===ordered.length-1?"（終点）":"（経由）"}</li>)}</ol>
   {mapPickTarget!=="sequence"&&<button disabled={!enabled||saving} onClick={beginSequence}>駅の選択を再開</button>}
   {stale&&<button disabled={!enabled||loading||saving} onClick={()=>void search([...orderedRef.current])}>経路を再確認</button>}
@@ -87,10 +89,10 @@ export function RouteCandidatePreview({editRoute,defaultName="路線1",onCancelE
   {error&&<p role="alert">{error}</p>}
   {result?.status==="no_path"&&<p role="status">接続する経路がありません。</p>}
   {(result?.truncated||result?.status==="incomplete")&&<p role="status">探索上限に達しました。経由駅を追加してください。</p>}
-  {membership&&<p>所属駅: {membership.member_stations.map(stationName).join(" → ")}</p>}
+  {membership&&(entityLabel==="系統"?<ServiceStopDiagram label="停車駅" controlLabel={i=>`地図選択の停車駅 ${i+1}`} disabled onChange={()=>{}} rows={membership.member_stations.map((id,i)=>({key:String(i),name:stationName(id),stopping:true}))}/>:<p>所属駅: {membership.member_stations.map(stationName).join(" → ")}</p>)}
   {result&&!result.truncated&&result.status!=="incomplete"&&result.candidates.length>1&&<button disabled={!enabled||saving} onClick={()=>setShowChoices(true)}>経路を選択</button>}
   <div><button disabled={!enabled||!canApply||!membership||loading||saving||stale||!name.trim()||!onSave} onClick={()=>void finish()}>編集終了</button><button className="secondary" disabled={saving} onClick={()=>{invalidate();onMapPick?.(null);onDirty?.(false);onCancelEdit?.();}}>キャンセル</button></div>
-  {showChoices&&result&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label="路線の経路を選択"><h3>経路を選択</h3>
+  {showChoices&&result&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label={`${entityLabel}の経路を選択`}><h3>経路を選択</h3>
    {result.candidates.map((candidate,i)=><label key={i}><input type="radio" name="route-candidate" checked={chosen===i} disabled={!enabled||saving} onChange={()=>void selectCandidate(i)}/>{candidate.stations.map(stationName).join(" → ")}{i===result.shortest_candidate_index?"（最短）":""}</label>)}
    <button disabled={loading||saving||!membership} onClick={()=>setShowChoices(false)}>決定</button>
    <button className="secondary" disabled={saving} onClick={()=>setShowChoices(false)}>地図で選び直す</button>

@@ -576,3 +576,11 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .inactive-plan .draft-path { stroke:#7a858b; }
 .workbench .draft-path.track-explicit-selection { stroke:#c17c0b; }
 .workbench .draft-path.invalid-candidate { stroke:#c43d45; stroke-dasharray:4 3; }
+
+/* Keep the placing panel's inline size independent of the open disclosure.
+   max-content let the speed row resize/recenter the entire toolbar. */
+.workbench .track-construction-toolbar {
+  box-sizing:border-box; width:340px; min-width:0; max-width:calc(100% - 24px);
+}
+.workbench .track-construction-toolbar .height-controls { flex-wrap:wrap; }
+.workbench .track-construction-toolbar .speed-input { min-width:0; flex-wrap:wrap; }
