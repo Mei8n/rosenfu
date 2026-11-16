@@ -86,7 +86,13 @@ test('reference following requires an explicit endpoint target and sends source 
  expect(method.value).toBe('');expect(method.options).toHaveLength(3);
  expect(method.options[1].textContent).toBe('existing（候補1）の終点から延伸');expect(method.options[2].textContent).toBe('existing（候補2）の終点から延伸');
  expect(method.textContent).not.toContain('11');
+ const unsnappedPreview=view.container.querySelector('.reference-copy-preview')!.getAttribute('d');
  fireEvent.change(method,{target:{value:'11:end'}});
+ const snappedPreview=view.container.querySelector('.reference-copy-preview')!.getAttribute('d');
+ expect(snappedPreview).not.toBe(unsnappedPreview);
+ const anchorScreen=project(anchor.latitude,anchor.longitude,DEFAULT_CAMERA);
+ const previewNumbers=snappedPreview!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+ expect(previewNumbers[0]).toBeCloseTo(anchorScreen.x,1);expect(previewNumbers[1]).toBeCloseTo(anchorScreen.y,1);
  expect(view.container.querySelectorAll('.alignment-selected')).toHaveLength(1);
  fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));
  fireEvent.click(copyPanel().getByRole('button',{name:'選択中の計画に追加',hidden:true}));await waitFor(()=>expect(copyPanel().queryByRole('button',{name:'選択中の計画に追加',hidden:true})).toBeNull());fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));

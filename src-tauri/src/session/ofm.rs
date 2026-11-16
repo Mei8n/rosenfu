@@ -147,7 +147,9 @@ mod tests {
         .unwrap()
     }
     fn stage(editor: &mut WorldEditor) {
-        let f = fixture();
+        stage_fixture(editor, fixture());
+    }
+    fn stage_fixture(editor: &mut WorldEditor, f: serde_json::Value) {
         let raw = f["rawEvidence"]
             .as_array()
             .unwrap()
@@ -215,6 +217,53 @@ mod tests {
         editor.delete_alignment(line.id).unwrap();
         assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
     }
+    #[test]
+    fn unsupported_old_save_leaves_file_and_session_unchanged() {
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let before = editor.snapshot();
+        let mut old: serde_json::Value =
+            serde_json::from_slice(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap();
+        old["schema_version"] = serde_json::json!(24);
+        let bytes = serde_json::to_vec(&old).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("old.json");
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(editor.load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(editor.snapshot(), before);
+    }
+    /// Optional observed-data acceptance; supply the local pinned corpus explicitly.
+    #[test]
+    #[ignore = "requires pinned external Tokyo tile corpus, never downloaded by the test"]
+    fn observed_tiles_stage_build_save_reload_and_undo() {
+        let path =
+            std::env::var("OFM_REAL_SESSION_FIXTURE").expect("explicit corpus path required");
+        let f: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let start = std::time::Instant::now();
+        let mut editor = WorldEditor::new();
+        stage_fixture(&mut editor, f.clone());
+        let mut r = request();
+        r.ofm_path = Some(serde_json::from_value(f["path"].clone()).unwrap());
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        let tmp = tempfile::tempdir().unwrap();
+        let save = tmp.path().join("real.json");
+        editor.save(&save).unwrap();
+        let bytes = std::fs::read(&save).unwrap();
+        let mut restored = WorldEditor::new();
+        restored.load(&save).unwrap();
+        assert_eq!(restored.snapshot(), built);
+        let id = built.alignments.last().unwrap().id;
+        restored.delete_alignment(id).unwrap();
+        assert_eq!(restored.undo_alignment_deletion().unwrap(), built);
+        eprintln!(
+            "observed session: {} bytes, {:?}",
+            bytes.len(),
+            start.elapsed()
+        );
+    }
+
     #[test]
     fn stale_stage_and_invalid_second_path_preserve_world() {
         let mut editor = WorldEditor::new();

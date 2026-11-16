@@ -165,7 +165,7 @@ impl SourceRecord {
             && self.source_date.as_ref().is_none_or(|s| safe_text(s, 64))
             && self.license == "ODbL-1.0"
             && self.attribution == "© OpenStreetMap contributors"
-            && matches!(self.conversion_format_version, 1 | 2 | 3)
+            && matches!(self.conversion_format_version, 1..=3)
     }
     fn bytes(&self) -> usize {
         self.key.len()
