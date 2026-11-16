@@ -629,7 +629,7 @@ export function App() {
     if(path.orderedSpans.some(p=>p.attributes.access!==undefined&&!['yes','permissive','designated'].includes(p.attributes.access)))throw Error('この道路のアクセス分類は追従対象外です。');
     const points=path.points.map(([longitude,latitude])=>({latitude,longitude}));if(alignmentLength(points)<20)throw Error("建設長が20m未満です。");for(const [index,key] of [[0,seamExtensionKey],[points.length-1,seamDestinationKey]] as const){const target=key?seamEndpoint(key)?.point:null;if(target&&(points[index].longitude!==target.longitude||points[index].latitude!==target.latitude))throw Error("近くに既設端点がありますが、道路から再生成した端点と完全に一致しません。");}return {points};
   },[frozenRoadTiles,seamExtensionKey,seamDestinationKey,world]);
-  const manualReferenceCopyState=useReferenceCopy({bundle:graphBundle,worldVersion:world,enabled,canStart:copyCanStart,tool:activeTool,name:alignmentName,onBuild:buildReferenceAlignment,roadFollow:roadFollowingBlocked,seamPreview:roadFollowing&&frozenRoadTiles.length?seamPreview:undefined,onBuildSeam:stageSeamPlan});
+  const manualReferenceCopyState=useReferenceCopy({bundle:graphBundle,worldVersion:world,enabled,canStart:copyCanStart,tool:activeTool,name:alignmentName,onBuild:buildReferenceAlignment,roadFollow:roadFollowingBlocked,directRoad:roadFollowing,beforeAutoBuild:()=>!referenceExtensionCandidates.length&&!seamConnectionCandidates(0).length&&!seamConnectionCandidates(1).length,seamPreview:roadFollowing&&frozenRoadTiles.length?seamPreview:undefined,onBuildSeam:stageSeamPlan});
   const automaticRailSelected=referencePanel&&!roadFollowing&&!graphBundle;
   const automaticRail=useAutomaticRail({selected:automaticRailSelected,enabled,canStart:copyCanStart,worldEpoch:railLoadEpoch,name:alignmentName,bounds,zoom:camera.zoom,radius:Math.min(1000,12*40075016.686*Math.cos(camera.latitude*Math.PI/180)/(256*2**camera.zoom*mapViewport(mapSize.width||1000,mapSize.height||600).scale)),onBuild:buildReferenceAlignment});
   const referenceCopyState=automaticRailSelected?automaticRail.copy:manualReferenceCopyState;
@@ -651,9 +651,15 @@ export function App() {
   const referenceExtensionLabel=(candidate:typeof referenceExtensionCandidates[number])=>{const name=candidate.alignment.name?.trim()||"名前未設定の線路";const peers=referenceExtensionCandidates.filter(item=>(item.alignment.name?.trim()||"名前未設定の線路")===name&&item.endpoint===candidate.endpoint);return `${name}${peers.length>1?`（候補${peers.indexOf(candidate)+1}）`:""}の${candidate.endpoint==="start"?"始点":"終点"}から延伸`;};
   const referenceExtension=referenceExtensionCandidates.find(candidate=>candidate.key===referenceExtensionKey);
   const referenceExtensionError=referenceExtensionKey?(!referenceExtension?"延伸対象の端点が参照形状に一致しません。起点を選び直してください。":referenceExtension.alignment.owner!==world?.companies[0]?.id?"他社の線路には延伸できません。":extensionJoinError(referenceExtension.build.points,extensionPrevious({alignmentId:referenceExtension.alignment.id,endpoint:referenceExtension.endpoint}))):null;
-  const referencePreviewPoints=manualReferenceCopyState.seamPlan?.points??referenceExtension?.build.points??referenceCopyState.plan.build?.points;
+  const referencePreviewPoints=manualReferenceCopyState.hoverPlan?.points??manualReferenceCopyState.seamPlan?.points??referenceExtension?.build.points??referenceCopyState.plan.build?.points;
   const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
   useEffect(()=>{setReferenceExtensionKey("");setSeamExtensionKey("");setSeamDestinationKey("");setSeamFocusKey("");if(!referenceCopy.active){setFrozenRoadBundle(null);setFrozenRoadTiles(old=>old.length?[]:old);}},[referenceCopy.active,graphBundle]);
+  useEffect(()=>{
+    if(roadFollowing&&referenceCopy.active&&graphBundle&&!frozenRoadBundle){
+      setFrozenRoadBundle(graphBundle);setFrozenRoadTiles((automaticRoad.snapshot?.tileSnapshots??[]).filter(t=>"tileLines" in t&&Array.isArray(t.tileLines)) as unknown as readonly DraftTileSnapshot[]);
+      newPath();
+    }
+  },[roadFollowing,referenceCopy.active,graphBundle,frozenRoadBundle]);
   const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referencePreviewPoints?[{id:"reference-plan",pathId:-1,points:referencePreviewPoints}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:(plan.reference||plan.ofmPath)?!!extensionJoinError(plan.points,extensionPrevious(plan.extension)):!!plannedGeometry(plan.points,plan.editedGeometry,extensionPrevious(plan.extension)).error})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
   const plannedPlatforms=plannedStations.map(station=>{
     const line=stationLines.find(line=>station.alignmentId?line.pathId===undefined&&line.id===station.alignmentId:line.pathId===station.pathId);
