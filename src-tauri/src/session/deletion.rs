@@ -761,6 +761,7 @@ mod tests {
             .collect();
         let snapshot = editor
             .build_plan(vec![PlannedAlignment {
+                ofm_path: None,
                 anchor_levels: None,
                 junction_source: None,
                 start_level: None,
@@ -1823,6 +1824,7 @@ mod tests {
         assert_eq!(editor.snapshot(), before);
         editor
             .build_plan(vec![PlannedAlignment {
+                ofm_path: None,
                 anchor_levels: None,
                 junction_source: None,
                 start_level: None,
@@ -1871,6 +1873,7 @@ mod tests {
             .collect();
         let built = editor
             .build_plan(vec![PlannedAlignment {
+                ofm_path: None,
                 anchor_levels: None,
                 junction_source: None,
                 start_level: None,
@@ -1895,6 +1898,7 @@ mod tests {
         assert_eq!(gap.alignments[1].points, points[3..]);
         let joined = editor
             .build_plan(vec![PlannedAlignment {
+                ofm_path: None,
                 anchor_levels: None,
                 junction_source: None,
                 start_level: None,

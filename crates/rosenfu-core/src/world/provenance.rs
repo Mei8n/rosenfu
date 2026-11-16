@@ -109,7 +109,7 @@ fn geometry_point(points: &[GeoPoint], positions: &[f64], t: f64) -> GeoPoint {
     }
     *points.last().expect("validated source points")
 }
-fn slice_matches(slice: &ProvenanceGeometrySlice, current: &[GeoPoint]) -> bool {
+pub(super) fn slice_matches(slice: &ProvenanceGeometrySlice, current: &[GeoPoint]) -> bool {
     let (source_positions, source_length) = geometry_positions(&slice.original_points);
     let (current_positions, current_length) = geometry_positions(current);
     if source_length <= 0. || current_length <= 0. {
@@ -165,7 +165,7 @@ impl SourceRecord {
             && self.source_date.as_ref().is_none_or(|s| safe_text(s, 64))
             && self.license == "ODbL-1.0"
             && self.attribution == "© OpenStreetMap contributors"
-            && matches!(self.conversion_format_version, 1 | 2 | 3)
+            && matches!(self.conversion_format_version, 1..=3)
     }
     fn bytes(&self) -> usize {
         self.key.len()
@@ -414,9 +414,24 @@ impl WorldDraft {
                 .checked_sub(prepend)
                 .ok_or(WorldError::InvalidProvenance)?;
         }
+        for p in normalized
+            .road_path_provenance
+            .iter_mut()
+            .filter(|p| p.alignment_id == id)
+        {
+            p.start_point_index = p
+                .start_point_index
+                .checked_sub(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+            p.end_point_index = p
+                .end_point_index
+                .checked_sub(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+        }
         normalized.preserve_provenance(old)
     }
     pub(super) fn preserve_provenance(&self, old: &Self) -> Result<(), WorldError> {
+        self.preserve_road_paths(old)?;
         // Source snapshots survive removing a bundle and are not silently GC'd.
         for source in &old.source_records {
             if !self.source_records.contains(source) {

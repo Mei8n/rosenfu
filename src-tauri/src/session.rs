@@ -2,6 +2,9 @@
 #[path = "session/deletion.rs"]
 mod deletion;
 pub use deletion::AlignmentSectionSelection;
+#[path = "session/ofm.rs"]
+mod ofm;
+pub use ofm::{OfmBindingInput, OfmRawInput};
 #[path = "session/save_slots.rs"]
 mod save_slots;
 use rosenfu_core::world::{
@@ -56,6 +59,8 @@ pub struct PlannedAlignmentExtension {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlannedAlignment {
+    #[serde(default)]
+    pub ofm_path: Option<rosenfu_core::ofm_evidence::PathDescriptor>,
     #[serde(default)]
     pub anchor_levels: Option<Vec<rosenfu_core::world::InfrastructureLevel>>,
     #[serde(default)]
@@ -634,6 +639,7 @@ impl WorldEditor {
         reference: Option<PlannedAlignmentReference>,
     ) -> Result<WorldDraft, String> {
         self.build_plan(vec![PlannedAlignment {
+            ofm_path: None,
             anchor_levels: None,
             junction_source: None,
             start_level: None,
@@ -725,6 +731,45 @@ impl WorldEditor {
             )?;
         }
         for mut alignment in alignments {
+            let ofm_path = alignment.ofm_path.take();
+            if let Some(path) = &ofm_path {
+                if alignment.reference.is_some()
+                    || alignment.extension.is_some()
+                    || alignment.destination.is_some()
+                    || alignment.junction_source.is_some()
+                    || alignment.anchor_levels.is_some()
+                    || alignment.start_level.is_some()
+                {
+                    return Err(
+                        "タイル境界を跨ぐ道路追従の延伸・接続・アンカー別高さはまだ未対応です。"
+                            .into(),
+                    );
+                }
+                let scoped = candidate
+                    .world
+                    .snapshot()
+                    .runtime_road_evidence
+                    .scope(&path.required_binding_keys)
+                    .map_err(|e| e.to_string())?;
+                let rebuilt = rosenfu_core::ofm_evidence::validate_path_descriptor(&scoped, path)
+                    .map_err(|e| e.to_string())?;
+                alignment.points = rebuilt
+                    .points
+                    .into_iter()
+                    .map(|p| GeoPoint {
+                        longitude: p[0],
+                        latitude: p[1],
+                    })
+                    .collect();
+                if alignment
+                    .points
+                    .iter()
+                    .any(|p| !in_edit_extent(p.latitude, p.longitude))
+                {
+                    return Err("路線は編集範囲内に建設してください。".into());
+                }
+            }
+
             if !alignment.infrastructure.is_valid() {
                 return Err("線路数は1・2・4のいずれかです。".into());
             }
@@ -1073,19 +1118,31 @@ impl WorldEditor {
                 }
                 continue;
             }
-            let alignment_id = match alignment.reference {
-                Some(reference) => candidate.build_alignment_from_reference_typed_unchecked(
-                    alignment.name,
-                    alignment.points,
-                    reference.source_record,
-                    reference.provenance,
-                    alignment.track_type,
-                )?,
-                None => candidate.build_alignment_typed_unchecked(
-                    alignment.name,
-                    alignment.points,
-                    alignment.track_type,
-                )?,
+            let alignment_id = if let Some(path) = ofm_path {
+                candidate
+                    .world
+                    .build_alignment_from_road_path(
+                        candidate.company,
+                        alignment.name.trim().to_owned(),
+                        alignment.track_type,
+                        path,
+                    )
+                    .map_err(|e| e.to_string())?
+            } else {
+                match alignment.reference {
+                    Some(reference) => candidate.build_alignment_from_reference_typed_unchecked(
+                        alignment.name,
+                        alignment.points,
+                        reference.source_record,
+                        reference.provenance,
+                        alignment.track_type,
+                    )?,
+                    None => candidate.build_alignment_typed_unchecked(
+                        alignment.name,
+                        alignment.points,
+                        alignment.track_type,
+                    )?,
+                }
             };
             if let Some(indices) = anchor_indices {
                 candidate.set_anchor_indices(alignment_id, indices)?;
@@ -3663,6 +3720,7 @@ mod tests {
         ];
         // Attribution on an earlier path must roll back if any later path fails.
         let attributed_path = || PlannedAlignment {
+            ofm_path: None,
             anchor_levels: None,
             junction_source: None,
             start_level: None,
@@ -3753,6 +3811,7 @@ mod tests {
         let id = editor.snapshot().alignments[0].id;
         let before = editor.snapshot();
         let reference_extension = || PlannedAlignment {
+            ofm_path: None,
             anchor_levels: None,
             junction_source: None,
             start_level: None,
@@ -4002,6 +4061,7 @@ mod tests {
         for (lat, lon) in [(0.0, 0.01), (0.01, 0.0), (0.01, 0.01)] {
             editor
                 .build_plan(vec![PlannedAlignment {
+                    ofm_path: None,
                     anchor_levels: None,
                     junction_source: None,
                     start_level: None,
@@ -4136,6 +4196,7 @@ mod tests {
         let expected = a.point_at(0.4);
         let start = a.points[0];
         let extension = PlannedAlignment {
+            ofm_path: None,
             anchor_levels: None,
             junction_source: None,
             start_level: None,
@@ -4848,6 +4909,7 @@ mod tests {
 
     fn planned_path(offset: f64) -> PlannedAlignment {
         PlannedAlignment {
+            ofm_path: None,
             anchor_levels: None,
             junction_source: None,
             start_level: None,
@@ -4942,6 +5004,7 @@ mod tests {
                 *old.points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                ofm_path: None,
                 anchor_levels: None,
                 junction_source: None,
                 start_level: None,
@@ -5040,6 +5103,7 @@ mod tests {
                 *before.alignments[0].points.last().unwrap()
             };
             let extension = || PlannedAlignment {
+                ofm_path: None,
                 anchor_levels: None,
                 junction_source: None,
                 start_level: None,
@@ -5126,6 +5190,7 @@ mod tests {
         let endpoint = *old.points.last().unwrap();
         let previous = old.points[old.points.len() - 2];
         let extension = || PlannedAlignment {
+            ofm_path: None,
             anchor_levels: None,
             junction_source: None,
             start_level: None,
@@ -5233,6 +5298,7 @@ mod endpoint_join_tests {
                     .unwrap();
                 let before = editor.snapshot();
                 let request = || PlannedAlignment {
+                    ofm_path: None,
                     anchor_levels: None,
                     junction_source: None,
                     start_level: None,
@@ -5295,6 +5361,7 @@ mod endpoint_join_tests {
         let before = editor.snapshot();
         for target in [b, AlignmentId(999), a] {
             let request = PlannedAlignment {
+                ofm_path: None,
                 anchor_levels: None,
                 junction_source: None,
                 start_level: None,
@@ -5339,6 +5406,7 @@ mod endpoint_join_tests {
         let mut bridge: Vec<_> = (175..=185).map(|i| point(i as f64 * 2.)).collect();
         *bridge.last_mut().unwrap() = original[0];
         let request = || PlannedAlignment {
+            ofm_path: None,
             anchor_levels: None,
             junction_source: None,
             start_level: None,
@@ -5450,6 +5518,7 @@ mod road_snapshot_transaction_tests {
     }
     fn plan() -> PlannedAlignment {
         PlannedAlignment {
+            ofm_path: None,
             anchor_levels: None,
             junction_source: None,
             start_level: None,
