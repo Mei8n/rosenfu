@@ -286,3 +286,20 @@ test('reconnected split pieces render a shared D coordinate and report its conne
  expect(screen.getByText('この端点は接続済みです')).toBeTruthy();
  expect(screen.queryByText('他社の線路は延伸できません')).toBeNull();
 });
+
+for(const [sourceCount,targetCount] of [[1,2],[2,1],[1,4],[4,1],[2,4],[4,2]])for(const fresh of [false,true])test(`mixed-track ${sourceCount} to ${targetCount}, ${fresh?'new':'built'} source has a real endpoint connection`,async()=>{
+ const source={...line,infrastructure:[{level:'ground',track_count:sourceCount}]};
+ const target={...line,id:'4',points:[point(350,130),point(420,130)],infrastructure:[{level:'ground',track_count:targetCount}]};
+ const map=await start({alignments:fresh?[target]:[source,target]});
+ fireEvent.change(screen.getByLabelText('敷設する線路数'),{target:{value:String(sourceCount)}});
+ fireEvent.click(map,{clientX:250,clientY:130});
+ fireEvent.pointerMove(map,{clientX:352,clientY:131});
+ expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('true');
+ fireEvent.click(map,{clientX:352,clientY:131});
+ vi.mocked(invoke).mockRejectedValueOnce(Error('inspect mixed-track request'));
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText(/inspect mixed-track request/);
+ const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as any;
+ expect(request.alignments[0].destination).toEqual({alignmentId:'4',endpoint:'start'});
+ expect(request.alignments[0].infrastructure.track_count).toBe(sourceCount);
+ expect(request.alignments[0].points.at(-1)).toEqual(point(350,130));
+});
