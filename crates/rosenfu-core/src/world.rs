@@ -633,3 +633,6 @@ pub use roads::{
     assess_road_crossings, AutomaticCrossing, CoverageBounds, RoadAssessment, RoadClassification,
     RoadSnapshot, RoadWay,
 };
+
+mod water_model;
+pub use water_model::{validate_construction_water, WATER_MODEL_REVISION};

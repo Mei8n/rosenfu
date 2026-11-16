@@ -108,6 +108,10 @@ impl WorldEditor {
         changed.section_profiles = profiles;
         let mut candidate = self.clone();
         candidate.world.replace(after).map_err(|e| e.to_string())?;
+        rosenfu_core::world::validate_construction_water(
+            self.world.snapshot(),
+            candidate.world.snapshot(),
+        )?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
@@ -257,6 +261,10 @@ impl WorldEditor {
                     )
                     .map_err(|e| e.to_string())?;
             }
+            rosenfu_core::world::validate_construction_water(
+                self.world.snapshot(),
+                candidate.world.snapshot(),
+            )?;
             rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
             let after = candidate.snapshot();
             candidate.deleted_alignment = Some((before, after.clone()));
@@ -778,6 +786,29 @@ mod tests {
             .unwrap();
         let id = snapshot.alignments[0].id;
         (editor, id)
+    }
+    #[test]
+    fn water_anchor_lowering_rejects_without_replacing_world_or_undo() {
+        let mut editor = WorldEditor::new();
+        let request: super::super::PlannedAlignment = serde_json::from_value(serde_json::json!({
+            "name":"lake bridge","points":[{"longitude":136.1,"latitude":35.25},{"longitude":136.11,"latitude":35.25}],
+            "trackType":"normal","infrastructure":{"level":"elevated","track_count":1},"stations":[]
+        })).unwrap();
+        let before = editor.build_plan(vec![request]).unwrap();
+        let previous_undo = editor.deleted_alignment.clone();
+        let line = before.alignments[0].clone();
+        let error = editor
+            .update_alignment_anchor_height(
+                line.id,
+                0,
+                rosenfu_core::world::InfrastructureLevel::Ground,
+                line,
+                plans(),
+            )
+            .unwrap_err();
+        assert!(error.contains("水域上"));
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.deleted_alignment, previous_undo);
     }
     #[test]
     fn split_remaps_unaffected_route_and_service_spans_and_undo_restores_them() {

@@ -209,7 +209,7 @@ fn point_at(points: &[GeoPoint], position: f64) -> GeoPoint {
 /// Split the cubic at derivative roots, then bracket zero on each monotone span.
 /// Tangencies/near tangencies are candidates within 1e-9 m; neither these nor
 /// the 64-step bisection results are exact ground-location certificates.
-fn zero_candidates(p: VerticalProfile) -> Vec<f64> {
+pub(crate) fn zero_candidates(p: VerticalProfile) -> Vec<f64> {
     let a =
         6. * p.start_height_m + 3. * p.start_tangent_m - 6. * p.end_height_m + 3. * p.end_tangent_m;
     let b = -6. * p.start_height_m - 4. * p.start_tangent_m + 6. * p.end_height_m

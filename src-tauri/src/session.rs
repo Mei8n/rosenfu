@@ -532,6 +532,10 @@ impl WorldEditor {
             provenance,
             track_type,
         )?;
+        rosenfu_core::world::validate_construction_water(
+            self.world.snapshot(),
+            candidate.world.snapshot(),
+        )?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -600,6 +604,10 @@ impl WorldEditor {
                 }
                 _ => e.to_string(),
             })?;
+        rosenfu_core::world::validate_construction_water(
+            self.world.snapshot(),
+            candidate.world.snapshot(),
+        )?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -620,6 +628,10 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.build_alignment_typed_unchecked(name, points, track_type)?;
+        rosenfu_core::world::validate_construction_water(
+            self.world.snapshot(),
+            candidate.world.snapshot(),
+        )?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -1120,6 +1132,10 @@ impl WorldEditor {
                 )?;
             }
         }
+        rosenfu_core::world::validate_construction_water(
+            self.world.snapshot(),
+            candidate.world.snapshot(),
+        )?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         if has_junction {
             candidate.deleted_alignment = Some((before_junction, candidate.snapshot()));
@@ -2769,11 +2785,11 @@ mod tests {
                 "A".into(),
                 vec![
                     GeoPoint {
-                        latitude: 35.0,
+                        latitude: 35.5,
                         longitude: 139.0,
                     },
                     GeoPoint {
-                        latitude: 35.1,
+                        latitude: 35.6,
                         longitude: 139.1,
                     },
                 ],
@@ -2806,11 +2822,11 @@ mod tests {
                 "A".into(),
                 vec![
                     GeoPoint {
-                        latitude: 35.0,
+                        latitude: 35.5,
                         longitude: 139.0,
                     },
                     GeoPoint {
-                        latitude: 35.1,
+                        latitude: 35.6,
                         longitude: 139.1,
                     },
                 ],
@@ -3653,11 +3669,11 @@ mod tests {
         };
         let points = vec![
             GeoPoint {
-                latitude: 35.0,
+                latitude: 35.5,
                 longitude: 139.0,
             },
             GeoPoint {
-                latitude: 35.0,
+                latitude: 35.5,
                 longitude: 139.1,
             },
         ];
@@ -3762,7 +3778,7 @@ mod tests {
             points: vec![
                 points[1],
                 GeoPoint {
-                    latitude: 35.0,
+                    latitude: 35.5,
                     longitude: 139.2,
                 },
             ],
@@ -4549,11 +4565,11 @@ mod tests {
         };
         let points = vec![
             GeoPoint {
-                latitude: 35.0,
+                latitude: 35.5,
                 longitude: 139.0,
             },
             GeoPoint {
-                latitude: 35.0,
+                latitude: 35.5,
                 longitude: 139.1,
             },
         ];
@@ -4570,15 +4586,15 @@ mod tests {
         branch.stations.clear();
         branch.points = vec![
             GeoPoint {
-                latitude: 35.,
+                latitude: 35.5,
                 longitude: 139.05,
             },
             GeoPoint {
-                latitude: 35.,
+                latitude: 35.5,
                 longitude: 139.051,
             },
             GeoPoint {
-                latitude: 35.01,
+                latitude: 35.51,
                 longitude: 139.06,
             },
         ];
