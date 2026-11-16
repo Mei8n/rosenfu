@@ -200,9 +200,12 @@ export function App() {
   const sampleOrigin = project(DEFAULT_CAMERA.latitude, DEFAULT_CAMERA.longitude, camera);
   const sampleTransform = "translate(" + (sampleOrigin.x - MAP_VIEWBOX.width / 2 * sampleScale) + " " + (sampleOrigin.y - MAP_VIEWBOX.height / 2 * sampleScale) + ") scale(" + sampleScale + ")";
   useEffect(() => {
-    const timer = window.setTimeout(() => setRequestedCamera(camera), 250);
+    if (!cameraPending) return;
+    // Throttle tile requests during movement instead of postponing them until
+    // the user stops dragging. Read the newest camera when the window ends.
+    const timer = window.setTimeout(() => setRequestedCamera(cameraRef.current), 250);
     return () => window.clearTimeout(timer);
-  }, [camera]);
+  }, [cameraPending, requestedCamera]);
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg || typeof ResizeObserver === "undefined") return;
