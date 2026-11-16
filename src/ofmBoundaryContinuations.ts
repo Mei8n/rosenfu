@@ -26,13 +26,25 @@ function strip(points:P[],axis:number,seam:number):P[]|undefined{
  if(out.length<2||Math.abs(Math.abs(out[0][axis]-seam)-BAND)>1e-5||Math.abs(Math.abs(out[out.length-1][axis]-seam)-BAND)>1e-5||out[0][axis]===out[out.length-1][axis])return;
  if(out[0][axis]>out[out.length-1][axis])out.reverse();return out;
 }
-function distanceTo(p:P,line:P[]){let best=Infinity;for(let i=1;i<line.length;i++){const a=line[i-1],b=line[i],dx=b[0]-a[0],dy=b[1]-a[1],den=dx*dx+dy*dy;const t=den?Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/den)):0;best=Math.min(best,Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy));}return best;}
-function separation(a:P[],b:P[]){let worst=0;for(let i=1;i<a.length;i++){const p=a[i-1],q=a[i],n=Math.ceil(dist(p,q)/2);if(n>1000)return Infinity;for(let j=0;j<=n;j++)worst=Math.max(worst,distanceTo([p[0]+(q[0]-p[0])*j/n,p[1]+(q[1]-p[1])*j/n],b));}return worst;}
+function pointSegment(p:P,a:P,b:P){const dx=b[0]-a[0],dy=b[1]-a[1],den=dx*dx+dy*dy,t=den?Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/den)):0;return Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy);}
+/** Continuous upper bound: distance to one convex target segment is convex
+ * along a source segment, hence its endpoint maximum bounds the entire segment.
+ * Min across those valid upper bounds remains an upper bound to the polyline. */
+export function continuousSeparation(a:P[],b:P[],budget={remaining:1000000}):number{
+ const bound=(p:P,q:P,depth:number):number=>{
+  let upper=Infinity;
+  for(let j=1;j<b.length;j++){if(--budget.remaining<0)return Infinity;upper=Math.min(upper,Math.max(pointSegment(p,b[j-1],b[j]),pointSegment(q,b[j-1],b[j])));}
+  if(upper<=TOLERANCE||depth===8||budget.remaining<0)return upper;
+  const middle:P=[(p[0]+q[0])/2,(p[1]+q[1])/2];
+  return Math.max(bound(p,middle,depth+1),bound(middle,q,depth+1));
+ };
+ let worst=0;for(let i=1;i<a.length;i++){worst=Math.max(worst,bound(a[i-1],a[i],0));if(worst>TOLERANCE||budget.remaining<0)return worst;}return worst;
+}
 export function findTileBoundaryContinuations(lines:readonly TileRoadLine[]):{pairs:BoundaryContinuation[];truncated:boolean}{
  if(lines.length>MAX_LINES||lines.reduce((n,l)=>n+l.coordinates.length,0)>MAX_POINTS)return {pairs:[],truncated:true};
  const ids=new Set<string>();
  for(const l of lines){if(ids.has(l.id)||!l.id||!l.revision||l.z!==14||![l.x,l.y].every(v=>Number.isInteger(v)&&v>=0&&v<16384)||l.coordinates.length<2||l.coordinates.length>512||l.coordinates.some(p=>!p.every(Number.isFinite)||Math.abs(p[0])>180||Math.abs(p[1])>85))return {pairs:[],truncated:false};ids.add(l.id);}
- const candidates:BoundaryContinuation[]=[];let checked=0;
+ const candidates:BoundaryContinuation[]=[];let checked=0;const distanceBudget={remaining:1000000};
  const cache=new Map<string,{points:P[];clipped:P[]|undefined}>();
  for(let i=0;i<lines.length;i++)for(let j=i+1;j<lines.length;j++){
   const a=lines[i],b=lines[j];if(a.revision!==b.revision||Math.abs(a.x-b.x)+Math.abs(a.y-b.y)!==1||!eligible(a)||!eligible(b)||!same(a,b))continue;
@@ -49,7 +61,7 @@ export function findTileBoundaryContinuations(lines:readonly TileRoadLine[]):{pa
   if(++checked>MAX_PAIRS)return {pairs:[],truncated:true};
   const tangent=(p:P[])=>{const x=p[p.length-1][0]-p[0][0],y=p[p.length-1][1]-p[0][1],n=Math.hypot(x,y);return [x/n,y/n];};
   const ta=tangent(aa),tb=tangent(bb);if(ta[0]*tb[0]+ta[1]*tb[1]<.995)continue;
-  const error=Math.max(separation(aa,bb),separation(bb,aa));if(error>TOLERANCE)continue;
+  const error=Math.max(continuousSeparation(aa,bb,distanceBudget),continuousSeparation(bb,aa,distanceBudget));if(distanceBudget.remaining<0)return {pairs:[],truncated:true};if(error>TOLERANCE)continue;
   candidates.push({aId:a.id,bId:b.id,overlapMeters:Math.min(length(aa),length(bb)),maxSeparationMeters:error});
  }
  const counts=new Map<string,number>();for(const p of candidates)for(const id of [p.aId,p.bId])counts.set(id,(counts.get(id)??0)+1);
