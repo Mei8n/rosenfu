@@ -34,6 +34,13 @@ async function start(snapshot: unknown = empty) {
   map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
   return map;
 }
+test('anchor clicks request exact validation without world-wide crossing totals',async()=>{
+ const map=await start();
+ fireEvent.click(map,{clientX:100,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:300,clientY:100});});
+ expect(invoke).toHaveBeenCalledWith('preview_construction_plan',expect.objectContaining({validationOnly:true,alignments:expect.any(Array)}));
+ expect(map.querySelectorAll('[data-anchor-index]').length).toBe(2);
+});
 test('confirmed invalid hover cannot add the matching anchor',async()=>{
  if(!window.PointerEvent)window.PointerEvent=MouseEvent as typeof PointerEvent;
  const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
