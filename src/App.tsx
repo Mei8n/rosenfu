@@ -274,7 +274,7 @@ export function App() {
   useEffect(()=>{setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);},[worldEpoch]);
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
   const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "select" | "inactive">("tracks");
-  function chooseMainTab(tab:WorkspaceTab){setError("");setMainTab(tab);setPanelCollapsed(false);setActiveTool(tab==="construction"?"tracks":tab==="stations"?"station-management":tab==="settings"?"company":tab==="routes"?"routes":tab==="services"?"services":"inactive");changeMapMode(tab==="construction"?"draw":"move");}
+  function chooseMainTab(tab:WorkspaceTab){if(seamMutationPending.current)return;setError("");setMainTab(tab);setPanelCollapsed(false);setActiveTool(tab==="construction"?"tracks":tab==="stations"?"station-management":tab==="settings"?"company":tab==="routes"?"routes":tab==="services"?"services":"inactive");changeMapMode(tab==="construction"?"draw":"move");}
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   // Internal compatibility label only; physical tracks are not user-named routes.
   const alignmentName = "新しい線路";
@@ -319,6 +319,7 @@ export function App() {
   useEffect(()=>{cancelParallel();},[activeTool,activePlanId,world]);
   const roadFollowingBlocked=roadFollowing;
   const [seamStageSending,setSeamStageSending]=useState(false);
+  const seamMutationPending=useRef(false);
   const [frozenRoadTiles,setFrozenRoadTiles]=useState<readonly DraftTileSnapshot[]>([]);
   const [frozenRoadBundle,setFrozenRoadBundle]=useState<ReferenceGraphBundle|null>(null);
   const automaticRoad=useAutomaticRoad(bounds,status==="ready"&&roadFollowing,worldEpoch,!!frozenRoadBundle);
@@ -619,7 +620,6 @@ export function App() {
   const seamPicks=manualReferenceCopyState.picks.map(p=>{const edge=graphBundle?.graph.edges.find(e=>e.id===p.edgeId);return edge?{fragmentId:edge.osmWayId,segmentIndex:edge.segmentIndex,fraction:p.fraction}:null;});
   const seamRequired=useMemo(()=>frozenRoadTiles.map(t=>{const p=t.bundle.source.source.split('/');return {x:Number(p.at(-2)),y:Number(p.at(-1)?.replace('.pbf',''))};}),[frozenRoadTiles]);
   const seamCopy=useOfmSeamCopy({enabled:status==="ready"&&!companySetupRequired&&roadFollowing,world,tool:activeTool,frozenTiles:frozenRoadTiles,requiredTiles:seamRequired,start:seamPicks[0]??null,end:seamPicks[1]??null,readTileEvidenceBatch:automaticRoad.readTileEvidenceBatch});
-  const referencePreviewPoints=manualReferenceCopyState.seamPlan?.points??referenceCopyState.plan.build?.points;
 
   const [referenceExtensionKey,setReferenceExtensionKey]=useState("");
   const referenceBuild=referenceCopyState.plan.build;
@@ -632,6 +632,7 @@ export function App() {
   const referenceExtensionLabel=(candidate:typeof referenceExtensionCandidates[number])=>{const name=candidate.alignment.name?.trim()||"名前未設定の線路";const peers=referenceExtensionCandidates.filter(item=>(item.alignment.name?.trim()||"名前未設定の線路")===name&&item.endpoint===candidate.endpoint);return `${name}${peers.length>1?`（候補${peers.indexOf(candidate)+1}）`:""}の${candidate.endpoint==="start"?"始点":"終点"}から延伸`;};
   const referenceExtension=referenceExtensionCandidates.find(candidate=>candidate.key===referenceExtensionKey);
   const referenceExtensionError=referenceExtensionKey?(!referenceExtension?"延伸対象の端点が参照形状に一致しません。起点を選び直してください。":referenceExtension.alignment.owner!==world?.companies[0]?.id?"他社の線路には延伸できません。":extensionJoinError(referenceExtension.build.points,extensionPrevious({alignmentId:referenceExtension.alignment.id,endpoint:referenceExtension.endpoint}))):null;
+  const referencePreviewPoints=manualReferenceCopyState.seamPlan?.points??referenceExtension?.build.points??referenceCopyState.plan.build?.points;
   const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
   useEffect(()=>{setReferenceExtensionKey("");if(!referenceCopy.active){setFrozenRoadBundle(null);setFrozenRoadTiles(old=>old.length?[]:old);}},[referenceCopy.active,graphBundle]);
   const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referencePreviewPoints?[{id:"reference-plan",pathId:-1,points:referencePreviewPoints}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:(plan.reference||plan.ofmPath)?!!extensionJoinError(plan.points,extensionPrevious(plan.extension)):!!plannedGeometry(plan.points,plan.editedGeometry,extensionPrevious(plan.extension)).error})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
@@ -1084,15 +1085,15 @@ export function App() {
       const path:PlannedPath={id,planId:activePlanId,name:planName,points:preview,line:preview,redo:[],infrastructure,designSpeedKmh,trackType,roadFollowing:false,extension:null,ofmPath:descriptor};
       const nextPlans={...constructionPlans,parkedPaths:[...constructionPlans.parkedPaths,path],plannedStations:plannedStations.map(p=>p.pathId===-1?{...p,pathId:id}:p)};
       if(!current())throw Error('計画が変更されたため処理を中止しました。');
-      setSeamStageSending(true);
+      seamMutationPending.current=true;setSeamStageSending(true);
       const snapshot=await invoke<World>('stage_ofm_construction_plan',{expectedWorldToken,plans:nextPlans,rawEvidence:draft.persistentProposal.newRawEvidence,tileBindings:draft.persistentProposal.tileBindings});
-      // Backend token protects its world; local edits remain independently guarded.
-      if(!current())throw Error('計画追加後に画面状態が変更されました。再読込前に保存状態を確認してください。');
+      // A successful mutation is authoritative: never discard its returned world.
+      // Editing/loading is busy-locked; navigation is locked during dispatch.
       const saved=savedPlanFingerprint;setWorld(snapshot);restoreConstructionPlans(snapshot.construction_plans);setSavedPlanFingerprint(saved);setDirty(true);
       const moveHistory=(entries:StationHistoryEntry[])=>entries.map(entry=>entry.planned?.pathId===-1?{...entry,planned:{...entry.planned,pathId:id}}:entry);
       setStationUndo(moveHistory);setStationRedo(moveHistory);
       setNotice('道路境界の出典と未着工計画を保持しました。計画を着工で建設します。');
-    }finally{setSeamStageSending(false);busyRef.current=false;setBusy(false);}
+    }finally{seamMutationPending.current=false;setSeamStageSending(false);busyRef.current=false;setBusy(false);}
   }
   async function buildReferenceAlignment(build:ReferenceBuild){
     if(!enabled||busyRef.current||!copyCanStart)throw Error("別の下書きまたは処理中です。");
@@ -1392,6 +1393,7 @@ export function App() {
   }
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
+      if(seamMutationPending.current)return;
       if(slotDialog||slotPicker||confirmLoad)return;
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete)return;
@@ -1773,7 +1775,7 @@ export function App() {
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
           <div className="inspector-title"><span>RAILWAY WORKSPACE</span><button className="secondary" aria-label={panelCollapsed ? "操作パネルを開く" : "操作パネルを畳む"} onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? "+" : "−"}</button></div>
           <nav className="editor-tabs construction-tabs" role="tablist" aria-label="建設ツール" hidden={mainTab!=="construction"}>
-            {([["tracks","線路"],["stations","駅設置"],["delete","削除"],["select","選択"]] as const).map(([tool,label],index)=><button key={tool} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const tools=["tracks","stations","delete","select"] as const;const next=tools[event.key==="Home"?0:event.key==="End"?3:(index+(event.key==="ArrowLeft"?3:1))%4];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
+            {([["tracks","線路"],["stations","駅設置"],["delete","削除"],["select","選択"]] as const).map(([tool,label],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{if(seamMutationPending.current)return;setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const tools=["tracks","stations","delete","select"] as const;const next=tools[event.key==="Home"?0:event.key==="End"?3:(index+(event.key==="ArrowLeft"?3:1))%4];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
           </nav>
           <section id="workspace-panel-finance" role="tabpanel" aria-labelledby="workspace-tab-finance" hidden={mainTab!=="finance"}><h3>財務</h3><p>未実装です。収支・運賃・経費の画面は今後追加します。</p></section>
           <section id="workspace-panel-city" role="tabpanel" aria-labelledby="workspace-tab-city" hidden={mainTab!=="city"}><h3>都市</h3><p>未実装です。人口・需要・都市発展の画面は今後追加します。</p></section>
