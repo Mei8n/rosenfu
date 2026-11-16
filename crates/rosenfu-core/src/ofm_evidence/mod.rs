@@ -2,6 +2,11 @@
 //! and a pinned rule. Hashes prove byte consistency, not supplier authenticity or coverage.
 //! No network, decompression, world mutation, or implicit repair is performed here.
 mod candidates;
+mod path;
+pub use path::{
+    reconstruct_path, validate_path_descriptor, DerivedPath, PathDescriptor, PathJoin, PathPick,
+    SourceSpan,
+};
 mod store;
 pub use candidates::{boundary_candidates, validate_boundary_candidates, BoundaryCandidate};
 mod wire;

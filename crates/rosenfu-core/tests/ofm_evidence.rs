@@ -727,6 +727,25 @@ fn three_tile_context_keeps_independent_mutual_uniqueness_per_boundary() {
         boundary_candidates(&store, &[(14552, 6451), (14553, 6451), (14554, 6451)]).unwrap();
     assert_eq!(pairs.len(), 2);
     assert_eq!(pairs[0].b_fragment, pairs[1].a_fragment);
+    let keys = store
+        .bindings()
+        .map(|b| b.canonical_url.clone())
+        .collect::<Vec<_>>();
+    let start = PathPick {
+        fragment_id: pairs[0].a_fragment.clone(),
+        segment_index: 0,
+        fraction: 0.,
+    };
+    let end = PathPick {
+        fragment_id: pairs[1].b_fragment.clone(),
+        segment_index: 0,
+        fraction: 1.,
+    };
+    let path = reconstruct_path(&store, &keys, &start, &end).unwrap();
+    assert_eq!(path.descriptor.ordered_spans.len(), 3);
+    assert_eq!(path.descriptor.joins.len(), 2);
+    assert!(path.points.windows(2).all(|e| e[0][0] < e[1][0]));
+    assert!(validate_path_descriptor(&store, &path.descriptor).is_ok());
 }
 #[test]
 fn candidate_class_context_limit_fails_closed_instead_of_filtering_away_ambiguity() {
@@ -742,6 +761,129 @@ fn candidate_class_context_limit_fails_closed_instead_of_filtering_away_ambiguit
     let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b]).unwrap();
     assert_eq!(
         boundary_candidates(&store, &[(14553, 6451)]),
+        Err(Error::Limit)
+    );
+}
+fn seam_picks(store: &EvidenceStore) -> (Vec<String>, PathPick, PathPick) {
+    let pair = boundary_candidates(store, SEAM_TILES).unwrap().remove(0);
+    (
+        store.bindings().map(|b| b.canonical_url.clone()).collect(),
+        PathPick {
+            fragment_id: pair.a_fragment,
+            segment_index: 0,
+            fraction: 0.,
+        },
+        PathPick {
+            fragment_id: pair.b_fragment,
+            segment_index: 0,
+            fraction: 1.,
+        },
+    )
+}
+#[test]
+fn reconstructed_blend_is_continuous_reversible_and_revalidated_after_deserialize() {
+    let store = seam_store(WEST_LINE, &[east_line()], None, None);
+    let (keys, start, end) = seam_picks(&store);
+    let path = reconstruct_path(&store, &keys, &start, &end).unwrap();
+    assert_eq!(path.points.len(), 23);
+    assert_eq!(path.descriptor.ordered_spans.len(), 2);
+    assert_eq!(path.descriptor.joins.len(), 1);
+    assert!(path.max_correction_meters <= 0.8);
+    assert!(path.points.windows(2).all(|e| e[1][0] > e[0][0]));
+    let reverse = reconstruct_path(&store, &keys, &end, &start).unwrap();
+    assert_eq!(path.points.len(), reverse.points.len());
+    for (a, b) in path.points.iter().zip(reverse.points.iter().rev()) {
+        assert!((a[0] - b[0]).abs() < 1e-10 && (a[1] - b[1]).abs() < 1e-10);
+    }
+    let restored: PathDescriptor =
+        serde_json::from_str(&serde_json::to_string(&path.descriptor).unwrap()).unwrap();
+    assert_eq!(validate_path_descriptor(&store, &restored).unwrap(), path);
+    for i in 0..8 {
+        let mut bad = restored.clone();
+        match i {
+            0 => {
+                bad.ordered_spans.remove(0);
+            }
+            1 => {
+                bad.ordered_spans[0].from += 0.01;
+            }
+            2 => {
+                bad.ordered_spans[0].binding_key = "forged".into();
+            }
+            3 => {
+                bad.joins[0].a_range[0] += 0.01;
+            }
+            4 => {
+                bad.joins[0].from_axis += 1e-5;
+            }
+            5 => {
+                bad.coverage_verified = true;
+            }
+            6 => {
+                bad.joins[0].a_id = "forged".into();
+            }
+            _ => {
+                bad.ordered_spans[0].to = f64::NAN;
+            }
+        };
+        assert!(validate_path_descriptor(&store, &bad).is_err());
+    }
+}
+#[test]
+fn picks_inside_blend_out_of_bounds_and_ambiguous_context_reject() {
+    let store = seam_store(WEST_LINE, &[east_line()], None, None);
+    let (keys, start, end) = seam_picks(&store);
+    let mut bad = start.clone();
+    bad.fraction = 0.5;
+    assert!(reconstruct_path(&store, &keys, &bad, &end).is_err());
+    bad.fraction = f64::NAN;
+    assert!(reconstruct_path(&store, &keys, &bad, &end).is_err());
+    bad.fraction = 0.;
+    bad.segment_index = usize::MAX;
+    assert!(reconstruct_path(&store, &keys, &bad, &end).is_err());
+    assert!(reconstruct_path(&store, &keys, &start, &start).is_err());
+    let ambiguous = seam_store(WEST_LINE, &[east_line(), east_line()], None, None);
+    assert!(reconstruct_path(&ambiguous, &keys, &start, &end).is_err());
+}
+#[test]
+#[ignore = "External real two-tile corpus, no data download in tests"]
+fn real_derived_path_matches_typescript_golden() {
+    let west = std::fs::read(std::env::var("OFM_TEST_WEST").unwrap()).unwrap();
+    let east = std::fs::read(std::env::var("OFM_TEST_TILE").unwrap()).unwrap();
+    let b = binding(&east);
+    let mut a = binding(&west);
+    a.x = 14552;
+    a.canonical_url = a.canonical_url.replace("14553", "14552");
+    let store =
+        EvidenceStore::from_parts(vec![raw_entry(&west), raw_entry(&east)], vec![a, b]).unwrap();
+    #[derive(serde::Deserialize)]
+    struct Golden {
+        descriptor: PathDescriptor,
+        points: Vec<[f64; 2]>,
+    }
+    let golden: Golden =
+        serde_json::from_str(include_str!("fixtures/ofm_derived_path_golden.json")).unwrap();
+    let actual = validate_path_descriptor(&store, &golden.descriptor).unwrap();
+    assert_eq!(actual.points.len(), golden.points.len());
+    let mut maximum: f64 = 0.;
+    for (a, b) in actual.points.iter().zip(&golden.points) {
+        for i in 0..2 {
+            maximum = maximum.max((a[i] - b[i]).abs());
+        }
+    }
+    assert!(maximum < 1e-10);
+    println!(
+        "path points={} max_degree_difference={maximum}",
+        actual.points.len()
+    );
+}
+#[test]
+fn whole_covered_source_segment_budget_is_not_bypassed_by_small_blend() {
+    let dense: Vec<_> = (0..501).map(|i| [i * 12, 2000]).collect();
+    let store = seam_store(&dense, &[east_line()], None, None);
+    let (keys, start, end) = seam_picks(&store);
+    assert_eq!(
+        reconstruct_path(&store, &keys, &start, &end),
         Err(Error::Limit)
     );
 }
