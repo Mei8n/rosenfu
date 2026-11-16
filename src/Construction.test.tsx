@@ -1,3 +1,4 @@
+import {replyToCommandOnce} from './testInvoke';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
@@ -86,7 +87,7 @@ test("line-constrained station previews then commits metric platform dimensions"
   fireEvent.pointerMove(map,{clientX:250,clientY:150});
   expect(map.querySelector(".station-platform")).toBeTruthy();
   expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
-  vi.mocked(invoke).mockResolvedValueOnce({...placed,station_placements:[{...placed.station_placements[0],length_m:240}]});
+  replyToCommandOnce('build_plan',{...placed,station_placements:[{...placed.station_placements[0],length_m:240}]});
   await settledMapClick(map,{clientX:250,clientY:150});
   fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText("計画駅を建設しました。");
   expect(invoke).toHaveBeenCalledWith("build_plan",expect.objectContaining({stations:[expect.objectContaining({alignmentId:"3",lengthM:240,widthM:12})]}));
@@ -125,7 +126,7 @@ test("keyboard position previews a platform and too-long platform is blocked",as
  expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
  fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"5"}});
  expect(map.querySelector(".station-platform")).toBeTruthy();
- vi.mocked(invoke).mockResolvedValueOnce(placed);
+ replyToCommandOnce('build_plan',placed);
  fireEvent.keyDown(map,{key:"Enter"});
  fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText("計画駅を建設しました。");
 });
