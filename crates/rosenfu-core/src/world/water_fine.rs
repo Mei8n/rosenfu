@@ -105,16 +105,20 @@ impl Fine {
             return Err("水域データの版または内容が一致しません。".into());
         }
         let row_bytes = (s.height + 1) * 4;
-        if row_bytes > bytes.len() || (bytes.len() - row_bytes) % 2 != 0 {
+        if row_bytes > bytes.len() || !(bytes.len() - row_bytes).is_multiple_of(2) {
             return Err(UNKNOWN.into());
         }
         let rows: Vec<_> = bytes[..row_bytes]
-            .chunks_exact(4)
-            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b) as usize)
             .collect();
         let edges: Vec<_> = bytes[row_bytes..]
-            .chunks_exact(2)
-            .map(|b| u16::from_le_bytes(b.try_into().unwrap()) as usize)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u16::from_le_bytes(*b) as usize)
             .collect();
         if rows.first() != Some(&0) || rows.last() != Some(&edges.len()) {
             return Err(UNKNOWN.into());
