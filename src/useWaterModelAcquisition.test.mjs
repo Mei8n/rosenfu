@@ -50,3 +50,18 @@ test('a late old native install plus a new empty missing-list refreshes a stale 
  await act(async()=>{installed=true;finishInstall();finishList([]);});
  await waitFor(()=>expect(result.current?.value).toEqual({ready:true}));
 });
+
+test('hung native read respects deadline and retries without interpreting absence',async()=>{
+ vi.useFakeTimers();try{vi.resetModules();const {useWaterModelAcquisition}=await import('./useWaterModelAcquisition');let calls=0;vi.mocked(invoke).mockImplementation(()=>{calls++;return new Promise(()=>{});});const {result,unmount}=renderHook(()=>useWaterModelAcquisition(true,1));await act(async()=>{});expect(calls).toBe(1);await act(async()=>vi.advanceTimersByTimeAsync(30000));expect(result.current).toBe(0);await act(async()=>vi.advanceTimersByTimeAsync(30000));expect(calls).toBe(2);await act(async()=>vi.advanceTimersByTimeAsync(90000));expect(calls).toBe(3);expect(result.current).toBe(0);unmount();}finally{vi.useRealTimers();}
+});
+test('late cancelled read never starts fetch or install and late rejection is handled',async()=>{
+ vi.resetModules();const {acquireWaterMasks}=await import('./useWaterModelAcquisition');let finish;const call=vi.fn(()=>new Promise(r=>finish=r)),fetcher=vi.fn();const controller=new AbortController();const result=acquireWaterMasks(controller.signal,vi.fn(),call,fetcher);await Promise.resolve();controller.abort(Error('cancel'));await expect(result).rejects.toThrow('cancel');finish([entry('fuji').pin]);await Promise.resolve();await Promise.resolve();expect(fetcher).not.toHaveBeenCalled();expect(call).toHaveBeenCalledTimes(1);
+ const controller2=new AbortController();let fail;const result2=acquireWaterMasks(controller2.signal,vi.fn(),vi.fn(()=>new Promise((_,r)=>fail=r)),fetcher);await Promise.resolve();controller2.abort(Error('cancel2'));await expect(result2).rejects.toThrow('cancel2');fail(Error('late native rejection'));await Promise.resolve();
+});
+test('outstanding native calls remain bounded across aborted world acquisitions',async()=>{
+ vi.resetModules();const {acquireWaterMasks}=await import('./useWaterModelAcquisition');const call=vi.fn(()=>new Promise(()=>{}));for(let i=0;i<12;i++){const c=new AbortController(),result=acquireWaterMasks(c.signal,vi.fn(),call,vi.fn());await Promise.resolve();c.abort();await expect(result).rejects.toBeDefined();}expect(call).toHaveBeenCalledTimes(8);
+});
+test('late timed-out install notifies only a current hook and requires a fresh native query',async()=>{
+ vi.resetModules();const {acquireWaterMasks,useWaterModelAcquisition}=await import('./useWaterModelAcquisition');const {data,pin}=entry('fuji');let finishInstall;const oldInstalled=vi.fn(),oldCall=vi.fn(command=>command==='water_mask_requests'?Promise.resolve([pin]):new Promise(resolve=>finishInstall=resolve));const controller=new AbortController();const old=acquireWaterMasks(controller.signal,oldInstalled,oldCall,async()=>new Response(data));await waitFor(()=>expect(finishInstall).toBeTruthy());controller.abort(Error('deadline'));await expect(old).rejects.toThrow('deadline');
+ vi.mocked(invoke).mockResolvedValue([]);const {result,unmount}=renderHook(()=>useWaterModelAcquisition(true,'current-world'));await waitFor(()=>expect(result.current).toBe(1));const before=vi.mocked(invoke).mock.calls.length;await act(async()=>finishInstall());await waitFor(()=>expect(vi.mocked(invoke).mock.calls.length).toBeGreaterThan(before));await waitFor(()=>expect(result.current).toBe(2));expect(oldInstalled).not.toHaveBeenCalled();expect(vi.mocked(invoke).mock.calls.every(([c])=>c==='water_mask_requests')).toBe(true);unmount();
+});
