@@ -22,8 +22,9 @@ fn in_edit_extent(latitude: f64, longitude: f64) -> bool {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionPreview {
-    pub new_crossing_count: usize,
-    pub roads_unverified: bool,
+    pub new_crossing_count: Option<usize>,
+    pub roads_unverified: Option<bool>,
+    pub validation_error: Option<String>,
 }
 
 /// A station attached to the alignment being constructed, not an existing ID.
@@ -755,7 +756,13 @@ impl WorldEditor {
             .into_iter()
             .flat_map(|(_, assessment)| assessment.crossings)
             .collect();
-        self.build_construction_plan(alignments, stations)?;
+        if let Err(error) = self.build_construction_plan(alignments, stations) {
+            return Ok(ConstructionPreview {
+                new_crossing_count: None,
+                roads_unverified: None,
+                validation_error: Some(error),
+            });
+        }
         let after = self.snapshot();
         let changed: std::collections::BTreeSet<_> = after
             .alignments
@@ -778,8 +785,9 @@ impl WorldEditor {
             })
             .count();
         Ok(ConstructionPreview {
-            new_crossing_count,
-            roads_unverified,
+            new_crossing_count: Some(new_crossing_count),
+            roads_unverified: Some(roads_unverified),
+            validation_error: None,
         })
     }
     /// Reference snapshots and construction commit together; failures leave the
@@ -5873,15 +5881,16 @@ mod road_snapshot_transaction_tests {
             .clone()
             .preview_construction_summary(vec![plan()], vec![], vec![roads()])
             .unwrap();
-        assert_eq!(preview.new_crossing_count, 1);
-        assert!(!preview.roads_unverified);
+        assert_eq!(preview.new_crossing_count, Some(1));
+        assert!(preview.validation_error.is_none());
+        assert_eq!(preview.roads_unverified, Some(false));
         assert_eq!(editor.snapshot(), old);
         editor
             .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
             .unwrap();
         assert_eq!(
             editor.road_assessments()[0].1.crossings.len(),
-            preview.new_crossing_count
+            preview.new_crossing_count.unwrap()
         );
     }
     #[test]
@@ -5892,14 +5901,16 @@ mod road_snapshot_transaction_tests {
             .clone()
             .preview_construction_summary(vec![plan()], vec![], vec![])
             .unwrap();
-        assert_eq!(preview.new_crossing_count, 0);
-        assert!(preview.roads_unverified);
+        assert_eq!(preview.new_crossing_count, Some(0));
+        assert_eq!(preview.roads_unverified, Some(true));
         let mut invalid = plan();
         invalid.points.clear();
         assert!(editor
             .clone()
             .preview_construction_summary(vec![invalid], vec![], vec![roads()])
-            .is_err());
+            .unwrap()
+            .validation_error
+            .is_some());
         assert_eq!(editor.snapshot(), old);
     }
     #[test]
@@ -5913,7 +5924,7 @@ mod road_snapshot_transaction_tests {
         let preview = editor
             .preview_construction_summary(vec![next], vec![], vec![])
             .unwrap();
-        assert_eq!(preview.new_crossing_count, 0);
+        assert_eq!(preview.new_crossing_count, Some(0));
     }
     #[test]
     fn road_snapshot_and_alignment_commit_atomically_and_survive_serialization() {
