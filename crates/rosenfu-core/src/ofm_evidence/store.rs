@@ -145,6 +145,39 @@ impl EvidenceStore {
             }),
         })
     }
+    /// Read-only whole-tile view of an already validated immutable store. This
+    /// accepts keys only, never external bytes or DTOs, and shares validated Arcs.
+    /// It does not infer acquisition-scope completeness or allow road filtering.
+    pub fn scope(&self, keys: &[String]) -> Result<Self> {
+        if keys.is_empty() || keys.len() > MAX_TILES {
+            return Err(Error::Limit);
+        }
+        let mut state = State::default();
+        for key in keys {
+            let binding = self.state.bindings.get(key).ok_or(Error::Binding)?;
+            if state
+                .bindings
+                .insert(key.clone(), binding.clone())
+                .is_some()
+            {
+                return Err(Error::Binding);
+            }
+            let raw = self
+                .state
+                .blobs
+                .get(&binding.raw_sha256)
+                .ok_or(Error::Hash)?;
+            state
+                .blobs
+                .insert(binding.raw_sha256.clone(), Arc::clone(raw));
+            let cache_key = DecodeKey::from(binding);
+            let decoded = self.state.decoded.get(&cache_key).ok_or(Error::Binding)?;
+            state.decoded.insert(cache_key, Arc::clone(decoded));
+        }
+        Ok(Self {
+            state: Arc::new(state),
+        })
+    }
     pub fn descriptors(&self) -> Vec<EvidenceDescriptor> {
         self.state
             .bindings

@@ -135,3 +135,86 @@ fn slots_export_import_and_versioned_replacement_use_the_complete_envelope() {
     assert!(save_world_if_version(&path, &imported, &version).is_ok());
     assert_eq!(load_world(&path).unwrap(), world);
 }
+#[test]
+fn parked_and_built_seam_paths_roundtrip_complete_envelope_and_fail_atomically() {
+    use rosenfu_core::ofm_evidence::{reconstruct_path, PathPick};
+    use rosenfu_core::world::TrackType;
+    let prefix = vec![
+        26, 56, 10, 14, 116, 114, 97, 110, 115, 112, 111, 114, 116, 97, 116, 105, 111, 110, 120, 2,
+        40, 128, 32, 18, 17, 18, 2, 0, 0, 24, 2, 34, 9, 9,
+    ];
+    let suffix = vec![
+        10, 144, 3, 0, 26, 5, 99, 108, 97, 115, 115, 34, 7, 10, 5, 109, 105, 110, 111, 114,
+    ];
+    let west = [prefix.clone(), vec![192, 62, 160, 31], suffix.clone()].concat();
+    let east = [prefix, vec![191, 1, 162, 31], suffix].concat();
+    let revision = "20261101_080013_pt";
+    let bindings: Vec<_> = [&west, &east]
+        .iter()
+        .enumerate()
+        .map(|(i, raw)| TileBinding {
+            canonical_url: format!(
+                "https://tiles.openfreemap.org/planet/{revision}/14/{}/6451.pbf",
+                14552 + i
+            ),
+            revision: revision.into(),
+            z: 14,
+            x: 14552 + i as u32,
+            y: 6451,
+            raw_sha256: raw_sha256(raw),
+            decoder_rule: DECODER_RULE.into(),
+        })
+        .collect();
+    let raw: Vec<_> = [west, east]
+        .into_iter()
+        .map(|bytes| RawEvidence {
+            sha256: raw_sha256(&bytes),
+            bytes,
+        })
+        .collect();
+    let store = EvidenceStore::from_parts(raw, bindings).unwrap();
+    let start = PathPick {
+        fragment_id: format!("ofm:{revision}:14:14552:6451:0:0"),
+        segment_index: 0,
+        fraction: 0.,
+    };
+    let end = PathPick {
+        fragment_id: format!("ofm:{revision}:14:14553:6451:0:0"),
+        segment_index: 0,
+        fraction: 1.,
+    };
+    let keys = store
+        .bindings()
+        .map(|b| b.canonical_url.clone())
+        .collect::<Vec<_>>();
+    let path = reconstruct_path(&store, &keys, &start, &end)
+        .unwrap()
+        .descriptor;
+    let mut world = World::default();
+    let player = world.add_player("p".into()).unwrap();
+    let owner = world.add_company(player, "c".into()).unwrap();
+    let plans=serde_json::from_value(serde_json::json!({"version":1,"plans":[{"id":1,"name":"seam"}],"parkedPaths":[{"id":2,"planId":1,"name":"seam","points":[],"redo":[],"line":[],"extension":null,"trackType":"normal","designSpeedKmh":120,"roadFollowing":true,"ofmPath":path}],"activePathId":1,"activePlanId":1,"draftPoints":[],"redoPoints":[],"draftExtension":null,"trackType":"normal","designSpeedKmh":120,"roadFollowing":true,"plannedStations":[],"draftFinished":false})).unwrap();
+    world
+        .stage_ofm_construction_plans(
+            plans,
+            store
+                .blobs()
+                .map(|(sha, raw)| RawEvidence {
+                    sha256: sha.into(),
+                    bytes: raw.into(),
+                })
+                .collect(),
+            store.bindings().cloned().collect(),
+        )
+        .unwrap();
+    let parked = world.clone();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+    world
+        .build_alignment_from_road_path(owner, "built".into(), TrackType::Normal, path)
+        .unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
+    let mut value: serde_json::Value = serde_json::from_slice(&encode(&world).unwrap()).unwrap();
+    value["world"]["road_path_provenance"][0]["to_position"] = serde_json::json!(0.4);
+    assert!(decode(&serde_json::to_vec(&value).unwrap()).is_err());
+    assert_eq!(decode(&encode(&parked).unwrap()).unwrap(), parked);
+}
