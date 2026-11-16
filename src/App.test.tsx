@@ -660,7 +660,7 @@ test("persisted alignment route is shown and protected against legacy editing",a
  vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{name:"Rosenfu",version:"test-version"}:world);
  renderStationEditor();await screen.findByText(/test-version/);
  fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.click(screen.getByRole("button",{name:"編集: 新方式本線"}));
- expect(screen.getByText("所属駅: 中央 → 東")).toBeTruthy();expect(screen.getByText(/建設線形 東西線形/)).toBeTruthy();
+ expect(within(screen.getByRole("list",{name:"所属駅"})).getAllByRole("listitem").map(item=>item.textContent)).toEqual(["中央","東"]);expect(screen.queryByText(/建設線形 東西線形/)).toBeNull();
  expect(screen.queryByLabelText("路線名")).toBeNull();
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="save_route")).toBe(false);
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^中央 /}));
