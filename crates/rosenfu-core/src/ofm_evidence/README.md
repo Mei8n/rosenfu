@@ -119,3 +119,66 @@ collection, WorldDraft mutation, or save-envelope encoding is implemented here.
 License/attribution remain mandatory external source-binding metadata in the
 future save envelope. This low-level decoder/store does not validate legal source
 metadata or pretend the provider cryptographically authenticated the bytes.
+
+## Raw-context boundary candidates, checkpoint 3 (not path reconstruction)
+
+`boundary_candidates(store, required_tiles)` independently projects integer MVT
+coordinates and recomputes conservative correspondence hypotheses from **all**
+candidate-class roads in the complete requested store. Required coordinates must
+exactly match the stored bindings; duplicate/missing/extra required coordinates
+reject. A caller-supplied line subset or graph hash is never accepted. This does
+not establish that unrequested external tiles exist or have been acquired. A
+trusted path request must determine the acquisition scope before construction.
+
+Rules follow the frozen PR164 helper: primary/secondary/tertiary/minor/service,
+absent brunnel, layer absent or numeric zero, oneway absent or numeric 0/1/-1.
+String directions remain ineligible; absent attributes do not equal explicit
+values. Layer uses the frontend's numeric interpretation; numeric protobuf value
+encodings compare numerically, not by wire tag. Class/subclass/access and raw
+oneway strings are never coerced. All original typed attributes remain unchanged
+in EvidenceStore. No access permission is inferred.
+
+Only adjacent tile pairs are considered. Each source must traverse the full
+20 m boundary band monotonically, without reentry, boundary-parallel portions,
+disconnected clipping, tile-corner contact or >100 m clipped length. Tangent dot
+product >=0.995 and bidirectional continuous distance upper bound <=0.8 m are
+required. The upper bound uses distance to one convex target segment, recursively
+bisecting at most 8 levels. One shared 1,000,000 segment-evaluation budget covers
+the entire invocation. Limits: 2,000 candidate-class lines, 100,000 points,
+512 points per line, 10,000 eligible clipped pair comparisons. Exhaustion returns
+an error, never partial candidates. Each tile boundary requires mutual uniqueness;
+a middle fragment may legitimately have one neighbor at each of two boundaries.
+
+Output is sorted by fragment IDs. `validate_boundary_candidates` checks the full
+claimed list against regeneration: identities/order/count exact, numeric metrics
+finite and within 1e-6 m. This tolerance is only for cross-language floating-point
+comparison, not a relaxation of the 0.8 m geometric candidate gate.
+
+### Actual two-tile comparison
+
+The optional `real_boundary_candidate_corpus` test consumes raw files only:
+
+```sh
+OFM_TEST_WEST=/path/to/west.pbf OFM_TEST_TILE=/path/to/east.pbf \
+  cargo test -p rosenfu-core --test ofm_evidence \
+  real_boundary_candidate_corpus -- --ignored --nocapture
+```
+
+Revision `20261101_080013_pt`, y6451, x14552/14553:
+- west SHA `235914c31f14d0450a19da8c0f0f9c42ab98422378dae798bd2c0a3fa2932413`
+- east SHA `48019e0b917793f6be41ed656de6fead84714945fedb2e69631aa8f1193cb873`
+- 1,509,801 combined raw bytes; 5,890 total decoded roads; 1,965 candidate-class lines.
+- 15 Rust candidate pairs match all 15 PR164 TypeScript pairs; largest observed
+  metric difference 9.313225746154785e-10 m.
+
+The small committed golden JSON contains only the 15 IDs/metrics from PR164
+`findTileBoundaryContinuations` using the same two raw inputs and the frontend
+MVT decoding/projection, filtered to the five candidate classes. Real PBF files
+and large generated geometry are not committed. Attribution: © OpenMapTiles
+© OpenStreetMap contributors, ODbL-1.0.
+
+**Not implemented:** graph chain/branch/cycle selection, start/end pick handling,
+ordered source spans, overlap blend regeneration, lightweight join validation,
+physical curvature/grades, source-record validation, world mutation, or saving.
+No candidate list is authorization or proof for construction. This is the bounded
+candidate stage of a later independently reconstructed seam path validator.

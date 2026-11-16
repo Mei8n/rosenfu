@@ -1,7 +1,9 @@
 //! Immutable raw evidence can be shared by SHA, but decoding is bound to tile coordinates
 //! and a pinned rule. Hashes prove byte consistency, not supplier authenticity or coverage.
 //! No network, decompression, world mutation, or implicit repair is performed here.
+mod candidates;
 mod store;
+pub use candidates::{boundary_candidates, validate_boundary_candidates, BoundaryCandidate};
 mod wire;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};

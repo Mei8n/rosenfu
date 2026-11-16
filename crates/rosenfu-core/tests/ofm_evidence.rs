@@ -522,3 +522,226 @@ fn store_rejects_mixed_versions_and_partial_batch_publication() {
     assert_eq!(store.descriptors(), before);
     assert_eq!(store.bindings().count(), 1);
 }
+fn xy_geometry(points: &[[i32; 2]]) -> Vec<u64> {
+    let zig = |n: i32| ((i64::from(n) << 1) ^ (i64::from(n) >> 31)) as u64;
+    let mut out = vec![
+        9,
+        zig(points[0][0]),
+        zig(points[0][1]),
+        (((points.len() - 1) as u64) << 3) | 2,
+    ];
+    for e in points.windows(2) {
+        out.extend([zig(e[1][0] - e[0][0]), zig(e[1][1] - e[0][1])]);
+    }
+    out
+}
+fn seam_store(
+    a: &[[i32; 2]],
+    bs: &[Vec<[i32; 2]>],
+    extra_a: Option<(&str, Vec<u8>)>,
+    extra_b: Option<(&str, Vec<u8>)>,
+) -> EvidenceStore {
+    let west = tile(&xy_geometry(a), extra_a);
+    let mut east_keys = vec!["class"];
+    let mut east_values = vec![field(1, b"minor")];
+    let mut tags = vec![0, 0];
+    if let Some((k, value)) = extra_b {
+        east_keys.push(k);
+        east_values.push(value);
+        tags.extend([1, 1]);
+    }
+    let east = field(
+        3,
+        &layer(
+            &bs.iter()
+                .map(|p| feature(&tags, &xy_geometry(p)))
+                .collect::<Vec<_>>(),
+            &east_keys,
+            &east_values,
+        ),
+    );
+    let b = binding(&east);
+    let mut a = binding(&west);
+    a.x = 14552;
+    a.canonical_url = a.canonical_url.replace("14553", "14552");
+    EvidenceStore::from_parts(vec![raw_entry(&west), raw_entry(&east)], vec![a, b]).unwrap()
+}
+const WEST_LINE: &[[i32; 2]] = &[[4000, 2000], [4200, 2000]];
+fn east_line() -> Vec<[i32; 2]> {
+    vec![[-96, 2001], [104, 2001]]
+}
+const SEAM_TILES: &[(u32, u32)] = &[(14552, 6451), (14553, 6451)];
+#[test]
+fn raw_context_candidates_cannot_be_omitted_forged_or_reversed() {
+    let store = seam_store(WEST_LINE, &[east_line()], None, None);
+    let actual = boundary_candidates(&store, SEAM_TILES).unwrap();
+    assert_eq!(actual.len(), 1);
+    assert!(actual[0].max_separation_meters > 0.3 && actual[0].max_separation_meters < 0.8);
+    assert!(validate_boundary_candidates(&store, SEAM_TILES, &actual).is_ok());
+    assert!(validate_boundary_candidates(&store, SEAM_TILES, &[]).is_err());
+    let mut wrong = actual.clone();
+    wrong[0].max_separation_meters = 0.;
+    assert!(validate_boundary_candidates(&store, SEAM_TILES, &wrong).is_err());
+    let mut wrong = actual.clone();
+    let pair = &mut wrong[0];
+    std::mem::swap(&mut pair.a_fragment, &mut pair.b_fragment);
+    assert!(validate_boundary_candidates(&store, SEAM_TILES, &wrong).is_err());
+    assert!(boundary_candidates(&store, &SEAM_TILES[..1]).is_err());
+    assert!(boundary_candidates(&store, &[SEAM_TILES[0], SEAM_TILES[0]]).is_err());
+    let mut reversed: Vec<_> = store.bindings().cloned().collect();
+    reversed.reverse();
+    let reload = EvidenceStore::from_parts(
+        store
+            .blobs()
+            .map(|(sha, raw)| RawEvidence {
+                sha256: sha.into(),
+                bytes: raw.into(),
+            })
+            .collect(),
+        reversed,
+    )
+    .unwrap();
+    assert_eq!(boundary_candidates(&reload, SEAM_TILES).unwrap(), actual);
+}
+#[test]
+fn candidate_ambiguity_structure_access_and_raw_direction_remain_distinct() {
+    let duplicated = seam_store(WEST_LINE, &[east_line(), east_line()], None, None);
+    assert!(boundary_candidates(&duplicated, SEAM_TILES)
+        .unwrap()
+        .is_empty());
+    for (a, b) in [
+        (
+            Some(("access", field(1, b"yes"))),
+            Some(("access", field(1, b"private"))),
+        ),
+        (Some(("layer", scalar(4, 0))), None),
+        (
+            Some(("brunnel", field(1, b"bridge"))),
+            Some(("brunnel", field(1, b"bridge"))),
+        ),
+        (
+            Some(("oneway", field(1, b"1"))),
+            Some(("oneway", field(1, b"1"))),
+        ),
+        (Some(("layer", scalar(4, 1))), Some(("layer", scalar(4, 1)))),
+    ] {
+        assert!(
+            boundary_candidates(&seam_store(WEST_LINE, &[east_line()], a, b), SEAM_TILES)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let mut reversed = east_line();
+    reversed.reverse();
+    assert!(boundary_candidates(
+        &seam_store(
+            WEST_LINE,
+            &[reversed],
+            Some(("oneway", scalar(4, 1))),
+            Some(("oneway", scalar(4, 1)))
+        ),
+        SEAM_TILES
+    )
+    .unwrap()
+    .is_empty());
+}
+#[test]
+fn distinct_parallel_roads_and_reentrant_crossings_are_not_paired() {
+    let far = vec![[-96, 2005], [104, 2005]];
+    assert!(
+        boundary_candidates(&seam_store(WEST_LINE, &[far], None, None), SEAM_TILES)
+            .unwrap()
+            .is_empty()
+    );
+    let looped = vec![[-96, 2001], [104, 2001], [-96, 2001]];
+    assert!(
+        boundary_candidates(&seam_store(WEST_LINE, &[looped], None, None), SEAM_TILES)
+            .unwrap()
+            .is_empty()
+    );
+}
+#[test]
+#[ignore = "External real two-tile corpus, no data download in tests"]
+fn real_boundary_candidate_corpus() {
+    let west = std::fs::read(std::env::var("OFM_TEST_WEST").unwrap()).unwrap();
+    let east = std::fs::read(std::env::var("OFM_TEST_TILE").unwrap()).unwrap();
+    let b = binding(&east);
+    let mut a = binding(&west);
+    a.x = 14552;
+    a.canonical_url = a.canonical_url.replace("14553", "14552");
+    let store =
+        EvidenceStore::from_parts(vec![raw_entry(&west), raw_entry(&east)], vec![a, b]).unwrap();
+    let pairs = boundary_candidates(&store, SEAM_TILES).unwrap();
+    let golden: Vec<(String, String, f64, f64)> =
+        serde_json::from_str(include_str!("fixtures/ofm_boundary_candidate_golden.json")).unwrap();
+    assert_eq!(pairs.len(), golden.len());
+    for p in &pairs {
+        let g = golden
+            .iter()
+            .find(|g| g.0 == p.a_fragment && g.1 == p.b_fragment)
+            .unwrap();
+        assert!((p.overlap_meters - g.2).abs() < 1e-6);
+        assert!((p.max_separation_meters - g.3).abs() < 1e-6);
+    }
+    println!(
+        "CANDIDATES {}",
+        serde_json::to_string(
+            &pairs
+                .iter()
+                .map(|p| (
+                    &p.a_fragment,
+                    &p.b_fragment,
+                    p.overlap_meters,
+                    p.max_separation_meters
+                ))
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
+    );
+    assert!(!pairs.is_empty());
+}
+#[test]
+fn three_tile_context_keeps_independent_mutual_uniqueness_per_boundary() {
+    let shapes = [
+        vec![[4000, 2000], [4200, 2000]],
+        vec![[-96, 2000], [4200, 2000]],
+        vec![[-96, 2000], [104, 2000]],
+    ];
+    let raw: Vec<_> = shapes.iter().map(|p| tile(&xy_geometry(p), None)).collect();
+    let bindings = raw
+        .iter()
+        .enumerate()
+        .map(|(i, raw)| {
+            let mut b = binding(raw);
+            b.x = 14552 + i as u32;
+            b.canonical_url = format!(
+                "https://tiles.openfreemap.org/planet/{}/14/{}/{}.pbf",
+                b.revision, b.x, b.y
+            );
+            b
+        })
+        .collect();
+    let store =
+        EvidenceStore::from_parts(raw.iter().map(|r| raw_entry(r)).collect(), bindings).unwrap();
+    let pairs =
+        boundary_candidates(&store, &[(14552, 6451), (14553, 6451), (14554, 6451)]).unwrap();
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(pairs[0].b_fragment, pairs[1].a_fragment);
+}
+#[test]
+fn candidate_class_context_limit_fails_closed_instead_of_filtering_away_ambiguity() {
+    let raw = field(
+        3,
+        &layer(
+            &vec![feature(&[0, 0], &xy_geometry(WEST_LINE)); 2001],
+            &["class"],
+            &[field(1, b"minor")],
+        ),
+    );
+    let b = binding(&raw);
+    let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b]).unwrap();
+    assert_eq!(
+        boundary_candidates(&store, &[(14553, 6451)]),
+        Err(Error::Limit)
+    );
+}
