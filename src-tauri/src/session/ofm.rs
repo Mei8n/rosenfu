@@ -218,6 +218,90 @@ mod tests {
         assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
     }
     #[test]
+    fn seam_exact_endpoint_extension_keeps_existing_alignment_and_provenance() {
+        use rosenfu_core::world::AlignmentEndpoint;
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let points: Vec<GeoPoint> =
+            serde_json::from_value(fixture()["plans"]["parkedPaths"][0]["points"].clone()).unwrap();
+        let start = points[0];
+        let source = editor
+            .build_alignment_typed_unchecked(
+                "元線路".into(),
+                vec![
+                    GeoPoint {
+                        longitude: start.longitude - 0.002,
+                        latitude: start.latitude,
+                    },
+                    start,
+                ],
+                rosenfu_core::world::TrackType::Normal,
+            )
+            .unwrap();
+        let mut r = request();
+        r.extension = Some(PlannedAlignmentExtension {
+            alignment_id: source,
+            endpoint: AlignmentEndpoint::End,
+        });
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        assert_eq!(built.alignments.len(), 1);
+        assert_eq!(built.alignments[0].id, source);
+        assert_eq!(built.alignments[0].points[1..], points);
+        assert_eq!(built.road_path_provenance.len(), 1);
+        assert_eq!(built.road_path_provenance[0].alignment_id, source);
+        assert_eq!(
+            rosenfu_storage::decode(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap(),
+            editor.world
+        );
+    }
+
+    #[test]
+    fn seam_anchor_heights_preserve_provenance_save_and_undo() {
+        use rosenfu_core::world::InfrastructureLevel;
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let mut r = request();
+        r.anchor_levels = Some(vec![InfrastructureLevel::Elevated; 2]);
+        r.infrastructure.level = InfrastructureLevel::Elevated;
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        let line = built.alignments.last().unwrap();
+        assert_eq!(line.section_profiles.len(), 1);
+        assert_eq!(line.section_profiles[0].start_height_m, 6.);
+        assert_eq!(line.section_profiles[0].end_height_m, 6.);
+        assert_eq!(built.road_path_provenance.len(), 1);
+        assert_eq!(
+            rosenfu_storage::decode(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap(),
+            editor.world
+        );
+        editor.delete_alignment(line.id).unwrap();
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+    }
+
+    #[test]
+    fn seam_steep_or_mismatched_anchor_heights_are_atomic() {
+        use rosenfu_core::world::InfrastructureLevel;
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let before = editor.snapshot();
+        let mut r = request();
+        r.anchor_levels = Some(vec![
+            InfrastructureLevel::Ground,
+            InfrastructureLevel::Elevated3,
+        ]);
+        assert!(editor.build_plan(vec![r]).unwrap_err().contains("勾配"));
+        assert_eq!(editor.snapshot(), before);
+        let mut r = request();
+        r.anchor_levels = Some(vec![InfrastructureLevel::Ground]);
+        assert!(editor
+            .build_plan(vec![r])
+            .unwrap_err()
+            .contains("高さ指定数"));
+        assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
     fn unsupported_old_save_leaves_file_and_session_unchanged() {
         let mut editor = WorldEditor::new();
         stage(&mut editor);
