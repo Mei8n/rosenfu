@@ -737,6 +737,27 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.clone().build_construction_plan(alignments, stations)
     }
+    /// Click placement needs only the exact build verdict, not world-wide crossing
+    /// totals. Keep all build/water/saveability checks, without computing those totals.
+    pub fn validate_construction_placement(
+        mut self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+        roads: Vec<rosenfu_core::world::RoadSnapshot>,
+    ) -> Result<ConstructionPreview, String> {
+        for snapshot in roads {
+            self.world
+                .add_road_snapshot(snapshot)
+                .map_err(|e| e.to_string())?;
+        }
+        let validation_error = self.build_construction_plan(alignments, stations).err();
+        Ok(ConstructionPreview {
+            // Not computed, rather than falsely reporting zero/verified.
+            new_crossing_count: None,
+            roads_unverified: None,
+            validation_error,
+        })
+    }
     /// Use the same road snapshots and construction pipeline as commit, without
     /// changing the live editor. Existing crossings are not charged again.
     pub fn preview_construction_summary(
@@ -5871,6 +5892,82 @@ mod road_snapshot_transaction_tests {
             reference: None,
             extension: None,
             destination: None,
+        }
+    }
+    #[test]
+    fn placement_verdict_matches_summary_without_reporting_uncomputed_crossings() {
+        let editor = WorldEditor::new();
+        let before = editor.snapshot();
+        for valid in [true, false] {
+            let make_path = || {
+                let mut path = plan();
+                if !valid {
+                    path.points.truncate(1);
+                }
+                path
+            };
+            let summary = editor
+                .clone()
+                .preview_construction_summary(vec![make_path()], vec![], vec![roads()])
+                .unwrap();
+            let verdict = editor
+                .clone()
+                .validate_construction_placement(vec![make_path()], vec![], vec![roads()])
+                .unwrap();
+            assert_eq!(verdict.validation_error, summary.validation_error);
+            assert_eq!(verdict.validation_error.is_none(), valid);
+            assert_eq!(verdict.new_crossing_count, None);
+            assert_eq!(verdict.roads_unverified, None);
+            assert_eq!(editor.snapshot(), before);
+        }
+        let mut invalid_roads = roads();
+        invalid_roads.source_sha256 = "invalid".into();
+        assert!(editor
+            .clone()
+            .validate_construction_placement(vec![plan()], vec![], vec![invalid_roads])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+    #[test]
+    #[ignore = "manual latency measurement"]
+    fn measure_anchor_preview_latency() {
+        let mut editor = WorldEditor::new();
+        for i in 0..20 {
+            let mut path = plan();
+            let y = i as f64 * 0.0001;
+            path.points = vec![point(-0.01, y), point(0.01, y)];
+            editor.build_construction_plan(vec![path], vec![]).unwrap();
+        }
+        let mut data = roads();
+        let base = data.roads[0].clone();
+        data.roads = (0..100)
+            .map(|i| {
+                let mut road = base.clone();
+                road.id = format!("way/{i}");
+                let x = -0.009 + i as f64 * 0.000018;
+                road.points = vec![point(x, -0.01), point(x, 0.02)];
+                road
+            })
+            .collect();
+        editor.world.add_road_snapshot(data).unwrap();
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            let result = editor
+                .clone()
+                .preview_construction_summary(vec![plan()], vec![], vec![])
+                .unwrap();
+            assert!(result.validation_error.is_none());
+            eprintln!("summary_ms={:.3}", start.elapsed().as_secs_f64() * 1000.0);
+            let start = std::time::Instant::now();
+            let fast = editor
+                .clone()
+                .validate_construction_placement(vec![plan()], vec![], vec![])
+                .unwrap();
+            assert_eq!(fast.validation_error, result.validation_error);
+            eprintln!(
+                "validation_ms={:.3}",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
         }
     }
     #[test]
