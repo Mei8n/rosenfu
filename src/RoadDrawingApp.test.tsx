@@ -86,3 +86,10 @@ test('legacy OFM sources keep provider attribution even without drawn alignments
  await start({...world,source_records:[{dataset_id:'ofm-tiles/legacy'}]});fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
  expect(screen.getByRole('link',{name:'OpenFreeMap'})).toBeTruthy();expect(screen.getByRole('link',{name:'© OpenMapTiles'})).toBeTruthy();
 });
+
+test('road preview suppresses the unrelated free chord and Ctrl restores ordinary preview',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);const {map,click}=await start();await click(-.0008);const p=project(latitude,longitude+.0008,camera);
+ await act(async()=>{fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y});await new Promise(r=>setTimeout(r,0));});
+ await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());expect(document.querySelector('.candidate-draft')).toBeNull();expect(document.querySelector('.curve-circle-guide')).toBeNull();
+ await act(async()=>{fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y,ctrlKey:true});});expect(document.querySelector('.road-drawing-preview')).toBeNull();expect(document.querySelector('.candidate-draft')).toBeTruthy();
+});
