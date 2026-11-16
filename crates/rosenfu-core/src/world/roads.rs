@@ -1,6 +1,7 @@
 //! Immutable reference geometry. Assets are derived from the saved snapshot and current
 //! alignment geometry, so edits, deletions and Undo cannot leave stale crossing records.
 use super::*;
+mod boundary;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CoverageBounds {
@@ -349,7 +350,7 @@ fn overlaps(a: CoverageBounds, b: CoverageBounds) -> bool {
 /// Derive crossings from current physical height at each intersection. Never cache
 /// these records in a save: alignment edits, removals and Undo change them immediately.
 pub fn assess_road_crossings(alignment: &Alignment, snapshots: &[RoadSnapshot]) -> RoadAssessment {
-    assess_connected_road_crossings(alignment, snapshots, &[], &[])
+    assess_connected_road_crossings(alignment, snapshots, &[], &[], &boundary::pairs(snapshots))
 }
 
 fn assess_connected_road_crossings(
@@ -357,6 +358,7 @@ fn assess_connected_road_crossings(
     snapshots: &[RoadSnapshot],
     start_neighbors: &[GeoPoint],
     end_neighbors: &[GeoPoint],
+    boundary_pairs: &[boundary::Pair],
 ) -> RoadAssessment {
     let mut result = RoadAssessment {
         crossings: vec![],
@@ -440,7 +442,10 @@ fn assess_connected_road_crossings(
                 }
                 // Duplicate mapped ways and source vertices produce one physical asset.
                 if !result.crossings.iter().any(|c| {
-                    metres(c.point, point) < 0.01 && (c.position - position).abs() * total < 0.01
+                    (c.road_id == road.id
+                        || !(c.road_id.starts_with("ofm:") && road.id.starts_with("ofm:")))
+                        && metres(c.point, point) < 0.01
+                        && (c.position - position).abs() * total < 0.01
                 }) {
                     result.crossings.push(AutomaticCrossing {
                         road_id: road.id.clone(),
@@ -452,9 +457,12 @@ fn assess_connected_road_crossings(
         }
         cursor += length;
     }
-    result
-        .crossings
-        .sort_by(|a, b| a.position.total_cmp(&b.position));
+    boundary::consolidate(alignment, &mut result.crossings, boundary_pairs);
+    result.crossings.sort_by(|a, b| {
+        a.position
+            .total_cmp(&b.position)
+            .then_with(|| a.road_id.cmp(&b.road_id))
+    });
     result
 }
 impl World {
@@ -474,6 +482,7 @@ impl World {
     /// belongs to the lowest alignment ID, so splitting a line never duplicates it.
     pub fn road_assessments(&self) -> std::collections::BTreeMap<AlignmentId, RoadAssessment> {
         let mut result = std::collections::BTreeMap::new();
+        let boundary_pairs = boundary::pairs(&self.data.road_snapshots);
         for alignment in &self.data.alignments {
             let mut starts = vec![];
             let mut ends = vec![];
@@ -514,6 +523,7 @@ impl World {
                     &self.data.road_snapshots,
                     &starts,
                     &ends,
+                    &boundary_pairs,
                 ),
             );
         }

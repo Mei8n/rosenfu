@@ -21,3 +21,16 @@ test('edit or Undo removes stale markers immediately and ignores late old-world 
 test('failed assessment never invents crossing markers',async()=>{
  vi.mocked(invoke).mockRejectedValue(Error('unavailable'));const {container}=render(<Harness world={first}/>);await screen.findByText('failed');expect(container.querySelectorAll('[data-crossing-alignment]')).toHaveLength(0);
 });
+test('canonical boundary fragment changes replace the marker and Undo restores its location',async()=>{
+ const crossing=value[0][1].crossings[0];
+ const before:RoadAssessments=[['3',{...value[0][1],roads_ready:false,crossings:[{...crossing,road_id:'ofm:east',point:{longitude:139.76806640625,latitude:35.6853489711398}}]}]];
+ const after:RoadAssessments=[['3',{...before[0][1],crossings:[{...crossing,road_id:'ofm:west',point:{longitude:139.76806640625,latitude:35.68534327496442}}]}]];
+ vi.mocked(invoke).mockResolvedValueOnce(before).mockResolvedValueOnce(after).mockResolvedValueOnce(before);
+ const {container,rerender}=render(<Harness world={first}/>);await screen.findByText('ready');
+ const marker=()=>container.querySelector('[data-crossing-alignment]');const initial=marker()!.getAttribute('transform');
+ rerender(<Harness world={second}/>);expect(marker()).toBeNull();await screen.findByText('ready');
+ expect(container.querySelectorAll('[data-crossing-alignment]')).toHaveLength(1);expect(marker()!.getAttribute('transform')).not.toBe(initial);
+ rerender(<Harness world={first}/>);expect(marker()).toBeNull();await screen.findByText('ready');
+ expect(container.querySelectorAll('[data-crossing-alignment]')).toHaveLength(1);expect(marker()!.getAttribute('transform')).toBe(initial);
+ expect(container.textContent).not.toContain('ofm:');
+});
