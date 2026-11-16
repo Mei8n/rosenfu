@@ -1,5 +1,11 @@
 # Automatic road following: bounded initial release
 
+> Historical release scope (PR #149), not the nationwide target architecture.
+> The current decision is on-demand OpenFreeMap vector tiles; custom national
+> pack generation is no longer the primary implementation path. The Tokyo pack
+> described below is still the integrated baseline at dev `528be958`. See
+> [implementation status](implementation-plan.md) and [alpha 0.2 road transport](road-transport-plan.md).
+
 This release automatically loads a pinned, same-origin OSM road pack when road
 following is selected. No manual import or third-party runtime API is required.
 The bundled region is Tokyo centre only (see public/road-data/README.md).

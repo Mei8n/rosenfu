@@ -84,7 +84,10 @@ test('reference following requires an explicit endpoint target and sends source 
  await pick({...start,longitude:start.longitude+.00002},'0');await pick(end,'1');
  const method=copyPanel().getByLabelText('敷設方法') as HTMLSelectElement;
  expect(method.value).toBe('');expect(method.options).toHaveLength(3);
+ expect(method.options[1].textContent).toBe('existing（候補1）の終点から延伸');expect(method.options[2].textContent).toBe('existing（候補2）の終点から延伸');
+ expect(method.textContent).not.toContain('11');
  fireEvent.change(method,{target:{value:'11:end'}});
+ expect(view.container.querySelectorAll('.alignment-selected')).toHaveLength(1);
  fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));
  fireEvent.click(copyPanel().getByRole('button',{name:'選択中の計画に追加',hidden:true}));await waitFor(()=>expect(copyPanel().queryByRole('button',{name:'選択中の計画に追加',hidden:true})).toBeNull());fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expect.objectContaining({reference:undefined}),expect.objectContaining({extension:{alignmentId:'11',endpoint:'end'},reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})]})));
