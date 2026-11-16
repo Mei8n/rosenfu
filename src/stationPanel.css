@@ -1,26 +1,25 @@
 /* Compact, map-first station directory; all values come from the saved network. */
 .station-directory .directory-heading{padding:12px 12px 8px;gap:8px}
-.station-directory .directory-heading h3{margin:0;font-size:14px}
+.station-directory .directory-heading h3{margin:0;font-size:calc(var(--ui-font,12px) + 2px)}
 .station-directory .count{background:var(--surface-alt);color:var(--muted);font-variant-numeric:tabular-nums}
 .station-search{padding:0 12px 10px}
-.station-search label{font-size:11px;color:var(--muted)}
-.station-search input{font-size:12px;padding:7px 9px;border-radius:4px}
-.station-list-heading{display:flex;justify-content:space-between;padding:6px 12px;border-block:1px solid var(--edge);color:var(--muted);font-size:10px}
+.station-search label{font-size:calc(var(--ui-font,12px) - 1px);color:var(--muted)}
+.station-search input{font-size:var(--ui-font,12px);padding:7px 9px;border-radius:4px}
+.station-list-heading{display:flex;justify-content:space-between;padding:6px 12px;border-block:1px solid var(--edge);color:var(--muted);font-size:calc(var(--ui-font,12px) - 2px)}
 .workbench .station-directory ul{max-height:clamp(150px,32vh,360px);padding:0;margin:0;overflow:auto}
 .workbench .station-directory .station-entry{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:0;border:0;border-bottom:1px solid var(--edge);background:transparent;min-width:0}
 .workbench .station-directory .station-entry:hover{background:var(--surface-alt)}
 .workbench .station-directory .station-entry.selected{background:var(--surface-alt);box-shadow:inset 3px 0 0 var(--accent,#3684ac)}
-.station-row-main{min-width:0;flex:1}.station-row-name{display:block;font-size:13px;overflow-wrap:anywhere}
-.station-directory .station-entry small{font-size:10px;line-height:1.5;overflow-wrap:anywhere;margin-top:2px}
-.station-platform-count{flex:none;font-size:12px;font-variant-numeric:tabular-nums;color:var(--muted)}
+.station-row-main{min-width:0;flex:1}.station-row-name{display:block;font-size:calc(var(--ui-font,12px) + 1px);overflow-wrap:anywhere}
+.station-directory .station-entry small{font-size:calc(var(--ui-font,12px) - 2px);line-height:1.5;overflow-wrap:anywhere;margin-top:2px}
+.station-platform-count{flex:none;font-size:var(--ui-font,12px);font-variant-numeric:tabular-nums;color:var(--muted)}
 .station-sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .station-inspector .equipment-editor{padding:14px 12px;border-top:1px solid var(--edge)}
-.station-inspector .station-detail-name{margin-bottom:12px}.station-inspector .station-detail-name strong{font-size:18px;font-weight:650}
-.station-inspector .station-detail-name button{padding:5px 8px;font-size:11px}
-.station-inspector .equipment-editor>h4{font-size:10px;letter-spacing:.08em;color:var(--muted);margin-bottom:8px}
+.station-inspector .station-detail-name{margin-bottom:12px}.station-inspector .station-detail-name strong{font-size:calc(var(--ui-font,12px) + 6px);font-weight:650}
+.station-inspector .station-detail-name button{padding:5px 8px;font-size:calc(var(--ui-font,12px) - 1px)}
+.station-inspector .equipment-editor>h4{font-size:calc(var(--ui-font,12px) - 2px);letter-spacing:.08em;color:var(--muted);margin-bottom:8px}
 .station-inspector .coordinate-fields{grid-template-columns:minmax(0,1fr);margin:10px 0}
-.station-inspector .route-actions{gap:5px;flex-wrap:wrap}.station-inspector .route-actions button{font-size:11px;padding:6px 8px}
-.station-inspector .station-detail-help{font-size:11px;color:var(--muted);margin:10px 0}
+.station-inspector .route-actions{gap:5px;flex-wrap:wrap}.station-inspector .route-actions button{font-size:calc(var(--ui-font,12px) - 1px);padding:6px 8px}
 .station-inspector .equipment-editor>.danger{width:100%;margin-top:14px}
 
 .station-inspector [hidden]{display:none}
