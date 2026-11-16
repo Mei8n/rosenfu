@@ -260,7 +260,7 @@ test("background switching is display-only and outside viewport clicks never cre
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
 });
 
-test("rapid pan debounces new tile URLs while keeping shared DOM and existing tiles georeferenced", () => {
+test("rapid pan throttles new tile URLs while keeping shared DOM and existing tiles georeferenced", () => {
   vi.useFakeTimers(); vi.mocked(isTauri).mockReturnValue(false); renderStationEditor();
   fireEvent.click(screen.getByLabelText("駅名を表示"));
   fireEvent.click(screen.getByRole("button", { name: "地理院地図（オンライン）" }));
@@ -277,7 +277,8 @@ test("rapid pan debounces new tile URLs while keeping shared DOM and existing ti
   const marker = map.querySelector(".station-marker")!;
   const station = project(35.685,139.735,camera);
   expect(Number(marker.querySelector("text")?.getAttribute("x"))).toBeCloseTo(station.x + 18);
-  act(()=>vi.advanceTimersByTime(249));
+  // The second movement must not restart the first 250 ms window.
+  act(()=>vi.advanceTimersByTime(149));
   expect(Array.from(map.querySelectorAll("image")).map(image=>image.getAttribute("data-tile-id"))).toEqual(Array.from(original.keys()));
   act(()=>vi.advanceTimersByTime(1));
   const current = Array.from(map.querySelectorAll("image:not([data-fallback-tile])"));
