@@ -693,5 +693,10 @@ pub use roads::{
     RoadSnapshot, RoadWay,
 };
 
+mod water_model;
+pub use water_model::WATER_MODEL_REVISION;
 mod road_path;
 pub use road_path::AlignmentRoadPathProvenance;
+
+mod water_fine;
+pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskRequest};

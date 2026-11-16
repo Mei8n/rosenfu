@@ -1,0 +1,39 @@
+name: Water mask model
+on:
+  pull_request:
+    paths:
+      - 'src/waterMaskModel.ts'
+      - 'src/waterMaskModel.test.ts'
+      - 'src/waterModelCatalog.ts'
+      - 'src/waterModelCatalog.test.ts'
+      - 'src/waterJapanCoarse.test.mjs'
+      - 'scripts/water-mask/**'
+      - 'data/water-mask-trial-20261114/**'
+      - 'data/water-japan-coarse-20261114/**'
+      - 'package-lock.json'
+      - '.github/workflows/water-mask-model.yml'
+permissions:
+  contents: read
+jobs:
+  water-mask:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      TMPDIR: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test -- src/waterMaskModel.test.ts src/waterModelCatalog.test.ts src/waterJapanCoarse.test.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r scripts/water-mask/requirements.txt
+      - run: python -m unittest discover -s scripts/water-mask -p "test_*.py" -v

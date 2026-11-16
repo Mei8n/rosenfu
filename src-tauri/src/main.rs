@@ -66,6 +66,33 @@ fn stage_ofm_construction_plan(
         .stage_ofm_construction_plan(&expected_world_token, plans, raw_evidence, tile_bindings)
 }
 #[tauri::command]
+fn water_mask_requests(
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<Vec<rosenfu_core::world::WaterMaskRequest>, String> {
+    Ok(editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .missing_water_masks())
+}
+#[tauri::command]
+fn install_water_mask(
+    editor: State<'_, Mutex<WorldEditor>>,
+    id: String,
+    bytes_base64: String,
+) -> Result<(), String> {
+    use base64::Engine;
+    if id.len() > 32 || bytes_base64.len() > 5500 {
+        return Err("水域データが上限を超えています。".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .map_err(|_| "水域データを復号できません。")?;
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .install_water_mask(&id, &bytes)
+}
+#[tauri::command]
 fn world_snapshot(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
     Ok(editor
         .lock()
@@ -705,6 +732,8 @@ fn main() {
             world_snapshot,
             ofm_world_token,
             stage_ofm_construction_plan,
+            water_mask_requests,
+            install_water_mask,
             preview_track_movement_geometry,
             preview_track_render_geometry,
             add_station,

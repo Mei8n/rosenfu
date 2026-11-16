@@ -111,6 +111,7 @@ fn next_manual_token() -> Result<String, String> {
 
 #[derive(Clone)]
 pub struct WorldEditor {
+    water_model: rosenfu_core::world::ConstructionWaterModel,
     world: World,
     company: CompanyId,
     loaded_path: Option<PathBuf>,
@@ -461,6 +462,7 @@ impl WorldEditor {
             .add_company(player, "新しい鉄道会社".into())
             .expect("valid initial company");
         Self {
+            water_model: Default::default(),
             world,
             company,
             loaded_path: None,
@@ -475,6 +477,12 @@ impl WorldEditor {
             deleted_alignment: None,
             pending_manual_replacement: None,
         }
+    }
+    pub fn missing_water_masks(&self) -> Vec<rosenfu_core::world::WaterMaskRequest> {
+        self.water_model.missing_requests()
+    }
+    pub fn install_water_mask(&mut self, id: &str, bytes: &[u8]) -> Result<(), String> {
+        self.water_model.install(id, bytes)
     }
     pub fn company_setup_required(&self) -> bool {
         self.company_setup_required
@@ -545,6 +553,8 @@ impl WorldEditor {
             provenance,
             track_type,
         )?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -613,6 +623,8 @@ impl WorldEditor {
                 }
                 _ => e.to_string(),
             })?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -633,6 +645,8 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.build_alignment_typed_unchecked(name, points, track_type)?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -1199,6 +1213,8 @@ impl WorldEditor {
                 )?;
             }
         }
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         if has_junction {
             candidate.deleted_alignment = Some((before_junction, candidate.snapshot()));
@@ -2859,11 +2875,11 @@ mod tests {
                 "A".into(),
                 vec![
                     GeoPoint {
-                        latitude: 35.0,
+                        latitude: 35.5,
                         longitude: 139.0,
                     },
                     GeoPoint {
-                        latitude: 35.1,
+                        latitude: 35.6,
                         longitude: 139.1,
                     },
                 ],
@@ -2896,11 +2912,11 @@ mod tests {
                 "A".into(),
                 vec![
                     GeoPoint {
-                        latitude: 35.0,
+                        latitude: 35.5,
                         longitude: 139.0,
                     },
                     GeoPoint {
-                        latitude: 35.1,
+                        latitude: 35.6,
                         longitude: 139.1,
                     },
                 ],
@@ -3743,11 +3759,11 @@ mod tests {
         };
         let points = vec![
             GeoPoint {
-                latitude: 35.0,
+                latitude: 35.5,
                 longitude: 139.0,
             },
             GeoPoint {
-                latitude: 35.0,
+                latitude: 35.5,
                 longitude: 139.1,
             },
         ];
@@ -3854,7 +3870,7 @@ mod tests {
             points: vec![
                 points[1],
                 GeoPoint {
-                    latitude: 35.0,
+                    latitude: 35.5,
                     longitude: 139.2,
                 },
             ],
@@ -4643,11 +4659,11 @@ mod tests {
         };
         let points = vec![
             GeoPoint {
-                latitude: 35.0,
+                latitude: 35.5,
                 longitude: 139.0,
             },
             GeoPoint {
-                latitude: 35.0,
+                latitude: 35.5,
                 longitude: 139.1,
             },
         ];
@@ -4664,15 +4680,15 @@ mod tests {
         branch.stations.clear();
         branch.points = vec![
             GeoPoint {
-                latitude: 35.,
+                latitude: 35.5,
                 longitude: 139.05,
             },
             GeoPoint {
-                latitude: 35.,
+                latitude: 35.5,
                 longitude: 139.051,
             },
             GeoPoint {
-                latitude: 35.01,
+                latitude: 35.51,
                 longitude: 139.06,
             },
         ];
