@@ -37,7 +37,9 @@ test('road following OFF still loads construction roads and atomically attaches 
  await waitFor(()=>expect(screen.getByRole('status',{name:'踏切・道路確認状態'}).querySelector('[title]')?.getAttribute('title')).toContain('出典の範囲保証は未検証'));
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan_with_roads',expect.objectContaining({roads:[expect.objectContaining({coverage_verified:false,roads:expect.any(Array)})]})));
- await waitFor(()=>expect(map.querySelectorAll('[data-crossing-alignment]')).toHaveLength(1));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('road_assessments'));
+ await screen.findByText(/線路を建設しました|計画を建設しました/);
+ expect(map.querySelectorAll('[data-crossing-alignment]')).toHaveLength(0);
 });
 test('missing road data remains advisory and ordinary construction still succeeds',async()=>{
  provider.load.mockRejectedValue(Error('outside Tokyo cells'));
