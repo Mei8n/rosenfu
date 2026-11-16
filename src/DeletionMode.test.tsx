@@ -83,7 +83,7 @@ test('idle construction hides line name and internal identifier without changing
  fireEvent.click(screen.getByRole('button',{name:'選択'}));
  fireEvent.click(map.querySelector('.alignment-hit')!);
  expect(map.querySelector('[data-alignment-id="3"] title')).toBeNull();
- expect(screen.queryByText('線路 3')).toBeNull();
+ expect(screen.queryByText('名前未設定の線路')).toBeNull();
  expect(screen.getByRole('button',{name:'選択線路を削除'})).toBeTruthy();
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
  expect(map.querySelector('[data-alignment-id="3"] title')?.textContent).toBe('線路');
