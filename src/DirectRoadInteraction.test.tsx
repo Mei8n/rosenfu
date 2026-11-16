@@ -11,10 +11,10 @@ function setup(){
 }
 const a={latitude:35,longitude:135.001},b={latitude:35,longitude:135.009};
 test('direct road starts without a second start button, previews on hover, and stages on the second map click',async()=>{
- const h=setup();expect(h.result.current.active).toBe(true);
+ const h=setup();expect(h.result.current.active).toBe(false);
  await act(()=>h.result.current.click(a));expect(h.result.current.picks).toHaveLength(1);expect(h.result.current.candidates).toEqual([]);
  await act(()=>h.result.current.hover(b));expect(h.result.current.hoverPlan?.points).toHaveLength(2);expect(h.props.onBuild).not.toHaveBeenCalled();
- await act(()=>h.result.current.click(b));await waitFor(()=>expect(h.props.onBuild).toHaveBeenCalledTimes(1));expect(h.result.current.picks).toEqual([]);expect(h.result.current.active).toBe(true);
+ await act(()=>h.result.current.click(b));await waitFor(()=>expect(h.props.onBuild).toHaveBeenCalledTimes(1));expect(h.result.current.picks).toEqual([]);expect(h.result.current.active).toBe(false);
 });
 test('failed staging retains endpoints, and ordinary enabled state updates do not reset them',async()=>{
  const h=setup();h.props.onBuild.mockRejectedValueOnce(Error('failure'));
@@ -24,4 +24,12 @@ test('failed staging retains endpoints, and ordinary enabled state updates do no
 });
 test('missing candidate does not invent a road or stage a straight line',async()=>{
  const h=setup();await act(()=>h.result.current.click({latitude:35.05,longitude:135}));expect(h.result.current.picks).toEqual([]);expect(h.props.onBuild).not.toHaveBeenCalled();
+});
+
+test('clear exits editing without silently restarting and a later click starts a fresh road',async()=>{
+ const h=setup();await act(()=>h.result.current.click(a));expect(h.result.current.active).toBe(true);
+ act(()=>h.result.current.clear());expect(h.result.current.active).toBe(false);expect(h.result.current.picks).toEqual([]);
+ h.rerender({...h.props,enabled:false});h.rerender(h.props);expect(h.result.current.active).toBe(false);
+ await act(()=>h.result.current.click(b));expect(h.result.current.active).toBe(true);expect(h.result.current.picks).toHaveLength(1);
+ expect(h.props.onBuild).not.toHaveBeenCalled();
 });
