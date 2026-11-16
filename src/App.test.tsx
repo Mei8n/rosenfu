@@ -326,7 +326,7 @@ test.each([false,true])("camera changes do not edit world IDs/coordinates and le
   panMap(300,-180);
   fireEvent.keyDown(window,{key:"+"});
   // Camera movement may request water metadata, but must never write the world.
-  expect(vi.mocked(invoke).mock.calls.slice(count)).toEqual([["water_mask_requests",{bounds:[139.8,35.7,139.9,35.75]}]]);
+  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.slice(count)).toEqual([["water_mask_requests",{bounds:[139.8,35.7,139.9,35.75]}]]));
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   fireEvent.click(screen.getByRole("button", { name: "読込を続ける" }));

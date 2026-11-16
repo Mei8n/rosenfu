@@ -377,6 +377,7 @@ export function App() {
   const [selectedPlanPath,setSelectedPlanPath]=useState<number|null>(null);
   const [trackDeleteConfirm,setTrackDeleteConfirm]=useState(false);
   const [deleteTarget,setDeleteTarget]=useState<DeleteTarget|null>(null);
+  const deletionTooltipRef=useRef<HTMLDivElement>(null);
   const [deleteHover,setDeleteHover]=useState<{target:DeleteTarget;x:number;y:number}|null>(null);
   useEffect(()=>{setDeleteHover(null);},[activeTool,camera,world,draftPoints,parkedPaths,plannedStations]);
   type DeleteHistory={kind:"built";world:World;plans:string;command:string;args:Record<string,unknown>}|{kind:"plan";before:ConstructionPlans;after:string;world:World|null};
@@ -825,7 +826,15 @@ export function App() {
   }
   function hoverDeletion(event:ReactPointerEvent<SVGElement>,target:DeleteTarget){
     if(gestureRef.current||event.pointerType==="touch")return;
-    const rect=svgRef.current?.getBoundingClientRect();if(rect)setDeleteHover({target,x:event.clientX-rect.left,y:event.clientY-rect.top});
+    const rect=svgRef.current?.getBoundingClientRect();if(!rect)return;
+    const x=event.clientX-rect.left,y=event.clientY-rect.top;
+    // Moving within one target only moves its tooltip, not the entire map and
+    // construction model. A target change still renders the new highlight.
+    if(deletionTooltipRef.current){
+      deletionTooltipRef.current.style.left=`${Math.max(8,Math.min(mapSize.width-240,x+18))}px`;
+      deletionTooltipRef.current.style.top=`${Math.max(8,Math.min(mapSize.height-80,y+18))}px`;
+    }
+    setDeleteHover(previous=>JSON.stringify(previous?.target)===JSON.stringify(target)?previous:{target,x,y});
   }
   function requestDeletion(event:MouseEvent<SVGElement>,target:DeleteTarget){
     event.stopPropagation();if(!enabled||busyRef.current||suppressSelectionClick.current)return;
@@ -1780,7 +1789,7 @@ export function App() {
             {trackRender.error&&<div role="status" className="field-error">ポイント形状を表示できません: {trackRender.error}</div>}
             {confirmRangeDelete&&<DeletionDialog defaultDelete label={`選択した${rangeCount}区間`} busy={busy} blocked={unapplied?"編集中の変更を適用または取り消してください":rangeCount?"":"区間が選択されていません"} error={error} onCancel={()=>setConfirmRangeDelete(false)} onDelete={deleteRange}/>}
             {deleteTarget&&<DeletionDialog defaultDelete={deleteTarget.kind==='built-section'||deleteTarget.kind==='plan-section'} label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
-            {activeTool==="delete"&&deleteHover&&!dragging&&<div className="construction-tooltip deletion-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,deleteHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,deleteHover.y+18))}}>{deletionLabel(deleteHover.target)}を{deleteHover.target.kind==="built-section"||deleteHover.target.kind==="station"?"撤去":"削除"}</div>}
+            {activeTool==="delete"&&deleteHover&&!dragging&&<div ref={deletionTooltipRef} className="construction-tooltip deletion-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,deleteHover.x+18)),top:Math.max(8,Math.min(mapSize.height-80,deleteHover.y+18))}}>{deletionLabel(deleteHover.target)}を{deleteHover.target.kind==="built-section"||deleteHover.target.kind==="station"?"撤去":"削除"}</div>}
             {activeTool==="stations"&&<fieldset className="construction-toolbar station-toolbar" disabled={!enabled} aria-label="駅設置設定"><PlatformLengthInput id="platform-length" label="駅の長さ" value={platformLength} onChange={setPlatformLength} compact/></fieldset>}
             {activeTool==="stations"&&(hoveredStation||stationJoinPreview)&&cursorPosition&&<div className="construction-tooltip" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{stationJoinPreview?.name??hoveredStation?.name}{stationJoinPreview&&stationJoinOrigin&&stationSelection?.target?<div>{stationJoinPreview.name}から {(distanceM(stationJoinOrigin,stationSelection.target.center)/1000).toFixed(2)} km</div>:hoveredStation?.lengthM!==undefined&&<> · {hoveredStation.lengthM/20}両</>}</div>}
             {activeTool==="stations"&&mapMode==="place"&&!dragging&&cursorPosition&&stationCursor&&!hoveredStation&&stationSelection?.error&&<div className="construction-tooltip station-placement-error" role="status" style={{left:Math.max(8,Math.min(mapSize.width-240,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-80,cursorPosition.y+18))}}>{stationSelection.error}</div>}
