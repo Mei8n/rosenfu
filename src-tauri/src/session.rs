@@ -111,6 +111,7 @@ fn next_manual_token() -> Result<String, String> {
 
 #[derive(Clone)]
 pub struct WorldEditor {
+    water_model: rosenfu_core::world::ConstructionWaterModel,
     world: World,
     company: CompanyId,
     loaded_path: Option<PathBuf>,
@@ -453,6 +454,7 @@ impl WorldEditor {
             .add_company(player, "新しい鉄道会社".into())
             .expect("valid initial company");
         Self {
+            water_model: Default::default(),
             world,
             company,
             loaded_path: None,
@@ -467,6 +469,12 @@ impl WorldEditor {
             deleted_alignment: None,
             pending_manual_replacement: None,
         }
+    }
+    pub fn missing_water_masks(&self) -> Vec<rosenfu_core::world::WaterMaskRequest> {
+        self.water_model.missing_requests()
+    }
+    pub fn install_water_mask(&mut self, id: &str, bytes: &[u8]) -> Result<(), String> {
+        self.water_model.install(id, bytes)
     }
     pub fn company_setup_required(&self) -> bool {
         self.company_setup_required
@@ -537,10 +545,8 @@ impl WorldEditor {
             provenance,
             track_type,
         )?;
-        rosenfu_core::world::validate_construction_water(
-            self.world.snapshot(),
-            candidate.world.snapshot(),
-        )?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -609,10 +615,8 @@ impl WorldEditor {
                 }
                 _ => e.to_string(),
             })?;
-        rosenfu_core::world::validate_construction_water(
-            self.world.snapshot(),
-            candidate.world.snapshot(),
-        )?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -633,10 +637,8 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.build_alignment_typed_unchecked(name, points, track_type)?;
-        rosenfu_core::world::validate_construction_water(
-            self.world.snapshot(),
-            candidate.world.snapshot(),
-        )?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         *self = candidate;
         Ok(self.snapshot())
@@ -1189,10 +1191,8 @@ impl WorldEditor {
                 )?;
             }
         }
-        rosenfu_core::world::validate_construction_water(
-            self.world.snapshot(),
-            candidate.world.snapshot(),
-        )?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         if has_junction {
             candidate.deleted_alignment = Some((before_junction, candidate.snapshot()));

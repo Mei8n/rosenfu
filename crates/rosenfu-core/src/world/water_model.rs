@@ -9,12 +9,12 @@ pub const WATER_MODEL_REVISION: &str =
     "ed008c4333500d072a9b7084bca52f245424dfc33c60c0db499625b7d63c7bca";
 const BYTES: &[u8] =
     include_bytes!("../../../../data/water-japan-coarse-20261114/japan-coarse.water");
-const UNKNOWN: &str = "水域モデルの情報が不足しているため着工できません。";
+pub(super) const UNKNOWN: &str = "水域モデルの情報が不足しているため着工できません。";
 const GROUND: &str = "水域上に地上線路は敷設できません。";
 const LONG: &str = "高架・開削の連続水面横断が30kmを超えます。";
 const COMPLEX: &str = "水域の接続経路を検証しきれないため着工できません。";
 #[derive(Clone)]
-struct Model {
+pub(super) struct Model {
     per: u32,
     rows: Vec<Vec<u32>>,
     scope: [f64; 4],
@@ -76,7 +76,7 @@ impl Model {
         }
         Ok(Self { per, rows, scope })
     }
-    fn water(&self, p: GeoPoint) -> Result<bool, String> {
+    pub(super) fn water(&self, p: GeoPoint) -> Result<bool, String> {
         let [w, s, e, n] = self.scope;
         if !p.longitude.is_finite()
             || !p.latitude.is_finite()
@@ -92,7 +92,7 @@ impl Model {
         let edges = self.rows.get(row).ok_or(UNKNOWN)?;
         Ok(edges.partition_point(|v| *v <= col) % 2 == 1)
     }
-    fn cuts(&self, a: GeoPoint, b: GeoPoint) -> Result<Vec<f64>, String> {
+    pub(super) fn cuts(&self, a: GeoPoint, b: GeoPoint) -> Result<Vec<f64>, String> {
         self.water(a)?;
         self.water(b)?;
         let mut result = vec![0., 1.];
@@ -113,12 +113,24 @@ impl Model {
         Ok(result)
     }
 }
-fn bundled() -> Result<&'static Model, String> {
+pub(super) fn bundled() -> Result<&'static Model, String> {
     static MODEL: OnceLock<Result<Model, String>> = OnceLock::new();
     MODEL
         .get_or_init(|| Model::decode(BYTES, [122., 20., 154., 46.]))
         .as_ref()
         .map_err(Clone::clone)
+}
+pub(super) trait WaterField {
+    fn water(&self, p: GeoPoint) -> Result<bool, String>;
+    fn cuts(&self, a: GeoPoint, b: GeoPoint) -> Result<Vec<f64>, String>;
+}
+impl WaterField for Model {
+    fn water(&self, p: GeoPoint) -> Result<bool, String> {
+        Model::water(self, p)
+    }
+    fn cuts(&self, a: GeoPoint, b: GeoPoint) -> Result<Vec<f64>, String> {
+        Model::cuts(self, a, b)
+    }
 }
 fn mix(a: GeoPoint, b: GeoPoint, t: f64) -> GeoPoint {
     GeoPoint {
@@ -150,7 +162,7 @@ fn summarize(pieces: &[(bool, f64)]) -> Result<Run, String> {
         whole: pieces.iter().all(|p| p.0),
     })
 }
-fn path_run(a: &Alignment, model: &Model, budget: &mut usize) -> Result<Run, String> {
+fn path_run(a: &Alignment, model: &impl WaterField, budget: &mut usize) -> Result<Run, String> {
     let anchors = a
         .anchor_indices
         .clone()
@@ -192,6 +204,21 @@ fn path_run(a: &Alignment, model: &Model, budget: &mut usize) -> Result<Run, Str
                     ((offset + distance) / length).clamp(0., 1.),
                 )
                 .ok_or(UNKNOWN)?;
+            // Hermite's cubic Bezier control hull proves the whole segment is
+            // below -12m. Water availability cannot change either construction rule.
+            if [
+                p.start_height_m,
+                p.start_height_m + p.start_tangent_m / 3.,
+                p.end_height_m - p.end_tangent_m / 3.,
+                p.end_height_m,
+            ]
+            .iter()
+            .all(|h| *h <= -2. * LEVEL_SPACING_M + 1e-9)
+            {
+                pieces.push((false, distance));
+                offset += distance;
+                continue;
+            }
             let mut cuts = model.cuts(pair[0], pair[1])?;
             let zeros = crate::water_observations::zero_candidates(p);
             for t in &zeros {
@@ -233,10 +260,10 @@ fn path_run(a: &Alignment, model: &Model, budget: &mut usize) -> Result<Run, Str
     }
     Ok(run)
 }
-fn validate_with_model(
+pub(super) fn validate_with_model(
     before: &WorldDraft,
     after: &WorldDraft,
-    model: &Model,
+    model: &impl WaterField,
 ) -> Result<(), String> {
     after.validate().map_err(|e| e.to_string())?;
     let mut relevant: BTreeSet<_> = after
@@ -369,12 +396,6 @@ fn validate_with_model(
     }
     Ok(())
 }
-/// Preview and build call this on the same isolated, fully constructed candidate.
-/// No world mutation, fees, or road readiness changes occur here.
-pub fn validate_construction_water(before: &WorldDraft, after: &WorldDraft) -> Result<(), String> {
-    validate_with_model(before, after, bundled()?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

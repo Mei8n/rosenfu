@@ -1,5 +1,4 @@
-//! The real session preview/build pipeline supplies the geometry and heights.
-//! This does not register an IPC command or enforce a construction refusal.
+//! Observation diagnostics on unbuilt geometry. Real construction refusal is separately asserted.
 #[allow(dead_code)]
 #[path = "../../../src-tauri/src/session.rs"]
 mod session;
@@ -31,14 +30,27 @@ fn ring(w: f64, s: f64, e: f64, n: f64) -> Vec<GeoPoint> {
     vec![p(w, s), p(e, s), p(e, n), p(w, n), p(w, s)]
 }
 
+// Analytical candidates are not construction permission; fine observations may now refuse their build.
+fn observed_candidate(
+    before: &rosenfu_core::world::WorldDraft,
+    points: &[GeoPoint],
+    copies: usize,
+) -> rosenfu_core::world::WorldDraft {
+    let mut world = rosenfu_core::world::World::new(before.clone()).unwrap();
+    let owner = before.companies[0].id;
+    for _ in 0..copies {
+        world
+            .build_alignment(owner, "unbuilt diagnostic".into(), points.to_vec())
+            .unwrap();
+    }
+    world.snapshot().clone()
+}
 #[test]
-fn water_ground_real_https_fixture_preview_and_commit_geometry_match() {
+fn water_ground_real_fixture_observation_does_not_override_native_refusal() {
     let (area, points) = fixture();
     let mut editor = WorldEditor::new();
     let before = editor.snapshot();
-    let candidate = editor
-        .preview_construction_plan(vec![request(&points)], vec![])
-        .unwrap();
+    let candidate = observed_candidate(&before, &points, 1);
     let preview = observe_ground_water(&before, &candidate, std::slice::from_ref(&area)).unwrap();
     assert_eq!(preview.contacts.len(), 1);
     assert_eq!(
@@ -47,12 +59,15 @@ fn water_ground_real_https_fixture_preview_and_commit_geometry_match() {
     );
     assert!(preview.unevaluated_profiles.is_empty());
     assert_eq!(editor.snapshot(), before);
-    let committed = editor.build_plan(vec![request(&points)]).unwrap();
-    assert_eq!(candidate, committed);
+    let preview_error = editor
+        .preview_construction_plan(vec![request(&points)], vec![])
+        .unwrap_err();
+    assert!(preview_error.contains("細密"));
     assert_eq!(
-        preview,
-        observe_ground_water(&before, &committed, &[area]).unwrap()
+        editor.build_plan(vec![request(&points)]).unwrap_err(),
+        preview_error
     );
+    assert_eq!(editor.snapshot(), before);
     assert_eq!(
         serde_json::to_value(&preview).unwrap()["coverage"],
         "unknown"
@@ -67,9 +82,7 @@ fn water_ground_covered_height_and_basin_stay_unresolved() {
     let (mut area, points) = fixture();
     let editor = WorldEditor::new();
     let before = editor.snapshot();
-    let candidate = editor
-        .preview_construction_plan(vec![request(&points)], vec![])
-        .unwrap();
+    let candidate = observed_candidate(&before, &points, 1);
     for (key, value, expected) in [
         (
             "covered",
@@ -148,9 +161,7 @@ fn water_ground_malformed_source_is_not_empty_evidence() {
     let (mut area, points) = fixture();
     let editor = WorldEditor::new();
     let before = editor.snapshot();
-    let candidate = editor
-        .preview_construction_plan(vec![request(&points)], vec![])
-        .unwrap();
+    let candidate = observed_candidate(&before, &points, 1);
     area.rings[0].pop();
     assert!(observe_ground_water(&before, &candidate, &[area]).is_err());
     assert_eq!(editor.snapshot(), before);
@@ -165,9 +176,7 @@ fn water_ground_output_limit_returns_no_partial_assessment() {
     let (area, points) = fixture();
     let editor = WorldEditor::new();
     let before = editor.snapshot();
-    let candidate = editor
-        .preview_construction_plan(vec![request(&points)], vec![])
-        .unwrap();
+    let candidate = observed_candidate(&before, &points, 1);
     let areas: Vec<_> = (0..1025)
         .map(|i| {
             let mut a = area.clone();
@@ -186,9 +195,7 @@ fn water_ground_all_changed_paths_and_legacy_levels_are_accounted() {
     let (area, points) = fixture();
     let editor = WorldEditor::new();
     let before = editor.snapshot();
-    let mut candidate = editor
-        .preview_construction_plan(vec![request(&points), request(&points)], vec![])
-        .unwrap();
+    let mut candidate = observed_candidate(&before, &points, 2);
     for path in &mut candidate.alignments {
         path.vertical_profile = None;
         path.section_profiles.clear();

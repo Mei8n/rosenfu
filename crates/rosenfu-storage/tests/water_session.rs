@@ -37,3 +37,68 @@ fn actual_land_and_six_metre_bridge_survive_save_roundtrip() {
         assert_eq!(decoded.snapshot(), &built);
     }
 }
+
+#[test]
+fn fine_acquisition_rechecks_native_preview_build_without_mutating_world_on_failure() {
+    let mut editor = WorldEditor::new();
+    let before = editor.snapshot();
+    let request = |level: &str| {
+        let mut p = plan(130.92709487964845, 33.930210012951626, level);
+        p.points[1].longitude = p.points[0].longitude + 0.000115;
+        p.points[0].longitude -= 0.000115;
+        p
+    };
+    let pending = editor
+        .preview_construction_plan(vec![request("ground")], vec![])
+        .unwrap_err();
+    assert!(pending.contains("取得"));
+    assert_eq!(
+        editor.build_plan(vec![request("ground")]).unwrap_err(),
+        pending
+    );
+    assert!(editor.install_water_mask("kanmon", b"broken").is_err());
+    assert_eq!(editor.snapshot(), before);
+    editor
+        .install_water_mask(
+            "kanmon",
+            include_bytes!("../../../data/water-mask-trial-20261114/kanmon/water.bin"),
+        )
+        .unwrap();
+    let refused = editor
+        .preview_construction_plan(vec![request("ground")], vec![])
+        .unwrap_err();
+    assert!(refused.contains("水域上"));
+    assert_eq!(
+        editor.build_plan(vec![request("ground")]).unwrap_err(),
+        refused
+    );
+    assert_eq!(editor.snapshot(), before);
+    let preview = editor
+        .preview_construction_plan(vec![request("elevated")], vec![])
+        .unwrap();
+    let built = editor.build_plan(vec![request("elevated")]).unwrap();
+    assert_eq!(preview, built);
+    let world = rosenfu_core::world::World::new(built.clone()).unwrap();
+    assert_eq!(
+        rosenfu_storage::decode(&rosenfu_storage::encode(&world).unwrap())
+            .unwrap()
+            .snapshot(),
+        &built
+    );
+}
+
+#[test]
+fn unknown_fine_does_not_block_provably_deep_tunnel_but_never_becomes_land() {
+    let mut editor = WorldEditor::new();
+    assert!(editor
+        .preview_construction_plan(vec![plan(138.73, 35.36, "ground")], vec![])
+        .unwrap_err()
+        .contains("細密"));
+    let mut deep = plan(138.73, 35.36, "ground");
+    deep.infrastructure.level = rosenfu_core::world::InfrastructureLevel::Underground2;
+    let built = editor.build_plan(vec![deep]).unwrap();
+    assert_eq!(built.alignments[0].height_at_position_m(0.5), Some(-12.));
+    assert!(editor
+        .preview_construction_plan(vec![plan(138.73, 35.36, "ground")], vec![])
+        .is_err());
+}

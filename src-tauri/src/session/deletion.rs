@@ -108,10 +108,8 @@ impl WorldEditor {
         changed.section_profiles = profiles;
         let mut candidate = self.clone();
         candidate.world.replace(after).map_err(|e| e.to_string())?;
-        rosenfu_core::world::validate_construction_water(
-            self.world.snapshot(),
-            candidate.world.snapshot(),
-        )?;
+        self.water_model
+            .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
@@ -261,10 +259,8 @@ impl WorldEditor {
                     )
                     .map_err(|e| e.to_string())?;
             }
-            rosenfu_core::world::validate_construction_water(
-                self.world.snapshot(),
-                candidate.world.snapshot(),
-            )?;
+            self.water_model
+                .validate(self.world.snapshot(), candidate.world.snapshot())?;
             rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
             let after = candidate.snapshot();
             candidate.deleted_alignment = Some((before, after.clone()));
