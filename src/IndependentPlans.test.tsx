@@ -1,3 +1,4 @@
+import {replyToCommandOnce} from './testInvoke';
 import {settledMapClick} from './testMapClick';
 import {LEVEL_LABELS} from './sectionInfrastructure';
 // @vitest-environment jsdom
@@ -92,7 +93,7 @@ test("plan names are optional, editable per independent plan and never become ph
  fireEvent.change(name(),{target:{value:"山側に変更"}});
  fireEvent.click(trackPanel().getByRole("button",{name:/計画 2 を編集/}));expect(name().value).toBe("");
  expect(trackPanel().getByRole("button",{name:/山側に変更 を編集/})).toBeTruthy();
- vi.mocked(invoke).mockResolvedValueOnce(built);fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
+ replyToCommandOnce('build_alignment',built);fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
  const payload=vi.mocked(invoke).mock.calls.find(([command])=>command==="build_alignment")?.[1] as {name:string};expect(payload.name).toBe("新しい線路");
  await waitFor(()=>expect(name().value).toBe("山側に変更"));fireEvent.change(name(),{target:{value:""}});expect(name().placeholder).toBe("計画 1");
 });
@@ -122,7 +123,7 @@ test("one explicit plan groups disconnected paths and atomically builds only its
  expect(map.querySelectorAll(".planned-station")).toHaveLength(3);
  const request=vi.mocked(invoke).mock.calls.find(([command])=>command==="build_plan")?.[1] as {alignments:{stations:unknown[]}[]};
  expect(request.alignments).toHaveLength(2);expect(request.alignments.map(path=>path.stations.length)).toEqual([1,1]);
- vi.mocked(invoke).mockResolvedValueOnce(built);fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
+ replyToCommandOnce('build_plan',built);fireEvent.click(trackPanel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
 });

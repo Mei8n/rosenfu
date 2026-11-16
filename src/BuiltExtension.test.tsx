@@ -1,3 +1,4 @@
+import {replyToCommandOnce} from './testInvoke';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
@@ -33,7 +34,7 @@ for(const endpoint of ["start","end"] as const)test(`${endpoint} extension joins
  expect(request.alignments).toHaveLength(2);const ext=request.alignments.find(p=>p.extension);
  expect(ext.extension).toEqual({alignmentId:"3",endpoint});expect(ext.points[0]).toEqual(line.points[endpoint==="start"?0:1]);expect(ext.stations[0].lengthM).toBe(160);
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
- vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0));
+ replyToCommandOnce('build_plan',world);fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0));
 });
 test("attributed endpoints can start an extension without duplicating the alignment",async()=>{
  const map=await start({alignment_provenance:[{alignment_id:"3",source:{source_key:"x"}}]});
@@ -45,7 +46,7 @@ test('extending invalidates built station redo ratios from the old alignment len
  const station={id:"4",owner:"2",name:"駅",...point(215,130)};
  const placement={station_id:"4",alignment_id:"3",position:0.5,length_m:200,width_m:12};
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
- vi.mocked(invoke).mockResolvedValueOnce({...world,stations:[station],station_placements:[placement]});
+ replyToCommandOnce('build_plan',{...world,stations:[station],station_placements:[placement]});
  await settledMapClick(map,{clientX:215,clientY:130});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith("build_plan",expect.anything()));
  await screen.findByText(/計画駅を建設しました/);
  vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});await screen.findByText(/直前の駅設置を取り消しました/);
