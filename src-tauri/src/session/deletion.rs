@@ -1023,6 +1023,110 @@ mod tests {
     }
 
     #[test]
+    fn selected_track_type_preserves_crossing_route_service_binding_and_history() {
+        use rosenfu_core::world::ServiceRouteBindingKind;
+        let (mut editor, id) = setup();
+        let a = editor
+            .world
+            .place_station_on_alignment(editor.company, "A".into(), id, 0.1, 20., 10.)
+            .unwrap();
+        let b = editor
+            .world
+            .place_station_on_alignment(editor.company, "B".into(), id, 0.9, 20., 10.)
+            .unwrap();
+        let segments = editor
+            .world
+            .route_candidates(a, b)
+            .unwrap()
+            .candidates
+            .remove(0)
+            .segments;
+        let route = editor
+            .world
+            .add_planned_route(
+                editor.company,
+                "路線".into(),
+                a,
+                segments.clone(),
+                vec![a, b],
+            )
+            .unwrap();
+        let stops = editor
+            .world
+            .preview_service_path(a, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect();
+        let service = editor
+            .world
+            .add_service_path(editor.company, "系統".into(), a, segments, stops)
+            .unwrap();
+        editor
+            .world
+            .set_service_route_binding(
+                editor.company,
+                service,
+                ServiceRouteBindingKind::Route { route_id: route },
+            )
+            .unwrap();
+        let mut before = editor.snapshot();
+        before.construction_plans = Some(plans());
+        let after = editor
+            .update_alignment_section_track_type(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1],
+                }],
+                before.alignments.clone(),
+                TrackType::HighSpeed,
+                plans(),
+            )
+            .unwrap();
+        assert_eq!(after.stations, before.stations);
+        assert_eq!(after.routes, before.routes);
+        assert_eq!(after.services, before.services);
+        assert_eq!(after.service_route_bindings, before.service_route_bindings);
+        assert_eq!(after.service_paths[0].stops, before.service_paths[0].stops);
+        assert_eq!(
+            after.service_paths[0].legs[0].key,
+            before.service_paths[0].legs[0].key
+        );
+        assert_eq!(
+            after.route_paths[0].member_stations,
+            before.route_paths[0].member_stations
+        );
+        let mut incompatible = after.clone();
+        incompatible
+            .alignments
+            .iter_mut()
+            .find(|line| line.track_type == TrackType::HighSpeed)
+            .unwrap()
+            .track_type = TrackType::Tram;
+        assert!(World::new(incompatible).is_err());
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("services.json");
+        editor.save(&path).unwrap();
+        let loaded = WorldEditor::new().load(&path).unwrap();
+        assert_eq!(loaded.service_paths, after.service_paths);
+        assert_eq!(loaded.route_paths, after.route_paths);
+        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        let redo = editor
+            .update_alignment_section_track_type(
+                vec![AlignmentSectionSelection {
+                    alignment_id: id,
+                    section_indices: vec![1],
+                }],
+                before.alignments.clone(),
+                TrackType::HighSpeed,
+                plans(),
+            )
+            .unwrap();
+        assert_eq!(redo, after);
+    }
+
+    #[test]
     fn selected_track_type_rejects_tram_without_mutation() {
         let (mut editor, id) = setup();
         let before = editor.snapshot();
