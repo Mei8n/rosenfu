@@ -523,7 +523,7 @@ fn single_double_y_has_distinct_curved_lane_geometry_and_exact_reverse_paths() {
     w.connect_alignment_endpoints(c, a, b).unwrap();
     let paths = w.track_movement_geometries().unwrap();
     assert_eq!(paths.len(), 4);
-    for pair in paths.chunks_exact(2) {
+    for pair in paths.as_chunks::<2>().0 {
         assert_eq!(
             pair[0].points,
             pair[1].points.iter().copied().rev().collect::<Vec<_>>()
@@ -610,7 +610,7 @@ fn internal_count_boundaries_have_bidirectional_y_paths_and_exact_lane_joins() {
                 geometry.internal_movements.len(),
                 if na == nb { 0 } else { wiring.len() }
             );
-            for pair in geometry.internal_movements.chunks_exact(2) {
+            for pair in geometry.internal_movements.as_chunks::<2>().0 {
                 assert_eq!(
                     pair[0].points,
                     pair[1].points.iter().copied().rev().collect::<Vec<_>>()

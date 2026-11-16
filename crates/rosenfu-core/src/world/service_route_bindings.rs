@@ -272,7 +272,7 @@ impl WorldDraft {
                     .iter()
                     .map(|l| l.segment.clone())
                     .collect();
-                let mut route_spans = spans(self, route.start, &route_segments)?;
+                let mut route_spans = spans(self, route.start, route_segments)?;
                 let service_spans = spans(self, service.start, &service_segments)?;
                 if !contains_path(&route_spans, &service_spans) {
                     route_spans.reverse();
