@@ -20,6 +20,7 @@ test('speed lives inside initially closed details and retains edited values acro
  await act(async()=>{render(<App/>);});
  const details=document.querySelector<HTMLDetailsElement>('.track-advanced-settings')!;
  expect(details).not.toBeNull();expect(details.open).toBe(false);
+ expect(details.closest(".track-construction-toolbar")).not.toBeNull();
  expect(details.querySelector('summary')?.textContent).toBe('詳細設定');
  const lower=details.closest('.construction-options-row')!;
  expect(lower.contains(screen.getByLabelText('敷設する線路数'))).toBe(true);
@@ -50,4 +51,9 @@ test('narrow toolbar allows label and controls to wrap without widening the disc
 test('explicit lower row remains full width and wraps its controls on narrow panels',()=>{
  expect(css).toMatch(/\.construction-options-row \{[^}]*flex-wrap:wrap;[^}]*flex-basis:100%;[^}]*min-width:0;[^}]*max-width:100%/);
  expect(css).toContain('@media (max-width:480px)');
+});
+
+
+test('track toolbar width is independent of expanded details without sizing station toolbars',()=>{
+ expect(css).toMatch(/\.track-construction-toolbar \{[^}]*box-sizing:border-box;[^}]*width:340px;[^}]*min-width:0;[^}]*max-width:calc\(100% - 24px\)/);
 });

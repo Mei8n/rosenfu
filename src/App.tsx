@@ -1,3 +1,6 @@
+import {ServiceFromRoute} from './ServiceFromRoute';
+import {ServiceMapCreator} from './ServiceMapCreator';
+import {StationDirectory} from './StationDirectory';
 import {TrackStroke} from "./TrackStroke";
 import {constructionValidationError,hasConstructionValidation} from './constructionPlacementGuard';
 import {useRoadDrawing} from './useRoadDrawing';
@@ -162,6 +165,7 @@ export function App() {
   const [rangeSelection,setRangeSelection]=useState<SectionSelection[]>([]);
   const [confirmRangeDelete,setConfirmRangeDelete]=useState(false);
   const [rangeTrackCount,setRangeTrackCount]=useState<1|2|4|null>(null);
+  const [rangeTrackType,setRangeTrackType]=useState<"normal"|"high_speed"|null>(null);
   const [rangeLevel,setRangeLevel]=useState<SectionInfrastructure["level"]|null>(null);
   const suppressMapClick = useRef(false);
   const suppressSelectionClick = useRef(false);
@@ -239,8 +243,6 @@ export function App() {
   const [errorRevision,setErrorRevision]=useState(0);
   function setError(message:string){setErrorMessage(message);setErrorRevision(value=>value+1);}
   const [notice, setNotice] = useState("");
-  const [latitude, setLatitude] = useState("35.67500");
-  const [longitude, setLongitude] = useState("139.75000");
   const [selected, setSelected] = useState<string | null>(null);
   const [editStationName, setEditStationName] = useState("");
   const stationNameInput=useRef<HTMLInputElement>(null);
@@ -268,6 +270,9 @@ export function App() {
   const [routeMapEdit,setRouteMapEdit]=useState<{id:string;name:string}|null>(null);
   const [routeSequenceKey,setRouteSequenceKey]=useState(0);
   const [routeCreating,setRouteCreating]=useState(false);
+  const [routeServiceDirty,setRouteServiceDirty]=useState(false);
+  const [serviceCreating,setServiceCreating]=useState(false);
+  const [serviceSequenceKey,setServiceSequenceKey]=useState(0);
   const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|"sequence"|null>(null);
   const routeMapSelect=useRef<((id:string)=>void)|null>(null);
   function cancelRouteMapPick(){routeMapSelect.current=null;setRouteMapPick(null);}
@@ -607,7 +612,7 @@ export function App() {
   const selectedRoutePath = world?.route_paths?.find(path => path.route_id === routeId);
   const companyDirty = !!world && companyName !== (world.companies[0]?.name ?? "");
   const selectedStation = world?.stations.find((station) => station.id === selected);
-  const directoryStations=world?.stations.filter(station=>!world.station_groups?.some(group=>group.members.includes(station.id)&&group.station_id!==station.id))??[];
+
   const stationDirty = !!selectedStation && editStationName !== selectedStation.name;
   const selectedPlacement = world?.station_placements?.find(p => p.station_id === selected);
   const platformDirty = !!selectedPlacement && (Number(editLength) !== selectedPlacement.length_m || Number(editWidth) !== selectedPlacement.width_m);
@@ -759,6 +764,13 @@ export function App() {
     :trackDeleteUndo?.world===world&&trackDeleteUndo?.after===planFingerprint;
   const canRedoTrackDelete=!!trackDeleteRedo&&trackDeleteRedo.world===world&&trackDeleteRedo.plans===planFingerprint;
   useEffect(()=>{if(trackDeleteRedo&&!canRedoTrackDelete)setTrackDeleteRedo(null);},[trackDeleteRedo,canRedoTrackDelete]);
+  // Splitting built sections can remap extension/station targets in pending plans.
+  function restoreRemappedPlans(snapshot:World){
+    if(!snapshot.construction_plans)return planFingerprint;
+    const saved=savedPlanFingerprint;
+    restoreConstructionPlans(snapshot.construction_plans);setSavedPlanFingerprint(saved);
+    return constructionPlanFingerprint(snapshot.construction_plans);
+  }
   function undoTrackDelete(){
     if(!enabled||!trackDeleteUndo||!canUndoTrackDelete)return;
     const entry=trackDeleteUndo;
@@ -766,7 +778,7 @@ export function App() {
       const saved=savedPlanFingerprint;restoreConstructionPlans(entry.before);setSavedPlanFingerprint(saved);
       setTrackDeleteRedo({entry,world,plans:constructionPlanFingerprint(entry.before)});setTrackDeleteUndo(null);return;
     }
-    void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteRedo({entry,world:snapshot,plans:planFingerprint});setTrackDeleteUndo(null);});
+    void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteRedo({entry,world:snapshot,plans:restoreRemappedPlans(snapshot)});setTrackDeleteUndo(null);});
   }
   function redoTrackDelete(){
     if(!enabled||!trackDeleteRedo||!canRedoTrackDelete)return;
@@ -777,10 +789,10 @@ export function App() {
     }
     void perform(async()=>{
       const snapshot=await invoke<World>(entry.command,entry.args);
-      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({...entry,world:snapshot});setTrackDeleteRedo(null);
+      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({...entry,world:snapshot,plans:restoreRemappedPlans(snapshot)});setTrackDeleteRedo(null);
     });
   }
-  useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);const selection=boxGesture.current;boxGesture.current=null;setSelectionBox(null);const svg=svgRef.current;if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);},[world,activeTool]);
+  useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);setRangeTrackType(null);const selection=boxGesture.current;boxGesture.current=null;setSelectionBox(null);const svg=svgRef.current;if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);},[world,activeTool]);
   useEffect(()=>{setBuiltHeightSelection(selection=>currentBuiltHeightSelection(selection,world?.alignments??[],activeTool==="select"));},[world,activeTool]);
   function updateBuiltAnchorHeight(level:SectionInfrastructure["level"]){
     if(!enabled||unapplied||!builtHeightSelection)return;
@@ -794,6 +806,11 @@ export function App() {
   const selectedInfrastructure=rangeSelection.flatMap(row=>row.sectionIndices.map(index=>alignments.find(line=>line.id===row.alignmentId)?.infrastructure?.[index]??DEFAULT_INFRASTRUCTURE));
   const selectedCountValues=new Set(selectedInfrastructure.map(value=>value.track_count));
   const selectedLevelValues=new Set(selectedInfrastructure.map(value=>value.level));
+  function updateRangeTrackType(){
+    if(!enabled||unapplied||!rangeCount||rangeTrackType===null)return;
+    const args={selections:rangeSelection,expectedAlignments:rangeSelection.map(row=>alignments.find(line=>line.id===row.alignmentId)!),constructionPlans,trackType:rangeTrackType};
+    void perform(async()=>{const snapshot=await invoke<World>("update_alignment_section_track_type",args);if(equalWorldSnapshots(snapshot,world))return;setWorld(snapshot);setDirty(true);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:restoreRemappedPlans(snapshot),command:"update_alignment_section_track_type",args});});
+  }
   function updateRangeInfrastructure(){
     if(!enabled||unapplied||!rangeCount||(rangeTrackCount===null&&rangeLevel===null))return;
     const args={selections:rangeSelection,expectedAlignments:rangeSelection.map(row=>alignments.find(line=>line.id===row.alignmentId)!),constructionPlans,trackCount:rangeTrackCount,level:rangeLevel};
@@ -879,7 +896,7 @@ export function App() {
   }
   function selectStation(id: string) {
     if (busyRef.current) return;
-    if (mainTab === "routes" && routeMapSelect.current) {
+    if ((mainTab === "routes" || mainTab === "services") && routeMapSelect.current) {
       if (!enabled || !stationsById.has(id)) return;
       const select=routeMapSelect.current;if(routeMapPick!=="sequence")cancelRouteMapPick();select(id);return;
     }
@@ -1052,7 +1069,7 @@ export function App() {
     if(event.button===0&&activeTool==="select"&&enabled){
       const p=coordinatesFromClient(event.clientX,event.clientY,event.currentTarget.getBoundingClientRect(),cameraRef.current);if(!p)return;
       const point=project(p.latitude,p.longitude,cameraRef.current),box={start:point,end:point};
-      boxGesture.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,box,camera:cameraRef.current,additive:event.shiftKey};setSelectionBox(box);if(!event.shiftKey)setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);
+      boxGesture.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,box,camera:cameraRef.current,additive:event.shiftKey};setSelectionBox(box);if(!event.shiftKey)setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);setRangeTrackType(null);
       suppressMapClick.current=true;suppressSelectionClick.current=true;event.currentTarget.setPointerCapture?.(event.pointerId);return;
     }
     suppressMapClick.current = true;
@@ -1585,11 +1602,6 @@ export function App() {
     window.addEventListener("keydown",modifier);window.addEventListener("keyup",modifier);window.addEventListener("blur",blur);
     return ()=>{window.removeEventListener("keydown",modifier);window.removeEventListener("keyup",modifier);window.removeEventListener("blur",blur);};
   });
-  function submitStation(event: FormEvent) {
-    event.preventDefault();
-    if (!latitude.trim() || !longitude.trim()) { setError("緯度・経度を入力してください。"); return; }
-    void addStation(Number(latitude), Number(longitude));
-  }
   function resetRoute(route?: Route) {
     setRouteId(route?.id ?? null); setRouteName(route?.name ?? "新路線");
     setRouteStart(route?.start ?? "");
@@ -1634,6 +1646,7 @@ export function App() {
     } finally {busyRef.current=false;setBusy(false);}
   }
   function resetService(service?: OperatingService) {
+    setServiceCreating(false);setRouteServiceDirty(false);cancelRouteMapPick();
     setServiceAppearanceDirty(false);
     setBindingDirty(false);
     setServiceId(service?.id ?? null);
@@ -1650,7 +1663,7 @@ export function App() {
   }
   async function createPathService(draft:CreateServicePath){
     if(!enabled||busyRef.current||serviceDirty||serviceId!==null)throw Error("別の系統を編集中です。");
-    busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("create_service_path",draft);setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setNotice("新形式の系統を適用しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}
+    busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("create_service_path",draft);setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setNotice("系統を作成しました。ファイルへは保存してください。");}finally{busyRef.current=false;setBusy(false);}
   }
   function completeSave() {
     setSavedViewFingerprint(JSON.stringify(camera));setSavedPlanFingerprint(planFingerprint);
@@ -1816,7 +1829,7 @@ export function App() {
             {nativeConstructionPreview?.error&&activeTool==="tracks"&&<div role="status" className="construction-tooltip">敷設判定を取得できません。着工時に再確認します。</div>}
             {nativeValidationError&&((activeTool!=="tracks"&&activeTool!=="inactive")||referenceCopy.active||parallelMode)&&<div role="status" className="construction-tooltip">敷設不可：{nativeValidationError}</div>}
             {anchorPlacementWaiting&&<div role="status" className="construction-tooltip">この位置に敷設できるか確認中…</div>}
-            {activeTool === "tracks" && <div className="construction-toolbar" role="group" aria-label="線路敷設設定"><HeightControls value={selectedHeight??infrastructure.level} disabled={!enabled||referenceCopy.active||(!heightAnchor&&!!draftDestination)} onChange={changeHeight}/><div className="construction-mode-row"><TrackTypeControls value={trackType} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType}/><div className="track-follow-options" role="group" aria-label="線路の追従"><button type="button" className="secondary follow-icon" aria-label="実在の路線網に合わせる" aria-describedby="follow-tip-rail" aria-pressed={referencePanel&&!roadFollowing} disabled={!enabled||!!draftExtension} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();referenceCopy.setMode("rail");setRoadFollowing(false);setReferencePanel(value=>!value||roadFollowing);}}><TrackFollowIcon kind="rail"/><span id="follow-tip-rail" role="tooltip" className="follow-tip">実在の路線網に合わせる<br/>実在の線路に沿って、線路の経路を描きます</span></button><button type="button" className="secondary follow-icon" aria-label="道路に合わせる" aria-describedby="follow-tip-road" aria-pressed={roadFollowing} disabled={!enabled} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();roadDrawing.cancel();setRoadFollowing(value=>!value);setReferencePanel(!roadFollowing);setHoverPoint(null);}}><TrackFollowIcon kind="road"/><span id="follow-tip-road" role="tooltip" className="follow-tip">道路に合わせる<br/>道路に沿って、線路の経路を描きます</span></button><button type="button" className="secondary follow-icon" aria-label="線路の横に沿わせる" aria-describedby="follow-tip-parallel" aria-pressed={parallelMode} disabled={!enabled||!copyCanStart} onClick={()=>{cancelParallel();referenceCopy.clear();setReferencePanel(false);setRoadFollowing(false);setParallelMode(value=>!value);setHoverPoint(null);}}><TrackFollowIcon kind="parallel"/><span id="follow-tip-parallel" role="tooltip" className="follow-tip">線路の横に沿わせる<br/>青い範囲にカーソルを合わせると、別の線路と平行に線路を描きます</span></button></div></div>
+            {activeTool === "tracks" && <div className="construction-toolbar track-construction-toolbar" role="group" aria-label="線路敷設設定"><HeightControls value={selectedHeight??infrastructure.level} disabled={!enabled||referenceCopy.active||(!heightAnchor&&!!draftDestination)} onChange={changeHeight}/><div className="construction-mode-row"><TrackTypeControls value={trackType} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType}/><div className="track-follow-options" role="group" aria-label="線路の追従"><button type="button" className="secondary follow-icon" aria-label="実在の路線網に合わせる" aria-describedby="follow-tip-rail" aria-pressed={referencePanel&&!roadFollowing} disabled={!enabled||!!draftExtension} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();referenceCopy.setMode("rail");setRoadFollowing(false);setReferencePanel(value=>!value||roadFollowing);}}><TrackFollowIcon kind="rail"/><span id="follow-tip-rail" role="tooltip" className="follow-tip">実在の路線網に合わせる<br/>実在の線路に沿って、線路の経路を描きます</span></button><button type="button" className="secondary follow-icon" aria-label="道路に合わせる" aria-describedby="follow-tip-road" aria-pressed={roadFollowing} disabled={!enabled} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();roadDrawing.cancel();setRoadFollowing(value=>!value);setReferencePanel(!roadFollowing);setHoverPoint(null);}}><TrackFollowIcon kind="road"/><span id="follow-tip-road" role="tooltip" className="follow-tip">道路に合わせる<br/>道路に沿って、線路の経路を描きます</span></button><button type="button" className="secondary follow-icon" aria-label="線路の横に沿わせる" aria-describedby="follow-tip-parallel" aria-pressed={parallelMode} disabled={!enabled||!copyCanStart} onClick={()=>{cancelParallel();referenceCopy.clear();setReferencePanel(false);setRoadFollowing(false);setParallelMode(value=>!value);setHoverPoint(null);}}><TrackFollowIcon kind="parallel"/><span id="follow-tip-parallel" role="tooltip" className="follow-tip">線路の横に沿わせる<br/>青い範囲にカーソルを合わせると、別の線路と平行に線路を描きます</span></button></div></div>
             <div className="construction-options-row"><label>線路数<select aria-label="敷設する線路数" value={infrastructure.track_count} disabled={!enabled||!!draftExtension||draftPoints.length>0||referenceCopy.active} onChange={e=>setInfrastructure(value=>({...value,track_count:Number(e.target.value) as 1|2|4}))}>{([1,2,4] as const).map(count=><option key={count} value={count}>{COUNT_LABELS[count]}</option>)}</select></label><details className="track-advanced-settings"><summary>詳細設定</summary><div className="target-speed-control"><label htmlFor="track-target-speed">目標最高速度</label><span className="speed-input"><button type="button" className="secondary" aria-label="目標最高速度を20 km/h下げる" disabled={!enabled||!!draftExtension||referenceCopy.active||designSpeedKmh<=1} onClick={()=>setDesignSpeedKmh(value=>Math.max(1,value-20))}>−</button><input id="track-target-speed" aria-label="線路の目標最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/><button type="button" className="secondary" aria-label="目標最高速度を20 km/h上げる" disabled={!enabled||!!draftExtension||referenceCopy.active||designSpeedKmh>=600} onClick={()=>setDesignSpeedKmh(value=>Math.min(600,value+20))}>＋</button><span>km/h</span></span></div></details></div>
 </div>}
             {activeTool === "tracks" && mapMode==="draw" && !parallelMode && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && (draftPoints.length>0 || (roadFollowing&&!graphBundle) || roadDrawing.preview?.kind==='error' || !!drawingPreviewError) && <div className="construction-tooltip drawing-tooltip drawing-metrics" role="status" style={{left:Math.max(8,Math.min(mapSize.width-210,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-90,cursorPosition.y+18))}}>
@@ -1841,7 +1854,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={(enabled && mainTab==="routes" && routeMapPick ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
+            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={(enabled && (mainTab==="routes"||mainTab==="services") && routeMapPick ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
@@ -1953,7 +1966,7 @@ export function App() {
             {deletePlanConfirm&&<PlanDeleteDialog name={planName.trim()||`計画 ${activePlanId}`} onCancel={()=>setDeletePlanConfirm(false)} onDelete={deleteCurrentPlan}/>}
             <div className="plan-actions"><button className="secondary" disabled={!enabled||referenceCopy.active} onClick={()=>setDeletePlanConfirm(true)}>計画を削除</button><button className="secondary" disabled={!enabled||referenceCopy.active||!planHasContent} onClick={clearCurrentPlan}>下書きを消去</button><button disabled={!enabled||referenceCopy.active||anchorPlacementInProgress||!planBuildable} onClick={commitAlignment}>計画を着工</button></div>
           </section>
-          <section role="tabpanel" id="panel-select" aria-labelledby="tab-select" hidden={activeTool!=="select"}><div className="range-selection-actions"><span>{rangeCount}区間を選択</span>{rangeCount>0&&<><span aria-label="選択区間の線路数">{selectedCountValues.size>1?"線路数: 混在":COUNT_LABELS[selectedInfrastructure[0].track_count]}</span><span aria-label="選択区間の高さ">{selectedLevelValues.size>1?"高さ: 混在":LEVEL_LABELS[selectedInfrastructure[0].level]}</span><label>線路数<select aria-label="選択区間の線路数変更" value={rangeTrackCount??""} disabled={!enabled} onChange={event=>setRangeTrackCount(event.target.value?Number(event.target.value) as 1|2|4:null)}><option value="">変更しない</option>{Object.entries(COUNT_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><label>高さ<select aria-label="選択区間の高さ変更" value={rangeLevel??""} disabled={!enabled} onChange={event=>setRangeLevel(event.target.value?event.target.value as SectionInfrastructure["level"]:null)}><option value="">変更しない</option>{Object.entries(LEVEL_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><button disabled={!enabled||unapplied||(rangeTrackCount===null&&rangeLevel===null)} onClick={updateRangeInfrastructure}>選択区間へ適用</button></>}<button disabled={!enabled||!rangeCount||unapplied} onClick={()=>{setError("");setConfirmRangeDelete(true);}}>選択区間を撤去</button><button className="secondary" disabled={!rangeCount} onClick={()=>setRangeSelection([])}>選択解除</button></div></section>
+          <section role="tabpanel" id="panel-select" aria-labelledby="tab-select" hidden={activeTool!=="select"}><div className="range-selection-actions"><span>{rangeCount}区間を選択</span>{rangeCount>0&&<><span aria-label="選択区間の線路数">{selectedCountValues.size>1?"線路数: 混在":COUNT_LABELS[selectedInfrastructure[0].track_count]}</span><span aria-label="選択区間の高さ">{selectedLevelValues.size>1?"高さ: 混在":LEVEL_LABELS[selectedInfrastructure[0].level]}</span><label>線路数<select aria-label="選択区間の線路数変更" value={rangeTrackCount??""} disabled={!enabled} onChange={event=>setRangeTrackCount(event.target.value?Number(event.target.value) as 1|2|4:null)}><option value="">変更しない</option>{Object.entries(COUNT_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><label>高さ<select aria-label="選択区間の高さ変更" value={rangeLevel??""} disabled={!enabled} onChange={event=>setRangeLevel(event.target.value?event.target.value as SectionInfrastructure["level"]:null)}><option value="">変更しない</option>{Object.entries(LEVEL_LABELS).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><button disabled={!enabled||unapplied||(rangeTrackCount===null&&rangeLevel===null)} onClick={updateRangeInfrastructure}>選択区間へ適用</button><label>線路種別<select aria-label="選択区間の線路種別変更" value={rangeTrackType??""} disabled={!enabled} onChange={event=>setRangeTrackType(event.target.value?event.target.value as "normal"|"high_speed":null)}><option value="">変更しない</option><option value="normal">通常</option><option value="high_speed">高速</option></select></label><button disabled={!enabled||unapplied||rangeTrackType===null} onClick={updateRangeTrackType}>線路種別を適用</button></>}<button disabled={!enabled||!rangeCount||unapplied} onClick={()=>{setError("");setConfirmRangeDelete(true);}}>選択区間を撤去</button><button className="secondary" disabled={!rangeCount} onClick={()=>setRangeSelection([])}>選択解除</button></div></section>
           <section role="tabpanel" id="panel-delete" aria-labelledby="tab-delete" hidden={activeTool!=="delete"} />
           <section className="station-editor" role="tabpanel" id="panel-stations" aria-labelledby="tab-stations" hidden={activeTool !== "stations"}>
 
@@ -1970,19 +1983,14 @@ export function App() {
 
           </section>
           </div>
-          <section hidden={activeTool!=="station-management"} className="station-history"><p className="field-hint">取消対象: {stationUndo.at(-1)?.station.name ?? "なし"} / Undo {stationUndo.length}件・Redo {stationRedo.length}件</p><div className="route-actions"><button type="button" className="secondary" disabled={!enabled || !stationUndo.length} onClick={undoStation}>駅設置を取り消す</button><button type="button" className="secondary" disabled={!enabled || !stationRedo.length} onClick={redoStation}>駅設置をやり直す</button></div></section>
-          <section id="workspace-panel-stations" role="tabpanel" className="station-directory" aria-labelledby="workspace-tab-stations" hidden={activeTool !== "station-management"}>            <details className="legacy-tools"><summary>旧ワールド用：単独駅の座標配置</summary>
-            <form onSubmit={submitStation}><fieldset disabled={!enabled}>
-              <div className="coordinate-fields"><div><label htmlFor="station-latitude">緯度</label><input id="station-latitude" type="number" min={BOUNDS.south} max={BOUNDS.north} step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} /></div><div><label htmlFor="station-longitude">経度</label><input id="station-longitude" type="number" min={BOUNDS.west} max={BOUNDS.east} step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} /></div></div>
-              <button className="full-width" type="submit">指定座標に配置</button>
-            </fieldset></form></details><div className="directory-heading"><h3 id="stations-title">配置済みの駅</h3><span className="count">{directoryStations.length}</span></div>
-            {directoryStations.length ? <ul>{directoryStations.map((station) => <li key={station.id}><button className={`station-entry ${selected === station.id ? "selected" : ""}`} onClick={() => selectStation(station.id)}><span>{station.name}</span><small>{station.latitude.toFixed(5)}, {station.longitude.toFixed(5)}</small></button></li>)}</ul> : <p className="empty-state">まだ駅はありません。<br />最初の駅を配置してみましょう。</p>}
+          <section id="workspace-panel-stations" role="tabpanel" className="station-directory" aria-labelledby="workspace-tab-stations" hidden={activeTool !== "station-management"}>
+            <StationDirectory key={worldEpoch} stations={world?.stations??[]} groups={world?.station_groups} routes={world?.routes??[]} paths={world?.route_paths} placements={world?.station_placements} selected={selected} onSelect={selectStation}/>
           </section>
-          <section hidden={activeTool !== "station-management"}>
-            {selectedStation && <div className="equipment-editor"><h4>駅設定</h4><p className="field-hint">設置後も駅名・ホーム長を変更できます。有人・無人・委託などの運営形態、維持費・満足度への反映は今後実装予定です。</p><div className="station-detail-name"><strong onDoubleClick={beginStationNameEdit}>{selectedStation.name}</strong><button ref={stationNameEditButton} type="button" className="secondary" disabled={!enabled} aria-label="選択駅の名前を編集" onClick={beginStationNameEdit}>✎ 編集</button></div>
-              {world?.station_placements?.some((p) => p.station_id === selectedStation.id) && <form onSubmit={event=>event.preventDefault()}><fieldset disabled={!enabled&&!stationResizePending}><div className="coordinate-fields"><PlatformLengthInput id="edit-platform-length" label="選択駅の長さ" value={editLength} onChange={value=>{setStationResizeFailure(null);setEditLength(value);}}/></div><div className="route-actions">{stationResizePending&&<span role="status">反映中</span>}{!resizeValid&&<span role="status">2〜20両で入力してください</span>}{stationResizeFailure===resizeKey&&<button type="button" className="secondary" disabled={!enabled||!resizeValid} onClick={()=>{setStationResizeFailure(null);void resizePlatform();}}>長さ変更を再試行</button>}<button type="button" className="secondary" disabled={!platformDirty||stationResizePending} onClick={() => { setStationResizeFailure(null);if(selectedPlacement){setEditLength(String(selectedPlacement.length_m));setEditWidth(String(selectedPlacement.width_m));} }}>ホーム長の下書きを破棄</button></div></fieldset></form>}
+          <section className="station-inspector" aria-label="選択した駅" hidden={activeTool !== "station-management"}>
+            {selectedStation && <div className="equipment-editor"><h4>駅の詳細</h4><div className="station-detail-name"><strong onDoubleClick={beginStationNameEdit}>{selectedStation.name}</strong><button ref={stationNameEditButton} type="button" className="secondary" disabled={!enabled} aria-label="選択駅の名前を編集" onClick={beginStationNameEdit} title="駅名を変更">✎</button></div>
+              {world?.station_placements?.some((p) => p.station_id === selectedStation.id) && <form onSubmit={event=>event.preventDefault()}><fieldset disabled={!enabled&&!stationResizePending}><div className="coordinate-fields"><PlatformLengthInput id="edit-platform-length" label="選択駅の長さ" value={editLength} onChange={value=>{setStationResizeFailure(null);setEditLength(value);}}/></div><div className="route-actions">{stationResizePending&&<span role="status">反映中</span>}{!resizeValid&&<span role="status">2〜20両で入力してください</span>}{stationResizeFailure===resizeKey&&<button type="button" className="secondary" disabled={!enabled||!resizeValid} onClick={()=>{setStationResizeFailure(null);void resizePlatform();}}>長さ変更を再試行</button>}<button type="button" className="secondary" hidden={!platformDirty} disabled={!platformDirty||stationResizePending} onClick={() => { setStationResizeFailure(null);if(selectedPlacement){setEditLength(String(selectedPlacement.length_m));setEditWidth(String(selectedPlacement.width_m));} }}>ホーム長の下書きを破棄</button></div></fieldset></form>}
               {world?.station_groups?.find(g=>g.members.includes(selected??""))&&<label>ホーム<select aria-label="編集するホーム" value={selected??""} onChange={event=>selectStation(event.target.value)}>{world.station_groups.find(g=>g.members.includes(selected??""))!.members.map((id,index)=><option key={id} value={id}>ホーム {index+1}</option>)}</select></label>}<form onSubmit={renameStation}><fieldset disabled={!enabled}>
-              <label htmlFor="edit-station-name">選択駅の名前</label><input ref={stationNameInput} id="edit-station-name" onKeyDown={event=>{if(event.key!=="Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode===229)return;event.preventDefault();event.stopPropagation();if(!enabled || busyRef.current)return;setEditStationName(selectedStation.name);stationNameEditButton.current?.focus();}} maxLength={80} value={editStationName} onChange={(event) => setEditStationName(event.target.value)} /><div className="route-actions"><button type="submit" disabled={!enabled || !stationDirty || !editStationName.trim()}>駅名を適用</button><button type="button" className="secondary" disabled={!enabled || !stationDirty} onClick={() => setEditStationName(selectedStation.name)}>駅名下書きを破棄</button></div></fieldset></form>
+              <label htmlFor="edit-station-name">選択駅の名前</label><input ref={stationNameInput} id="edit-station-name" onKeyDown={event=>{if(event.key!=="Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode===229)return;event.preventDefault();event.stopPropagation();if(!enabled || busyRef.current)return;setEditStationName(selectedStation.name);stationNameEditButton.current?.focus();}} maxLength={80} value={editStationName} onChange={(event) => setEditStationName(event.target.value)} /><div className="route-actions" hidden={!stationDirty}><button type="submit" disabled={!enabled || !stationDirty || !editStationName.trim()}>駅名を適用</button><button type="button" className="secondary" disabled={!enabled || !stationDirty} onClick={() => setEditStationName(selectedStation.name)}>駅名下書きを破棄</button></div></fieldset></form>
               <button className="secondary danger" disabled={!enabled || unapplied || !!stationReferences(selectedStation.id)} onClick={() => setPendingDelete({ kind: "station", id: selectedStation.id })}>{world?.station_groups?.some(g=>g.members.includes(selectedStation.id))?"選択ホームを撤去":"選択駅を削除"}</button>
               {stationReferences(selectedStation.id) && <p className="field-hint">削除不可: {stationReferences(selectedStation.id)}</p>}
             </div>}
@@ -1999,8 +2007,11 @@ export function App() {
           <section className="service-editor" role="tabpanel" id="workspace-panel-services" aria-labelledby="workspace-tab-services" hidden={activeTool !== "services"}>
             <h3>系統</h3>
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
-            <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => chooseService(null)}>新規系統</button><table aria-label="系統一覧"><thead><tr><th>名前</th><th>乗客</th><th>収支</th><th>車両数</th></tr></thead><tbody>{world?.services.map((service) => <tr key={service.id}><th><button className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id===serviceId?null:service.id)} aria-label={`系統編集: ${service.name}`} aria-pressed={service.id===serviceId}><ServiceBadge color={world.service_appearances?.find(row=>row.service_id===service.id)?.color??'#3b82f6'} shape={world.service_appearances?.find(row=>row.service_id===service.id)?.shape??'circle'} symbol={world.service_appearances?.find(row=>row.service_id===service.id)?.symbol??initialServiceSymbol(service.name)}/>{service.name}</button></th>{["乗客","収支","車両数"].map(label=><td key={label} title="未実装" aria-label={`${label}: 未実装`}>—</td>)}</tr>)}</tbody></table></div>
-            <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null} onDirty={setPathServiceDirty} onSave={createPathService}/>
+            <div className="service-directory"><button className="secondary" disabled={!enabled} onClick={() => {if(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty){chooseService(null);return;}chooseService(null);cancelRouteMapPick();setServiceCreating(true);setServiceSequenceKey(key=>key+1);}}>新規系統</button><table aria-label="系統一覧"><thead><tr><th>名前</th><th>乗客</th><th>収支</th><th>車両数</th></tr></thead><tbody>{world?.services.map((service) => <tr key={service.id}><th><button className={`route-choice ${service.id === serviceId ? "selected" : ""}`} disabled={!enabled} onClick={() => chooseService(service.id===serviceId?null:service.id)} aria-label={`系統編集: ${service.name}`} aria-pressed={service.id===serviceId}><ServiceBadge color={world.service_appearances?.find(row=>row.service_id===service.id)?.color??'#3b82f6'} shape={world.service_appearances?.find(row=>row.service_id===service.id)?.shape??'circle'} symbol={world.service_appearances?.find(row=>row.service_id===service.id)?.symbol??initialServiceSymbol(service.name)}/>{service.name}</button></th>{["乗客","収支","車両数"].map(label=><td key={label} title="未実装" aria-label={`${label}: 未実装`}>—</td>)}</tr>)}</tbody></table></div>
+            {serviceCreating&&serviceId===null&&<ServiceMapCreator key={`map-service-${pathDraftEpoch}`} world={world??previewWorld} stations={world?.stations??[]} enabled={enabled&&mainTab==="services"} defaultName={(()=>{let n=1;while(world?.services.some(row=>row.name===`系統${n}`))n++;return `系統${n}`;})()} onDirty={setPathServiceDirty} onSave={async draft=>{await createPathService(draft);setServiceCreating(false);cancelRouteMapPick();}} onCancel={()=>{setServiceCreating(false);setPathServiceDirty(false);cancelRouteMapPick();}} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="services")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} mapPickTarget={routeMapPick} startSequenceKey={serviceSequenceKey}/>}
+            {!serviceCreating&&serviceId===null&&<ServiceFromRoute key={`route-service-${worldEpoch}-${pathDraftEpoch}`} routes={world?.routes??[]} paths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled&&!serviceDirty&&(!pathServiceDirty||routeServiceDirty)} onDirty={dirty=>{setRouteServiceDirty(dirty);setPathServiceDirty(dirty);}} onSave={createPathService}/>}
+            <details><summary>区間・直通を指定して作成</summary>
+            <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null&&!serviceCreating&&!routeServiceDirty} onDirty={setPathServiceDirty} onSave={createPathService}/></details>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
