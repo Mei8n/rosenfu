@@ -42,12 +42,23 @@ export function roadFragmentIntersects(points:readonly {longitude:number;latitud
   if(ok)return true;
  }return false;
 }
+export const OFM_EVIDENCE_RULE='ofm_transportation_z14_v1' as const;
+export type OpenFreeMapEvidenceRequest={revision:string;z:14;x:number;y:number;rawSha256:string;decoderRule:typeof OFM_EVIDENCE_RULE};
+export type OpenFreeMapEvidenceBinding=OpenFreeMapEvidenceRequest&{key:string;url:string;license:'ODbL-1.0';attribution:string};
+export type OpenFreeMapEvidenceBatch={rawTiles:{sha256:string;bytes:Uint8Array}[];bindings:OpenFreeMapEvidenceBinding[]};
+export const OFM_EVIDENCE_LIMITS={cacheBytes:16*1024*1024,cacheEntries:16,batchBytes:8*1024*1024,batchTiles:16,pending:16} as const;
 export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:()=>number=Date.now){
  type Task={promise:Promise<OpenFreeMapTileSnapshot>;users:Set<symbol>;controller:AbortController};
  let template:Promise<{template:string;revision:string}>|undefined;
  let metadataRetryAfter=0,usedBytes=0,usedTiles=0,activeLoads=0;let metadataController:AbortController|undefined;let metadataReady=false;
  let queue:Promise<unknown>=Promise.resolve();
+ let rawCacheBytes=0,evidencePending=0;const rawCache=new Map<string,Uint8Array>(),knownRaw=new Map<string,string>();
  const cache=new Map<string,OpenFreeMapTileSnapshot>(),pending=new Map<string,Task>(),failures=new Map<string,number>();
+ function rememberRaw(key:string,sha:string,bytes:Uint8Array){
+  knownRaw.delete(key);knownRaw.set(key,sha);while(knownRaw.size>OFM_LIMITS.cacheEntries)knownRaw.delete(knownRaw.keys().next().value!);
+  const old=rawCache.get(key);if(old)rawCacheBytes-=old.length;rawCache.delete(key);rawCache.set(key,bytes);rawCacheBytes+=bytes.length;
+  while(rawCacheBytes>OFM_EVIDENCE_LIMITS.cacheBytes||rawCache.size>OFM_EVIDENCE_LIMITS.cacheEntries){const first=rawCache.keys().next().value!;rawCacheBytes-=rawCache.get(first)!.length;rawCache.delete(first);}
+ }
  const cancelled=()=>new DOMException('道路取得を取り消しました。','AbortError');
  const stopReason=(signal:AbortSignal)=>signal.reason instanceof DOMException&&signal.reason.name==='TimeoutError'?signal.reason:cancelled();
  const check=(signal:AbortSignal)=>{if(signal.aborted)throw stopReason(signal);};
@@ -92,7 +103,7 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
     check(controller.signal); // queued work with no subscribers performs no fetch
     if(usedTiles>=OFM_LIMITS.sessionTiles||usedBytes>=OFM_LIMITS.sessionBytes)throw Error('道路タイル取得予算上限です。');
     usedTiles++;const bytes=await request(meta.template.replace('{z}','14').replace('{x}',String(x)).replace('{y}',String(y)),controller.signal);check(controller.signal);
-    const snapshot=await decodeOpenFreeMapRoadTile(bytes,x,y,meta.revision,now());check(controller.signal);return snapshot;
+    const snapshot=await decodeOpenFreeMapRoadTile(bytes,x,y,meta.revision,now());check(controller.signal);rememberRaw(key,snapshot.bundle.sourceSha256,bytes);return snapshot;
    }).then(snapshot=>{cache.set(key,snapshot);while(cache.size>OFM_LIMITS.cacheEntries)cache.delete(cache.keys().next().value!);return snapshot;}).catch(e=>{
     if(!controller.signal.aborted){failures.set(key,now());while(failures.size>128)failures.delete(failures.keys().next().value!);}throw e;
    }).finally(()=>{if(pending.get(key)===created)pending.delete(key);});
@@ -100,7 +111,28 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
   }
   task.users.add(user);owned.add(task);return task.promise;
  }
- return {async load(bounds:GraphBounds,signal?:AbortSignal):Promise<OpenFreeMapRoadSnapshot>{
+ async function readTileEvidenceBatch(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal):Promise<OpenFreeMapEvidenceBatch>{
+  if(!Array.isArray(refs)||refs.length<1||refs.length>OFM_EVIDENCE_LIMITS.batchTiles||evidencePending>=OFM_EVIDENCE_LIMITS.pending)throw Error('道路証拠要求数が上限を超えています。');
+  // Validate the entire request before any download. Caller URLs and invented hashes are not accepted.
+  const bindings:OpenFreeMapEvidenceBinding[]=[],keys=new Set<string>();
+  for(const r of refs){if(!r||r.z!==14||r.decoderRule!==OFM_EVIDENCE_RULE||typeof r.revision!=='string'||typeof r.rawSha256!=='string'||! /^[A-Za-z0-9_]{1,64}$/.test(r.revision)||! /^[a-f0-9]{64}$/.test(r.rawSha256)||![r.x,r.y].every(v=>Number.isInteger(v)&&v>=0&&v<16384))throw Error('道路証拠bindingが不正です。');
+   const key=`${r.revision}/${r.x}/${r.y}`,url=`${OFM_METADATA}/${r.revision}/14/${r.x}/${r.y}.pbf`;
+   if(keys.has(key)||knownRaw.get(key)!==r.rawSha256)throw Error('道路証拠が現在の取得済みタイルと一致しません。');keys.add(key);
+   bindings.push({revision:r.revision,z:14,x:r.x,y:r.y,rawSha256:r.rawSha256,decoderRule:OFM_EVIDENCE_RULE,key:url,url,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION});
+  }
+  evidencePending++;const controller=new AbortController(),abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();const timer=setTimeout(()=>controller.abort(new DOMException('道路証拠取得が25秒で完了しませんでした。','TimeoutError')),25000);
+  try{const raws=new Map<string,Uint8Array>();let total=0;
+   for(const b of bindings){check(controller.signal);const key=`${b.revision}/${b.x}/${b.y}`;let bytes=rawCache.get(key);
+    if(bytes){rawCache.delete(key);rawCache.set(key,bytes);}else{
+     const work=queue.then(async()=>{check(controller.signal);const sharedHit=rawCache.get(key);if(sharedHit){if(await hash(sharedHit)!==b.rawSha256)throw Error('道路証拠cacheが一致しません。');return sharedHit;}if(usedTiles>=OFM_LIMITS.sessionTiles||usedBytes>=OFM_LIMITS.sessionBytes)throw Error('道路タイル取得予算上限です。');usedTiles++;const raw=await request(b.url,controller.signal);check(controller.signal);if(await hash(raw)!==b.rawSha256)throw Error('道路証拠の原データSHAが変わっています。');check(controller.signal);rememberRaw(key,b.rawSha256,raw);return raw;});queue=work.catch(()=>undefined);bytes=await wait(work,controller.signal);
+    }
+    if(await hash(bytes)!==b.rawSha256)throw Error('道路証拠cacheが一致しません。');check(controller.signal);
+    if(!raws.has(b.rawSha256)){total+=bytes.length;if(total>OFM_EVIDENCE_LIMITS.batchBytes)throw Error('道路証拠合計が8MiBを超えています。');raws.set(b.rawSha256,bytes.slice());}
+   }
+   return {bindings,rawTiles:[...raws].map(([sha256,bytes])=>({sha256,bytes}))};
+  }finally{controller.abort();clearTimeout(timer);signal?.removeEventListener('abort',abort);evidencePending--;}
+ }
+ return {readTileEvidenceBatch,async load(bounds:GraphBounds,signal?:AbortSignal):Promise<OpenFreeMapRoadSnapshot>{
   const tiles=roadTilesOf(bounds),user=Symbol('road-consumer'),owned=new Set<Task>(),controller=new AbortController();
   const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
   const timer=setTimeout(()=>controller.abort(new DOMException('道路取得が25秒で完了しませんでした。','TimeoutError')),25000);activeLoads++;
