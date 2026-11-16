@@ -229,3 +229,9 @@ export function lookupConstructionWater(lon:number,lat:number,fine:FineWaterAvai
   if(coarse.state!=='not_provided'||!declaredAbsence(coarse))return {state:'unknown',reason:'coarse_unavailable'};
   return {state:'model_land',basis:'not_provided',sourceIds:[]};
 }
+
+/** Validate a fine grid and test its half-open footprint without loading bytes. */
+export function fineWaterSpecCovers(spec:FineWaterSpec,lon:number,lat:number):boolean {
+  checkSpec(spec);
+  return gridCell(spec,lon,lat)!==null;
+}

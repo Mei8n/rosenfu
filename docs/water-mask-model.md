@@ -97,3 +97,20 @@ catalog未取得を非提供へ変換してはならない。呼出側は取得�
 観測専用fineの空セル、必要fineの未取得、破損coarseのnull等はUnknownを維持する。
 完全なfineがその地点を評価できれば、その地点で不要なcoarseの失敗は判定を妨げない。
 公開3地点は依然observations_onlyであり、この方針追加だけで空セルを陸地にしない。
+
+
+## catalogから正常非提供を確定する取得処理
+
+`loadConstructionWaterAt`は固定URL/bytes/SHAをawait前にコピーし、最大1MiBのcatalogを検証する。
+適用区域scope内の完全fine一覧と明示coarse状態が揃って初めて正常非提供を認める。
+scope外、catalog未取得、部分一覧、予定ファイル404、破損はUnknown。対象点の必要fineだけを取得し、
+fineが存在しなければcoarseを取得する。必要な取得・復号は失敗時に一度再試行し、全体30秒で中断する。
+呼出元の取消も伝播する。キャッシュは持たず、取得失敗を永続的な非提供として記録しない。
+
+公開試験用construction-catalog.jsonは3地点のboundsだけをscopeにする。1600bytes、
+SHA256 `4fb0686fd30f3a905decdaad877b4e1109800de7961d4fc2780d57b1b92cc488`。
+fine一覧はこれら3地点のobservations_onlyで、coarseはこの試験配信では非提供。
+範囲外の日本全国を正常非提供と宣言せずUnknownに保つ。これは取得経路の試験catalogであり、
+全国の通常敷設を有効にする設定ではない。check-delivery.mjsは取得APIで実水域点・富士山Unknown・
+区域外Unknownも確認する。App/IPCへ接続するには、建設候補全区間に必要な固定モデルを集め、
+保存版・共通物理評価・既存小ウィンドウ理由表示と結ぶ必要がある。地点取得成功だけで着工を許可しない。

@@ -25,3 +25,8 @@ The catalog registers observations_only masks; never promote these to
 complete_model or interpret an absent file as dry. Small GitHub trial hosting does
 not promise national availability or production performance. No App integration
 or build permission is enabled by this dataset.
+
+`construction-catalog.json` exercises the acquisition API, with scope limited to
+these three windows and observations_only fine entries. Coarse data is explicitly
+not provided by this trial. Outside its scope is Unknown, not normal non-provision.
+It must not be installed as a national construction-clearance catalog.

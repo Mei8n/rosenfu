@@ -4,6 +4,8 @@ on:
     paths:
       - 'src/waterMaskModel.ts'
       - 'src/waterMaskModel.test.ts'
+      - 'src/waterModelCatalog.ts'
+      - 'src/waterModelCatalog.test.ts'
       - 'scripts/water-mask/**'
       - 'data/water-mask-trial-20261114/**'
       - 'package-lock.json'
@@ -27,7 +29,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
-      - run: npm test -- src/waterMaskModel.test.ts
+      - run: npm test -- src/waterMaskModel.test.ts src/waterModelCatalog.test.ts
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
