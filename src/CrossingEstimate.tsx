@@ -7,6 +7,7 @@ function summary(value:unknown):Summary|null{
 /** A reference estimate only. Economy/charging is not implemented. Never turn
  * pending, failed or incomplete road data into a definitive zero crossings. */
 export function CrossingEstimate({value,pending=false}:{value:unknown;pending?:boolean}){
+ if(value&&typeof value==="object"&&typeof (value as {validationError?:unknown}).validationError==="string")return null;
  const data=summary(value);
  if(pending||!data)return <div className="crossing-estimate">踏切：確認中</div>;
  return <div className="crossing-estimate">
