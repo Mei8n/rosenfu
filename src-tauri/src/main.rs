@@ -696,6 +696,10 @@ fn list_save_slots(
         .list_save_slots(&save_root(&app)?)
 }
 #[tauri::command]
+fn move_save_slot(app: tauri::AppHandle, slot_id: String, restore: bool, editor: State<'_, Mutex<WorldEditor>>) -> Result<(), String> {
+    editor.lock().map_err(|_| "world state unavailable")?.move_save_slot(&save_root(&app)?, &slot_id, restore)
+}
+#[tauri::command]
 fn create_new_world(
     company_name: String,
     editor: State<'_, Mutex<WorldEditor>>,
@@ -844,6 +848,7 @@ fn main() {
             rename_route,
             set_service_route_binding,
             list_save_slots,
+            move_save_slot,
             create_new_world,
             load_save_slot,
             save_world_as,

@@ -4,13 +4,31 @@ use super::*;
 pub struct SaveSlotList {
     pub active_slot_id: Option<String>,
     pub slots: Vec<rosenfu_storage::SaveSlot>,
+    pub deleted_slots: Vec<rosenfu_storage::SaveSlot>,
 }
 impl WorldEditor {
     pub fn list_save_slots(&self, root: &Path) -> Result<SaveSlotList, String> {
         Ok(SaveSlotList {
             active_slot_id: self.active_slot_id.clone(),
             slots: rosenfu_storage::list_save_slots(root).map_err(|e| e.to_string())?,
+            deleted_slots: rosenfu_storage::list_deleted_save_slots(root).map_err(|e| e.to_string())?,
         })
+    }
+    pub fn move_save_slot(&mut self, root: &Path, id: &str, restore: bool) -> Result<(), String> {
+        // Keep the active world and its in-memory edits intact. Only detach its
+        // file identity after a successful archive, so autosave cannot recreate it.
+        rosenfu_storage::move_save_slot(root, id, restore).map_err(|e| e.to_string())?;
+        if !restore && self.active_slot_id.as_deref() == Some(id) {
+            self.active_slot_id = None;
+            self.loaded_path = None;
+            self.manual_version = None;
+            self.manual_repair_allowed = false;
+            self.autosave_version = None;
+            self.observed_autosave = None;
+            self.autosave_blocked = false;
+            self.autosave_replace_allowed = false;
+        }
+        Ok(())
     }
     pub fn create_new_world(&mut self, company_name: String) -> Result<WorldDraft, String> {
         let mut candidate = Self::new();
@@ -58,7 +76,16 @@ impl WorldEditor {
         if self.active_slot_id.is_none() {
             return Ok(false);
         }
-        self.autosave_status(&self.active_autosave_path(root)?)
+        let path = self.active_autosave_path(root)?;
+        let available = self.autosave_status(&path)?;
+        // Automatic start is per active slot. Preserve the replaced autosave via
+        // storage's backup, and retain version checking against external writers.
+        if available && self.autosave_version.is_none() {
+            rosenfu_storage::load_world(&path).map_err(|e| e.to_string())?;
+            self.allow_autosave_replacement(&path)?;
+            self.autosave_replace_allowed = false;
+        }
+        Ok(available)
     }
     pub fn load_save_slot(&mut self, root: &Path, id: String) -> Result<WorldDraft, String> {
         let path = rosenfu_storage::save_slot_path(root, &id).map_err(|e| e.to_string())?;
@@ -146,6 +173,70 @@ mod tests {
     use super::*;
     fn bytes(path: &Path) -> Vec<u8> {
         std::fs::read(path).unwrap()
+    }
+    #[test]
+    fn plan_only_autosave_survives_restart_without_touching_manual_save() {
+        let root = tempfile::tempdir().unwrap();
+        let mut editor = WorldEditor::new();
+        editor.save_active_slot(root.path(), None, None).unwrap();
+        let id = editor.active_slot_id.clone().unwrap();
+        let manual = editor.active_save_path(root.path()).unwrap();
+        let before = bytes(&manual);
+        let plans: rosenfu_core::world::ConstructionPlans = serde_json::from_value(serde_json::json!({
+            "version":1,"plans":[{"id":1,"name":"未着工計画"}],"parkedPaths":[],
+            "activePathId":1,"activePlanId":1,
+            "draftPoints":[{"latitude":35.0,"longitude":139.0},{"latitude":35.001,"longitude":139.001}],
+            "redoPoints":[],"draftExtension":null,"trackType":"normal","designSpeedKmh":120,
+            "roadFollowing":false,"plannedStations":[],"draftFinished":true
+        })).unwrap();
+        assert!(!editor.slot_autosave_status(root.path()).unwrap());
+        editor.autosave_active_slot(root.path(), &id, Some(plans.clone()), None).unwrap();
+        assert_eq!(bytes(&manual), before);
+        // A fresh session reloads the manual slot, then its separate autosave.
+        let mut restarted = WorldEditor::new();
+        assert!(restarted.load_save_slot(root.path(), id.clone()).unwrap().construction_plans.is_none());
+        assert!(restarted.slot_autosave_status(root.path()).unwrap());
+        let restored = restarted.load_slot_autosave(root.path()).unwrap();
+        assert_eq!(restored.construction_plans, Some(plans));
+        assert!(restored.alignments.is_empty());
+        assert_eq!(restarted.active_slot_id.as_deref(), Some(id.as_str()));
+        assert_eq!(bytes(&manual), before);
+    }
+    #[test]
+    fn deleting_active_slot_preserves_edits_and_stops_autosave() {
+        let root = tempfile::tempdir().unwrap();
+        let mut editor = WorldEditor::new();
+        editor.save_active_slot(root.path(), None, None).unwrap();
+        let id = editor.active_slot_id.clone().unwrap();
+        editor.rename_company("unsaved".into()).unwrap();
+        let before = editor.snapshot();
+        editor.move_save_slot(root.path(), &id, false).unwrap();
+        assert_eq!(editor.snapshot(), before);
+        assert!(editor.active_slot_id.is_none());
+        assert!(editor.autosave_active_slot(root.path(), &id, None, None).is_err());
+        editor.move_save_slot(root.path(), &id, true).unwrap();
+        assert!(editor.active_slot_id.is_none());
+        editor.load_save_slot(root.path(), id).unwrap();
+        assert_ne!(editor.snapshot().companies[0].name, "unsaved");
+    }
+    #[test]
+    fn existing_autosave_starts_automatically_and_keeps_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let mut editor = WorldEditor::new();
+        editor.save_active_slot(root.path(), None, None).unwrap();
+        let id = editor.active_slot_id.clone().unwrap();
+        editor.rename_company("recovery".into()).unwrap();
+        editor.autosave_active_slot(root.path(), &id, None, None).unwrap();
+        let auto = editor.active_autosave_path(root.path()).unwrap();
+        let previous = bytes(&auto);
+        editor.load_save_slot(root.path(), id.clone()).unwrap();
+        assert!(editor.slot_autosave_status(root.path()).unwrap());
+        editor.rename_company("new edit".into()).unwrap();
+        editor.autosave_active_slot(root.path(), &id, None, None).unwrap();
+        assert_eq!(bytes(&rosenfu_storage::backup_path(&auto)), previous);
+        std::fs::write(&auto,b"corrupt").unwrap();
+        assert!(editor.slot_autosave_status(root.path()).is_err());
+        assert!(editor.autosave_active_slot(root.path(), &id, None, None).is_err());
     }
     #[test]
     fn new_world_and_save_as_are_isolated_and_do_not_overwrite_legacy() {

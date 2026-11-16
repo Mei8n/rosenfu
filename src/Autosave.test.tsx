@@ -17,13 +17,11 @@ test('failure stays visible and retries; epoch change does not report stale succ
  let finish:()=>void=()=>{};vi.mocked(invoke).mockImplementation(command=>command==='autosave_status'?Promise.resolve({available:false}):new Promise(resolve=>{finish=()=>resolve({saved:true});}));await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});h.rerender({...h.props,epoch:1,world:{id:3}});await act(async()=>{finish();});expect(h.result.current.available).toBe(false);expect(h.props.busyRef.current).toBe(false);expect(h.result.current.message).not.toContain('自動保存しました');
 });
 test('unmount clears timer and clean world does not autosave',async()=>{const h=start();h.rerender({...h.props,dirty:false});await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='autosave_world')).toBe(false);h.unmount();await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='autosave_world')).toBe(false);});
-test('existing slot needs explicit replacement and manual world switch resets permission; successful auto restore continues',async()=>{
+test('existing valid slot starts automatically and world switches recheck before saving',async()=>{
  vi.useFakeTimers();vi.mocked(invoke).mockImplementation(async command=>command==='autosave_status'?{available:true}:{saved:true});
- const props={slotId:"test-slot",ready:true,dirty:true,world:{id:1},epoch:0,restoredEpoch:-1,busyRef:{current:false},setBusy:vi.fn()};const h=renderHook(p=>useAutosave(p),{initialProps:props});
- await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(h.result.current.permission).toBe('blocked');expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='autosave_world')).toBe(false);
- await act(async()=>{await h.result.current.allowReplacement();});await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='autosave_world')).toHaveLength(1);
- h.rerender({...props,epoch:1,world:{id:2}});await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(h.result.current.permission).toBe('blocked');expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='autosave_world')).toHaveLength(1);
- h.rerender({...props,epoch:2,restoredEpoch:2,world:{id:3}});await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(h.result.current.permission).toBe('allowed');expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='autosave_world')).toHaveLength(2);
+ const props={slotId:"test-slot",ready:true,dirty:true,world:{id:1},epoch:0,busyRef:{current:false},setBusy:vi.fn()};const h=renderHook(p=>useAutosave(p),{initialProps:props});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(h.result.current.permission).toBe('allowed');expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='autosave_world')).toHaveLength(1);
+ h.rerender({...props,epoch:1,world:{id:2}});await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='autosave_world')).toHaveLength(2);
 });
 test('unknown or failed status never writes; retry handles absence and ignores stale checks',async()=>{
  vi.useFakeTimers();let finish:(v:unknown)=>void=()=>{};vi.mocked(invoke).mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
@@ -41,13 +39,6 @@ test('conflicting autosave stays stopped until an explicit recheck; a missing sl
  const before=writes();await act(async()=>{await vi.advanceTimersByTimeAsync(600000);});expect(writes()).toBe(before);
  await act(async()=>{h.result.current.retryStatus();});expect(h.result.current.permission).toBe('allowed');
  await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(writes()).toBe(before+1);
-});
-test('replacement authorization failure never starts writing and releases busy state',async()=>{
- const h=start();await act(async()=>{});
- vi.mocked(invoke).mockImplementation(async command=>{if(command==='autosave_status')return {available:true};throw Error('changed after status');});
- await act(async()=>{h.result.current.retryStatus();});expect(h.result.current.permission).toBe('blocked');
- await act(async()=>{await h.result.current.allowReplacement();});expect(h.result.current.permission).toBe('failed');expect(h.props.busyRef.current).toBe(false);
- await act(async()=>{await vi.advanceTimersByTimeAsync(600000);});expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='autosave_world')).toBe(false);
 });
 test('a delayed old status response cannot revoke a restored epoch grant',async()=>{
  vi.useFakeTimers();let finish:(v:unknown)=>void=()=>{};
