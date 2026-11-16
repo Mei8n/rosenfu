@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {findTileBoundaryContinuations as find,type TileRoadLine} from './ofmBoundaryContinuations';
+import {findTileBoundaryContinuations as find,continuousSeparation,type TileRoadLine} from './ofmBoundaryContinuations';
 const seam=139.76806640625;
 function line(id:string,x=14552,offset=0):TileRoadLine{return {id,revision:'same',z:14,x,y:6451,class:'minor',coordinates:[[seam-.0003,35.684+offset],[seam+.0003,35.684+offset]]};}
 describe('tile boundary geometric candidates',()=>{
@@ -20,3 +20,7 @@ describe('tile boundary geometric candidates',()=>{
 });
 
 it('rejects unknown raw oneway without treating it as absent',()=>{for(const oneway of ['yes','no','unknown',NaN,Infinity,2])expect(find([{...line('a'),oneway},{...line('b',14553),oneway}]).pairs).toHaveLength(0);});
+
+it('bounds a source interior peak missed by endpoint sampling',()=>{expect(continuousSeparation([[0,0],[2,0]],[[0,0],[1,2],[2,0]])).toBeGreaterThan(.8);});
+it('can refine a bend without accepting an unproved sample estimate',()=>{expect(continuousSeparation([[0,0],[2,0]],[[0,.3],[1,.4],[2,.3]])).toBeLessThanOrEqual(.8);});
+it('exhausted continuous-distance budget fails conservatively',()=>{const budget={remaining:0};expect(continuousSeparation([[0,0],[2,0]],[[0,0],[2,0]],budget)).toBe(Infinity);});

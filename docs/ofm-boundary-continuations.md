@@ -10,7 +10,7 @@ LineString must traverse the complete 20 m strip centered on their shared edge.
 MultiLine components have separate IDs. Matching requires equal road class,
 subclass, structure, layer, level and direction metadata; bridges, tunnels and
 nonzero/unknown structures are excluded. Both clipped lines must have compatible
-tangents and <=0.8 m sampled bidirectional separation and be mutually unique.
+tangents and <=0.8 m continuous bidirectional separation upper bound and be mutually unique.
 Corners, loops, boundary-parallel segments, point-only contact and ambiguous
 parallel candidates are rejected. Nonzero one-way lines cannot reverse their
 source digitization direction. All quantities are conservative game thresholds,
@@ -39,3 +39,10 @@ Bridge/motorway/trunk cases are not accepted by this helper.
 Reference: https://mapbox.github.io/vector-tile-spec/ (buffer geometry may extend
 past extent; no portable inter-tile topology guarantee). No third-party code is
 copied. Raw tile and OSM study artifacts are not committed to this repository.
+
+Continuous distance validation uses convex point-to-segment distance: for each
+source segment, min over target segments of max(endpoint distances) is a valid
+upper bound over the whole source segment. If too loose, bisect source segments
+up to depth 8; acceptance requires the bound, not sampled values, to pass. A shared
+one-million target-segment operation budget fails with no partial candidates.
+An interior-peak regression rejects an endpoint-only false positive.
