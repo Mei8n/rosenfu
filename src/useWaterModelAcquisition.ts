@@ -21,7 +21,9 @@ function waterCall<T>(call:typeof invoke,command:string,args:Parameters<typeof i
  signal.throwIfAborted();
  if(pendingIpc>=MAX_PENDING_IPC)return Promise.reject(Error('水域IPCの完了待ちが上限です。'));
  pendingIpc++;
- const native=Promise.resolve().then(()=>{signal.throwIfAborted();return call<T>(command,args);});
+ let native:Promise<T>;
+ // Preserve the established dispatch order; wrap synchronous transport errors too.
+ try{native=Promise.resolve(call<T>(command,args));}catch(error){native=Promise.reject(error);}
  return new Promise<T>((resolve,reject)=>{
   const abort=()=>reject(signal.reason??new Error('水域取得を中止しました。'));
   signal.addEventListener('abort',abort,{once:true});

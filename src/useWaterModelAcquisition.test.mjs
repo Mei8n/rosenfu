@@ -65,3 +65,13 @@ test('late timed-out install notifies only a current hook and requires a fresh n
  vi.resetModules();const {acquireWaterMasks,useWaterModelAcquisition}=await import('./useWaterModelAcquisition');const {data,pin}=entry('fuji');let finishInstall;const oldInstalled=vi.fn(),oldCall=vi.fn(command=>command==='water_mask_requests'?Promise.resolve([pin]):new Promise(resolve=>finishInstall=resolve));const controller=new AbortController();const old=acquireWaterMasks(controller.signal,oldInstalled,oldCall,async()=>new Response(data));await waitFor(()=>expect(finishInstall).toBeTruthy());controller.abort(Error('deadline'));await expect(old).rejects.toThrow('deadline');
  vi.mocked(invoke).mockResolvedValue([]);const {result,unmount}=renderHook(()=>useWaterModelAcquisition(true,'current-world'));await waitFor(()=>expect(result.current).toBe(1));const before=vi.mocked(invoke).mock.calls.length;await act(async()=>finishInstall());await waitFor(()=>expect(vi.mocked(invoke).mock.calls.length).toBeGreaterThan(before));await waitFor(()=>expect(result.current).toBe(2));expect(oldInstalled).not.toHaveBeenCalled();expect(vi.mocked(invoke).mock.calls.every(([c])=>c==='water_mask_requests')).toBe(true);unmount();
 });
+
+test('native request dispatch stays synchronous while synchronous errors release pending capacity',async()=>{
+ vi.resetModules();const {acquireWaterMasks}=await import('./useWaterModelAcquisition');const order=[];
+ const call=vi.fn(()=>{order.push('water_mask_requests');return Promise.resolve([]);});
+ const pending=acquireWaterMasks(new AbortController().signal,()=>{},call);order.push('after-call');
+ expect(order).toEqual(['water_mask_requests','after-call']);expect(await pending).toBe(true);
+ const broken=vi.fn(()=>{throw Error('transport');});
+ for(let i=0;i<10;i++)await expect(acquireWaterMasks(new AbortController().signal,()=>{},broken)).rejects.toThrow('transport');
+ expect(broken).toHaveBeenCalledTimes(10);
+});
