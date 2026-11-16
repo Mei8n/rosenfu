@@ -102,7 +102,10 @@ impl WorldEditor {
         candidate.active_slot_id = Some(slot.id);
         candidate.manual_version = Some(version);
         candidate.manual_repair_allowed = false;
-        candidate.pending_manual_replacement = None;
+        #[cfg(test)]
+        {
+            candidate.pending_manual_replacement = None;
+        }
         candidate.autosave_version = None;
         candidate.observed_autosave = None;
         candidate.autosave_blocked = false;
