@@ -108,3 +108,124 @@ PBF fixture tests run with the pinned optional dependency; stdlib-only tests ski
 Publishing requires copying the completed pack to public/road-data, setting its exact
 manifest SHA in src/roadPackRelease.ts, retaining ODbL notices and running the real-cell
 reader tests. Never promote partial output or change a manifest without changing its pin.
+
+## National source extraction (operator-only, not an enabled app release)
+
+`national.py` processes up to eight **same-timestamp** Geofabrik Japan PBF regions
+sequentially using `osmium==4.3.2`, `shapely==2.1.2`, a file-backed node-location
+index and SQLite (16 MiB page cache). It does not download or copy TrainsWorld code.
+
+```sh
+python national.py sources.json /absolute/output/not-yet-existing
+```
+
+`sources.json` is a list of `{ "name": "kanto", "pbf": "/.../kanto-261114.osm.pbf",
+"poly": "/.../kanto.poly", "sha256": "<verified PBF SHA-256>",
+"url": "https://download.geofabrik.de/asia/japan/kanto-261114.osm.pbf" }`.
+Retain the provider receipt and matching source clipping polygon. Files are hash
+verified before extraction. A current `.poly` alone is **not** evidence of a
+historical clip boundary; the operator must establish the polygon applies to the
+pinned PBF before distributing coverage claims.
+
+The atomic output contains `index.json` (`rosenfu-road-pack-index`, version 1) and
+`packs/<region>/<integer-longitude>_<integer-latitude>/manifest.json`. Each shard
+contains at most 2,500 existing v1 `.02°` road cells. The index records source PBF
+URL/hash/timestamp, polygon hash, shard path/hash/bytes/bounds and certified-cell
+counts. Shard `source.format` is `osm-pbf`; `xml_sha256` is deliberately absent,
+because this pipeline does not produce XML. The PBF hash is `file_sha256` and
+`parent_pbf_sha256`. `coverage_geojson` has its own canonical JSON hash; original
+`.poly` bytes are independently identified by `poly_sha256`.
+
+Only cells wholly covered by the source clipping polygon are emitted, including
+valid empty-road cells. Holes are subtracted. Partially intersecting regional
+boundary cells are counted as **unknown and omitted**, not claimed empty or land.
+A nationwide source inventory is not nationwide complete runtime coverage.
+Consumers must verify the pinned index, shard manifests and every cell. A shard's
+bounding rectangle is a locator, **not coverage**. Conflicting overlapping source
+ways must be rejected by consumers, not silently replaced. All sources must use
+exactly the same OSM replication timestamp. The source manifest records selected
+OSM-road extraction completeness, not real-world road completeness.
+
+Whole original node IDs, way IDs, vertex order and structure tags are retained.
+No smoothing, missing-node inference, generalized-vector-tile completeness claim,
+or map-background redistribution is performed. Road filtering matches the Tokyo
+pack; excluded classes such as footways are not counted as vehicle roads.
+
+Budgets are explicit: 2 GiB PBF/source, 200M source nodes/source, 10M ways/source,
+300k certified cells/source, 10k nodes/way, 10k ways and 100k coordinates/cell,
+5 MiB/cell or manifest, 12 GiB total output and 3 GiB free-disk floor. The full
+national output is never held in RAM. Node indexes and SQLite spill to disk;
+source processing removes their temporary indexes before starting the next source.
+Any missing node, hash/version mismatch, invalid polygon, limit breach or exhausted
+disk aborts without publishing an index/output directory. Nothing is truncated.
+Actual national output size, source polygon provenance, cold-cache load, source
+boundary behavior and hosting limits must be measured before enabling a release.
+
+Data attribution: © OpenStreetMap contributors, ODbL 1.0, via Geofabrik.
+Keep the original data's attribution/license and derived-database obligations;
+this generator does not grant a new license. Hosting/distribution is a separate
+step and is not performed by the generator.
+
+Tests: `python -m unittest -v test_national` (optional pinned dependencies required).
+
+**Current provenance gate:** the national index and each shard source explicitly
+carry `coverage_verified: false` and `polygon_snapshot_match: "unverified"`.
+`certified_cells` counts geometric containment in the supplied polygon only; it is
+not permission to certify absence of roads or permit construction. Current `.poly`
+downloads do not establish that a historical PBF used the same clipping geometry.
+The data may serve reference display/following, but construction coverage must
+remain UNKNOWN until that separate provenance gap is resolved and reviewed.
+
+### Boundary revision evidence (2026-11-16 investigation)
+
+The official [Geofabrik polygon history](https://github.com/geofabrik/polygons_download.geofabrik.de)
+permits inspecting changes, but its README explains that download-server polygons
+are intersections of regional and parent polygons, not the raw regional files.
+At inspected tree `c26b05e77065591be18f83cbb38622468afd8af5`, the most recent
+Kanto polygon author date was 2017-11-09, Japan 2022-03-16, Asia 2022-09-14.
+The repository imported that history in 2025. These dates are evidence of stability,
+not proof of the exact extraction configuration used for a particular PBF.
+
+`kanto-261114.poly` returned HTTP 404. The official Kanto listing associated
+`kanto-261114.osm.pbf` and the undated `kanto.poly` with the same displayed
+2026-11-15 01:49 time, but does not publish a PBF-to-polygon hash binding.
+Intersecting the pinned repository region/Japan/Asia polygons did **not** produce
+geometrically identical boundaries to the downloaded polygons: Kanto symmetric
+difference 0.0005398823 square degrees, Shikoku 0.0001223265. Rounding is a
+possible explanation, not an established fact. No tolerance is used to turn this
+into a coverage guarantee. Actual generated packs remain `coverage_verified:false`.
+Even an exact clipping match would only certify extraction of selected OSM road
+classes from that snapshot, not completeness of roads in the real world.
+
+`generate_contract_fixture.py` creates an invented four-cell PBF and polygon
+pair together, then explicitly marks **only that synthetic fixture** verified.
+`src/nationalRoadRepository.test.ts` loads its real generator output through the
+production index/shard/cell reader and checks source identity, revision and hashes.
+It must not be used as a certification tool for real Geofabrik data.
+
+### Independent disk budgets
+
+The generator reserves at least 3 GiB globally (`min_free_bytes`) and caps its own
+allocated filesystem blocks at 4 GiB (`work_bytes`) by default. Do not implement
+the latter by subtracting current free space from startup free space: unrelated
+builds would be charged to this generator. Accounting includes output files,
+output directories and the active SQLite/node-index working directory, but not
+input PBFs or other jobs. Immutable output files are statted once; only their
+small directory chain and the few mutable index files are refreshed. Thus emitting
+400,000 cells does not repeatedly scan 400,000 prior files. Sparse-file accounting
+uses Linux `st_blocks * 512`, not logical size. Platforms without `st_blocks` use
+logical bytes as a fallback; exact allocated-block accounting is supported only
+where `st_blocks` is available. The guard runs at bounded extraction
+checkpoints and before/after output writes; it detects an overage and aborts
+without publication rather than providing an OS-enforced instantaneous quota.
+Node indexes are released after extraction and before cell emission.
+
+PBF extraction runs in a short-lived `spawn` process. In osmium 4.3.2 a named
+`sparse_file_array` file descriptor can remain open even after reader closure,
+cache clear, reference deletion and Python garbage collection. Waiting for the
+child to exit makes descriptor release explicit before removing `nodes.idx`,
+including on Windows. This is not a cleanup-error suppression. SQLite and the
+node cache remain inside the same own-work budget; no source data is sent elsewhere.
+Extraction/shutdown has a two-hour default deadline; error, timeout or parent
+interruption terminates and joins the child before temporary-directory cleanup.
+No index is published on failure.

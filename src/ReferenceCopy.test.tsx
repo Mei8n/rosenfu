@@ -10,6 +10,8 @@ import {App} from './App';
 import {invoke} from '@tauri-apps/api/core';
 import {DEFAULT_CAMERA,project} from './map';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
+// Reference-copy geometry tests do not depend on live road acquisition.
+vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'unavailable fixture',load:async()=>{throw Error('road reference unavailable in copy fixture');}})}));
 vi.mock('./referenceGraphBundle',()=>({readReferenceGraphBundle:vi.fn()}));
 afterEach(()=>{cleanup();vi.resetAllMocks();vi.unstubAllGlobals();localStorage.clear();});
 function fixture(){const graph=syntheticReferenceGraph();graph.edges[1].osmWayId='101';graph.edges[1].segmentIndex=1;graph.nodes[2].latitude=35.0005;return {graph,graphSha256:'a'.repeat(64),sourceSha256:'b'.repeat(64),source:{source:'synthetic',sourceDate:null,license:'ODbL-1.0',attribution:'© OpenStreetMap contributors'}};}
@@ -82,7 +84,10 @@ test('reference following requires an explicit endpoint target and sends source 
  await pick({...start,longitude:start.longitude+.00002},'0');await pick(end,'1');
  const method=copyPanel().getByLabelText('敷設方法') as HTMLSelectElement;
  expect(method.value).toBe('');expect(method.options).toHaveLength(3);
+ expect(method.options[1].textContent).toBe('existing（候補1）の終点から延伸');expect(method.options[2].textContent).toBe('existing（候補2）の終点から延伸');
+ expect(method.textContent).not.toContain('11');
  fireEvent.change(method,{target:{value:'11:end'}});
+ expect(view.container.querySelectorAll('.alignment-selected')).toHaveLength(1);
  fireEvent.click(copyPanel().getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));
  fireEvent.click(copyPanel().getByRole('button',{name:'選択中の計画に追加',hidden:true}));await waitFor(()=>expect(copyPanel().queryByRole('button',{name:'選択中の計画に追加',hidden:true})).toBeNull());fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expect.objectContaining({reference:undefined}),expect.objectContaining({extension:{alignmentId:'11',endpoint:'end'},reference:expect.objectContaining({sourceRecord:expect.objectContaining({graph_sha256:'a'.repeat(64)})})})]})));

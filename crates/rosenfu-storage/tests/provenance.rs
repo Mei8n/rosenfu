@@ -42,6 +42,7 @@ fn provenance_world() -> World {
         start_point_index: 0,
         end_point_index: 1,
         source: AlignmentProvenanceInput {
+            tile_fragment_id: None,
             network_path: vec![],
             source_key: key,
             method: ProvenanceMethod::OsmSegmentCopyV1,
@@ -124,7 +125,7 @@ fn versioned_network_chain_provenance_roundtrips_without_fabricated_way() {
     assert_eq!(decode(&bytes).unwrap(), network_world);
     let old = String::from_utf8(bytes)
         .unwrap()
-        .replace("\"schema_version\": 22", "\"schema_version\": 21");
+        .replace("\"schema_version\": 24", "\"schema_version\": 23");
     assert!(decode(old.as_bytes()).is_err());
 }
 
@@ -181,4 +182,20 @@ fn unbuilt_network_plan_roundtrips_then_builds_exact_geometry_and_source() {
     let mut invalid = saved.snapshot().clone();
     invalid.construction_plans.as_mut().unwrap().parked_paths[0].line[0].latitude += 0.001;
     assert!(World::new(invalid).is_err());
+}
+
+#[test]
+fn ofm_tile_provenance_survives_save_without_fake_osm_way_id() {
+    let mut draft = provenance_world().snapshot().clone();
+    let source = &mut draft.source_records[0];
+    source.dataset_id = "ofm-tiles/20261101_080013_pt/14/14551/6465".into();
+    source.revision = "20261101_080013_pt".into();
+    source.conversion_format_version = 3;
+    let provenance = &mut draft.alignment_provenance[0].source;
+    provenance.method = ProvenanceMethod::OfmTileSliceV1;
+    provenance.mode = ReferenceMode::Road;
+    provenance.osm_way_id.clear();
+    provenance.tile_fragment_id = Some("ofm:20261101_080013_pt:14:14551:6465:12:0".into());
+    let world = World::new(draft).unwrap();
+    assert_eq!(decode(&encode(&world).unwrap()).unwrap(), world);
 }

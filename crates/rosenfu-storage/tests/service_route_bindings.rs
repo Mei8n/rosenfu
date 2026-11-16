@@ -57,7 +57,7 @@ fn current_schema_roundtrips_explicit_binding() {
     w.set_service_route_binding(c, s, ServiceRouteBindingKind::Route { route_id: r })
         .unwrap();
     let encoded = encode(&w).unwrap();
-    assert_eq!(SCHEMA_VERSION, 22);
+    assert_eq!(SCHEMA_VERSION, 24);
     assert_eq!(decode(&encoded).unwrap(), w);
 }
 #[test]

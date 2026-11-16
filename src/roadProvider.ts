@@ -1,18 +1,11 @@
-import {createRoadRepository,type RoadSnapshot} from './automaticRoadData';
-import {createRoadPackRepository} from './roadPackRepository';
-import {ROAD_PACK_RELEASE} from './roadPackRelease';
+import {createOpenFreeMapRoadRepository} from './openFreeMapRoadData';
+import type {RoadSnapshot} from './automaticRoadData';
 import type {GraphBounds} from './referenceGraph';
 
 export type RoadProvider={name:string;load:(bounds:GraphBounds)=>Promise<RoadSnapshot>};
-/** A release selects exactly one provider. Missing or invalid pack coverage must
- * remain unavailable; it never causes a request to a different public service. */
+/** Runtime roads use the provider's current bounded vector tiles. Archived pack
+ * generators remain available for research, but are not a silent fallback. */
 export function createRoadProvider():RoadProvider{
- if(ROAD_PACK_RELEASE!==null){
-  const release=ROAD_PACK_RELEASE;
-  if(!release.name.trim()||release.name.length>200)throw Error('道路パックの提供名が不正です。');
-  const repository=createRoadPackRepository(new URL('/road-data/',globalThis.location.origin),release.manifestSha256);
-  return {name:release.name,load:bounds=>repository.load(bounds)};
- }
- const repository=createRoadRepository();
- return {name:'OpenStreetMap / Overpass',load:bounds=>repository.load(bounds)};
+ const repository=createOpenFreeMapRoadRepository();
+ return {name:'OpenFreeMap / OpenStreetMap',load:bounds=>repository.load(bounds)};
 }

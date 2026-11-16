@@ -5,6 +5,8 @@ import {afterEach,beforeEach,expect,test,vi} from 'vitest';
 import {useAutomaticRail} from './useAutomaticRail';
 import {App} from './App';
 import {invoke} from '@tauri-apps/api/core';
+// These are rail interaction tests; road transport has separate acceptance tests.
+vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'unavailable test roads',load:async()=>{throw Error('road fixture unavailable');}})}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
 import type {RailRequest,RailResponse} from './realRailProvider';
 const source={key:'a'.repeat(64)+':'+ 'b'.repeat(64),dataset_id:'trainsworld-realgraph-jp',revision:'2026-11-13',graph_sha256:'a'.repeat(64),source_sha256:'b'.repeat(64),source:'https://data.anita.garden/trainworld/2026-11-13/realgraph/jp.rgr',source_date:null,license:'ODbL-1.0',attribution:'© OpenStreetMap contributors',conversion_format_version:2};
@@ -39,7 +41,7 @@ test('App ordinary save preserves selected rail route; adding and building uses 
  const preview=view.container.querySelector('.reference-copy-preview')?.getAttribute('d');expect(preview).toBeTruthy();
  fireEvent.click(screen.getByText('保存',{selector:'button'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='save_world')).toBe(true));await screen.findByText(/選択中の参照候補は計画に追加するまで保存されません/);
  expect(worker.terminated).toBe(false);expect(FakeWorker.instances).toHaveLength(1);expect(view.container.querySelector('.reference-copy-preview')?.getAttribute('d')).toBe(preview);
- fireEvent.click(screen.getByLabelText('形状・出典を確認し、ゲーム内の敷設計画に追加します'));fireEvent.click(screen.getByRole('button',{name:'選択中の計画に追加'}));await waitFor(()=>expect(screen.queryByRole('button',{name:'選択中の計画に追加'})).toBeNull());
+ fireEvent.click(screen.getByLabelText('形状を確認した'));fireEvent.click(screen.getByRole('button',{name:'選択中の計画に追加'}));await waitFor(()=>expect(screen.queryByRole('button',{name:'選択中の計画に追加'})).toBeNull());
  fireEvent.click(screen.getByRole('button',{name:'実在の路線網に合わせる'}));expect(view.container.querySelectorAll('.automatic-rail-reference')).toHaveLength(0);expect(screen.getByRole('link',{name:'© OpenStreetMap contributors'}).closest('details')).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='build_plan')).toBe(true));
  const payload=vi.mocked(invoke).mock.calls.find(([command])=>command==='build_plan')![1] as {alignments:{points:unknown;reference:{provenance:{network_path:unknown}}}[]};expect(payload.alignments[0].points).toEqual(route.points);expect(payload.alignments[0].reference.provenance.network_path).toEqual(route.spans);
