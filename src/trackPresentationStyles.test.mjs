@@ -9,3 +9,8 @@ test('built, plan, candidate, selected and invalid states remain visually distin
  expect(styles).toMatch(/\.workbench \.draft-path\.invalid-candidate \{[^}]*stroke:#c43d45/);
  expect(styles).toMatch(/\.workbench \.draft-path\.track-explicit-selection \{[^}]*stroke:#c17c0b/);
 });
+
+test('track casings stop at endpoints without cutting the preceding rail, while rails retain round ends',()=>{
+ expect(styles).toMatch(/\.workbench \.rail-casing \{[^}]*stroke-linecap:butt/);
+ expect(styles).toMatch(/\.alignment-path \{[^}]*stroke-linecap: round/);
+});
