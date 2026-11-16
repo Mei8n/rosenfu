@@ -478,6 +478,40 @@ impl WorldEditor {
             pending_manual_replacement: None,
         }
     }
+    pub fn enable_national_water(&mut self) -> Result<(), String> {
+        self.water_model.enable_national()
+    }
+    pub fn national_water_enabled(&self) -> bool {
+        self.water_model.national_enabled()
+    }
+    pub fn missing_water_zones(&self, bounds: [f64; 4]) -> Result<Vec<String>, String> {
+        // Existing connected track can be validated far beyond a newly edited endpoint.
+        // Query each existing segment, not one country-spanning world bounding box.
+        let mut ids: std::collections::BTreeSet<String> = self
+            .water_model
+            .missing_zones(bounds)?
+            .into_iter()
+            .collect();
+        for line in &self.world.snapshot().alignments {
+            for pair in line.points.windows(2) {
+                let a = pair[0];
+                let b = pair[1];
+                ids.extend(self.water_model.missing_zones([
+                    a.longitude.min(b.longitude),
+                    a.latitude.min(b.latitude),
+                    a.longitude.max(b.longitude),
+                    a.latitude.max(b.latitude),
+                ])?);
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
+    pub fn install_water_zone(
+        &mut self,
+        zone: std::sync::Arc<rosenfu_core::water_zone::WaterZone>,
+    ) -> Result<(), String> {
+        self.water_model.install_zone(zone)
+    }
     pub fn missing_water_masks(&self) -> Vec<rosenfu_core::world::WaterMaskRequest> {
         self.water_model.missing_requests()
     }
@@ -2169,6 +2203,126 @@ mod tests {
         let mut editor = WorldEditor::new();
         editor.rename_company(name.into()).unwrap();
         editor
+    }
+    #[test]
+    fn national_water_requests_include_remote_existing_tracks_after_load_and_keep_provider_on_new_world(
+    ) {
+        use rosenfu_core::water_zone::registry;
+        let mut editor = WorldEditor::new();
+        let points = vec![
+            GeoPoint {
+                longitude: 141.350,
+                latitude: 43.068,
+            },
+            GeoPoint {
+                longitude: 141.351,
+                latitude: 43.069,
+            },
+        ];
+        editor
+            .world
+            .build_alignment(editor.company, "remote".into(), points.clone())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        editor.save(&path).unwrap();
+        let mut loaded = WorldEditor::new();
+        loaded.enable_national_water().unwrap();
+        loaded.load(&path).unwrap();
+        assert!(loaded.national_water_enabled());
+        let local = [139.75, 35.67, 139.76, 35.68];
+        let mut expected: std::collections::BTreeSet<String> = registry::intersecting(local)
+            .unwrap()
+            .iter()
+            .map(|p| p.zone_id.clone())
+            .collect();
+        expected.extend(
+            registry::intersecting([141.350, 43.068, 141.351, 43.069])
+                .unwrap()
+                .iter()
+                .map(|p| p.zone_id.clone()),
+        );
+        assert_eq!(
+            loaded.missing_water_zones(local).unwrap(),
+            expected.into_iter().collect::<Vec<_>>()
+        );
+        let before = loaded.snapshot();
+        // No implicit empty mask can make a loaded region buildable before acquisition.
+        assert!(loaded
+            .build_alignment(
+                "missing water".into(),
+                vec![
+                    GeoPoint {
+                        longitude: 139.75,
+                        latitude: 35.67
+                    },
+                    GeoPoint {
+                        longitude: 139.751,
+                        latitude: 35.67
+                    }
+                ]
+            )
+            .is_err());
+        assert_eq!(loaded.snapshot(), before);
+        loaded.create_new_world("new".into()).unwrap();
+        assert!(loaded.national_water_enabled());
+        assert_eq!(
+            loaded.missing_water_zones(local).unwrap(),
+            registry::intersecting(local)
+                .unwrap()
+                .iter()
+                .map(|p| p.zone_id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    #[ignore = "requires local water-only evidence, not redistributed"]
+    fn external_national_water_build_save_reload_uses_same_fixed_model() {
+        let root = std::path::PathBuf::from(std::env::var("WATER_ZONE_EVIDENCE").unwrap());
+        let mut editor = WorldEditor::new();
+        editor.enable_national_water().unwrap();
+        for pin in rosenfu_core::water_zone::registry::pins().unwrap() {
+            let bytes = std::fs::read(root.join(format!("{}.water", pin.zone_id))).unwrap();
+            editor
+                .install_water_zone(std::sync::Arc::new(
+                    rosenfu_core::water_zone::WaterZone::decode(pin.clone(), &bytes).unwrap(),
+                ))
+                .unwrap();
+        }
+        editor.rename_company("national test".into()).unwrap();
+        editor
+            .build_alignment(
+                "Tokyo dry model".into(),
+                vec![
+                    GeoPoint {
+                        longitude: 139.7671,
+                        latitude: 35.6812,
+                    },
+                    GeoPoint {
+                        longitude: 139.7673,
+                        latitude: 35.6814,
+                    },
+                ],
+            )
+            .unwrap();
+        let expected = editor.snapshot();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        editor.save(&path).unwrap();
+        let mut loaded = WorldEditor::new();
+        loaded.enable_national_water().unwrap();
+        assert_eq!(loaded.load(&path).unwrap(), expected);
+        assert!(loaded.national_water_enabled());
+        assert!(!loaded
+            .missing_water_zones([139.767, 35.681, 139.768, 35.682])
+            .unwrap()
+            .is_empty());
+        // Acquired model data is session state, never silently embedded in schema 25.
+        assert!(!std::fs::read_to_string(path)
+            .unwrap()
+            .contains("2026-11-13"));
     }
     fn pending_token(editor: &mut WorldEditor, path: &Path) -> String {
         let result = editor.request_manual_save(path, None, None).unwrap();

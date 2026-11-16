@@ -75,3 +75,21 @@ test('native request dispatch stays synchronous while synchronous errors release
  for(let i=0;i<10;i++)await expect(acquireWaterMasks(new AbortController().signal,()=>{},broken)).rejects.toThrow('transport');
  expect(broken).toHaveBeenCalledTimes(10);
 });
+test('native zones use bounded native requests and never browser-fetch mixed packs',async()=>{
+ vi.resetModules();const {acquireWaterMasks}=await import('./useWaterModelAcquisition');const order=[];const call=vi.fn(async(command,args)=>{order.push([command,args]);return command==='water_mask_requests'?[{id:'tyo',native:true},{id:'osaka',native:true}]:undefined;});const fetcher=vi.fn();const installed=vi.fn();
+ expect(await acquireWaterMasks(new AbortController().signal,installed,call,fetcher,[139,35,140,36])).toBe(true);expect(fetcher).not.toHaveBeenCalled();expect(order).toEqual([['water_mask_requests',{bounds:[139,35,140,36]}],['acquire_water_zone',{id:'tyo'}],['acquire_water_zone',{id:'osaka'}]]);expect(installed).toHaveBeenCalledTimes(2);
+});
+
+test('native acquisition runs at most two transfers and cancellation never starts queued zones',async()=>{
+ vi.resetModules();const {acquireWaterMasks}=await import('./useWaterModelAcquisition');const resolvers=[];let active=0,max=0;
+ const call=vi.fn(command=>{if(command==='water_mask_requests')return Promise.resolve(['a','b','c','d'].map(id=>({id,native:true})));active++;max=Math.max(max,active);return new Promise(resolve=>resolvers.push(()=>{active--;resolve();}));});
+ const c=new AbortController(),installed=vi.fn();const run=acquireWaterMasks(c.signal,installed,call,vi.fn(),[139,35,140,36]);await waitFor(()=>expect(resolvers).toHaveLength(2));expect(max).toBe(2);c.abort(Error('cancel'));await expect(run).rejects.toThrow('cancel');for(const resolve of resolvers)resolve();await Promise.resolve();expect(call.mock.calls.filter(([command])=>command==='acquire_water_zone')).toHaveLength(2);expect(installed).not.toHaveBeenCalled();
+});
+
+test('rotated retries give later native zones an opportunity when the first pair fails',async()=>{
+ vi.resetModules();const {acquireWaterMasks}=await import('./useWaterModelAcquisition');const visited=[];const call=vi.fn(async(command,args)=>{if(command==='water_mask_requests')return ['a','b','c','d'].map(id=>({id,native:true}));visited.push(args.id);if(args.id==='a'||args.id==='b')throw Error('network');});const listed=vi.fn();
+ expect(await acquireWaterMasks(new AbortController().signal,vi.fn(),call,vi.fn(),[139,35,140,36],{offset:2,listed})).toBe(false);expect(visited.slice(0,2)).toEqual(['c','d']);expect(listed).toHaveBeenCalledWith(4);
+});
+test('successful partial native rounds continue beyond three rounds but remain bounded',async()=>{
+ vi.useFakeTimers();try{vi.resetModules();const {useWaterModelAcquisition}=await import('./useWaterModelAcquisition');let lists=0,installs=0;vi.mocked(invoke).mockImplementation(command=>{if(command==='water_mask_requests'){lists++;return Promise.resolve(lists<=4?[{id:'a',native:true},{id:'b',native:true}]:[]);}installs++;return installs%2?Promise.resolve():Promise.reject(Error('transient'));});const {result,unmount}=renderHook(()=>useWaterModelAcquisition(true,1,[139,35,140,36]));await act(async()=>{});await act(async()=>vi.advanceTimersByTimeAsync(120000));expect(lists).toBe(5);expect(result.current).toBeGreaterThan(3);unmount();}finally{vi.useRealTimers();}
+});

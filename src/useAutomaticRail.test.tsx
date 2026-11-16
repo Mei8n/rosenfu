@@ -47,12 +47,12 @@ test('App ordinary save preserves selected rail route; adding and building uses 
  const payload=vi.mocked(invoke).mock.calls.find(([command])=>command==='build_plan')![1] as {alignments:{points:unknown;reference:{provenance:{network_path:unknown}}}[]};expect(payload.alignments[0].points).toEqual(route.points);expect(payload.alignments[0].reference.provenance.network_path).toEqual(route.spans);
 });
 
-test.each([true,false])('App credits rendered source-derived built geometry, not orphan source records (%s)',async linked=>{
+test.each([true,false])('App retains water OSM attribution on sample background with or without derived rail (%s)',async linked=>{
  vi.useRealTimers();
  const points=[{latitude:35.67504,longitude:139.75},{latitude:35.676,longitude:139.751}];
  const world={next_id:'4',players:[{id:'1',name:'Player'}],companies:[{id:'2',owner:'1',name:'Railway'}],stations:[],tracks:[],routes:[],services:[],station_placements:[],source_records:[source],alignments:linked?[{id:'3',owner:'2',name:'Source rail',points,track_type:'normal',design_speed_kmh:120}]:[],alignment_provenance:linked?[{alignment_id:'3',start_point_index:0,end_point_index:1,source:{source_key:source.key,method:'rail_graph_route_v1',osm_way_id:'',mode:'rail',start_segment_index:0,end_segment_index:0,start_fraction:0,end_fraction:0,network_path:route.spans}}]:[]};
  vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'built-credit-test'}:command==='list_save_slots'?{active_slot_id:'test',slots:[]}:world);
  render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/built-credit-test/);
- const credits=screen.queryAllByRole('link',{name:'© OpenStreetMap contributors'});expect(credits).toHaveLength(linked?1:0);if(linked)expect(credits[0].closest('details')).toBeNull();
+ const credits=screen.queryAllByRole('link',{name:'© OpenStreetMap contributors'});expect(credits).toHaveLength(1);expect(credits[0].closest('details')).toBeNull();
  expect(FakeWorker.instances).toHaveLength(0);
 });

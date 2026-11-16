@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod session;
+mod water_zone_delivery;
 use rosenfu_core::world::{AlignmentId, GeoPoint, RouteId, ServiceId, StationId, WorldDraft};
 use session::WorldEditor;
 use std::{path::PathBuf, sync::Mutex};
@@ -67,13 +68,50 @@ fn stage_ofm_construction_plan(
 }
 #[tauri::command]
 fn water_mask_requests(
+    bounds: Option<[f64; 4]>,
     editor: State<'_, Mutex<WorldEditor>>,
-) -> Result<Vec<rosenfu_core::world::WaterMaskRequest>, String> {
-    Ok(editor
+) -> Result<Vec<serde_json::Value>, String> {
+    let editor = editor.lock().map_err(|_| "world state unavailable")?;
+    if editor.national_water_enabled() {
+        return match bounds {
+            Some(bounds) => Ok(editor
+                .missing_water_zones(bounds)?
+                .into_iter()
+                .map(|id| serde_json::json!({"id":id,"native":true}))
+                .collect()),
+            None => Ok(vec![]),
+        };
+    }
+    editor
+        .missing_water_masks()
+        .into_iter()
+        .map(|r| serde_json::to_value(r).map_err(|e| e.to_string()))
+        .collect()
+}
+#[tauri::command]
+async fn acquire_water_zone(
+    app: tauri::AppHandle,
+    delivery: State<'_, std::sync::Arc<water_zone_delivery::WaterZoneDelivery>>,
+    id: String,
+) -> Result<(), String> {
+    if id.len() > 32 {
+        return Err("未登録の水域データです。".into());
+    }
+    let delivery = delivery.inner().clone();
+    let zone = tauri::async_runtime::spawn_blocking(move || {
+        delivery.acquire(&id, &water_zone_delivery::Cancellation::default())
+    })
+    .await
+    .map_err(|_| "水域取得処理に失敗しました。")?
+    .map_err(|e| format!("水域データを取得できませんでした: {e}"))?;
+    let editor = app.state::<Mutex<WorldEditor>>();
+    let result = editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .missing_water_masks())
+        .install_water_zone(zone);
+    result
 }
+
 #[tauri::command]
 fn install_water_mask(
     editor: State<'_, Mutex<WorldEditor>>,
@@ -718,8 +756,20 @@ fn save_world(
         .save_active_slot(&save_root(&app)?, construction_plans, view_state)
 }
 fn main() {
+    let mut editor = WorldEditor::new();
+    editor
+        .enable_national_water()
+        .expect("invalid compiled water registry");
+    let delivery = water_zone_delivery::WaterZoneDelivery::new(
+        rosenfu_core::water_zone::registry::pins()
+            .expect("compiled water registry")
+            .to_vec(),
+        water_zone_delivery::HttpTransport::new().expect("water HTTPS client"),
+    )
+    .expect("water delivery registry");
     tauri::Builder::default()
-        .manage(Mutex::new(WorldEditor::new()))
+        .manage(std::sync::Arc::new(delivery))
+        .manage(Mutex::new(editor))
         .invoke_handler(tauri::generate_handler![
             engine_info,
             preview_service_path,
@@ -733,6 +783,7 @@ fn main() {
             ofm_world_token,
             stage_ofm_construction_plan,
             water_mask_requests,
+            acquire_water_zone,
             install_water_mask,
             preview_track_movement_geometry,
             preview_track_render_geometry,
