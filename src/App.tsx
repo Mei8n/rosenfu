@@ -758,6 +758,13 @@ export function App() {
     :trackDeleteUndo?.world===world&&trackDeleteUndo?.after===planFingerprint;
   const canRedoTrackDelete=!!trackDeleteRedo&&trackDeleteRedo.world===world&&trackDeleteRedo.plans===planFingerprint;
   useEffect(()=>{if(trackDeleteRedo&&!canRedoTrackDelete)setTrackDeleteRedo(null);},[trackDeleteRedo,canRedoTrackDelete]);
+  // Splitting built sections can remap extension/station targets in pending plans.
+  function restoreRemappedPlans(snapshot:World){
+    if(!snapshot.construction_plans)return planFingerprint;
+    const saved=savedPlanFingerprint;
+    restoreConstructionPlans(snapshot.construction_plans);setSavedPlanFingerprint(saved);
+    return constructionPlanFingerprint(snapshot.construction_plans);
+  }
   function undoTrackDelete(){
     if(!enabled||!trackDeleteUndo||!canUndoTrackDelete)return;
     const entry=trackDeleteUndo;
@@ -765,7 +772,7 @@ export function App() {
       const saved=savedPlanFingerprint;restoreConstructionPlans(entry.before);setSavedPlanFingerprint(saved);
       setTrackDeleteRedo({entry,world,plans:constructionPlanFingerprint(entry.before)});setTrackDeleteUndo(null);return;
     }
-    void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteRedo({entry,world:snapshot,plans:planFingerprint});setTrackDeleteUndo(null);});
+    void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteRedo({entry,world:snapshot,plans:restoreRemappedPlans(snapshot)});setTrackDeleteUndo(null);});
   }
   function redoTrackDelete(){
     if(!enabled||!trackDeleteRedo||!canRedoTrackDelete)return;
@@ -776,7 +783,7 @@ export function App() {
     }
     void perform(async()=>{
       const snapshot=await invoke<World>(entry.command,entry.args);
-      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({...entry,world:snapshot});setTrackDeleteRedo(null);
+      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({...entry,world:snapshot,plans:restoreRemappedPlans(snapshot)});setTrackDeleteRedo(null);
     });
   }
   useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);setRangeTrackType(null);const selection=boxGesture.current;boxGesture.current=null;setSelectionBox(null);const svg=svgRef.current;if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);},[world,activeTool]);
@@ -796,7 +803,7 @@ export function App() {
   function updateRangeTrackType(){
     if(!enabled||unapplied||!rangeCount||rangeTrackType===null)return;
     const args={selections:rangeSelection,expectedAlignments:rangeSelection.map(row=>alignments.find(line=>line.id===row.alignmentId)!),constructionPlans,trackType:rangeTrackType};
-    void perform(async()=>{const snapshot=await invoke<World>("update_alignment_section_track_type",args);if(equalWorldSnapshots(snapshot,world))return;setWorld(snapshot);setDirty(true);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint,command:"update_alignment_section_track_type",args});});
+    void perform(async()=>{const snapshot=await invoke<World>("update_alignment_section_track_type",args);if(equalWorldSnapshots(snapshot,world))return;setWorld(snapshot);setDirty(true);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:restoreRemappedPlans(snapshot),command:"update_alignment_section_track_type",args});});
   }
   function updateRangeInfrastructure(){
     if(!enabled||unapplied||!rangeCount||(rangeTrackCount===null&&rangeLevel===null))return;
