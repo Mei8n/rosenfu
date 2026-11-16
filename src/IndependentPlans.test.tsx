@@ -205,12 +205,23 @@ test("completed plans do not reappear as empty plan switcher entries after savin
  for(const [x,y] of [[180,130],[230,130]])await settledMapClick(map,{clientX:x,clientY:y});
  fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));
  for(const [x,y] of [[320,200],[360,200]])await settledMapClick(map,{clientX:x,clientY:y});
+ // Background viewport reads and construction previews may interleave with
+ // mutations. Match replies by command, never let a read consume a build reply.
+ const original=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='build_alignment')return built;
+  if(command==='save_world')return {saved:true};
+  return original(command,args);
+ });
  for(let i=0;i<2;i++){
-  vi.mocked(invoke).mockResolvedValueOnce(built);
-  fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));
+  const buildButton=trackPanel().getByRole('button',{name:'計画を着工'}) as HTMLButtonElement;
+  await waitFor(()=>expect(buildButton.disabled).toBe(false));
+  fireEvent.click(buildButton);
+  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='build_alignment')).toHaveLength(i+1));
   await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
  }
- vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ expect(map.querySelectorAll('.draft-path')).toHaveLength(0);
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));
  await screen.findByText(/ワールドと未着工計画を保存しました/);
  const payload=vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:unknown};
  cleanup();await start({...built,construction_plans:payload.constructionPlans});
