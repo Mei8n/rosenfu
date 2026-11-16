@@ -23,7 +23,7 @@ import {currentBuiltHeightSelection,equalWorldSnapshots,builtAnchorHeight,BuiltA
 import {useConstructionPreview} from './useConstructionPreview';
 import {anchorHeights,changeAnchorHeight} from './anchorHeights';
 import {TrackGeometryLayer,useTrackRenderGeometry} from './TrackRenderGeometry';
-import {sharedServiceSections,serviceBandPaths} from './serviceMapAppearance';
+import {sharedServiceSections,serviceBandPaths,serviceRenderChains} from './serviceMapAppearance';
 import "./PlanBreakdown.css";
 import {ServiceAppearanceControls,ServiceBadge,initialServiceSymbol, type ServiceSymbolShape} from './ServiceAppearanceControls';
 import {JunctionPoints} from './JunctionPoints';
@@ -410,7 +410,7 @@ export function App() {
     return [placement.station_id,alignment?stationPolygon(alignment.points,placement.position,placement.length_m,placement.width_m):null];
   })),[world]);
   const routeVisual = useMemo(() => routeAppearance(world), [world]);
-  const serviceMapSections=useMemo(()=>sharedServiceSections(world),[world]);
+  const serviceMapSections=useMemo(()=>serviceRenderChains(sharedServiceSections(world),world?.alignment_connections??[]),[world]);
   const selectedAlignment = alignments.find((a) => a.id === alignmentId);
   const extensionPrevious=useCallback((extension:Extension|null)=>{
     const alignment=alignments.find(a=>a.id===extension?.alignmentId);
@@ -1885,10 +1885,10 @@ export function App() {
               </g>)}
               {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} lines={alignments} selectedId={referenceCopy.active?((manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id)??""):alignmentId}/>}
               <g className="route-assignment-overlays" pointerEvents="none">{alignments.flatMap(alignment=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
-              {(mainTab==="routes"||mainTab==="services")&&serviceMapSections.map((section,index)=><g key={section.alignmentId+":"+index} className="service-map-section" data-alignment-id={section.alignmentId} data-service-count={section.bands.length} pointerEvents="none">
+              {(mainTab==="routes"||mainTab==="services")&&serviceMapSections.map((section,index)=><g key={section.alignmentIds.join(":")+":"+index} className="service-map-section" data-alignment-id={section.alignmentIds[0]} data-service-count={section.bands.length} pointerEvents="none">
                 <title>{section.bands.map(b=>b.name).join(" / ")}</title>
-                <path d={drawPath(section.points)} fill="none" stroke="white" strokeWidth="10"/>
-                {serviceBandPaths(section.points.map(p=>project(p.latitude,p.longitude,camera)),section.bands).map(band=><path key={band.serviceId} data-service-id={band.serviceId} d={band.d} fill="none" stroke={band.color} strokeWidth={band.width}/>)}
+                <path d={drawPath(section.points)} fill="none" stroke="white" strokeWidth="10" strokeLinecap="butt" strokeLinejoin="round"/>
+                {serviceBandPaths(section.points.map(p=>project(p.latitude,p.longitude,camera)),section.bands).map(band=><path key={band.serviceId} data-service-id={band.serviceId} d={band.d} fill="none" stroke={band.color} strokeWidth={band.width} strokeLinecap="round" strokeLinejoin="round"/>)}
               </g>)}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {roadFollowing&&(roadDrawing.preview?.kind==='point'||roadDrawing.preview?.kind==='route')&&focusMarker(roadDrawing.preview.point,'anchor','road-snap-point')}
