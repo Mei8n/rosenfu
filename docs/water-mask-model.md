@@ -1,0 +1,36 @@
+# 水域マスクの取得とモデル分類
+
+`src/waterMaskModel.ts` は、水域専用 byte range の取得、細密行ランの復号、TWW1 世界マスクの復号、二層モデルの地点分類を行う。現時点でApp/session/IPCへ未接続であり、着工を許可・拒否する機能ではない。全国配信データの登録もしていない。
+
+## 原典との比較と利用条件
+
+参考にした公開原典は TrainsWorld commit `6b8ef91729e1e5812f3dcbaedd6c0a49fed6a84b`。コードを転用せず、公開データ形式と取得・分類方法を確認して独立実装した。
+
+- [osm_water.py](https://github.com/circularsquare/trainsworld/blob/6b8ef91729e1e5812f3dcbaedd6c0a49fed6a84b/trainworld/pipeline/osm_water.py) の細密水域はGeofabrik PBFの面とOSM海岸線由来海域。日本設定は25mセル。小河川等を狭幅除去で意図的に省略し、覆蓋・季節水域等を選別する。線の幅を推測して水面へ変換しない。
+- [world_water.py](https://github.com/circularsquare/trainsworld/blob/6b8ef91729e1e5812f3dcbaedd6c0a49fed6a84b/trainworld/pipeline/world_water.py) の粗密世界水域は海とNatural Earth大湖の1/60度セル。小河川の網羅性を保証しない。
+- [clock.worker.ts](https://github.com/circularsquare/trainsworld/blob/6b8ef91729e1e5812f3dcbaedd6c0a49fed6a84b/trainworld/app/src/workers/clock.worker.ts) のマスク近傍取得と候補再評価を参考にする。ただし404や配列欠落を成功扱いする経路は採用しない。
+- [NOTICE](https://github.com/circularsquare/trainsworld/blob/6b8ef91729e1e5812f3dcbaedd6c0a49fed6a84b/NOTICE.md) はコードAGPL-3.0とデータODbLを区別し、混在packの一部に追加制限も記載する。本変更はTWコード、都市pack、境界/人口データを収録・再配布しない。水域データ公開時には原典別の帰属・利用条件を維持する。
+
+## 読込契約
+
+細密入力は行境界u32と水域列ランu16のlittle-endian配列。格子は原点からの球面正距円筒座標、公開形式の半径6371008.8mを使用する。これは供給ラスタの座標変換であり、路線譜の線路距離や6m高さを変更しない。セルの東/北端は範囲外。寸法、有限値、緯経度範囲、配列長、行境界、ランの順序/重複/範囲を検証し、入力bufferとspecを内部コピーする。
+
+世界マスクはTWW1とu32寸法、各行のLEB128境界差分を検証する。幅/高さと1度あたりセル数の整合、正規LEB128、偶数境界、厳密な境界増加、末尾余剰を確認。最大16MiB、境界数400万、1度182セルまでに制限する。粗密世界マスクの非水域セルはモデル陸地へ昇格させない。
+
+`fetchWaterRange` はHTTPS URL・offset・length・期待SHA256を受け取り、正確な206/Content-Range、最大16MiBのstream長、SHA256を確認する。404、200へのRange無視、切詰め、過大body、hash不一致は例外。中断時はbody readerを取消し、古い結果を返さない。共有キャッシュや自動再試行はまだ実装していないので、道路側の転送状態に影響しない。
+
+## 分類契約
+
+- `model_water` / `model_land`: catalogで要求された細密格子が全て存在し、格子仕様と版が一致した地点。その解像度・選別規則でのモデル分類で、現実の未収録小河川がない証明ではない。使用した全source IDと最大セル幅を返す。
+- `unknown/fine_missing`: 必要格子の欠落、spec違い、格子照会のnull。不足を重複する別格子や粗密水域で隠さない。
+- `coarse_water`: 細密catalog範囲外で粗密マスクに水域がある。地上判定に使える精密境界の保証ではない。
+- `unknown/outside_fine`: 細密範囲外で粗密水域の根拠もない。陸地へ変換しない。
+- 重なった細密格子は水域側を採用する。同一地点で異なるrevisionの混合はエラー。catalogは1024格子まで。
+
+catalog自体の真正性・入力PBFと境界の版整合・地域抽出の完全性はこのデコーダでは証明しない。呼出側が認証済みmanifestとモデルの採用条件を用意する必要がある。任意の矩形と空ランを渡しただけで実世界の陸地を認定してはならない。現stageのcoverage=[]をこのAPIだけで昇格させない。
+
+## 接続前に残る作業
+
+実データ配信、認証済みcatalog、保存するモデル版/出典、Rustとの格子入力契約、線路に沿う水域区間の計算、6m Hermite高さ、30km超・環状/分岐・-2/-3免除の共通評価が必要。previewとbuildは同じ候補と固定マスク版を使い、build直前にも検証する。未取得は既存小ウィンドウへ理由を返し、道路の参考追従を水域取得失敗で停止させない。未評価を許可へ読み替えず、全面停止する未完成gateも導入しない。
+
+ローカル9試験・TypeScript型検査成功。境界、重複、欠落、版混合、壊れた行ラン、Range/hash/取消を検証した。実配信取得成功・WebView・建設拒否E2Eは未検証。2026-11-16のTW world.water取得試行はHTTP403で、空データとして扱っていない。
