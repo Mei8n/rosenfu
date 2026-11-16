@@ -23,21 +23,34 @@ fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInf
 }
 #[tauri::command]
 fn preview_track_movement_geometry(
+    editor: State<'_, Mutex<WorldEditor>>,
     world: WorldDraft,
 ) -> Result<Vec<rosenfu_core::world::TrackMovementGeometry>, String> {
-    rosenfu_core::world::World::new(world)
-        .map_err(|e| e.to_string())?
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .world_for_ui_preview(world)?
         .track_movement_geometries()
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
 fn preview_track_render_geometry(
+    editor: State<'_, Mutex<WorldEditor>>,
     world: WorldDraft,
 ) -> Result<rosenfu_core::world::TrackRenderGeometry, String> {
-    rosenfu_core::world::World::new(world)
-        .map_err(|e| e.to_string())?
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .world_for_ui_preview(world)?
         .track_render_geometry()
         .map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn ofm_world_token(editor: State<'_, Mutex<WorldEditor>>) -> Result<String, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .ofm_world_token()
 }
 #[tauri::command]
 fn world_snapshot(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
@@ -674,6 +687,7 @@ fn main() {
             preview_route_candidates,
             preview_route_membership,
             world_snapshot,
+            ofm_world_token,
             preview_track_movement_geometry,
             preview_track_render_geometry,
             add_station,

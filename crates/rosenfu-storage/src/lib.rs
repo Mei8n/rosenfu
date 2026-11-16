@@ -1,4 +1,6 @@
 //! Provisional alpha JSON storage. One authoritative writer per save path is required.
+mod evidence;
+use evidence::EvidenceEnvelope;
 use rosenfu_core::world::{World, WorldDraft, WorldError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -8,7 +10,7 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 24;
+pub const SCHEMA_VERSION: u64 = 25;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -78,6 +80,7 @@ struct SaveDocument {
     format: String,
     schema_version: u64,
     world: WorldDraft,
+    road_evidence: EvidenceEnvelope,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -166,7 +169,9 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
             return Err(StorageError::InvalidHeader);
         }
     }
-    let document: SaveDocument = serde_json::from_value(value)?;
+    let mut document: SaveDocument = serde_json::from_value(value)?;
+    let store = document.road_evidence.restore()?;
+    document.world.restore_road_evidence(store)?;
     let world = World::new(document.world)?;
     ensure_world_saveable(&world)?;
     Ok(world)
@@ -177,6 +182,7 @@ struct BorrowedSaveDocument<'a> {
     format: &'static str,
     schema_version: u64,
     world: &'a WorldDraft,
+    road_evidence: EvidenceEnvelope,
 }
 
 struct BoundedCounter {
@@ -202,6 +208,7 @@ pub fn ensure_world_saveable(world: &World) -> Result<(), StorageError> {
         format: FORMAT,
         schema_version: SCHEMA_VERSION,
         world: world.snapshot(),
+        road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
     };
     let mut counter = BoundedCounter { count: 0 };
     serde_json::to_writer_pretty(&mut counter, &document).map_err(|e| {
@@ -223,6 +230,7 @@ pub fn encode(world: &World) -> Result<Vec<u8>, StorageError> {
         format: FORMAT,
         schema_version: SCHEMA_VERSION,
         world: world.snapshot(),
+        road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
     };
     let mut bytes = serde_json::to_vec_pretty(&document)?;
     bytes.push(b'\n');

@@ -15,3 +15,6 @@ pub fn engine_info() -> EngineInfo {
 }
 
 pub mod world;
+
+/// Bounded, offline OpenFreeMap tile evidence decoding (not yet world storage).
+pub mod ofm_evidence;

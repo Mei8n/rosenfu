@@ -2,6 +2,8 @@
 #[path = "session/deletion.rs"]
 mod deletion;
 pub use deletion::AlignmentSectionSelection;
+#[path = "session/ofm.rs"]
+mod ofm;
 #[path = "session/save_slots.rs"]
 mod save_slots;
 use rosenfu_core::world::{
