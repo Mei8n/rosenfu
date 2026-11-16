@@ -49,17 +49,18 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
  let queue:Promise<unknown>=Promise.resolve();
  const cache=new Map<string,OpenFreeMapTileSnapshot>(),pending=new Map<string,Task>(),failures=new Map<string,number>();
  const cancelled=()=>new DOMException('道路取得を取り消しました。','AbortError');
- const check=(signal:AbortSignal)=>{if(signal.aborted)throw cancelled();};
+ const stopReason=(signal:AbortSignal)=>signal.reason instanceof DOMException&&signal.reason.name==='TimeoutError'?signal.reason:cancelled();
+ const check=(signal:AbortSignal)=>{if(signal.aborted)throw stopReason(signal);};
  // A load may stop waiting without cancelling work used by another load.
  async function wait<T>(promise:Promise<T>,signal:AbortSignal):Promise<T>{
   check(signal);let abort:()=>void=()=>{};
-  const stopped=new Promise<never>((_,reject)=>{abort=()=>reject(cancelled());signal.addEventListener('abort',abort,{once:true});});
+  const stopped=new Promise<never>((_,reject)=>{abort=()=>reject(stopReason(signal));signal.addEventListener('abort',abort,{once:true});});
   try{return await Promise.race([promise,stopped]);}finally{signal.removeEventListener('abort',abort);}
  }
  async function request(url:string,shared?:AbortSignal){
   const controller=new AbortController(),abort=()=>controller.abort();
   shared?.addEventListener('abort',abort,{once:true});if(shared?.aborted)controller.abort();
-  const timer=setTimeout(abort,OFM_LIMITS.timeout);
+  const timer=setTimeout(()=>controller.abort(new DOMException('道路データの通信が20秒で完了しませんでした。','TimeoutError')),OFM_LIMITS.timeout);
   try{
    check(controller.signal);
    const r=await fetcher(url,{signal:controller.signal,credentials:'omit',referrerPolicy:'no-referrer'});
@@ -70,7 +71,7 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
    try{for(;;){check(controller.signal);const {done,value}=await reader.read();check(controller.signal);if(done)break;size+=value.length;usedBytes+=value.length;if(size>OFM_LIMITS.bytes||usedBytes>OFM_LIMITS.sessionBytes){await reader.cancel();throw Error('道路データ取得容量上限です。');}chunks.push(value);}}
    finally{controller.signal.removeEventListener('abort',cancelReader);reader.releaseLock();}
    const result=new Uint8Array(size);let off=0;for(const c of chunks){result.set(c,off);off+=c.length;}return result;
-  }finally{clearTimeout(timer);shared?.removeEventListener('abort',abort);}
+  }catch(error){if(controller.signal.aborted)throw stopReason(controller.signal);throw error;}finally{clearTimeout(timer);shared?.removeEventListener('abort',abort);}
  }
  function metadata(){
   if(metadataController?.signal.aborted&&!metadataReady)template=undefined;
@@ -102,7 +103,7 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
  return {async load(bounds:GraphBounds,signal?:AbortSignal):Promise<OpenFreeMapRoadSnapshot>{
   const tiles=roadTilesOf(bounds),user=Symbol('road-consumer'),owned=new Set<Task>(),controller=new AbortController();
   const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
-  const timer=setTimeout(abort,25000);activeLoads++;
+  const timer=setTimeout(()=>controller.abort(new DOMException('道路取得が25秒で完了しませんでした。','TimeoutError')),25000);activeLoads++;
   try{
    check(controller.signal);const meta=await wait(metadata(),controller.signal);check(controller.signal);
    const snapshots=await wait(Promise.all(tiles.map(([x,y])=>acquire(x,y,meta,user,owned))),controller.signal);check(controller.signal);
