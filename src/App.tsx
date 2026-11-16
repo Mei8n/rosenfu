@@ -1,3 +1,4 @@
+import { EditingMapFrame } from "./EditingMapFrame";
 import {ServiceFromRoute} from './ServiceFromRoute';
 import {ServiceMapCreator} from './ServiceMapCreator';
 import {StationDirectory} from './StationDirectory';
@@ -1820,6 +1821,7 @@ export function App() {
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
             <div className="map-surface">
+            <EditingMapFrame enabled={status==="ready"&&!companySetupRequired} tab={mainTab} tool={activeTool} mapMode={mapMode} pickingStations={routeMapPick!==null}/>
             {trackRender.error&&<div role="status" className="field-error">ポイント形状を表示できません: {trackRender.error}</div>}
             {confirmRangeDelete&&<DeletionDialog defaultDelete label={`選択した${rangeCount}区間`} busy={busy} blocked={unapplied?"編集中の変更を適用または取り消してください":rangeCount?"":"区間が選択されていません"} error={error} onCancel={()=>setConfirmRangeDelete(false)} onDelete={deleteRange}/>}
             {deleteTarget&&<DeletionDialog defaultDelete={deleteTarget.kind==='built-section'||deleteTarget.kind==='plan-section'} label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
