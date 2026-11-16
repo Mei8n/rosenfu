@@ -296,6 +296,102 @@ mod tests {
     }
 
     #[test]
+    fn invalid_seam_destination_rolls_back_world_plans_and_evidence() {
+        use rosenfu_core::world::{AlignmentEndpoint, TrackType};
+        for gap in [0.001, -0.002] {
+            let mut editor = WorldEditor::new();
+            stage(&mut editor);
+            let points: Vec<GeoPoint> =
+                serde_json::from_value(fixture()["plans"]["parkedPaths"][0]["points"].clone())
+                    .unwrap();
+            let mut end = *points.last().unwrap();
+            // A separated endpoint or a cusp cannot become a connection.
+            if gap > 0. {
+                end.longitude += gap;
+            }
+            let target = editor
+                .build_alignment_typed_unchecked(
+                    "接続先".into(),
+                    vec![
+                        end,
+                        GeoPoint {
+                            longitude: end.longitude + gap,
+                            latitude: end.latitude,
+                        },
+                    ],
+                    TrackType::Normal,
+                )
+                .unwrap();
+            let before = editor.snapshot();
+            let mut r = request();
+            r.destination = Some(PlannedAlignmentExtension {
+                alignment_id: target,
+                endpoint: AlignmentEndpoint::Start,
+            });
+            assert!(editor.build_plan(vec![r]).is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+    }
+
+    #[test]
+    fn seam_anchor_profile_connects_both_ends_and_preserves_sources() {
+        use rosenfu_core::world::{AlignmentEndpoint, InfrastructureLevel, TrackType};
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let points: Vec<GeoPoint> =
+            serde_json::from_value(fixture()["plans"]["parkedPaths"][0]["points"].clone()).unwrap();
+        let start = points[0];
+        let end = *points.last().unwrap();
+        let source = editor
+            .build_alignment_typed_unchecked(
+                "元線路".into(),
+                vec![
+                    GeoPoint {
+                        longitude: start.longitude - 0.002,
+                        latitude: start.latitude,
+                    },
+                    start,
+                ],
+                TrackType::Normal,
+            )
+            .unwrap();
+        let target = editor
+            .build_alignment_typed_unchecked(
+                "接続先".into(),
+                vec![
+                    end,
+                    GeoPoint {
+                        longitude: end.longitude + 0.002,
+                        latitude: end.latitude,
+                    },
+                ],
+                TrackType::Normal,
+            )
+            .unwrap();
+        let originals = editor.snapshot().alignments;
+        let mut r = request();
+        r.extension = Some(PlannedAlignmentExtension {
+            alignment_id: source,
+            endpoint: AlignmentEndpoint::End,
+        });
+        r.destination = Some(PlannedAlignmentExtension {
+            alignment_id: target,
+            endpoint: AlignmentEndpoint::Start,
+        });
+        r.anchor_levels = Some(vec![InfrastructureLevel::Ground; 2]);
+        editor.build_plan(vec![r]).unwrap();
+        let built = editor.snapshot();
+        assert_eq!(built.alignments[..2], originals);
+        assert_eq!(built.alignments.len(), 3);
+        assert_eq!(built.alignment_connections.len(), 2);
+        assert_eq!(built.road_path_provenance.len(), 1);
+        assert_eq!(
+            rosenfu_storage::decode(&rosenfu_storage::encode(&editor.world).unwrap()).unwrap(),
+            editor.world
+        );
+    }
+
+    #[test]
     fn seam_anchor_heights_preserve_provenance_save_and_undo() {
         use rosenfu_core::world::InfrastructureLevel;
         let mut editor = WorldEditor::new();
