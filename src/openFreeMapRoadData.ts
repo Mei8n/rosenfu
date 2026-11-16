@@ -127,7 +127,7 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
      const work=queue.then(async()=>{check(controller.signal);const sharedHit=rawCache.get(key);if(sharedHit){if(await hash(sharedHit)!==b.rawSha256)throw Error('道路証拠cacheが一致しません。');return sharedHit;}if(usedTiles>=OFM_LIMITS.sessionTiles||usedBytes>=OFM_LIMITS.sessionBytes)throw Error('道路タイル取得予算上限です。');usedTiles++;const raw=await request(b.url,controller.signal);check(controller.signal);if(await hash(raw)!==b.rawSha256)throw Error('道路証拠の原データSHAが変わっています。');check(controller.signal);rememberRaw(key,b.rawSha256,raw);return raw;});queue=work.catch(()=>undefined);bytes=await wait(work,controller.signal);
     }
     if(await hash(bytes)!==b.rawSha256)throw Error('道路証拠cacheが一致しません。');check(controller.signal);
-    if(!raws.has(b.rawSha256)){total+=bytes.length;if(total>OFM_EVIDENCE_LIMITS.batchBytes)throw Error('道路証拠合計が8MiBを超えています。');raws.set(b.rawSha256,bytes.slice());}
+    total+=bytes.length;if(total>OFM_EVIDENCE_LIMITS.batchBytes)throw Error('道路証拠合計が8MiBを超えています。');if(!raws.has(b.rawSha256))raws.set(b.rawSha256,bytes.slice());
    }
    return {bindings,rawTiles:[...raws].map(([sha256,bytes])=>({sha256,bytes}))};
   }finally{controller.abort();clearTimeout(timer);signal?.removeEventListener('abort',abort);evidencePending--;}
