@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
-import {extensionAvailable,extensionStops} from './serviceRouteExtension';
+import {extensionAvailable,extensionStops} from './routeExtensionModel';
 import {resolveServicePath,referenceKey,sameSegment,sameOccurrence} from './servicePaths';
 import type {ServicePath,PathWorld,PathPreview,StopReference} from './servicePaths';
 import type {Segment} from './RouteCandidatePreview';

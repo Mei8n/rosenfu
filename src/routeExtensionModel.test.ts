@@ -1,5 +1,5 @@
 import {expect,test} from 'vitest';
-import {extensionAvailable,extensionStops} from './serviceRouteExtension';
+import {extensionAvailable,extensionStops} from './routeExtensionModel';
 import type {ServicePath,PathPreview} from './servicePaths';
 const a={kind:'alignment' as const,alignment_id:'a',from:'1',to:'3'};
 const b={...a,from:'3',to:'4'};
