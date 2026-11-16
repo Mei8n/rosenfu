@@ -175,7 +175,7 @@ export function App() {
   const provider = MAP_PROVIDERS[background === "sample" ? "osm" : background];
   const requestedTiles = useMemo(() => background === "sample" ? [] : visibleTiles(requestedCamera,background,mapSize,pixelRatio), [requestedCamera,background,mapSize,pixelRatio]);
   const displayTiles = useMemo(() => requestedTiles.map((tile) => positionTile(tile, camera)), [requestedTiles, camera]);
-  const bounds = viewBounds(camera, mapSize);
+  const bounds = useMemo(()=>viewBounds(camera,mapSize),[camera,mapSize]);
   const [manualGraphBundle,setGraphBundle]=useState<ReferenceGraphBundle|null>(null);
   const [graphVisible,setGraphVisible]=useState(true);
   const [pendingGraphChange,setPendingGraphChange]=useState<{bundle:ReferenceGraphBundle|null}|null>(null);
@@ -184,7 +184,7 @@ export function App() {
   const [referencePack,setReferencePack]=useState<ReferencePack|null>(null);
   const [referenceVisible,setReferenceVisible]=useState(true);
   const referenceRepository=useMemo(()=>referencePack?createReferenceRepository(referencePack):null,[referencePack]);
-  const referenceResult=referenceRepository?.query(bounds) ?? {stations:[],total:0};
+  const referenceResult=useMemo(()=>referenceRepository?.query(bounds) ?? {stations:[],total:0},[referenceRepository,bounds]);
   const cameraPending = camera !== requestedCamera;
   // Anchor the fictional offline scene to the same camera as railway geometry.
   const sampleScale = 2 ** (camera.zoom - DEFAULT_CAMERA.zoom);
@@ -384,7 +384,7 @@ export function App() {
   const platformWidth = "12";
   const [editLength, setEditLength] = useState("200");
   const [editWidth, setEditWidth] = useState("12");
-  const alignments = world?.alignments ?? [];
+  const alignments = useMemo(()=>world?.alignments ?? [],[world]);
   const trackRender=useTrackRenderGeometry(world,status==="ready"&&(!!world?.alignment_connections?.length||alignments.some(line=>line.infrastructure?.some((section,index)=>index>0&&section.track_count!==line.infrastructure![index-1].track_count))));
   const detailedStations = camera.zoom >= 13;
   const [stationResizePending,setStationResizePending]=useState(false);
@@ -396,12 +396,12 @@ export function App() {
   const routeVisual = useMemo(() => routeAppearance(world), [world]);
   const serviceMapSections=useMemo(()=>sharedServiceSections(world),[world]);
   const selectedAlignment = alignments.find((a) => a.id === alignmentId);
-  function extensionPrevious(extension:Extension|null){
+  const extensionPrevious=useCallback((extension:Extension|null)=>{
     const alignment=alignments.find(a=>a.id===extension?.alignmentId);
     return alignment&&extension?(extension.endpoint==="start"?alignment.points[1]:alignment.points.at(-2)):undefined;
-  }
-  const directedJunction=draftJunctionSource&&draftPoints[0]?(draftPoints[1]||hoverPoint?junctionDirection(draftJunctionSource,draftPoints[0],draftPoints[1]??hoverPoint!):draftJunctionSource):undefined;
-  const previousPoint=directedJunction&&draftPoints[0]?junctionPrevious(directedJunction,draftPoints[0]):extensionPrevious(draftExtension);
+  },[alignments]);
+  const directedJunction=useMemo(()=>draftJunctionSource&&draftPoints[0]?(draftPoints[1]||hoverPoint?junctionDirection(draftJunctionSource,draftPoints[0],draftPoints[1]??hoverPoint!):draftJunctionSource):undefined,[draftJunctionSource,draftPoints,hoverPoint]);
+  const previousPoint=useMemo(()=>directedJunction&&draftPoints[0]?junctionPrevious(directedJunction,draftPoints[0]):extensionPrevious(draftExtension),[directedJunction,draftPoints,extensionPrevious,draftExtension]);
   const [cursorPosition,setCursorPosition]=useState<{x:number;y:number;width:number;height:number}|null>(null);
   const draftGeometry = useMemo(() => plannedGeometry(draftPoints,draftEditedGeometry,previousPoint), [draftPoints,draftEditedGeometry,previousPoint]);
   function fittedDestination(anchors:GeoPoint[],edited:typeof draftEditedGeometry,target:ReturnType<typeof destinationTarget>) {
@@ -409,7 +409,7 @@ export function App() {
     return inside?twoEndedJoin(anchors,edited,previousPoint,inside)??edited:edited;
   }
   const previewAnchors=hoverPoint && !draftFinished && draftPoints.length && mapMode === "draw" ? [...draftPoints, hoverPoint] : draftPoints;
-  const previewGeometry = plannedGeometry(previewAnchors,previewAnchors!==draftPoints?fittedDestination(previewAnchors,draftEditedGeometry,hoverPoint&&cursorPosition?destinationTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null):draftEditedGeometry,previousPoint);
+  const previewGeometry = previewAnchors===draftPoints?draftGeometry:plannedGeometry(previewAnchors,fittedDestination(previewAnchors,draftEditedGeometry,hoverPoint&&cursorPosition?destinationTarget(hoverPoint,cursorPosition.width,cursorPosition.height):null),previousPoint);
   const draftLine = draftGeometry.points;
   const previewLine = previewGeometry.points;
   const draftInvalid = Boolean(draftGeometry.error);
@@ -646,8 +646,8 @@ export function App() {
   const referencePreviewPoints=manualReferenceCopyState.seamPlan?.points??referenceExtension?.build.points??referenceCopyState.plan.build?.points;
   const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
   useEffect(()=>{setReferenceExtensionKey("");setSeamExtensionKey("");setSeamDestinationKey("");setSeamFocusKey("");if(!referenceCopy.active){setFrozenRoadBundle(null);setFrozenRoadTiles(old=>old.length?[]:old);}},[referenceCopy.active,graphBundle]);
-  const stationLines:StationLine[] = [...alignments,...(referenceCopy.active&&referencePreviewPoints?[{id:"reference-plan",pathId:-1,points:referencePreviewPoints}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:(plan.reference||plan.ofmPath)?!!extensionJoinError(plan.points,extensionPrevious(plan.extension)):!!plannedGeometry(plan.points,plan.editedGeometry,extensionPrevious(plan.extension)).error})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])];
-  const plannedPlatforms=plannedStations.map(station=>{
+  const stationLines=useMemo<StationLine[]>(()=>[...alignments,...(referenceCopy.active&&referencePreviewPoints?[{id:"reference-plan",pathId:-1,points:referencePreviewPoints}]:[]),...parkedPaths.map(plan=>({id:"plan:"+plan.id,pathId:plan.id,points:plan.line,invalid:(plan.reference||plan.ofmPath)?!!extensionJoinError(plan.points,extensionPrevious(plan.extension)):!!plannedGeometry(plan.points,plan.editedGeometry,extensionPrevious(plan.extension)).error})),...(draftLine.length>1?[{id:"plan:"+activePathId,pathId:activePathId,points:draftLine,invalid:draftInvalid||roadFollowingBlocked}]:[])],[alignments,referenceCopy.active,referencePreviewPoints,parkedPaths,extensionPrevious,draftLine,activePathId,draftInvalid,roadFollowingBlocked]);
+  const plannedPlatforms=useMemo(()=>plannedStations.map(station=>{
     const line=stationLines.find(line=>station.alignmentId?line.pathId===undefined&&line.id===station.alignmentId:line.pathId===station.pathId);
     const nearest=line?nearestOnAlignment(line.points,station.point):null;
     const polygon=line&&nearest?stationPolygon(line.points,nearest.position,station.lengthM,12):[];
@@ -655,11 +655,11 @@ export function App() {
     const position=nearest?Math.max(half,Math.min(1-half,nearest.position)):0;
     const center=line&&polygon.length>=4?pointOnAlignment(line.points,position):null;
     return {station,line,position,polygon,valid:!!line&&!line.invalid&&!!center&&distanceM(center,station.point)<1&&polygon.length>=4};
-  });
-  const stationGroupDisplay=stationGroupViews([
+  }),[plannedStations,stationLines]);
+  const stationGroupDisplay=useMemo(()=>stationGroupViews([
     ...(world?.stations??[]).flatMap(station=>{const placement=world?.station_placements?.find(p=>p.station_id===station.id),polygon=stationPolygons.get(station.id);return placement&&polygon?[{id:station.id,name:station.name,owner:station.owner,lineId:placement.alignment_id,polygon,planned:false}]:[];}),
     ...plannedPlatforms.flatMap(p=>p.line?[{id:p.station.id,name:p.station.name,owner:world?.companies[0]?.id??"",lineId:p.line.id,polygon:p.polygon,planned:true}]:[])
-  ],world?.station_groups);
+  ],world?.station_groups),[world,stationPolygons,plannedPlatforms]);
   const stationDisplayGroup=(id:string)=>stationGroupDisplay.find(g=>g.members.some(m=>m.id===id));
   const mergedStationIds=new Set(stationGroupDisplay.filter(g=>g.members.length>1).flatMap(g=>g.members.map(m=>m.id)));
   const occupiedStationPlatforms=[...(world?.station_placements??[]).map(p=>({lineId:p.alignment_id,position:p.position,lengthM:p.length_m})),...plannedPlatforms.flatMap(p=>p.line?[{lineId:p.line.id,position:p.position,lengthM:p.station.lengthM}]:[])];
@@ -678,7 +678,7 @@ export function App() {
   const hasPlans = plannedStations.length>0 || draftPoints.length > 0 || redoPoints.length > 0 || parkedPaths.length > 0 || referenceCopy.active;
   const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,draftAnchorLevels:draftPoints.length?draftAnchorLevels:undefined,redoAnchorLevels:redoPoints.length?redoAnchorLevels:undefined,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,draftJunctionSource:(draftPoints.length||redoPoints.length)?directedJunction:undefined,startLevel:(draftPoints.length||redoPoints.length)?startLevel:undefined,infrastructure:infrastructure.track_count===1&&infrastructure.level==="ground"?undefined:infrastructure,roadFollowing,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[draftAnchorLevels,redoAnchorLevels,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,infrastructure,startLevel,directedJunction,roadFollowing,plannedStations,draftFinished]);
   const persistedPlans=useMemo(()=>compactEmptyPlans(constructionPlans),[constructionPlans]);
-  const planFingerprint=constructionPlanFingerprint(constructionPlans);
+  const planFingerprint=useMemo(()=>constructionPlanFingerprint(constructionPlans),[constructionPlans]);
   const seamStageCurrent=useRef({world,worldEpoch,planFingerprint,picks:JSON.stringify([manualReferenceCopyState.picks,seamExtensionKey,seamDestinationKey]),activeTool});
   seamStageCurrent.current={world,worldEpoch,planFingerprint,picks:JSON.stringify([manualReferenceCopyState.picks,seamExtensionKey,seamDestinationKey]),activeTool};
 
@@ -1254,12 +1254,12 @@ export function App() {
     placePlatformAt(coordinates,rect.width,rect.height);
   }
 
-  const currentPaths:PlannedPath[]=[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,editedGeometry:draftEditedGeometry,designSpeedKmh,trackType,infrastructure,startLevel,anchorLevels:draftAnchorLevels,redoAnchorLevels,junctionSource:directedJunction,roadFollowing,extension:draftExtension,destination:draftDestination,redoDestination:draftRedoDestination}]:[])];
-  const currentStations=plannedPlatforms.filter(item=>stationPlanId(item.station)===activePlanId);
+  const currentPaths=useMemo<PlannedPath[]>(()=>[...parkedPaths.filter(path=>path.planId===activePlanId),...(draftPoints.length||redoPoints.length?[{id:activePathId,planId:activePlanId,name:planName,points:draftPoints,redo:redoPoints,line:draftLine,editedGeometry:draftEditedGeometry,designSpeedKmh,trackType,infrastructure,startLevel,anchorLevels:draftAnchorLevels,redoAnchorLevels,junctionSource:directedJunction,roadFollowing,extension:draftExtension,destination:draftDestination,redoDestination:draftRedoDestination}]:[])],[constructionPlans,draftLine]);
+  const currentStations=useMemo(()=>plannedPlatforms.filter(item=>stationPlanId(item.station)===activePlanId),[plannedPlatforms,activePlanId,activePathId,parkedPaths]);
   const planHasContent=currentPaths.length>0||currentStations.length>0;
   // Keep fully undone paths for Redo, but do not submit them as empty alignments.
-  const buildPaths=currentPaths.filter(path=>path.points.length>0);
-  const planBuildable=(buildPaths.length>0||currentStations.some(item=>item.station.alignmentId))&&currentStations.every(item=>item.station.pathId===undefined||buildPaths.some(path=>path.id===item.station.pathId))&&buildPaths.every(path=>path.line.length>=2&&!((path.reference||path.ofmPath)?extensionJoinError(path.points,extensionPrevious(path.extension)):plannedGeometry(path.points,path.editedGeometry,extensionPrevious(path.extension)).error)&&!joinError(path.line,path.extension,path.destination,path.trackType)&&!(path.roadFollowing));
+  const buildPaths=useMemo(()=>currentPaths.filter(path=>path.points.length>0),[currentPaths]);
+  const planBuildable=useMemo(()=>(buildPaths.length>0||currentStations.some(item=>item.station.alignmentId))&&currentStations.every(item=>item.station.pathId===undefined||buildPaths.some(path=>path.id===item.station.pathId))&&buildPaths.every(path=>path.line.length>=2&&!((path.reference||path.ofmPath)?extensionJoinError(path.points,extensionPrevious(path.extension)):plannedGeometry(path.points,path.editedGeometry,extensionPrevious(path.extension)).error)&&!joinError(path.line,path.extension,path.destination,path.trackType)&&!(path.roadFollowing)),[buildPaths,currentStations,extensionPrevious,world,trackType]);
   const requests=buildPaths.map(path=>({name:alignmentName,points:path.line,anchorIndices:anchorIndices(path.points,path.line),trackType:path.trackType,designSpeedKmh:path.designSpeedKmh,infrastructure:path.infrastructure??DEFAULT_INFRASTRUCTURE,startLevel:path.startLevel,anchorLevels:path.anchorLevels,junctionSource:path.junctionSource,extension:path.extension??undefined,destination:path.destination,reference:path.reference?{sourceRecord:path.reference.sourceRecord,provenance:path.reference.provenance}:undefined,ofmPath:path.ofmPath,stations:plannedPlatforms.filter(item=>item.station.pathId===path.id).map(item=>({name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}))}));
   const stations=currentStations.filter(item=>item.station.alignmentId).map(item=>({alignmentId:item.station.alignmentId!,name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:item.position,lengthM:item.station.lengthM,widthM:12}));
   const constructionRequest={alignments:requests,stations};
