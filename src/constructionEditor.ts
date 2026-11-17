@@ -1,3 +1,4 @@
+import {assertNever} from './assertNever';
 import {emptyConstructionPlans,type ConstructionPlans,type PlannedPath,type GeoPoint,type Extension} from './constructionPlans';
 import {plannedGeometry,type EditedGeometry} from './editedGeometry';
 import type {JunctionSource} from './junctionSelection';
@@ -28,7 +29,7 @@ export function constructionEditorState(plans:ConstructionPlans=emptyConstructio
  const {plans:headers,parkedPaths,activePathId,activePlanId,draftPoints,redoPoints,draftFinished,draftExtension,draftDestination,draftRedoDestination,draftEditedGeometry,draftJunctionSource,draftAnchorLevels,redoAnchorLevels=[],startLevel}=plans;
  return {plans:headers,parkedPaths,activePathId,activePlanId,draftPoints,redoPoints,draftFinished,draftExtension,draftDestination,draftRedoDestination,draftEditedGeometry,draftJunctionSource,draftAnchorLevels,redoAnchorLevels,startLevel};
 }
-const clearedDraft={draftPoints:[] as GeoPoint[],redoPoints:[] as GeoPoint[],draftFinished:false,draftExtension:null,draftDestination:undefined,draftRedoDestination:undefined,draftEditedGeometry:undefined};
+const clearedDraft:Pick<ConstructionEditorState,'draftPoints'|'redoPoints'|'draftFinished'|'draftExtension'|'draftDestination'|'draftRedoDestination'|'draftEditedGeometry'>={draftPoints:[],redoPoints:[],draftFinished:false,draftExtension:null,draftDestination:undefined,draftRedoDestination:undefined,draftEditedGeometry:undefined};
 export function constructionEditorReducer(state:ConstructionEditorState,action:ConstructionEditorAction):ConstructionEditorState{
  switch(action.type){
   case 'RESTORE_PLANS':return constructionEditorState(action.plans);
@@ -53,5 +54,6 @@ export function constructionEditorReducer(state:ConstructionEditorState,action:C
    if(action.id===state.activePathId)return {...state,draftPoints:value.points,redoPoints:value.redo,draftEditedGeometry:value.geometry,draftDestination:value.destination,draftRedoDestination:value.redoDestination,...('anchorLevels' in value?{draftAnchorLevels:value.anchorLevels}:{}),...('redoAnchorLevels' in value?{redoAnchorLevels:value.redoAnchorLevels??[]}:{}),...('startLevel' in value?{startLevel:value.startLevel}:{}),...('extension' in value?{draftExtension:value.extension??null}:{})};
    return {...state,parkedPaths:state.parkedPaths.map(path=>path.id===action.id?{...path,anchorLevels:'anchorLevels' in value?value.anchorLevels:path.anchorLevels,redoAnchorLevels:'redoAnchorLevels' in value?value.redoAnchorLevels:path.redoAnchorLevels,startLevel:'startLevel' in value?value.startLevel:path.startLevel,infrastructure:value.infrastructure??path.infrastructure,extension:'extension' in value?value.extension??null:path.extension,destination:value.destination,redoDestination:value.redoDestination,points:value.points,editedGeometry:value.geometry,line:path.ofmPath?value.points:plannedGeometry(value.points,value.geometry,action.previous).points,redo:value.redo}:path)};
   }
+  default:return assertNever(action);
  }
 }

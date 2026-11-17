@@ -16,3 +16,19 @@ test('pending or invalid data cannot present an old or fabricated count',()=>{
  expect(screen.getByText('踏切：確認中')).toBeTruthy();expect(screen.queryByText(/2か所/)).toBeNull();
  rerender(<CrossingEstimate value={{newCrossingCount:-1,roadsUnverified:false}}/>);expect(screen.getByText('踏切：確認中')).toBeTruthy();
 });
+
+test.each([
+ null,{}, {newCrossingCount:'2',roadsUnverified:false},
+ {newCrossingCount:1.5,roadsUnverified:false},
+ {newCrossingCount:Infinity,roadsUnverified:false},
+ {newCrossingCount:2,roadsUnverified:'false'},
+ {newCrossingCount:2},
+])('malformed IPC summary remains pending: %j',value=>{
+ render(<CrossingEstimate value={value}/>);
+ expect(screen.getByText('踏切：確認中')).toBeTruthy();
+ expect(screen.queryByText(/追加額/)).toBeNull();
+});
+test('a validation error suppresses even a previously valid crossing summary',()=>{
+ render(<CrossingEstimate value={{newCrossingCount:2,roadsUnverified:false,validationError:'建設不可'}}/>);
+ expect(screen.queryByText(/踏切|追加額/)).toBeNull();
+});

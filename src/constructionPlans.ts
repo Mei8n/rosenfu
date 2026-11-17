@@ -46,6 +46,11 @@ export function compactEmptyPlans(value:ConstructionPlans):ConstructionPlans{
 
 /** Stable comparison across Rust struct ordering and the compact default encoding. */
 export function constructionPlanFingerprint(value:ConstructionPlans):string{
+ return canonicalFingerprint(value);
+}
+
+/** Shared canonical encoding for document and World history comparisons. */
+export function canonicalFingerprint(value:object):string{
  function canonical(item:unknown):unknown{
   if(Array.isArray(item))return item.map(canonical);
   if(item&&typeof item==='object'){
