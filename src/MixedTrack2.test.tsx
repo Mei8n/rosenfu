@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
 import {settledMapClick} from "./testMapClick";
@@ -28,7 +29,7 @@ for(const [sourceCount,targetCount] of [[2,1],[2,4]])for(const fresh of [false,t
  const map=await start({alignments:fresh?[target]:[source,target]});
  fireEvent.change(screen.getByLabelText('敷設する線路数'),{target:{value:String(sourceCount)}});
  await settledMapClick(map,{clientX:startX,clientY:130});
- fireEvent.pointerMove(map,{clientX:x+2,clientY:131});
+ await settledPointerMove(map,{clientX:x+2,clientY:131});
  expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('true');
  await settledMapClick(map,{clientX:x+2,clientY:131});
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});

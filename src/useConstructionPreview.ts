@@ -5,7 +5,8 @@ import {invoke} from '@tauri-apps/api/core';
 export function useConstructionPreview(world:unknown,request:{alignments:unknown[];stations:unknown[];roads?:unknown[]}|null,waterRevision=0){
  const roads=request?.roads;
  const roadKey=useMemo(()=>JSON.stringify(roads??[]),[roads]);
- const key=request?`{"alignments":${JSON.stringify(request.alignments)},"stations":${JSON.stringify(request.stations)},"roads":${roadKey}}`:null;
+ const alignments=request?.alignments,stations=request?.stations;
+ const key=useMemo(()=>request?`{"alignments":${JSON.stringify(request.alignments)},"stations":${JSON.stringify(request.stations)},"roads":${roadKey}}`:null,[alignments,stations,roadKey]);
  const [state,setState]=useState<{world:unknown;key:string;waterRevision:number;error:string|null;value:unknown}|null>(null);
  const running=useRef(false);
  const queued=useRef<null|(()=>Promise<void>)>(null);

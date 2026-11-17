@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import {afterEach,expect,test,vi} from 'vitest';
@@ -62,7 +63,7 @@ test('later anchor edit is undone before the split deletion, without losing its 
  const split=shape();
  const anchor=map.querySelector('[data-anchor-index="1"]')!;
  fireEvent.pointerDown(anchor,{clientX:180,clientY:200,button:0});
- fireEvent.pointerMove(map,{clientX:180,clientY:220});
+ await settledPointerMove(map,{clientX:180,clientY:220});
  fireEvent.pointerUp(map,{clientX:180,clientY:220});
  expect(shape()).not.toEqual(split);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});

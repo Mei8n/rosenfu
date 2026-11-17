@@ -1,8 +1,11 @@
+import {Profiler,type ProfilerOnRenderCallback} from 'react';
+import {settledPointerMove,settledPointerEnter} from './testMapClick';
 // @vitest-environment jsdom
 import {afterEach,expect,test,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {invoke,isTauri} from '@tauri-apps/api/core';
 import {App} from './App';
+import {GsiBackground} from './GsiBackground';
 import {BuiltTrackLayer} from './BuiltTrackLayer';
 import {StationLayer} from './StationLayer';
 import {RouteLayer} from './RouteLayer';
@@ -31,13 +34,17 @@ vi.mock('./TrackRenderGeometry',async importOriginal=>{
  const actual=await importOriginal<typeof import('./TrackRenderGeometry')>();
  return {...actual,TrackGeometryLayer:{...actual.TrackGeometryLayer,type:vi.fn((actual.TrackGeometryLayer as unknown as {type:()=>unknown}).type)}};
 });
+vi.mock('./GsiBackground',async importOriginal=>{
+ const actual=await importOriginal<typeof import('./GsiBackground')>();
+ return {...actual,GsiBackground:{...actual.GsiBackground,type:vi.fn((actual.GsiBackground as unknown as {type:()=>unknown}).type)}};
+});
 vi.mock('./sectionInfrastructure',{spy:true});
 vi.mock('./serviceMapAppearance',{spy:true});
 const renderSpy=(component:unknown)=>(component as {type:ReturnType<typeof vi.fn>}).type;
-const layers=[BuiltTrackLayer,StationLayer,RouteLayer,TrackGeometryLayer];
+const layers=[BuiltTrackLayer,StationLayer,RouteLayer,TrackGeometryLayer,GsiBackground];
 afterEach(()=>{cleanup();localStorage.clear();vi.clearAllMocks();vi.unstubAllGlobals();});
 
-async function start(physical=false){
+async function start(physical=false,onRender?:ProfilerOnRenderCallback){
  vi.stubGlobal('PointerEvent',MouseEvent);
  const points=Array.from({length:64},(_,i)=>({latitude:35.67504,longitude:139.72+i*.001}));
  const world={next_id:'1000',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'会社'}],routes:[],services:[{id:'40',owner:'2',name:'系統',start:'10'}],
@@ -57,7 +64,7 @@ async function start(physical=false){
   if(command==='rename_company')return {...world,alignments:[{...world.alignments[0],points:points.map(p=>({...p,latitude:p.latitude+.001}))}],stations:world.stations.map(s=>({...s,name:`更新${s.name}`,latitude:s.latitude+.001}))};
   throw Error('unexpected '+command);
  });
- render(<App/>);
+ render(onRender?<Profiler id="App" onRender={onRender}><App/></Profiler>:<App/>);
  await screen.findByText(/map-layer-test/);
  if(physical)await vi.waitFor(()=>expect(document.querySelector('[data-physical-alignment]')).not.toBeNull());
  const map=document.querySelector<SVGSVGElement>('svg[role="img"]')!;
@@ -73,11 +80,11 @@ for(const physical of [false,true])test(`cursor updates skip committed layers ($
  const initialStation=map.querySelector('.station-marker')!.innerHTML;
  vi.clearAllMocks();
  const begin=performance.now();
- for(let i=0;i<10;i++)fireEvent.pointerMove(map,{clientX:400+i*3,clientY:300+i});
+ for(let i=0;i<10;i++)await settledPointerMove(map,{clientX:400+i*3,clientY:300+i});
  const elapsed=performance.now()-begin;
  const counts=layers.map(layer=>renderSpy(layer).mock.calls.length);
  console.info(JSON.stringify({scenario:physical?'physical':'schematic',pointerMoves:10,renderCounts:counts,infrastructureCalculations:vi.mocked(displayInfrastructureSections).mock.calls.length,schematicCalculations:vi.mocked(schematicTrackPaths).mock.calls.length,serviceBandCalculations:vi.mocked(serviceBandPaths).mock.calls.length,jsdomPointerMs:elapsed}));
- expect(counts).toEqual([0,0,0,0]);
+ expect(counts).toEqual([0,0,0,0,0]);
  expect(displayInfrastructureSections).not.toHaveBeenCalled();
  expect(schematicTrackPaths).not.toHaveBeenCalled();
  expect(serviceBandPaths).not.toHaveBeenCalled();
@@ -108,12 +115,12 @@ test('active construction preview and built hover leave committed layers untouch
  await settledMapClick(map,{clientX:300,clientY:380});
  expect(map.querySelector('.confirmed-draft')).not.toBeNull();
  vi.clearAllMocks();
- for(let i=0;i<10;i++)fireEvent.pointerMove(map,{clientX:350+i*3,clientY:390});
+ for(let i=0;i<10;i++)await settledPointerMove(map,{clientX:350+i*3,clientY:390});
  expect(map.querySelector('.candidate-draft')).not.toBeNull();
  for(const layer of layers)expect(renderSpy(layer)).not.toHaveBeenCalled();
  expect(displayInfrastructureSections).not.toHaveBeenCalled();
  const hit=map.querySelector('.alignment-hit')!;
- fireEvent.pointerEnter(hit,{clientX:500,clientY:300});
+ await settledPointerEnter(hit,{clientX:500,clientY:300});
  expect(map.querySelector('.built-hover-point')).not.toBeNull();
  for(const layer of layers)expect(renderSpy(layer)).not.toHaveBeenCalled();
  fireEvent.pointerLeave(hit);
@@ -126,10 +133,43 @@ test('visible service bands reuse geometry on hover and update on camera movemen
  expect(map.querySelector('.service-map-section')).not.toBeNull();
  const before=map.querySelector('[data-service-id="40"]')!.getAttribute('d');
  vi.clearAllMocks();
- for(let i=0;i<10;i++)fireEvent.pointerMove(map.querySelector('.alignment-hit')!,{clientX:500+i,clientY:300});
+ for(let i=0;i<10;i++)await settledPointerMove(map.querySelector('.alignment-hit')!,{clientX:500+i,clientY:300});
  expect(renderSpy(RouteLayer)).not.toHaveBeenCalled();
  expect(serviceBandPaths).not.toHaveBeenCalled();
  panMap(40,20);
  expect(serviceBandPaths).toHaveBeenCalled();
  expect(map.querySelector('[data-service-id="40"]')!.getAttribute('d')).not.toBe(before);
+});
+
+test('pointer bursts publish one React update per frame and cancel queued work on leave',async()=>{
+ const commits:number[]=[];
+ const map=await start(false,(_id,_phase,duration)=>commits.push(duration));
+ let nextId=0;const frames=new Map<number,FrameRequestCallback>();
+ vi.stubGlobal('requestAnimationFrame',(callback:FrameRequestCallback)=>{frames.set(++nextId,callback);return nextId;});
+ vi.stubGlobal('cancelAnimationFrame',(id:number)=>frames.delete(id));
+ commits.length=0;vi.clearAllMocks();
+ for(let i=0;i<20;i++)fireEvent.pointerMove(map,{clientX:600+i,clientY:400+i});
+ expect(commits).toHaveLength(0);
+ expect(frames.size).toBe(1);
+ act(()=>{const pending=[...frames.values()];frames.clear();for(const callback of pending)callback(16);});
+ expect(commits).toHaveLength(1);
+ for(const layer of layers)expect(renderSpy(layer)).not.toHaveBeenCalled();
+ fireEvent.pointerMove(map,{clientX:640,clientY:440});
+ expect(frames.size).toBe(1);
+ fireEvent.pointerLeave(map);
+ expect(frames.size).toBe(0);
+});
+
+test('a click before the visual frame uses the click coordinates and drops queued preview',async()=>{
+ const map=await start();
+ let callback:FrameRequestCallback|null=null;
+ vi.stubGlobal('requestAnimationFrame',(next:FrameRequestCallback)=>{callback=next;return 1;});
+ vi.stubGlobal('cancelAnimationFrame',()=>{callback=null;});
+ fireEvent.pointerMove(map,{clientX:600,clientY:400});
+ expect(callback).not.toBeNull();
+ await settledMapClick(map,{clientX:180,clientY:380});
+ expect(callback).toBeNull();
+ const anchor=map.querySelector('.draft-anchor')!;
+ expect(Number(anchor.getAttribute('x'))).toBeCloseTo(177.5);
+ expect(Number(anchor.getAttribute('y'))).toBeCloseTo(377.5);
 });

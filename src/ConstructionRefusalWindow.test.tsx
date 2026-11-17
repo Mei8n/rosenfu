@@ -1,3 +1,4 @@
+import {settledPointerMove,settledPointerEnter} from './testMapClick';
 import {emptyConstructionPlans} from './constructionPlans';
 // @vitest-environment jsdom
 import React from 'react';
@@ -33,7 +34,7 @@ async function start(preview:()=>Promise<unknown>){
 }
 test('native refusal uses the one positioned drawing window and clears when pointer leaves',async()=>{
  const map=await start(async()=>{throw '水域データの網羅性を確認できません。';});
- fireEvent.pointerMove(map,{clientX:360,clientY:130});
+ await settledPointerMove(map,{clientX:360,clientY:130});
  await waitFor(()=>expect(document.querySelector('.drawing-tooltip')?.textContent).toContain('網羅性を確認できません'));
  const tip=document.querySelector<HTMLElement>('.drawing-tooltip')!;
  expect(document.querySelectorAll('.construction-tooltip')).toHaveLength(1);
@@ -43,7 +44,7 @@ test('native refusal uses the one positioned drawing window and clears when poin
 test('finished plan hover displays current backend refusal without an extra panel',async()=>{
  const map=await start(async()=>{throw '水面横断が30kmを超えています。';});
  fireEvent.keyDown(document.body,{key:'Escape'});
- const hit=map.querySelector('.plan-hover-hit')!;fireEvent.pointerEnter(hit,{clientX:250,clientY:130});
+ const hit=map.querySelector('.plan-hover-hit')!;await settledPointerEnter(hit,{clientX:250,clientY:130});
  await waitFor(()=>expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain('この計画は敷設不可：水面横断'));
  expect(document.querySelectorAll('.construction-tooltip')).toHaveLength(1);
  fireEvent.pointerLeave(hit);expect(document.querySelectorAll('.construction-tooltip')).toHaveLength(0);
@@ -51,10 +52,10 @@ test('finished plan hover displays current backend refusal without an extra pane
 test('old cursor refusal cannot overwrite a newer accepted hovered plan',async()=>{
  let rejectOld:(reason:unknown)=>void=()=>{};let calls=0;
  const map=await start(()=>{calls++;return calls===1?new Promise((_,reject)=>{rejectOld=reject;}):Promise.resolve(world);});
- fireEvent.pointerMove(map,{clientX:360,clientY:130});
+ await settledPointerMove(map,{clientX:360,clientY:130});
  await waitFor(()=>expect(calls).toBe(1));
  fireEvent.keyDown(document.body,{key:'Escape'});
- fireEvent.pointerEnter(map.querySelector('.plan-hover-hit')!,{clientX:250,clientY:130});
+ await settledPointerEnter(map.querySelector('.plan-hover-hit')!,{clientX:250,clientY:130});
  await act(async()=>rejectOld('古い水域拒否'));
  await waitFor(()=>expect(calls).toBe(2));await act(async()=>{});
  expect(document.querySelector('.plan-hover-tooltip')?.textContent).not.toContain('古い水域拒否');
@@ -69,7 +70,7 @@ test('a refused preview does not prevent draft save and a rejected build keeps t
   return prior(command,args);
  });
  fireEvent.keyDown(document.body,{key:'Escape'});
- fireEvent.pointerEnter(map.querySelector('.plan-hover-hit')!,{clientX:250,clientY:130});
+ await settledPointerEnter(map.querySelector('.plan-hover-hit')!,{clientX:250,clientY:130});
  await waitFor(()=>expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain(reason));
  fireEvent.click(screen.getByRole('button',{name:'保存'}));
  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world')).toBe(true));

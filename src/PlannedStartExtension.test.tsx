@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
@@ -91,7 +92,7 @@ test("reversing a free start transfers the far built connection to source; occup
  expect(saved.draftPoints).toEqual([...anchors].reverse());
  await waitFor(()=>expect((screen.getByRole("button",{name:"保存"}) as HTMLButtonElement).disabled).toBe(false));
  await settledMapClick(map,{clientX:100,clientY:130,detail:1});
- fireEvent.pointerMove(map,{clientX:180,clientY:130});
+ await settledPointerMove(map,{clientX:180,clientY:130});
  expect(screen.getByText("この端点は接続済みです")).toBeTruthy();
  expect(screen.queryByText("他社の線路は延伸できません")).toBeNull();
  await settledMapClick(map,{clientX:180,clientY:130,detail:1});

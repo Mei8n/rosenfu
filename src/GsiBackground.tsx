@@ -1,6 +1,6 @@
 import { positionTile, MAX_TILES } from "./map";
 import type { Camera } from "./map";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 export type BackgroundTile = { id: string; url: string; x: number; y: number; width: number; height: number };
 export type TileStatus = { loaded: number; failed: number; total: number };
@@ -8,7 +8,7 @@ export type TileStatus = { loaded: number; failed: number; total: number };
 type Props = { camera?: Camera; tiles: readonly BackgroundTile[]; width: number; height: number; onStatus: (status: TileStatus) => void };
 
 /** Provider-neutral raster layer. Browser HTTP cache is retained; no prefetch, application cache or automatic retries. */
-export function GsiBackground({ tiles, camera, width, height, onStatus }: Props) {
+export const GsiBackground=memo(function GsiBackground({ tiles, camera, width, height, onStatus }: Props) {
   // Only already displayed, successfully loaded tiles are retained during replacement.
   // At most one bounded layer of metadata, no prefetch or persistent/offline cache.
   const loadedTiles=useRef(new Map<string,BackgroundTile>());
@@ -58,4 +58,4 @@ export function GsiBackground({ tiles, camera, width, height, onStatus }: Props)
       : <image key={tile.id} data-tile-id={tile.id} data-fallback-tile={!currentTileIds.current.has(tile.id) || undefined} href={tile.url} x={tile.x} y={tile.y} width={tile.width} height={tile.height}
           onLoad={() => finish(tile.id, "loaded")} onError={() => finish(tile.id, "failed")} />)}
   </g>;
-}
+});

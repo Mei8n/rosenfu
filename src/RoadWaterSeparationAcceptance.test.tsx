@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from 'react';
@@ -46,7 +47,7 @@ test('road acquisition failure reason is in the existing near-track window, not 
  provider.load.mockRejectedValue(Error('outside road cells'));
  const map=await start();fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
  await waitFor(()=>expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).toContain('outside road cells'));
- fireEvent.pointerMove(map,{clientX:250,clientY:150});
+ await settledPointerMove(map,{clientX:250,clientY:150});
  const tooltip=document.querySelector<HTMLElement>('.drawing-tooltip');
  expect(tooltip).not.toBeNull();expect(tooltip?.textContent).toContain('道路参考データ未取得');
  expect(tooltip?.textContent).toContain('outside road cells');
