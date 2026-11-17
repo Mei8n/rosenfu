@@ -1,4 +1,4 @@
-import {constructionPlanFingerprint,type ConstructionPlans} from './constructionPlans';
+import {canonicalFingerprint,type ConstructionPlans} from './constructionPlans';
 
 /** Session-only history. A final operation discards history, never the live document. */
 export class EditHistory<T> {
@@ -17,12 +17,14 @@ export function planEditKey(value:ConstructionPlans):string {
  // only the second committed anchor makes that direction a document edit.
  for(const path of paths)if(path.points.length<2&&path.junctionSource)path.junctionSource={...path.junctionSource,reverse:undefined};
  const occupied=new Set(paths.map(path=>path.planId));
- return constructionPlanFingerprint({plans:value.plans.filter(plan=>occupied.has(plan.id)||value.plannedStations.some(station=>station.planId===plan.id)),paths,stations:value.plannedStations} as unknown as ConstructionPlans);
+ return canonicalFingerprint({plans:value.plans.filter(plan=>occupied.has(plan.id)||value.plannedStations.some(station=>station.planId===plan.id)),paths,stations:value.plannedStations});
 }
 export function worldEditKey(value:unknown):string {
  if(!value||typeof value!=='object')return '';
- const {construction_plans:_,view_state:__,...world}=value as Record<string,unknown>;
- return constructionPlanFingerprint(world as unknown as ConstructionPlans);
+ const world={...value};
+ if('construction_plans' in world)delete world.construction_plans;
+ if('view_state' in world)delete world.view_state;
+ return canonicalFingerprint(world);
 }
 export function sameWorldEdit(a:unknown,b:unknown):boolean{return a===b||worldEditKey(a)===worldEditKey(b);}
 export const FINAL_WORLD_COMMANDS=new Set(['build_plan','build_plan_with_roads','build_alignment','build_alignment_with_stations','build_alignment_from_reference','place_station_on_alignment','add_station','update_station_placement','update_alignment_anchor_height','update_alignment_section_infrastructure','update_alignment_section_track_type']);

@@ -4,7 +4,7 @@ import {invoke} from '@tauri-apps/api/core';
 import type {RoadAssessments,SavedRoadSnapshot} from './constructionRoads';
 /** Results are tied to the exact world object. Edits, load and Undo hide old
  * assets immediately, and late IPC responses cannot restore stale crossings. */
-export function useRoadAssessments(world:({road_snapshots?:SavedRoadSnapshot[]})|null,enabled:boolean){
+export function useRoadAssessments(world:({road_snapshots?:SavedRoadSnapshot[]})|null,enabled:boolean):{world:unknown;value:RoadAssessments;error:string|null;pending:boolean}{
  const [state,setState]=useState<{world:unknown;value:RoadAssessments;error:string|null}|null>(null);
  useEffect(()=>{
   if(!enabled||!world||!world.road_snapshots?.length)return;
@@ -15,5 +15,5 @@ export function useRoadAssessments(world:({road_snapshots?:SavedRoadSnapshot[]})
   }).catch(error=>{if(alive)setState({world,value:[],error:String(error)});});
   return()=>{alive=false;};
  },[world,enabled]);
- return enabled&&state?.world===world?{...state,pending:false}:{world,value:[] as RoadAssessments,error:null,pending:enabled&&!!world?.road_snapshots?.length};
+ return enabled&&state?.world===world?{...state,pending:false}:{world,value:[],error:null,pending:enabled&&!!world?.road_snapshots?.length};
 }
