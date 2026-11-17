@@ -14,7 +14,7 @@ type Props = {
   candidateLength?: (candidate:Candidate)=>number;
   onCandidateChange?: (candidate:Candidate|null) => void;
   onSelectionChange?: (stationIds: string[]) => void;
-  editRoute?: {id:string;name:string;path?:Candidate}; defaultName?:string;
+  editRoute?: {id:string;name:string;path?:Candidate;excludedStations?:string[];memberStations?:string[]}; defaultName?:string;
   onCancelEdit?: () => void;
   startSequenceKey?: number;
   mapPickTarget?: "start" | "end" | "via" | "sequence" | null;
@@ -54,8 +54,15 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  useEffect(()=>{invalidate();orderedRef.current=[];setOrdered([]);setName(initialName);},[resetKey]);
  useEffect(()=>{generation.current++;setLoading(false);setMembership(null);setShowChoices(false);setStale(orderedRef.current.length>1);return()=>{generation.current++;};},[worldVersion]);
  useEffect(()=>{onDirty?.(ordered.length>0||name!==initialName);},[ordered,name,initialName,onDirty]);
+ async function membershipFor(candidate:Candidate){
+  const args={start:candidate.stations[0],segments:candidate.segments};
+  const all=await invoke<Membership>("preview_route_membership",{...args,excludedStations:[]});
+  const endpoints=new Set([all.path.stations[0],all.path.stations.at(-1)]);
+  const excluded=(editRoute?.excludedStations??[]).filter(id=>all.member_stations.includes(id)&&!endpoints.has(id));
+  return excluded.length?invoke<Membership>("preview_route_membership",{...args,excludedStations:excluded}):all;
+ }
  async function validate(candidate:Candidate,token:number){
-  const next=await invoke<Membership>("preview_route_membership",{start:candidate.stations[0],segments:candidate.segments,excludedStations:[]});
+  const next=await membershipFor(candidate);
   if(token===generation.current)setMembership(next);
  }
  async function search(ids:string[]){
@@ -85,7 +92,7 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
      if(!length)throw Error('経路の比較に必要な地図情報がありません');
      const choice=await editStationOrder(orderedRef.current,id,ids=>invoke<Candidates>('preview_route_candidates',{start:ids[0],end:ids.at(-1),...(ids.length>2?{viaStationIds:ids.slice(1,-1)}:{})}),length);
      if(session!==generation.current)return;
-     const next=await invoke<Membership>('preview_route_membership',{start:choice.result.candidates[choice.index].stations[0],segments:choice.result.candidates[choice.index].segments,excludedStations:[]});
+     const next=await membershipFor(choice.result.candidates[choice.index]);
      if(session!==generation.current)return;
      orderedRef.current=choice.ids;setOrdered(choice.ids);setResult(choice.result);setChosen(choice.index);setMembership(next);setStale(false);setShowChoices(choice.result.candidates.length>1);
     }catch(cause){if(session===generation.current)setError(String(cause));}
@@ -98,7 +105,7 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  function beginEditing(){
   const path=editRoute?.path;if(!path)return;
   if(new Set(path.stations).size!==path.stations.length){setError('同じ駅を複数回通る経路の地図編集には未対応です。区間編集を利用してください');return;}
-  invalidate();orderedRef.current=[...path.stations];setOrdered([...path.stations]);setMembership({path,member_stations:path.stations,excluded_stations:[]});beginSequence();
+  invalidate();orderedRef.current=[...path.stations];setOrdered([...path.stations]);setMembership({path,member_stations:editRoute?.memberStations??path.stations,excluded_stations:editRoute?.excludedStations??[]});beginSequence();
  }
  useEffect(()=>{if(startSequenceKey){if(editingMap)beginEditing();else beginSequence();}},[startSequenceKey]);
  async function selectCandidate(index:number){
@@ -117,7 +124,7 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  return <section className="route-candidate-preview" aria-label={editRoute?`${entityLabel}を編集`:`${entityLabel}を作成`}>
   <h4>{name||initialName}</h4>
   <label>{entityLabel}名<input autoComplete="off" value={name} maxLength={80} disabled={!enabled||saving} onChange={e=>setName(e.target.value)}/></label>
-  {editingMap&&<p>{entityLabel==='系統'?'地図の中間駅をクリックすると停車・通過を切り替えます。起点・終点をクリックすると短縮し、新しい駅をクリックすると経路へ追加します。':'地図の駅をクリックすると経由指定を追加、選択済みの駅をクリックすると指定を外します。起点・終点も変更できます。経路上の中間駅は引き続き路線に所属します。'}選択駅の順序を保って経路を再探索します。元の経路から変わる場合もあるため、地図で確認して編集終了で確定してください。</p>}
+  {editingMap&&<p>{entityLabel==='系統'?'地図の中間駅をクリックすると停車・通過を切り替えます。起点・終点をクリックすると短縮し、新しい駅をクリックすると経路へ追加します。':'地図の駅をクリックすると経由指定を追加、選択済みの駅をクリックすると指定を外します。起点・終点も変更できます。既存の所属設定を保ち、新しく通る駅は路線に追加します。起終点になる駅は所属駅になります。'}選択駅の順序を保って経路を再探索します。元の経路から変わる場合もあるため、地図で確認して編集終了で確定してください。</p>}
   <ol aria-label="選択した駅">{ordered.map((id,i)=><li key={id}>{stationName(id)}{i===0?"（始点）":i===ordered.length-1?"（終点）":"（経由）"}</li>)}</ol>
   {mapPickTarget!=="sequence"&&<button disabled={!enabled||saving} onClick={beginSequence}>駅の選択を再開</button>}
   {stale&&<button disabled={!enabled||loading||saving} onClick={()=>void search([...orderedRef.current])}>経路を再確認</button>}

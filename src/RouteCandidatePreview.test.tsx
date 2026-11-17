@@ -199,3 +199,28 @@ test.each([false,true])('queued map edits preserve click order; cancelled=%s ign
  else await waitFor(()=>expect(onSelectionChange).toHaveBeenLastCalledWith(['1','2','3','4','5']));
  expect(onSave).not.toHaveBeenCalled();
 });
+test('rename-only and cancellation preserve saved intermediate membership exclusion',async()=>{
+ const onSave=vi.fn().mockResolvedValue(undefined),onCancelEdit=vi.fn();
+ const props={editRoute:{id:'r',name:'本線',path,memberStations:['1','3'],excludedStations:['2']},stations,worldVersion:world,enabled:true,canApply:true,startSequenceKey:1,onSave,onCancelEdit};
+ render(<RouteCandidatePreview {...props}/>);
+ expect(screen.getByText('所属駅: 始発 → 終点')).toBeTruthy();
+ fireEvent.change(screen.getByLabelText('路線名'),{target:{value:'新本線'}});
+ expect(onSave).not.toHaveBeenCalled();
+ await act(async()=>fireEvent.click(screen.getByText('編集終了')));
+ expect(onSave).toHaveBeenCalledWith('新本線',{path,member_stations:['1','3'],excluded_stations:['2']});
+ fireEvent.click(screen.getByText('キャンセル'));expect(onSave).toHaveBeenCalledOnce();expect(onCancelEdit).toHaveBeenCalledOnce();
+});
+test('changed route retains excluded intermediate stations but promotes a new endpoint to membership',async()=>{
+ let pick:((id:string)=>void)|undefined;const onSave=vi.fn();
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  const a=args as {start:string;end:string;viaStationIds?:string[];segments:Candidate['segments'];excludedStations?:string[]};
+  if(command==='preview_route_candidates'){const ids=[a.start,...(a.viaStationIds??[]),a.end];return {status:'unique',candidates:[{stations:ids,segments:ids.slice(1).map((to,i)=>({kind:'alignment',alignment_id:'a',from:ids[i],to}))}],truncated:false,shortest_candidate_index:0};}
+  const ids=[a.start,...a.segments.map(s=>s.to)];return {path:{stations:ids,segments:a.segments},member_stations:ids.filter(id=>!a.excludedStations?.includes(id)),excluded_stations:a.excludedStations??[]};
+ });
+ render(<RouteCandidatePreview editRoute={{id:'r',name:'本線',path,memberStations:['1','3'],excludedStations:['2']}} candidateLength={p=>p.stations.at(-1)==='4'?1:10} stations={[...stations,{id:'4',name:'新駅'}]} worldVersion={world} enabled canApply startSequenceKey={1} onSave={onSave} onMapPick={(_,cb)=>{pick=cb;}}/>);
+ await act(async()=>pick?.('4'));await screen.findByText('所属駅: 始発 → 終点 → 新駅');
+ expect(invoke).toHaveBeenCalledWith('preview_route_membership',expect.objectContaining({excludedStations:['2']}));
+ await act(async()=>pick?.('1'));await screen.findByText('所属駅: 中間 → 終点 → 新駅');
+ expect(onSave).not.toHaveBeenCalled();await act(async()=>fireEvent.click(screen.getByText('編集終了')));
+ expect(onSave.mock.calls[0][1].excluded_stations).toEqual([]);
+});
