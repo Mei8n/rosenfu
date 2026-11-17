@@ -73,8 +73,7 @@ test('switching plans retains a fully undone start point for Redo',async()=>{
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
- fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));
- fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0); // snapshot precedes the later empty plan header
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
 });

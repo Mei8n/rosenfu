@@ -70,8 +70,13 @@ test("drag does not place a station and clearing one independent plan only remov
 });
 test("changing a plan so its station no longer fits blocks construction until station is removed",async()=>{
  const map=await start();await settledMapClick(map,{clientX:310,clientY:150});
- fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
- await settledMapClick(map,{clientX:250,clientY:150});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));
+ fireEvent.click(screen.getByRole("tab",{name:"線路"}));
+ // Undo would remove the later station first. Shorten the actual geometry to
+ // retain coverage of invalid-station protection instead of relying on old tool-local history.
+ const endpoint=map.querySelector('[data-anchor-index="1"]')!;
+ fireEvent.pointerDown(endpoint,{clientX:320,clientY:150,button:0});
+ fireEvent.pointerMove(map,{clientX:250,clientY:150});fireEvent.pointerUp(map,{clientX:250,clientY:150});
+ fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));
  await screen.findByText(/計画駅が線路に収まりません/);
  expect(invoke).not.toHaveBeenCalledWith("build_alignment_with_stations",expect.anything());
  expect(invoke).not.toHaveBeenCalledWith("build_alignment",expect.anything());
@@ -129,7 +134,11 @@ test("planned station hover names it, blocks duplicate placement and edits persi
  fireEvent.change(screen.getByLabelText("計画駅名"),{target:{value:"中央"}});
  expect(screen.getByText("中央 · 10両")).toBeTruthy();
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
+ expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
+ expect((screen.getByLabelText("計画駅名") as HTMLInputElement).value).toBe("新駅");
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
  expect((screen.getByLabelText("計画駅名") as HTMLInputElement).value).toBe("中央");
  fireEvent.click(screen.getByRole("button",{name:"保存"}));

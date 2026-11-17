@@ -1,3 +1,4 @@
+import {EditHistory,planEditKey,worldEditKey,sameWorldEdit,FINAL_WORLD_COMMANDS,UNDO_WORLD_COMMANDS} from "./editHistory";
 import { ServiceDelete } from "./ServiceDelete";
 import {ServiceFromRoute} from './ServiceFromRoute';
 import {ServiceMapCreator} from './ServiceMapCreator';
@@ -53,7 +54,7 @@ import {anchorDragPreview} from "./anchorDragPreview";
 import {plannedGeometry, type EditedGeometry} from "./editedGeometry";
 import {plannedTrackHeight} from "./plannedTrackHeight";
 import {plannedTrackSpeed} from "./plannedTrackSpeed";
-import {emptyConstructionPlans,compactEmptyPlans,removeConstructionPlan,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
+import {emptyConstructionPlans,recoverLegacyRedoPlans,compactEmptyPlans,removeConstructionPlan,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
 import {UserGuide} from "./UserGuide";
 import {MapCredits} from "./MapCredits";
 import {snapReferenceStart} from "./referenceEndpointSnap";
@@ -70,7 +71,7 @@ import {UnsavedCloseDialog} from "./UnsavedCloseDialog";
 import {useUnsavedCloseGuard} from "./useUnsavedCloseGuard";
 import { ErrorNotice } from "./ErrorNotice";
 import { routeAppearance } from "./routeAppearance";
-import {useReferenceCopy} from "./useReferenceCopy";
+import {useReferenceCopy,sameReferenceSession,type ReferenceSessionSnapshot} from "./useReferenceCopy";
 import {ReferenceCopyControls} from "./ReferenceCopyControls";
 import type {ReferenceBuild} from "./referenceCopy";
 import {AlignmentProvenance} from "./AlignmentProvenance";
@@ -94,9 +95,9 @@ import { PlatformLengthInput } from "./PlatformLengthInput";
 import type { Segment, Membership } from "./RouteCandidatePreview";
 import { RouteCandidatePreview } from "./RouteCandidatePreview";
 import { MAP_PROVIDERS } from "./mapProviders";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, FormEvent, CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke as nativeInvoke, isTauri } from "@tauri-apps/api/core";
 import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, positionTile, viewBounds, mapViewport } from "./map";
 import { GsiBackground } from "./GsiBackground";
 import type { Camera } from "./map";
@@ -156,6 +157,21 @@ const previewWorld: World = {
 const detail = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function App() {
+  type EditSnapshot={world:World;plans:ConstructionPlans};
+  const editJournal=useRef(new EditHistory<EditSnapshot>());
+  const [historyAvailability,setHistoryAvailability]=useState({undo:false,redo:false});
+  function refreshHistoryAvailability(){const next={undo:!!editJournal.current.peek(false),redo:!!editJournal.current.peek(true)};setHistoryAvailability(old=>old.undo===next.undo&&old.redo===next.redo?old:next);}
+  const editBaseline=useRef<EditSnapshot|null>(null);
+  const historyRestoring=useRef(false);
+  const pendingWorldAction=useRef<{kind:"edit"|"final"|"load"|"stage";result:unknown}|null>(null);
+  async function invoke<T>(command:string,args?:Record<string,unknown>):Promise<T>{
+    const result=await (args===undefined?nativeInvoke<T>(command):nativeInvoke<T>(command,args));
+    if(FINAL_WORLD_COMMANDS.has(command)||UNDO_WORLD_COMMANDS.has(command)||['load_save_slot','load_autosave','create_new_world','stage_ofm_construction_plan'].includes(command)){
+      pendingWorldAction.current={kind:FINAL_WORLD_COMMANDS.has(command)?"final":UNDO_WORLD_COMMANDS.has(command)?"edit":command==='stage_ofm_construction_plan'?"stage":"load",result};
+    }
+    return result;
+  }
+
   const svgRef = useRef<SVGSVGElement | null>(null);
   const cameraRef = useRef<Camera>(DEFAULT_CAMERA);
   const [pixelRatio, setPixelRatio] = useState(() => window.devicePixelRatio || 1);
@@ -247,6 +263,7 @@ export function App() {
   const [errorRevision,setErrorRevision]=useState(0);
   function setError(message:string){setErrorMessage(message);setErrorRevision(value=>value+1);}
   const [notice, setNotice] = useState("");
+  const [planRecoveryNotice,setPlanRecoveryNotice]=useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [editStationName, setEditStationName] = useState("");
   const stationNameInput=useRef<HTMLInputElement>(null);
@@ -295,6 +312,8 @@ export function App() {
   const [anchorUndo,setAnchorUndo]=useState<AnchorEdit[]>([]),[anchorRedo,setAnchorRedo]=useState<AnchorEdit[]>([]);
   // Keep session-only edit history with its path while another plan is selected.
   const parkedAnchorHistory=useRef(new Map<number,{undo:AnchorEdit[];redo:AnchorEdit[]}>());
+  // Remaining plans survive construction, but their pre-construction edits do not.
+  const constructionUndoFloor=useRef(new Map<number,number>());
   function parkAnchorHistory(){
     parkedAnchorHistory.current.set(activePathId,{undo:anchorUndo.filter(edit=>edit.id===activePathId),redo:anchorRedo.filter(edit=>edit.id===activePathId)});
   }
@@ -359,7 +378,7 @@ export function App() {
   function adjacentHistoryPath(redo:boolean){
     return [...parkedPaths].reverse().find(path=>path.planId===activePlanId&&!path.reference&&!path.ofmPath&&(
       redo ? path.redo.length>0 || !!parkedAnchorHistory.current.get(path.id)?.redo.length
-        : path.points.length>0 || !!parkedAnchorHistory.current.get(path.id)?.undo.length
+        : path.points.length>(constructionUndoFloor.current.get(path.id)??0) || !!parkedAnchorHistory.current.get(path.id)?.undo.length
     ));
   }
   function movePathHistory(redo:boolean){
@@ -375,15 +394,8 @@ export function App() {
     pendingPathHistory.current=null;
     if(pending.redo)redoPoint();else undoPoint();
   },[activePathId]);
-  function undoPoint() { if(anchorUndo.length){undoAnchor(false);return;} if (!draftPoints.length) {movePathHistory(false);return;} if(draftFinished&&draftPoints.length===2){undoLastSegment();return;} setDraftRedoDestination(draftDestination??draftRedoDestination);setDraftDestination(undefined);const levels=anchorHeights(draftPoints.length,draftPoints.length?draftAnchorLevels:undefined,startLevel,infrastructure.level);setDraftAnchorLevels(levels.slice(0,-1));setRedoAnchorLevels(items=>[...items,levels[levels.length-1]]);setRedoPoints(redo => [...redo, draftPoints[draftPoints.length-1]]); setDraftPoints(points => points.slice(0,-1)); setHoverPoint(null); }
-  function redoPoint() {
-    if(anchorRedo.length){undoAnchor(true);return;} if (!redoPoints.length) {movePathHistory(true);return;}
-    const count=draftFinished&&!draftPoints.length&&redoPoints.length>=2?2:1;
-    const after={anchorLevels:[...anchorHeights(draftPoints.length,draftPoints.length?draftAnchorLevels:undefined,startLevel,infrastructure.level),...redoPoints.slice(-count).map((_,i)=>redoAnchorLevels[redoPoints.length-count+i]??infrastructure.level).reverse()],redoAnchorLevels:redoAnchorLevels.slice(0,-count),points:[...draftPoints,...redoPoints.slice(-count).reverse()],geometry:draftEditedGeometry,redo:redoPoints.slice(0,-count),destination:redoPoints.length===count?draftRedoDestination:draftDestination,redoDestination:redoPoints.length===count?undefined:draftRedoDestination};
-
-      setAnchorUndo(items=>[...items,{kind:"point" as const,id:activePathId,before:{anchorLevels:draftAnchorLevels,redoAnchorLevels,points:draftPoints,geometry:draftEditedGeometry,redo:redoPoints,destination:draftDestination,redoDestination:draftRedoDestination},after}].slice(-50));
-    applyAnchorEdit(activePathId,after);
-  }
+  function undoPoint() { stepEditHistory(false); }
+  function redoPoint() { stepEditHistory(true); }
   const [alignmentId, setAlignmentId] = useState("");
   const [selectedPlanPath,setSelectedPlanPath]=useState<number|null>(null);
   const [trackDeleteConfirm,setTrackDeleteConfirm]=useState(false);
@@ -668,6 +680,31 @@ export function App() {
   useEffect(()=>{roadDrawing.cancel();},[draftPoints,draftFinished,infrastructure,world,activeTool,mapMode]);
   const roadFinishAfterPlacement=useRef(false);
   const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
+  type ReferenceDraftEdit={session:ReferenceSessionSnapshot;stations:PlannedStation[];extension:string;seamExtension:string;seamDestination:string};
+  const referenceJournal=useRef(new EditHistory<ReferenceDraftEdit>());
+  const referenceBaseline=useRef<ReferenceDraftEdit|null>(null);
+  const referenceRestoring=useRef(false);
+  const [referenceHistoryAvailable,setReferenceHistoryAvailable]=useState({undo:false,redo:false});
+  function refreshReferenceHistory(){const next={undo:!!referenceJournal.current.peek(false),redo:!!referenceJournal.current.peek(true)};setReferenceHistoryAvailable(old=>old.undo===next.undo&&old.redo===next.redo?old:next);}
+  useLayoutEffect(()=>{
+    if(busyRef.current||referenceCopy.busy)return;
+    if(!referenceCopy.active){referenceJournal.current.clear();referenceBaseline.current=null;referenceRestoring.current=false;refreshReferenceHistory();return;}
+    const next:ReferenceDraftEdit={session:referenceCopy.sessionSnapshot,stations:plannedStations.filter(s=>s.pathId===-1),extension:referenceExtensionKey,seamExtension:seamExtensionKey,seamDestination:seamDestinationKey};
+    const before=referenceBaseline.current;
+    if(referenceRestoring.current){referenceRestoring.current=false;referenceBaseline.current=next;return;}
+    if(before&&before.session.bundleIdentity===next.session.bundleIdentity&&before.session.provider===next.session.provider){
+      if(!sameReferenceSession(before.session,next.session)||JSON.stringify([before.stations,before.extension,before.seamExtension,before.seamDestination])!==JSON.stringify([next.stations,next.extension,next.seamExtension,next.seamDestination]))referenceJournal.current.record(before,next,false);
+    }else referenceJournal.current.clear();
+    referenceBaseline.current=next;refreshReferenceHistory();
+  },[referenceCopy.sessionSnapshot,referenceCopy.busy,plannedStations,referenceExtensionKey,seamExtensionKey,seamDestinationKey,busy]);
+  function stepReferenceHistory(redo:boolean){
+    if(!enabled||busyRef.current||referenceCopy.busy||!referenceCopy.active||saveBlocked)return;
+    const entry=referenceJournal.current.peek(redo);if(!entry)return;
+    const target=redo?entry.after:entry.before;
+    if(!referenceCopy.restoreSession(target.session,referenceCopy.sessionSnapshot)){setError('参照経路の状態が変わったため履歴を復元できません。');return;}
+    referenceRestoring.current=true;referenceJournal.current.complete(redo);
+    setPlannedStations(items=>[...items.filter(s=>s.pathId!==-1),...target.stations]);setReferenceExtensionKey(target.extension);setSeamExtensionKey(target.seamExtension);setSeamDestinationKey(target.seamDestination);refreshReferenceHistory();
+  }
   useEffect(()=>{setReferenceExtensionKey("");setSeamExtensionKey("");setSeamDestinationKey("");setSeamFocusKey("");if(!referenceCopy.active){setFrozenRoadBundle(null);setFrozenRoadTiles(old=>old.length?[]:old);}},[referenceCopy.active,graphBundle]);
   useEffect(()=>{
     if(roadFollowing&&referenceCopy.active&&graphBundle&&!frozenRoadBundle){
@@ -705,6 +742,47 @@ export function App() {
   const saveBlocked = routeRenameDirty || serviceAppearanceDirty || bindingDirty || !!anchorPreview || candidateDirty || serviceDirty || pathServiceDirty || companyDirty || stationSettingsDirty;
   const hasPlans = plannedStations.length>0 || draftPoints.length > 0 || redoPoints.length > 0 || parkedPaths.length > 0 || referenceCopy.active;
   const constructionPlans=useMemo<ConstructionPlans>(()=>({version:1,draftAnchorLevels:draftPoints.length?draftAnchorLevels:undefined,redoAnchorLevels:redoPoints.length?redoAnchorLevels:undefined,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,draftJunctionSource:(draftPoints.length||redoPoints.length)?directedJunction:undefined,startLevel:(draftPoints.length||redoPoints.length)?startLevel:undefined,infrastructure:infrastructure.track_count===1&&infrastructure.level==="ground"?undefined:infrastructure,roadFollowing:legacyRoadDraft,plannedStations:plannedStations.filter(station=>station.pathId!==-1),draftFinished}),[draftAnchorLevels,redoAnchorLevels,plans,parkedPaths,activePathId,activePlanId,draftPoints,draftEditedGeometry,redoPoints,draftExtension,draftDestination,draftRedoDestination,trackType,designSpeedKmh,infrastructure,startLevel,directedJunction,roadFollowing,legacyRoadDraft,plannedStations,draftFinished]);
+  useLayoutEffect(()=>{
+    if(!world||busyRef.current)return;
+    const next={world,plans:constructionPlans},before=editBaseline.current,action=pendingWorldAction.current;
+    if(historyRestoring.current){historyRestoring.current=false;pendingWorldAction.current=null;editBaseline.current=next;return;}
+    if(!before){editBaseline.current=next;pendingWorldAction.current=null;return;}
+    const changedWorld=!sameWorldEdit(before.world,world),changedPlan=before.plans!==constructionPlans&&planEditKey(before.plans)!==planEditKey(constructionPlans);
+    if(action&&sameWorldEdit(action.result,world)){
+      pendingWorldAction.current=null;
+      if(action.kind==='load'||(action.kind==='final'&&changedWorld)){editJournal.current.clear();editBaseline.current=next;refreshHistoryAvailability();return;}
+      if(action.kind==='stage'&&(changedWorld||changedPlan)){editJournal.current.record(before,next,changedWorld);editBaseline.current=next;refreshHistoryAvailability();return;}
+    }
+    if(changedWorld){
+      // World mutation must have a matching successful native editing operation.
+      if(action?.kind==='edit')editJournal.current.record(before,next,true);
+      else editJournal.current.clear();
+    }else if(changedPlan){
+      const last=editJournal.current.peek(false);
+      // A stroke's first segment is one edit; its first anchor alone is only its start.
+      if(last&&!last.world&&last.after.plans.activePathId===next.plans.activePathId&&(last.before.plans.draftPoints.length===0||last.before.plans.activePathId!==next.plans.activePathId)&&last.after.plans.draftPoints.length===1&&next.plans.draftPoints.length===2&&last.after.plans.parkedPaths.length===next.plans.parkedPaths.length){last.after=next;editJournal.current.redo=[];}
+      else editJournal.current.record(before,next,false);
+    }else {
+      const last=editJournal.current.peek(false);
+      if(last&&planEditKey(last.after.plans)===planEditKey(next.plans)&&sameWorldEdit(last.after.world,next.world))last.after=next;
+    }
+    editBaseline.current=next;refreshHistoryAvailability();
+  },[world,constructionPlans,busy]);
+  function stepEditHistory(redo:boolean){
+    if(!enabled||busyRef.current||historyRestoring.current||!world)return;
+    if(unapplied||stationResizePending){setError("編集中の変更を適用または取り消してください。");return;}
+    const entry=editJournal.current.peek(redo);if(!entry){setNotice("元に戻せる操作はありません。");return;}
+    const target=redo?entry.after:entry.before;
+    const restore=(snapshot:World)=>{
+      historyRestoring.current=true;editJournal.current.complete(redo);refreshHistoryAvailability();
+      const saved=savedPlanFingerprint;restoreConstructionPlans({...target.plans,draftFinished:target.plans.draftPoints.length>=2});setSavedPlanFingerprint(saved);
+      setWorld(snapshot);setDirty(true);setTrackDeleteUndo(null);setTrackDeleteRedo(null);clearStationHistory();
+      setPathDraftEpoch(value=>value+1);resetRoute();resetService();setStationCursor(null);setSelected(null);setEditStationName("");setPendingDelete(null);setPendingStation(null);setCompanyName(snapshot.companies[0]?.name??"");
+      setNotice(redo?"操作をやり直しました。":"操作を元に戻しました。");
+    };
+    if(entry.world){void perform(async()=>{const snapshot=await nativeInvoke<World>(redo?'redo_world_edit':'undo_world_edit',{expectedWorld:{...world,construction_plans:target.plans,view_state:camera}});restore(snapshot);});}
+    else restore(world);
+  }
   const persistedPlans=useMemo(()=>compactEmptyPlans(constructionPlans),[constructionPlans]);
   const planFingerprint=useMemo(()=>constructionPlanFingerprint(constructionPlans),[constructionPlans]);
   const seamStageCurrent=useRef({world,worldEpoch,planFingerprint,picks:JSON.stringify([manualReferenceCopyState.picks,seamExtensionKey,seamDestinationKey]),activeTool});
@@ -725,6 +803,13 @@ export function App() {
     setDraftJunctionSource(restored.draftJunctionSource);setDraftAnchorLevels(restored.draftAnchorLevels);setRedoAnchorLevels(restored.redoAnchorLevels??[]);setHeightAnchor(null);setStartLevel(restored.startLevel);setInfrastructure(restored.infrastructure??DEFAULT_INFRASTRUCTURE);setTrackType(restored.trackType);setDesignSpeedKmh(restored.designSpeedKmh);setRoadFollowing(restored.roadFollowing);setLegacyRoadDraft(restored.roadFollowing);setPlannedStations(restored.plannedStations);
     nextPlanId.current=ids.plan;nextPathId.current=ids.path;nextPlannedStationId.current=ids.station;
     setSavedPlanFingerprint(constructionPlanFingerprint(restored));
+  }
+  function restoreLoadedPlans(snapshot:World){
+    const original=snapshot.construction_plans??emptyConstructionPlans();
+    const recovery=recoverLegacyRedoPlans(original,extension=>{const line=snapshot.alignments?.find(a=>a.id===extension.alignmentId);return extension.endpoint==='start'?line?.points[1]:line?.points.at(-2);});
+    restoreConstructionPlans(recovery.plans,true);
+    setSavedPlanFingerprint(constructionPlanFingerprint(compactEmptyPlans(original)));
+    setPlanRecoveryNotice([recovery.recoveredPathIds.length?`旧形式の取り消し中データから未着工経路を${recovery.recoveredPathIds.length}件復旧しました。内容を確認して保存してください。`:'',recovery.unresolvedPathIds.length?`復旧を確定できない旧経路（${recovery.unresolvedPathIds.join('、')}）は元データを保持しています。保存を上書きせず確認してください。`:''].filter(Boolean).join(' '));
   }
   function alignmentReferences(id:string){
     if(world?.alignments?.find(a=>a.id===id)?.owner!==world?.companies[0]?.id)return "他社の線路";
@@ -775,29 +860,8 @@ export function App() {
     restoreConstructionPlans(snapshot.construction_plans);setSavedPlanFingerprint(saved);
     return constructionPlanFingerprint(snapshot.construction_plans);
   }
-  function undoTrackDelete(){
-    if(!enabled||!trackDeleteUndo||!canUndoTrackDelete)return;
-    const entry=trackDeleteUndo;
-    if(entry.kind==="built"&&entry.command==="delete_service"&&(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty)){setServiceHint("編集中の変更を適用または取り消してください。");return;}
-    if(entry.kind==="plan"){
-      const saved=savedPlanFingerprint;restoreConstructionPlans(entry.before);setSavedPlanFingerprint(saved);
-      setTrackDeleteRedo({entry,world,plans:constructionPlanFingerprint(entry.before)});setTrackDeleteUndo(null);return;
-    }
-    void perform(async()=>{const snapshot=await invoke<World>("undo_alignment_deletion");setWorld(snapshot);setDirty(true);setTrackDeleteRedo({entry,world:snapshot,plans:entry.command==="delete_service"?planFingerprint:restoreRemappedPlans(snapshot)});setTrackDeleteUndo(null);if(entry.command==="delete_service")resetService();});
-  }
-  function redoTrackDelete(){
-    if(!enabled||!trackDeleteRedo||!canRedoTrackDelete)return;
-    const entry=trackDeleteRedo.entry;
-    if(entry.kind==="built"&&entry.command==="delete_service"&&(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty)){setServiceHint("編集中の変更を適用または取り消してください。");return;}
-    if(entry.kind==="plan"){
-      const saved=savedPlanFingerprint;restoreConstructionPlans(JSON.parse(entry.after) as ConstructionPlans);setSavedPlanFingerprint(saved);
-      setTrackDeleteUndo(entry);setTrackDeleteRedo(null);return;
-    }
-    void perform(async()=>{
-      const snapshot=await invoke<World>(entry.command,entry.args);
-      setWorld(snapshot);setDirty(true);setTrackDeleteUndo({...entry,world:snapshot,plans:entry.command==="delete_service"?planFingerprint:restoreRemappedPlans(snapshot)});setTrackDeleteRedo(null);if(entry.command==="delete_service")resetService();
-    });
-  }
+  function undoTrackDelete(){ stepEditHistory(false); }
+  function redoTrackDelete(){ stepEditHistory(true); }
   useEffect(()=>{setRangeSelection([]);setConfirmRangeDelete(false);setRangeTrackCount(null);setRangeLevel(null);setRangeTrackType(null);const selection=boxGesture.current;boxGesture.current=null;setSelectionBox(null);const svg=svgRef.current;if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);},[world,activeTool]);
   useEffect(()=>{setBuiltHeightSelection(selection=>currentBuiltHeightSelection(selection,world?.alignments??[],activeTool==="select"));},[world,activeTool]);
   function updateBuiltAnchorHeight(level:SectionInfrastructure["level"]){
@@ -923,7 +987,7 @@ export function App() {
     void perform(async () => {
       const snapshot = await invoke<World>("rename_station", { stationId: selectedStation.id, name: editStationName.trim() });
       setWorld(snapshot); setEditStationName(snapshot.stations.find((station) => station.id === selectedStation.id)?.name ?? "");
-      setDirty(true); setConfirmLoad(false); setNotice("駅名を変更しました。保存でファイルに反映します。駅設置履歴は終了しました。");clearStationHistory();
+      setDirty(true); setConfirmLoad(false); setNotice("駅名を変更しました。保存でファイルに反映します。Undoで駅名を戻せます。");clearStationHistory();
     });
   }
   function deleteEquipment() {
@@ -953,7 +1017,7 @@ export function App() {
     setStatus("loading");
     Promise.all([invoke<EngineInfo>("engine_info"), invoke<World>("world_snapshot")]).then(
       ([engine, snapshot]) => {
-        if (active) { setInfo(engine); setCompanySetupRequired(engine.company_setup_required===true); setWorld(snapshot); restoreConstructionPlans(snapshot.construction_plans,true);restoreView(snapshot.view_state);setCompanyName(snapshot.companies[0]?.name ?? ""); setStatus("ready"); }
+        if (active) { setInfo(engine); setCompanySetupRequired(engine.company_setup_required===true); setWorld(snapshot); restoreLoadedPlans(snapshot);restoreView(snapshot.view_state);setCompanyName(snapshot.companies[0]?.name ?? ""); setStatus("ready"); }
       },
       (failure) => {
         if (active) { setError(detail(failure)); setStatus("error"); }
@@ -1012,7 +1076,7 @@ export function App() {
   }
   function undoAnchor(redo:boolean){
     const history=redo?anchorRedo:anchorUndo,entry=history.at(-1);if(!entry)return;
-    if(!redo&&entry.kind==="point"&&entry.id===activePathId&&draftFinished&&draftPoints.length===2&&entry.before.points.length===1){
+    if(!redo&&entry.kind==="point"&&entry.id===activePathId&&draftFinished&&draftPoints.length===2&&entry.before.points.length===1&&!(constructionUndoFloor.current.get(activePathId)??0)){
       const start=history.at(-2);
       undoLastSegment(start?.kind==="point"&&start.id===activePathId&&start.before.points.length===0&&start.after.points.length===1?2:1);return;
     }
@@ -1446,17 +1510,15 @@ export function App() {
       }
       const roads=attachment.roads;
       const snapshot=await invoke<World>(roads.length?"build_plan_with_roads":batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",roads.length?{alignments:requests,stations,roads}:batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,anchorIndices:first.anchorIndices,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh,infrastructure:first.infrastructure,startLevel:first.startLevel,anchorLevels:first.anchorLevels});
-      const extendedIds=new Set(requests.flatMap(request=>request.extension?[request.extension.alignmentId]:[]));
-      const keepHistory=(entry:StationHistoryEntry)=>Boolean(entry.planned)||!entry.placement||!extendedIds.has(entry.placement.alignment_id);
-      setStationUndo(history=>history.filter(keepHistory));setStationRedo(history=>history.filter(keepHistory));
-      ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setStationUndo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setStationRedo(items=>items.filter(entry=>!entry.planned||stationPlanId(entry.planned)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
+      ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));setParkedPaths(paths=>paths.filter(path=>path.planId!==activePlanId));
       const created=snapshot.alignments?.find(a=>!alignments.some(old=>old.id===a.id));
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);setDraftFinished(false);setDraftAnchorLevels(undefined);setRedoAnchorLevels([]);setHeightAnchor(null);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);
-      const saved=savedPlanFingerprint,nextPlans=removeConstructionPlan(constructionPlans,activePlanId);restoreConstructionPlans(nextPlans);setSavedPlanFingerprint(saved);
-      if(requests.some(request=>request.junctionSource)){setTrackDeleteUndo({kind:"built",world:snapshot,plans:constructionPlanFingerprint(nextPlans),command:roads.length?"build_plan_with_roads":"build_plan",args:roads.length?{alignments:requests,stations,roads}:{alignments:requests,stations}});setTrackDeleteRedo(null);}
+      const saved=savedPlanFingerprint,remaining=removeConstructionPlan(constructionPlans,activePlanId);
+      const nextPlans:ConstructionPlans={...remaining,redoPoints:[],redoAnchorLevels:[],draftRedoDestination:undefined,parkedPaths:remaining.parkedPaths.map(path=>({...path,redo:[],redoAnchorLevels:[],redoDestination:undefined}))};
+      restoreConstructionPlans(nextPlans);setSavedPlanFingerprint(saved);
+      constructionUndoFloor.current=new Map([[nextPlans.activePathId,nextPlans.draftPoints.length],...nextPlans.parkedPaths.map(path=>[path.id,path.points.length] as [number,number])]);
+      pendingPathHistory.current=null;clearStationHistory();setTrackDeleteUndo(null);setTrackDeleteRedo(null);
       if(created)setAlignmentId(created.id);
-      const builtStations=snapshot.stations.filter(station=>!world?.stations.some(old=>old.id===station.id)).map(station=>({station,placement:snapshot.station_placements?.find(p=>p.station_id===station.id)}));
-      setStationUndo(history=>[...history,...builtStations].slice(-50));setStationRedo([]);
       changeMapMode(activeTool==="stations"?"place":"draw");setNotice((requests.length?"線路を建設しました。計画駅も反映しました。":"計画駅を建設しました。")+(roadConfirmation?` ${roadConfirmation}`:""));
     });
   }
@@ -1509,45 +1571,8 @@ export function App() {
     if(saveBlocked || (placement && (Number(editLength)!==placement.length_m || Number(editWidth)!==placement.width_m)))return "編集中の下書き・配置プレビューを適用または解除してください。";
     return "";
   }
-  function undoStation(){
-    if(!enabled || busyRef.current)return;
-    const entry=stationUndo.at(-1);if(!entry){setNotice("取り消せる駅設置履歴はありません。保存済み・読込済みの駅は対象外です。");return;}
-    if(pendingDelete||pendingStation||confirmLoad){setError("表示中の確認を完了または取り消してください。");return;}
-    if(entry.planned){setPlannedStations(items=>items.filter(item=>item.id!==entry.planned!.id));setStationUndo(items=>items.slice(0,-1));setStationRedo(items=>[...items,entry]);setNotice("計画駅の設置を取り消しました。");return;}
-    const blocked=stationHistoryBlock();if(blocked){setError(blocked);return;}
-    const current=world?.stations.find(station=>station.id===entry.station.id);
-    const currentPlacement=world?.station_placements?.find(p=>p.station_id===entry.station.id);
-    if(JSON.stringify(current)!==JSON.stringify(entry.station)||JSON.stringify(currentPlacement)!==JSON.stringify(entry.placement)){setError("対象駅が設置後に変更されています。駅設置Undoは実行できません。");return;}
-    const references=stationReferences(entry.station.id);if(references){setError("駅設置Undo不可: "+references);return;}
-    void perform(async()=>{
-      const snapshot=await invoke<World>("delete_station",{stationId:entry.station.id});
-      setWorld(snapshot);setDirty(true);setConfirmLoad(false);setStationUndo(history=>history.slice(0,-1));setStationRedo(history=>[...history,entry]);
-      if(selected===entry.station.id){setSelected(null);setEditStationName("");setPendingStation(null);}
-
-      if(routeStart===entry.station.id)resetRoute();if(serviceStart===entry.station.id)resetService();setPendingDelete(null);
-      setNotice("直前の駅設置を取り消しました。やり直すと新しい駅IDになります。");
-    });
-  }
-  function redoStation(){
-    if(!enabled || busyRef.current)return;
-    const entry=stationRedo.at(-1);if(!entry){setNotice("やり直せる駅設置履歴はありません。");return;}
-    if(pendingDelete||pendingStation||confirmLoad){setError("表示中の確認を完了または取り消してください。");return;}
-    if(entry.planned){
-      if(!stationLines.some(line=>entry.planned!.alignmentId?line.pathId===undefined&&line.id===entry.planned!.alignmentId:line.pathId===entry.planned!.pathId)){setError("元の線路計画がありません。");return;}
-      setPlannedStations(items=>[...items,entry.planned!]);setStationRedo(items=>items.slice(0,-1));setStationUndo(items=>[...items,entry]);setNotice("計画駅を再設置しました。");return;
-    }
-    const blocked=stationHistoryBlock();if(blocked){setError(blocked);return;}
-    if(entry.placement&&!alignments.some(a=>a.id===entry.placement!.alignment_id)){setError("元の建設線形がありません。駅設置Redoは実行できません。");return;}
-    void perform(async()=>{
-      const p=entry.placement;
-      const snapshot=await invoke<World>(p?"place_station_on_alignment":"add_station",p?{name:entry.station.name,alignmentId:p.alignment_id,position:p.position,lengthM:p.length_m,widthM:p.width_m}:{name:entry.station.name,latitude:entry.station.latitude,longitude:entry.station.longitude});
-      const created=snapshot.stations.find(station=>!world?.stations.some(old=>old.id===station.id));
-      setWorld(snapshot);setDirty(true);setConfirmLoad(false);
-      if(!created){clearStationHistory();setError("再設置の結果を識別できません。重複防止のため履歴を終了しました。ワールドを確認してください。");return;}
-      setStationRedo(history=>history.slice(0,-1));setStationUndo(history=>[...history,{station:created,placement:snapshot.station_placements?.find(p=>p.station_id===created.id)}].slice(-50));
-      setNotice("駅を再設置しました。駅IDは新規発行です。保存でファイルに反映します。");
-    });
-  }
+  function undoStation(){ stepEditHistory(false); }
+  function redoStation(){ stepEditHistory(true); }
   useKeyboardPan((dx,dy)=>changeCamera(panCamera(cameraRef.current,dx,dy)),
     ()=>!!(seamMutationPending.current||busyRef.current||slotDialog||slotPicker||confirmLoad||deleteTarget||confirmRangeDelete||gestureRef.current||anchorGesture.current||boxGesture.current));
   useEffect(() => {
@@ -1571,19 +1596,9 @@ export function App() {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==="z") {
         event.preventDefault();if(event.repeat || busyRef.current)return;
         if(parallelStart){if(!event.shiftKey)cancelParallel();return;}
-        if(heightAnchor&&heightAnchor.id!==activePathId){
-          const history=parkedAnchorHistory.current.get(heightAnchor.id),entries=event.shiftKey?history?.redo:history?.undo,entry=entries?.at(-1);
-          if(history&&entry){applyAnchorEdit(entry.id,event.shiftKey?entry.after:entry.before);parkedAnchorHistory.current.set(entry.id,event.shiftKey?{undo:[...history.undo,entry],redo:history.redo.slice(0,-1)}:{undo:history.undo.slice(0,-1),redo:[...history.redo,entry]});return;}
-        }
         if(anchorGesture.current){cancelAnchorGesture();return;}
-        // Tool changes are not edits: undo the last deletion before per-tool
-        // drawing/placement history while its exact post-operation state still matches.
-        if(event.shiftKey?canRedoTrackDelete:canUndoTrackDelete){if(event.shiftKey)redoTrackDelete();else undoTrackDelete();return;}
-        if(activeTool==="delete"||activeTool==="select"){if(event.shiftKey)redoTrackDelete();else undoTrackDelete();return;}
-        if((activeTool==="tracks"||heightAnchor) && (event.shiftKey?anchorRedo.length:anchorUndo.length)){undoAnchor(event.shiftKey);return;}
-        if(referenceCopy.active && activeTool==="tracks"){if(event.shiftKey)referenceCopy.redoPick();else referenceCopy.undo();}
-        else if(activeTool==="tracks" && (draftPoints.length || redoPoints.length || adjacentHistoryPath(event.shiftKey))){if(event.shiftKey)redoPoint();else undoPoint();}
-        else if(event.shiftKey)redoStation();else undoStation();return;
+        if(referenceCopy.active){stepReferenceHistory(event.shiftKey);return;}
+        stepEditHistory(event.shiftKey);return;
       }
       if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
       if (event.key === "Escape") {roadDrawing.cancel();cancelParallel(); if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
@@ -1746,7 +1761,7 @@ export function App() {
       referenceCopy.clear();setCandidateDirty(false);setPendingGraphChange(null);
       setCompanySetupRequired(false);
       clearStationHistory();
-      setTrackDeleteUndo(null);setSelectedPlanPath(null);setTrackDeleteConfirm(false);setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreConstructionPlans(snapshot.construction_plans,true);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
+      setTrackDeleteUndo(null);setSelectedPlanPath(null);setTrackDeleteConfirm(false);setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreLoadedPlans(snapshot);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
   }
   function requestLoad(source:"manual"|"auto"){setSlotAction(null);setLoadSource(source);if(dirty||plansDirty||viewDirty||unapplied)setConfirmLoad(true);else load(source);}
   function load(source: "manual"|"auto" = loadSource) {
@@ -1776,6 +1791,7 @@ export function App() {
       <div className="workspace">
         <section className="map-panel" aria-labelledby="map-title">
           <div className="map-notices" aria-label="通知">
+            {planRecoveryNotice&&<p role="status">{planRecoveryNotice}</p>}
       {closeGuard.closeError && !closeGuard.confirmClose && <div className="banner" role="alert">{closeGuard.closeError}</div>}
 
       {status === "preview" && <p className="banner">ブラウザでの画面確認です。表示はサンプルデータで、駅の配置・線路接続・保存・読込はデスクトップ版で利用できます。</p>}
@@ -1812,7 +1828,8 @@ export function App() {
           <div className="track-selection-controls" role="group" aria-label="線路選択">
             <button type="button" className="secondary" disabled={!enabled} aria-pressed={mapMode==="move"&&activeTool==="inactive"} onClick={()=>{setActiveTool("inactive");changeMapMode("move");setTrackDeleteConfirm(false);}}>選択</button>
             {selectedTrackExists&&mapMode==="move"&&<>{!(mainTab==="construction"&&activeTool==="inactive")&&<span>{selectedPlanPath!==null?"計画線路":selectedAlignment?.name?.trim()||"名前未設定の線路"}</span>}<button type="button" className="danger" disabled={!enabled||unapplied||!!selectedTrackReferences} onClick={()=>setTrackDeleteConfirm(true)}>選択線路を削除</button>{selectedTrackReferences&&<small>削除不可：{selectedTrackReferences}が使用中</small>}</>}
-            {trackDeleteUndo&&activeTool!=="delete"&&<button type="button" className="secondary" disabled={!enabled||!canUndoTrackDelete} onClick={undoTrackDelete}>{trackDeleteUndo.kind==="built"&&trackDeleteUndo.command==="delete_service"?"系統削除を元に戻す":"線路削除を元に戻す"}</button>}
+            <button type="button" className="secondary" disabled={!enabled||saveBlocked||!(referenceCopy.active?referenceHistoryAvailable.undo:historyAvailability.undo)} onClick={()=>referenceCopy.active?stepReferenceHistory(false):stepEditHistory(false)}>元に戻す</button>
+            <button type="button" className="secondary" disabled={!enabled||saveBlocked||!(referenceCopy.active?referenceHistoryAvailable.redo:historyAvailability.redo)} onClick={()=>referenceCopy.active?stepReferenceHistory(true):stepEditHistory(true)}>やり直す</button>
           </div>
           {trackDeleteConfirm&&selectedTrackExists&&<TrackDeleteDialog busy={busy} blocked={!enabled||unapplied||!!selectedTrackReferences} error={error} onCancel={()=>setTrackDeleteConfirm(false)} onDelete={deleteSelectedTrack}/>}
           <div className="camera-controls" aria-label="地図表示操作">
@@ -1983,7 +2000,7 @@ export function App() {
           </section>
           <section className="track-editor" role="tabpanel" id="panel-tracks" aria-labelledby="tab-tracks" hidden={activeTool !== "tracks" && activeTool !== "inactive"}>
 
-            <details className="reference-tools" hidden={!referencePanel&&!referenceCopy.active} open><summary>実在線路・道路に沿う</summary>{roadFollowing&&<div role="status" aria-label="道路データ状態">{automaticRoad.message}<button type="button" className="secondary" disabled={referenceCopy.active} onClick={automaticRoad.retry}>再取得</button></div>}{roadFollowing?<p role="status">{roadDrawing.preview?.kind==="error"?roadDrawing.preview.error:"道路上で始点と次の地点をクリック。Ctrl を押す間は自由に敷設"}</p>:automaticRailSelected?<AutomaticRailControls copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;if(roadFollowing){setFrozenRoadBundle(graphBundle);setFrozenRoadTiles((automaticRoad.snapshot?.tileSnapshots??[]).filter(t=>"tileLines" in t&&Array.isArray(t.tileLines)) as unknown as readonly DraftTileSnapshot[]);}newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} status={automaticRail.status} retry={automaticRail.retry} enabled={enabled} canStart={copyCanStart} zoom={camera.zoom} truncated={automaticRail.view.truncated}/>:<ReferenceCopyControls cancelDisabled={seamStageSending} extensionError={referenceExtensionError} extensionControls={manualReferenceCopyState.seamPlan?<>{([0,1] as const).map(index=><label key={index}>{index===0?"道路追従の始点接続":"道路追従の終点接続"}<select aria-label={index===0?"道路追従の始点接続":"道路追従の終点接続"} value={index===0?seamExtensionKey:seamDestinationKey} onChange={e=>{(index===0?setSeamExtensionKey:setSeamDestinationKey)(e.target.value);setSeamFocusKey(e.target.value);referenceCopy.setConfirmed(false);}}><option value="">接続しない</option>{seamConnectionCandidates(index).map(candidate=><option key={candidate.key} value={candidate.key}>{seamCandidateLabel(index,candidate)}</option>)}</select></label>)}<small>元の道路形状上に正確に一致する既設端点だけ選択できます。形状は移動しません。</small></>:<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>{referenceExtensionLabel(candidate)}</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,begin:()=>{if(!copyCanStart)return;if(roadFollowing){setFrozenRoadBundle(graphBundle);setFrozenRoadTiles((automaticRoad.snapshot?.tileSnapshots??[]).filter(t=>"tileLines" in t&&Array.isArray(t.tileLines)) as unknown as readonly DraftTileSnapshot[]);}newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/> }</details>
+            <details className="reference-tools" hidden={!referencePanel&&!referenceCopy.active} open><summary>実在線路・道路に沿う</summary>{roadFollowing&&<div role="status" aria-label="道路データ状態">{automaticRoad.message}<button type="button" className="secondary" disabled={referenceCopy.active} onClick={automaticRoad.retry}>再取得</button></div>}{roadFollowing?<p role="status">{roadDrawing.preview?.kind==="error"?roadDrawing.preview.error:"道路上で始点と次の地点をクリック。Ctrl を押す間は自由に敷設"}</p>:automaticRailSelected?<AutomaticRailControls copy={{...referenceCopy,canUndo:referenceHistoryAvailable.undo,canRedo:referenceHistoryAvailable.redo,undo:()=>stepReferenceHistory(false),redoPick:()=>stepReferenceHistory(true),begin:()=>{if(!copyCanStart)return;if(roadFollowing){setFrozenRoadBundle(graphBundle);setFrozenRoadTiles((automaticRoad.snapshot?.tileSnapshots??[]).filter(t=>"tileLines" in t&&Array.isArray(t.tileLines)) as unknown as readonly DraftTileSnapshot[]);}newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} status={automaticRail.status} retry={automaticRail.retry} enabled={enabled} canStart={copyCanStart} zoom={camera.zoom} truncated={automaticRail.view.truncated}/>:<ReferenceCopyControls cancelDisabled={seamStageSending} extensionError={referenceExtensionError} extensionControls={manualReferenceCopyState.seamPlan?<>{([0,1] as const).map(index=><label key={index}>{index===0?"道路追従の始点接続":"道路追従の終点接続"}<select aria-label={index===0?"道路追従の始点接続":"道路追従の終点接続"} value={index===0?seamExtensionKey:seamDestinationKey} onChange={e=>{(index===0?setSeamExtensionKey:setSeamDestinationKey)(e.target.value);setSeamFocusKey(e.target.value);referenceCopy.setConfirmed(false);}}><option value="">接続しない</option>{seamConnectionCandidates(index).map(candidate=><option key={candidate.key} value={candidate.key}>{seamCandidateLabel(index,candidate)}</option>)}</select></label>)}<small>元の道路形状上に正確に一致する既設端点だけ選択できます。形状は移動しません。</small></>:<label>敷設方法<select aria-label="敷設方法" value={referenceExtensionKey} onChange={event=>{setReferenceExtensionKey(event.target.value);referenceCopy.setConfirmed(false);}}><option value="">独立した新しい線路</option>{referenceExtensionCandidates.map(candidate=><option key={candidate.key} value={candidate.key}>{referenceExtensionLabel(candidate)}</option>)}</select><small>起点から8px以内で、参照形状から正確に再現できる既存端点を選択できます。形状を平行移動せず参照区間の起点を補正します。既存の線路種別を引き継ぎます。複数候補から自動接続はしません。</small></label>} copy={{...referenceCopy,canUndo:referenceHistoryAvailable.undo,canRedo:referenceHistoryAvailable.redo,undo:()=>stepReferenceHistory(false),redoPick:()=>stepReferenceHistory(true),begin:()=>{if(!copyCanStart)return;if(roadFollowing){setFrozenRoadBundle(graphBundle);setFrozenRoadTiles((automaticRoad.snapshot?.tileSnapshots??[]).filter(t=>"tileLines" in t&&Array.isArray(t.tileLines)) as unknown as readonly DraftTileSnapshot[]);}newPath();referenceCopy.begin();changeMapMode("draw");setHoverPoint(null);}}} enabled={enabled} canStart={copyCanStart} hasBundle={!!graphBundle}/> }</details>
 
             {selectedAlignment&&world?.alignment_provenance?.some(p=>p.alignment_id===selectedAlignment.id)&&<AlignmentProvenance alignment={selectedAlignment} provenances={world?.alignment_provenance?.filter(p=>p.alignment_id===selectedAlignment.id)} sourceRecords={world?.source_records??[]}/>}
 

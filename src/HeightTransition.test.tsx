@@ -59,9 +59,9 @@ test('individual anchor levels survive edits Undo Redo save and reload',async()=
  await act(async()=>{fireEvent.click(map,{clientX:340,clientY:100});});await act(async()=>{fireEvent.click(map,{clientX:340,clientY:100});});
  fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}));
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated}).getAttribute('aria-pressed')).toBe('true');
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?Promise.resolve({saved:true}):original(command,args));
  fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText('ワールドと未着工計画を保存しました。');
@@ -71,16 +71,16 @@ test('individual anchor levels survive edits Undo Redo save and reload',async()=
  fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
 });
-test('parked anchor height edits keep their own Undo history and save levels',async()=>{
+test('parked anchor height edits follow chronological Undo history and save levels',async()=>{
  const {emptyConstructionPlans}=await import('./constructionPlans');
  const points=[{latitude:35.67504,longitude:139.73},{latitude:35.67504,longitude:139.76},{latitude:35.67504,longitude:139.79}];
  const plans={...emptyConstructionPlans(),parkedPaths:[{id:2,planId:1,name:'parked',points,line:points,redo:[],trackType:'normal',designSpeedKmh:120,roadFollowing:false,extension:null,anchorLevels:['ground','elevated','ground']}]};
  const map=await start({...empty,construction_plans:plans});fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-path="2"][data-anchor-index="1"]')!);
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}));
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated_3}));
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated}).getAttribute('aria-pressed')).toBe('true');
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated}).getAttribute('aria-pressed')).toBe('true');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?Promise.resolve({saved:true}):original(command,args));
  fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText('ワールドと未着工計画を保存しました。');
  expect(invoke).toHaveBeenCalledWith('save_world',expect.objectContaining({constructionPlans:expect.objectContaining({parkedPaths:expect.arrayContaining([expect.objectContaining({id:2,anchorLevels:['ground','elevated_2','ground']})])})}));
