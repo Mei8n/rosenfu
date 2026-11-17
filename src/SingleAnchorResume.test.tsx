@@ -21,8 +21,8 @@ async function start(extra={}){
  const map=screen.getByRole("img",{name:"駅配置用サンプル地図"});map.getBoundingClientRect=()=>rect;return map;
 }
 
-test('legacy saved single anchor resumes the same exact anchor, not a nearby new path',async()=>{
- const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200)],redoPoints:[point(240,200)],draftFinished:true}});
+test('saved single anchor without legacy redo resumes the same exact anchor, not a nearby new path',async()=>{
+ const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200)],redoPoints:[],draftFinished:true}});
  const click=async (x:number,y=200)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
  fireEvent.pointerMove(map,{clientX:122,clientY:201});
@@ -40,7 +40,7 @@ test('legacy saved single anchor resumes the same exact anchor, not a nearby new
 });
 
 test('a parked single anchor can resume without duplicating either path',async()=>{
- const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200)],redoPoints:[point(240,200)],draftFinished:true}});
+ const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200)],redoPoints:[],draftFinished:true}});
  const click=async (x:number,y=200)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  // Start and finish another disconnected track in this same plan.
  await click(300,80);await click(400,80);await click(400,80);
@@ -57,4 +57,17 @@ test('a parked single anchor can resume without duplicating either path',async()
  const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan')![1] as {alignments:{points:ReturnType<typeof point>[]}[]};
  expect(request.alignments).toHaveLength(2);
  expect(request.alignments.find(path=>path.points[0].latitude===point(120,200).latitude)?.points[0]).toEqual(point(120,200));
+});
+
+// Legacy Redo data is rescued as a visible unbuilt candidate, not session history.
+test('legacy undone endpoint is recovered exactly without reviving Undo history',async()=>{
+ const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200)],redoPoints:[point(240,200)],draftFinished:true}});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[]});
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_alignment',expect.anything()));
+ const request=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_alignment')![1] as {points:ReturnType<typeof point>[]};
+ expect(request.points).toEqual([point(120,200),point(240,200)]);
 });

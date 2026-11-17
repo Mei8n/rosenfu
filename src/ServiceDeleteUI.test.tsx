@@ -15,14 +15,14 @@ test.each([false,true])('service deletion Undo/Redo preserves unsaved plans (def
  const before={...structuredClone(base),construction_plans:emptyConstructionPlans()};
  const after={...before,services:[],service_paths:[],service_route_bindings:[],service_appearances:[]};
  let finishMutation:(()=>void)|undefined;
- const mutationCount=()=>vi.mocked(invoke).mock.calls.filter(([command])=>command==='delete_service'||command==='undo_alignment_deletion').length;
+ const mutationCount=()=>vi.mocked(invoke).mock.calls.filter(([command])=>command==='delete_service'||command==='undo_world_edit'||command==='redo_world_edit').length;
  // A visible world update is not a promise that perform() has released its busy
  // guard. Flush the whole operation before sending the next keyboard gesture.
  async function mutate(gesture:()=>void,command:string){
   const count=mutationCount();
   await act(async()=>{gesture();});
   expect(mutationCount()).toBe(count+1);
-  expect(vi.mocked(invoke).mock.calls.filter(([name])=>name==='delete_service'||name==='undo_alignment_deletion').at(-1)?.[0]).toBe(command);
+  expect(vi.mocked(invoke).mock.calls.filter(([name])=>name==='delete_service'||name==='undo_world_edit'||name==='redo_world_edit').at(-1)?.[0]).toBe(command);
   if(deferred){
    expect(finishMutation).toBeTypeOf('function');
    // In-flight input must not run another mutation or undo a construction plan.
@@ -34,11 +34,12 @@ test.each([false,true])('service deletion Undo/Redo preserves unsaved plans (def
   }
  }
  vi.mocked(isTauri).mockReturnValue(true);
- vi.mocked(invoke).mockImplementation(async command=>{
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{
   if(command==='engine_info')return {name:'Rosenfu',version:'delete-ui-test'};
   if(command==='world_snapshot')return structuredClone(before);
-  if(command==='undo_alignment_deletion'||command==='delete_service'){
-   const result=structuredClone(command==='delete_service'?after:before);
+  if(command==='undo_world_edit'||command==='redo_world_edit'||command==='delete_service'){
+   const expected=(args as any)?.expectedWorld;
+   const result={...structuredClone(command==='undo_world_edit'?before:after),...(expected?{construction_plans:expected.construction_plans,view_state:expected.view_state}:{})};
    return deferred?new Promise(resolve=>{finishMutation=()=>resolve(result);}):result;
   }
   if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};
@@ -64,9 +65,12 @@ test.each([false,true])('service deletion Undo/Redo preserves unsaved plans (def
  await waitFor(()=>expect(screen.queryByRole('button',{name:'系統編集: 普通'})).toBeNull());
  expect(shapes()).toEqual(planned);
  for(let i=0;i<2;i++){
-  await mutate(()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true}),'undo_alignment_deletion');
+  await mutate(()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true}),'undo_world_edit');
   await screen.findByRole('button',{name:'系統編集: 普通'});expect(shapes()).toEqual(planned);
-  await mutate(()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true}),'delete_service');
+  await mutate(()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true}),'redo_world_edit');
   await waitFor(()=>expect(screen.queryByRole('button',{name:'系統編集: 普通'})).toBeNull());expect(shapes()).toEqual(planned);
  }
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='delete_service')).toHaveLength(1);
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='undo_world_edit')).toHaveLength(2);
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='redo_world_edit')).toHaveLength(2);
 });

@@ -83,17 +83,17 @@ test('finished path undo/redo retains completion at three, two and zero points',
  for(const length of [2,0]){
   undo();fireEvent.pointerMove(map,{clientX:420,clientY:180});
   expect(map.querySelectorAll('.draft-anchor')).toHaveLength(length);
-  const saved=await savedPlan();expect(saved.draftFinished).toBe(true);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
+  const saved=await savedPlan();expect(saved.draftFinished).toBe(length>0);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
  }
  for(const length of [2,3]){
   redo();fireEvent.pointerMove(map,{clientX:420,clientY:180});
-  const saved=await savedPlan();expect(saved.draftFinished).toBe(true);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
+  const saved=await savedPlan();expect(saved.draftFinished).toBe(length>0);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
  }
 });
-test('loaded finished plans retain completion through fallback point undo/redo',async()=>{
+test('loaded finished plans retain completion without synthesizing session history',async()=>{
  const map=await setup();await settledMapClick(map,{clientX:350,clientY:150});const saved=await savedPlan();
  vi.mocked(invoke).mockResolvedValueOnce({...empty,construction_plans:saved});fireEvent.click(screen.getByRole('button',{name:'読込'}));await screen.findByText(/保存したワールドを読み込みました/);
- undo();expect((await savedPlan()).draftFinished).toBe(true);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ undo();expect((await savedPlan()).draftFinished).toBe(true);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
  redo();expect((await savedPlan()).draftFinished).toBe(true);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
 });
 test('finished drag undo and redo preserve completed state and other paths',async()=>{

@@ -14,7 +14,7 @@ HTMLDialogElement.prototype.close=function(){this.removeAttribute('open');};
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 async function start(snapshot:unknown=built){
  vi.mocked(isTauri).mockReturnValue(true);
- vi.mocked(invoke).mockImplementation(async command=>{if(command==='engine_info')return {name:'Rosenfu',version:'mode-test'};if(command==='world_snapshot')return snapshot;if(command==='delete_alignment_section'||command==='delete_station')return empty;if(command==='undo_alignment_deletion')return snapshot;throw Error(command);});
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{if(command==='engine_info')return {name:'Rosenfu',version:'mode-test'};if(command==='world_snapshot')return snapshot;if(command==='delete_alignment_section'||command==='delete_station')return empty;if(command==='undo_world_edit'||command==='redo_world_edit')return {...(command==='undo_world_edit'?snapshot as object:empty),construction_plans:(args as any).expectedWorld.construction_plans,view_state:(args as any).expectedWorld.view_state};throw Error(command);});
  render(<App/>);await screen.findByText(/mode-test/);
  const map=screen.getByRole('img',{name:'駅配置用OpenStreetMap'});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));return map;
@@ -152,7 +152,7 @@ test('built station deletion supports repeated undo and redo through backend val
   await waitFor(()=>expect((screen.getByRole('tab',{name:'削除'}) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});await waitFor(()=>expect(map.querySelector('[data-delete-station]')).toBeNull());
  }
- expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='delete_station')).toHaveLength(3);
+ expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='delete_station')).toHaveLength(1);expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='redo_world_edit')).toHaveLength(2);
 });
 
 test('planned anchor deletion redo is discarded by a different deletion',async()=>{

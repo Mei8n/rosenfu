@@ -100,10 +100,11 @@ test('outgoing tangent guide follows the preview endpoint and extends beyond the
  expect(Number(guide()!.getAttribute('x2'))).toBeCloseTo(600,4);
  expect(Number(guide()!.getAttribute('y2'))).toBeGreaterThan(360);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(guide()).toBeNull(); // Undo stops drawing instead of resuming it implicitly.
+ await settledMapClick(map,{clientX:250,clientY:130});
  expect(Number(guide()!.getAttribute('x1'))).toBeCloseTo(500,5);
  expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(Number(guide()!.getAttribute('y2')),5);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
- await settledMapClick(map,{clientX:300,clientY:180});
  expect(guide()).toBeNull();
  fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
  expect(guide()).toBeNull();

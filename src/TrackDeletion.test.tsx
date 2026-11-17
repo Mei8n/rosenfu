@@ -14,11 +14,11 @@ HTMLDialogElement.prototype.close=function(){this.removeAttribute("open");};
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 async function start(snapshot:unknown=built){
  vi.mocked(isTauri).mockReturnValue(true);
- vi.mocked(invoke).mockImplementation(async command=>{if(command==="preview_construction_plan")return {validationError:null};
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{if(command==="preview_construction_plan")return {validationError:null};
   if(command==="engine_info")return {name:"Rosenfu",version:"delete-test"};
   if(command==="world_snapshot")return snapshot;
   if(command==="delete_alignment")return empty;
-  if(command==="undo_alignment_deletion")return built;
+  if(command==="undo_world_edit"||command==="redo_world_edit")return {...(command==="undo_world_edit"?built:empty),construction_plans:(args as any).expectedWorld.construction_plans,view_state:(args as any).expectedWorld.view_state};
   throw Error(command);
  });
  render(<App/>);fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));await screen.findByText(/delete-test/);
@@ -34,7 +34,7 @@ test("built line selection, cancel, confirmed deletion and guarded undo",async()
  fireEvent.click(screen.getByRole("button",{name:"選択線路を削除"}));fireEvent.click(screen.getByRole("button",{name:"線路を削除"}));
  await waitFor(()=>expect(map.querySelector(".alignment-hit")).toBeNull());
  expect(invoke).toHaveBeenCalledWith("delete_alignment",expect.objectContaining({alignmentId:"3",constructionPlans:expect.any(Object)}));
- fireEvent.click(screen.getByRole("button",{name:"線路削除を元に戻す"}));await waitFor(()=>expect(map.querySelector(".alignment-hit")).not.toBeNull());
+ fireEvent.click(screen.getByRole("button",{name:"元に戻す"}));await waitFor(()=>expect(map.querySelector(".alignment-hit")).not.toBeNull());
 });
 test("station dependency refuses built line deletion",async()=>{
  const map=await start({...built,stations:[{id:"4",owner:"2",name:"駅",latitude:35.67504,longitude:139.75}],station_placements:[{station_id:"4",alignment_id:"3",position:.5,length_m:200,width_m:12}]});
@@ -48,7 +48,7 @@ test("planned line deletion is local, reversible and does not build",async()=>{
  fireEvent.click(screen.getByRole("button",{name:"選択"}));fireEvent.click(map.querySelector(".plan-hover-hit")!);
  fireEvent.click(screen.getByRole("button",{name:"選択線路を削除"}));fireEvent.click(screen.getByRole("button",{name:"線路を削除"}));
  expect(map.querySelector(".confirmed-draft")).toBeNull();
- fireEvent.click(screen.getByRole("button",{name:"線路削除を元に戻す"}));
+ fireEvent.click(screen.getByRole("button",{name:"元に戻す"}));
  expect(map.querySelector(".confirmed-draft")!.getAttribute("d")).toBe(before);
  expect(vi.mocked(invoke).mock.calls.some(([cmd])=>cmd==="delete_alignment"||cmd==="build_plan")).toBe(false);
 });
@@ -69,7 +69,7 @@ test("deleting a parked path preserves current path, saves the removal and suppo
  expect(map.querySelector(".parked-plan")).toBeNull();expect(map.querySelector(".confirmed-draft")).not.toBeNull();
  vi.mocked(invoke).mockResolvedValueOnce({saved:true});
  fireEvent.click(screen.getByRole("button",{name:"保存"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith("save_world",expect.objectContaining({constructionPlans:expect.objectContaining({parkedPaths:[]})})));
- fireEvent.click(screen.getByRole("button",{name:"線路削除を元に戻す"}));expect(map.querySelector(".parked-plan")).not.toBeNull();
+ fireEvent.click(screen.getByRole("button",{name:"元に戻す"}));expect(map.querySelector(".parked-plan")).not.toBeNull();
 });
 
 test("planned anchors also select their path in selection mode",async()=>{
@@ -86,8 +86,8 @@ test("empty-plan persistence cleanup does not invalidate in-session track undo",
  const map=await start({...empty,construction_plans:plans});
  fireEvent.click(screen.getByRole("button",{name:"選択"}));fireEvent.click(map.querySelector('[data-plan-hover-id="2"]')!);
  fireEvent.click(screen.getByRole("button",{name:"選択線路を削除"}));fireEvent.click(screen.getByRole("button",{name:"線路を削除"}));
- expect((screen.getByRole("button",{name:"線路削除を元に戻す"}) as HTMLButtonElement).disabled).toBe(false);
- fireEvent.click(screen.getByRole("button",{name:"線路削除を元に戻す"}));
+ expect((screen.getByRole("button",{name:"元に戻す"}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole("button",{name:"元に戻す"}));
  expect(map.querySelector(".parked-plan")).not.toBeNull();
 });
 
@@ -106,7 +106,7 @@ test.each(['ground','elevated'] as const)('whole planned line deletion restores 
  }
  expect(map.querySelector('.confirmed-draft')).toBeNull();
  fireEvent.keyDown(window,{key:'z',ctrlKey:true});
- vi.mocked(invoke).mockImplementation(async command=>{if(command==="preview_construction_plan")return {validationError:null};if(command==='save_world')return {saved:true};if(command==='list_save_slots')return {active_slot_id:null,slots:[]};throw Error(command);});
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{if(command==="preview_construction_plan")return {validationError:null};if(command==='save_world')return {saved:true};if(command==='list_save_slots')return {active_slot_id:null,slots:[]};throw Error(command);});
  fireEvent.click(screen.getByRole('button',{name:'保存'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('save_world',expect.objectContaining({constructionPlans:expect.objectContaining({startLevel,infrastructure:{track_count:2,level:'elevated_2'}})})));
 });

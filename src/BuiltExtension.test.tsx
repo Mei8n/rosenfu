@@ -41,7 +41,7 @@ test("attributed endpoints can start an extension without duplicating the alignm
  await settledMapClick(map,{clientX:250,clientY:130});expect(await screen.findByText(/から延伸を計画しています/)).toBeTruthy();expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
 });
 
-test('extending invalidates built station redo ratios from the old alignment length',async()=>{
+test('station construction is final and extension retains its built station without replay',async()=>{
  const map=await start();
  const station={id:"4",owner:"2",name:"駅",...point(215,130)};
  const placement={station_id:"4",alignment_id:"3",position:0.5,length_m:200,width_m:12};
@@ -49,11 +49,11 @@ test('extending invalidates built station redo ratios from the old alignment len
  replyToCommandOnce('build_plan',{...world,stations:[station],station_placements:[placement]});
  await settledMapClick(map,{clientX:215,clientY:130});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith("build_plan",expect.anything()));
  await screen.findByText(/計画駅を建設しました/);
- vi.mocked(invoke).mockResolvedValueOnce(world);fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});await screen.findByText(/直前の駅設置を取り消しました/);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="undo_world_edit"||command==="delete_station")).toBe(false);
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));await settledMapClick(map,{clientX:250,clientY:130});await settledMapClick(map,{clientX:310,clientY:130});
- vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[{...line,points:[...line.points,point(310,130)]}]});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
+ replyToCommandOnce("build_plan",{...world,stations:[station],station_placements:[placement],alignments:[{...line,points:[...line.points,point(310,130)]}]});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));const count=vi.mocked(invoke).mock.calls.length;
- fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});await screen.findByText(/やり直せる駅設置履歴はありません/);expect(vi.mocked(invoke).mock.calls).toHaveLength(count);
+ fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});await screen.findByText(/元に戻せる操作はありません/);expect(vi.mocked(invoke).mock.calls).toHaveLength(count);expect(map.querySelectorAll(".station-marker")).toHaveLength(1);
 });
 
 test('automatic extension rejects a backward join in preview',async()=>{
@@ -234,15 +234,22 @@ test('destination hover refuses mismatched track type and cannot submit a fake j
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
 });
 
-test('restored undone destination is retained when redo finishes the path',async()=>{
+test('legacy undone destination is recovered on load without creating session history',async()=>{
  const target={...line,id:'4',points:[point(350,130),point(420,130)]};
  const plans={version:1,plans:[{id:1,name:''}],parkedPaths:[],activePathId:1,activePlanId:1,draftPoints:[point(250,130)],redoPoints:[point(350,130)],draftExtension:{alignmentId:'3',endpoint:'end'},draftRedoDestination:{alignmentId:'4',endpoint:'start'},trackType:'normal',designSpeedKmh:120,roadFollowing:false,plannedStations:[],draftFinished:true};
  const map=await start({alignments:[line,target],construction_plans:plans});
- // Startup text can appear before React flushes the restored keyboard-handler effect.
+ // Legacy redo geometry is recovered on load, not replayed as a session edit.
  await act(async()=>{});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ const restored=map.querySelector('.confirmed-draft')?.getAttribute('d');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ expect(map.querySelector('.confirmed-draft')?.getAttribute('d')).toBe(restored);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
- vi.mocked(invoke).mockResolvedValueOnce(world);
+ expect(map.querySelector('.confirmed-draft')?.getAttribute('d')).toBe(restored);
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='undo_world_edit'||command==='redo_world_edit')).toBe(false);
+ replyToCommandOnce('build_plan',world);
  fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({destination:{alignmentId:'4',endpoint:'start'}})])})));
 });
