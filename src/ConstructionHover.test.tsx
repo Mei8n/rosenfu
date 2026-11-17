@@ -1,3 +1,4 @@
+import {settledPointerMove,settledPointerEnter} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
@@ -32,15 +33,15 @@ test("plan details appear only while hovering a plan, not elsewhere or during dr
   expect(document.querySelector(".construction-tooltip")).toBeNull();
   fireEvent.keyDown(document.body,{key:"Escape"});
   const line=map.querySelector(".plan-hover-hit")!;
-  fireEvent.pointerEnter(line,{clientX:250,clientY:150,pointerType:"mouse"});
+  await settledPointerEnter(line,{clientX:250,clientY:150,pointerType:"mouse"});
   expect(document.querySelector(".construction-tooltip")?.textContent).toContain("線路計画");
   fireEvent.pointerLeave(line);
   expect(document.querySelector(".construction-tooltip")).toBeNull();
-  fireEvent.pointerEnter(line,{clientX:250,clientY:150});
+  await settledPointerEnter(line,{clientX:250,clientY:150});
   fireEvent.pointerDown(map,{clientX:250,clientY:150,button:0,pointerId:1});
   expect(document.querySelector(".construction-tooltip")).toBeNull();
   fireEvent.pointerUp(map,{clientX:250,clientY:150,pointerId:1});
-  fireEvent.pointerEnter(line,{clientX:250,clientY:150});
+  await settledPointerEnter(line,{clientX:250,clientY:150});
   fireEvent.pointerLeave(map);
   expect(document.querySelector(".construction-tooltip")).toBeNull();
 });
@@ -49,12 +50,12 @@ test("drawing details follow the cursor without hover and diagnose an invalid ca
  vi.stubGlobal("PointerEvent",MouseEvent);
  const map=await start();
  await settledMapClick(map,{clientX:200,clientY:130});await settledMapClick(map,{clientX:300,clientY:170});
- fireEvent.pointerMove(map,{clientX:360,clientY:190});
+ await settledPointerMove(map,{clientX:360,clientY:190});
  expect(document.querySelector(".drawing-tooltip")?.textContent).toContain("速度上限");
- fireEvent.pointerMove(map,{clientX:220,clientY:160});
+ await settledPointerMove(map,{clientX:220,clientY:160});
  expect(document.querySelector(".drawing-tooltip")?.textContent).toContain("線路が折り返しています");
  expect(map.querySelector(".invalid-candidate")).toBeTruthy();
- fireEvent.pointerMove(map,{clientX:297,clientY:168});
+ await settledPointerMove(map,{clientX:297,clientY:168});
  expect(document.querySelector(".drawing-tooltip")?.textContent).not.toContain("最後の点をもう一度クリック");
  expect(map.querySelector(".invalid-candidate")).toBeNull();
  fireEvent.pointerLeave(map);expect(document.querySelector(".drawing-tooltip")).toBeNull();
@@ -72,7 +73,7 @@ test('hover only speed and highlight clear on leaving; small endpoints are visua
  expect(anchors[2].classList.contains('draft-endpoint')).toBe(true);
  expect(Number(anchors[1].getAttribute('width'))).toBeLessThan(8);
  const line=map.querySelector('.plan-hover-hit')!;
- fireEvent.pointerEnter(line,{clientX:220,clientY:130});
+ await settledPointerEnter(line,{clientX:220,clientY:130});
  expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain('80 km/h');
  expect(document.querySelector('.plan-hover-tooltip')?.textContent).toContain('高さ 0 m');
  expect(map.querySelectorAll('.plan-hovered')).toHaveLength(0);
@@ -88,21 +89,21 @@ test('line and anchor focus markers share a compact radius without changing endp
  const map=await start();
  await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:320,clientY:130});
  const line=map.querySelector('.plan-hover-hit')!;
- fireEvent.pointerEnter(line,{clientX:240,clientY:130});
+ await settledPointerEnter(line,{clientX:240,clientY:130});
  const point=map.querySelector('.plan-hover-point')!;
  const radius=point.getAttribute('r');
  expect(point.getAttribute('data-kind')).toBe('line');
  expect(point.parentElement?.getAttribute('pointer-events')).toBe('none');
  fireEvent.pointerLeave(line);
  await settledMapClick(map,{clientX:320,clientY:130});
- fireEvent.pointerMove(map,{clientX:320,clientY:130});
+ await settledPointerMove(map,{clientX:320,clientY:130});
  const endpoint=map.querySelector('.endpoint-snap-ring')!;
  expect(endpoint.getAttribute('r')).toBe(radius);
  expect(endpoint.getAttribute('data-kind')).toBe('anchor');
  expect(endpoint.getAttribute('data-allowed')).toBe('true');
  expect(endpoint.parentElement?.querySelector('.focus-anchor-center')).not.toBeNull();
  // The visual change must not expand the actual endpoint snapping radius.
- fireEvent.pointerMove(map,{clientX:331,clientY:130});
+ await settledPointerMove(map,{clientX:331,clientY:130});
  expect(map.querySelector('.endpoint-snap-ring')).toBeNull();
 });
 
@@ -112,7 +113,7 @@ test('direct hover of the actual anchor hit rectangles shows start and middle an
  fireEvent.keyDown(document.body,{key:'Escape'});
  for(const index of [0,1,2]){
   const anchor=map.querySelector(`[data-anchor-index="${index}"]`)!;
-  fireEvent.pointerEnter(anchor,{clientX:180+70*index,clientY:130});
+  await settledPointerEnter(anchor,{clientX:180+70*index,clientY:130});
   expect(map.querySelector('.plan-hover-point')?.getAttribute('data-kind')).toBe('anchor');
   expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
   fireEvent.pointerLeave(anchor);expect(map.querySelector('.plan-hover-point')).toBeNull();

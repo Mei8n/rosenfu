@@ -1,3 +1,4 @@
+import {useMemo} from 'react';
 import {project,type Camera} from './map';
 import type {GeoPoint} from './alignment';
 import type {HeightAlignment} from './BuiltAnchorHeight';
@@ -42,8 +43,10 @@ export function plannedSlopeBoundaries(plans:Planned[]):Boundary[]{
 /** Screen-sized white-backed marks remain legible on map/track backgrounds.
  * User requested both boundaries (TW uses middle-of-ramp directional marks). */
 export function SlopeBoundaryMarkers({lines,plans,camera,scale}:{lines:HeightAlignment[];plans:Planned[];camera:Camera;scale:number}){
+ const built=useMemo(()=>builtSlopeBoundaries(lines),[lines]);
+ const planned=useMemo(()=>plannedSlopeBoundaries(plans),[plans]);
  const seen=new Set<string>();
- const marks=[...builtSlopeBoundaries(lines),...plannedSlopeBoundaries(plans)].filter(mark=>{
+ const marks=[...built,...planned].filter(mark=>{
   const key=JSON.stringify([mark.point,mark.height,mark.planned]);if(seen.has(key))return false;seen.add(key);return true;
  });
  return <g pointerEvents="none" className="slope-boundary-markers">{marks.map((mark,i)=>{

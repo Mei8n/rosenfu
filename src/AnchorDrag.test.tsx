@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from 'react';
@@ -81,12 +82,12 @@ const redo=()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:tr
 test('finished path undo/redo retains completion at three, two and zero points',async()=>{
  const map=await setup();await settledMapClick(map,{clientX:350,clientY:150});
  for(const length of [2,0]){
-  undo();fireEvent.pointerMove(map,{clientX:420,clientY:180});
+  undo();await settledPointerMove(map,{clientX:420,clientY:180});
   expect(map.querySelectorAll('.draft-anchor')).toHaveLength(length);
   const saved=await savedPlan();expect(saved.draftFinished).toBe(length>0);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
  }
  for(const length of [2,3]){
-  redo();fireEvent.pointerMove(map,{clientX:420,clientY:180});
+  redo();await settledPointerMove(map,{clientX:420,clientY:180});
   const saved=await savedPlan();expect(saved.draftFinished).toBe(length>0);expect(saved.draftPoints).toHaveLength(length);expect(map.querySelector('.candidate-draft')).toBeNull();
  }
 });

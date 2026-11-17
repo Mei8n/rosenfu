@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 // @vitest-environment jsdom
 import React from 'react';
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
@@ -93,18 +94,18 @@ test('legacy OFM sources keep provider attribution even without drawn alignments
 
 test('road preview suppresses the unrelated free chord and Ctrl restores ordinary preview',async()=>{
  vi.stubGlobal('PointerEvent',MouseEvent);const {map,click}=await start();await click(-.0008);const p=project(latitude,longitude+.0008,camera);
- await act(async()=>{fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y});await new Promise(r=>setTimeout(r,0));});
+ await act(async()=>{await settledPointerMove(map,{clientX:p.x,clientY:p.y});await new Promise(r=>setTimeout(r,0));});
  await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());expect(document.querySelector('.candidate-draft')).toBeNull();expect(document.querySelector('.curve-circle-guide')).toBeNull();
- await act(async()=>{fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y,ctrlKey:true});});expect(document.querySelector('.road-drawing-preview')).toBeNull();expect(document.querySelector('.candidate-draft')).toBeTruthy();
+ await act(async()=>{await settledPointerMove(map,{clientX:p.x,clientY:p.y,ctrlKey:true});});expect(document.querySelector('.road-drawing-preview')).toBeNull();expect(document.querySelector('.candidate-draft')).toBeTruthy();
 });
 
 test('curved road preview reports routed length and curve speed rather than the free chord',async()=>{
  vi.stubGlobal('PointerEvent',MouseEvent);const vertices=[{longitude:longitude-.001,latitude},{longitude,latitude},{longitude,latitude:latitude+.001}];const {map,click}=await start(world,vertices);await click(-.0008);
- const point={longitude,latitude:latitude+.0008},pixel=project(point.latitude,point.longitude,camera);await act(async()=>{fireEvent.pointerMove(map,{clientX:pixel.x,clientY:pixel.y});await new Promise(r=>setTimeout(r,0));});await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());
+ const point={longitude,latitude:latitude+.0008},pixel=project(point.latitude,point.longitude,camera);await act(async()=>{await settledPointerMove(map,{clientX:pixel.x,clientY:pixel.y});await new Promise(r=>setTimeout(r,0));});await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());
  const expected=await createRoadDrawingEngine(mock.snapshot.bundle,[])({point,start:{longitude:longitude-.0008,latitude},radiusM:20});if(expected.kind!=='route')throw Error('fixture did not route');const geometry=sampledGeometry(expected.line),speed=Math.min(120,...geometry.arcs.map(a=>provisionalCurveSpeed(a.radiusM)??0));
  expect(geometry.arcs.length).toBeGreaterThan(0);expect(document.querySelector('.drawing-metrics')?.textContent).toContain(`＋ ${Math.round(alignmentLength(expected.line))} m`);expect(document.querySelector('.drawing-speed')?.textContent).toBe(`${speed} km/h`);
 });
 test('unfittable road corner displays its specific refusal instead of adding an anchor',async()=>{
- vi.stubGlobal('PointerEvent',MouseEvent);const vertices=[{longitude:longitude-.0002,latitude},{longitude,latitude},{longitude,latitude:latitude+.001}];const {map,click}=await start(world,vertices);await click(-.0002);const point=project(latitude+.0008,longitude,camera);await act(async()=>{fireEvent.pointerMove(map,{clientX:point.x,clientY:point.y});await new Promise(r=>setTimeout(r,0));});await waitFor(()=>expect(document.querySelector('.drawing-metrics')?.textContent).toContain('カーブをつなぐための道路の長さが足りません'));
+ vi.stubGlobal('PointerEvent',MouseEvent);const vertices=[{longitude:longitude-.0002,latitude},{longitude,latitude},{longitude,latitude:latitude+.001}];const {map,click}=await start(world,vertices);await click(-.0002);const point=project(latitude+.0008,longitude,camera);await act(async()=>{await settledPointerMove(map,{clientX:point.x,clientY:point.y});await new Promise(r=>setTimeout(r,0));});await waitFor(()=>expect(document.querySelector('.drawing-metrics')?.textContent).toContain('カーブをつなぐための道路の長さが足りません'));
  await act(async()=>{fireEvent.click(map,{clientX:point.x,clientY:point.y,detail:1});await new Promise(r=>setTimeout(r,0));});expect(document.querySelectorAll('.draft-anchor')).toHaveLength(1);
 });

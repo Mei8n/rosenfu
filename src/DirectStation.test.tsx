@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
@@ -27,7 +28,7 @@ test("direct hover and click places planned stations without committing tracks; 
  const map=await start();
  expect(screen.queryByLabelText("配置先の線路")).toBeNull();
  expect(screen.queryByRole("button",{name:"ホームを配置"})).toBeNull();
- fireEvent.pointerMove(map,{clientX:230,clientY:150});
+ await settledPointerMove(map,{clientX:230,clientY:150});
  expect(map.querySelector(".station-platform")).toBeTruthy();
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
  await settledMapClick(map,{clientX:230,clientY:150});await settledMapClick(map,{clientX:280,clientY:150});
@@ -57,7 +58,7 @@ test("atomic plan construction submits stations together; failure preserves draf
 });
 test("drag does not place a station and clearing one independent plan only removes its stations",async()=>{
  const map=await start();
- fireEvent.pointerDown(map,{clientX:240,clientY:150,button:0,pointerId:1});fireEvent.pointerMove(map,{clientX:250,clientY:150,pointerId:1});fireEvent.pointerUp(map,{clientX:250,clientY:150,pointerId:1});await settledMapClick(map,{clientX:250,clientY:150});
+ fireEvent.pointerDown(map,{clientX:240,clientY:150,button:0,pointerId:1});await settledPointerMove(map,{clientX:250,clientY:150,pointerId:1});fireEvent.pointerUp(map,{clientX:250,clientY:150,pointerId:1});await settledMapClick(map,{clientX:250,clientY:150});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));await settledMapClick(map,{clientX:250,clientY:150});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
@@ -75,7 +76,7 @@ test("changing a plan so its station no longer fits blocks construction until st
  // retain coverage of invalid-station protection instead of relying on old tool-local history.
  const endpoint=map.querySelector('[data-anchor-index="1"]')!;
  fireEvent.pointerDown(endpoint,{clientX:320,clientY:150,button:0});
- fireEvent.pointerMove(map,{clientX:250,clientY:150});fireEvent.pointerUp(map,{clientX:250,clientY:150});
+ await settledPointerMove(map,{clientX:250,clientY:150});fireEvent.pointerUp(map,{clientX:250,clientY:150});
  fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));
  await screen.findByText(/計画駅が線路に収まりません/);
  expect(invoke).not.toHaveBeenCalledWith("build_alignment_with_stations",expect.anything());
@@ -113,9 +114,9 @@ test("pending save locks editing without consuming a planned-station redo",async
 test("station controls are on the map, invalid placement is boxed and names are opt-in",async()=>{
  const map=await start();
  const input=screen.getByLabelText('駅の長さ');expect(input.closest('.map-surface')).toBeTruthy();expect(input.closest('#panel-stations')).toBeNull();
- fireEvent.pointerMove(map,{clientX:230,clientY:50});
+ await settledPointerMove(map,{clientX:230,clientY:50});
  const tip=document.querySelector('.station-placement-error');expect(tip?.tagName).toBe('DIV');expect(tip?.textContent).toBe('駅は線路上に置いてください');
- fireEvent.pointerMove(map,{clientX:230,clientY:150});expect(document.querySelector('.station-placement-error')).toBeNull();
+ await settledPointerMove(map,{clientX:230,clientY:150});expect(document.querySelector('.station-placement-error')).toBeNull();
  expect(map.querySelector('.station-placement-preview')?.tagName).toBe('path');
  await settledMapClick(map,{clientX:230,clientY:150});expect(map.querySelector('.planned-station text')).toBeNull();
  fireEvent.click(screen.getByLabelText('駅名を表示'));expect(map.querySelector('.planned-station text')?.textContent).toContain('新駅');
@@ -126,7 +127,7 @@ test("station controls are on the map, invalid placement is boxed and names are 
 test("planned station hover names it, blocks duplicate placement and edits persist in saved plans",async()=>{
  const map=await start();
  await settledMapClick(map,{clientX:250,clientY:150});
- fireEvent.pointerMove(map,{clientX:250,clientY:150});
+ await settledPointerMove(map,{clientX:250,clientY:150});
  expect(screen.getByText("新駅 · 10両")).toBeTruthy();
  expect(map.querySelector(".station-placement-preview")).toBeNull();
  await settledMapClick(map,{clientX:250,clientY:150});
@@ -144,4 +145,19 @@ test("planned station hover names it, blocks duplicate placement and edits persi
  fireEvent.click(screen.getByRole("button",{name:"保存"}));
  await screen.findByText(/ワールドと未着工計画を保存しました/);
  expect(invoke).toHaveBeenCalledWith("save_world",expect.objectContaining({constructionPlans:expect.objectContaining({plannedStations:[expect.objectContaining({name:"中央"})]})}));
+});
+
+test('Enter before the next visual frame places at the newest pointer coordinates',async()=>{
+ const map=await start();
+ let pending:FrameRequestCallback|null=null;
+ vi.stubGlobal('requestAnimationFrame',(callback:FrameRequestCallback)=>{pending=callback;return 1;});
+ vi.stubGlobal('cancelAnimationFrame',()=>{pending=null;});
+ try{
+  fireEvent.pointerMove(map,{clientX:230,clientY:150});
+  expect(pending).not.toBeNull();
+  fireEvent.keyDown(map,{key:'Enter'});
+  expect(pending).toBeNull();
+  const planned=map.querySelector('.planned-station circle')!;
+  expect(Number(planned.getAttribute('cx'))).toBeCloseTo(460);
+ }finally{vi.unstubAllGlobals();}
 });

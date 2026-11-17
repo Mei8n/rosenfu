@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
@@ -25,7 +26,7 @@ test('saved single anchor without legacy redo resumes the same exact anchor, not
  const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200)],redoPoints:[],draftFinished:true}});
  const click=async (x:number,y=200)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
- fireEvent.pointerMove(map,{clientX:122,clientY:201});
+ await settledPointerMove(map,{clientX:122,clientY:201});
  expect(map.querySelector('.endpoint-snap-ring')).not.toBeNull();
  await click(122,201);
  expect(map.querySelectorAll('.parked-anchor')).toHaveLength(0);
@@ -45,7 +46,7 @@ test('a parked single anchor can resume without duplicating either path',async()
  // Start and finish another disconnected track in this same plan.
  await click(300,80);await click(400,80);await click(400,80);
  expect(map.querySelectorAll('.parked-anchor')).toHaveLength(1);
- fireEvent.pointerMove(map,{clientX:122,clientY:201});
+ await settledPointerMove(map,{clientX:122,clientY:201});
  expect(map.querySelector('.endpoint-snap-ring')).not.toBeNull();
  await click(122,201);
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);

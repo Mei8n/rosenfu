@@ -83,3 +83,17 @@ test('disabling while native runs drops the latest queued candidate',async()=>{
  await act(async()=>finish({old:true}));
  expect(invoke).toHaveBeenCalledTimes(1);expect(result.current).toBeNull();
 });
+
+test('unrelated rerenders with the same input arrays neither serialize nor restart validation',async()=>{
+ const serialize=vi.fn(()=>[]);
+ const alignments:unknown[]=[];
+ Object.defineProperty(alignments,'toJSON',{value:serialize});
+ const stations:unknown[]=[],world={};
+ vi.mocked(invoke).mockResolvedValue({ok:true});
+ const {rerender,result}=renderHook(()=>useConstructionPreview(world,{alignments,stations}));
+ await waitFor(()=>expect(result.current?.value).toEqual({ok:true}));
+ serialize.mockClear();vi.mocked(invoke).mockClear();
+ for(let i=0;i<10;i++)rerender();
+ expect(serialize).not.toHaveBeenCalled();
+ expect(invoke).not.toHaveBeenCalled();
+});

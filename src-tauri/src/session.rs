@@ -1,4 +1,6 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
+#[path = "construction_timing.rs"]
+pub(crate) mod construction_timing;
 #[path = "session/deletion.rs"]
 mod deletion;
 #[path = "session/history.rs"]
@@ -882,6 +884,7 @@ impl WorldEditor {
         stations: Vec<PlannedBuiltStation>,
         roads: Vec<rosenfu_core::world::RoadSnapshot>,
     ) -> Result<WorldDraft, String> {
+        let _timing = construction_timing::Phase::new("build.roads_and_transaction");
         let mut candidate = self.clone();
         for snapshot in roads {
             candidate
@@ -904,6 +907,7 @@ impl WorldEditor {
         alignments: Vec<PlannedAlignment>,
         stations: Vec<PlannedBuiltStation>,
     ) -> Result<WorldDraft, String> {
+        let _timing = construction_timing::Phase::new("build.transaction");
         if alignments.is_empty() && stations.is_empty() {
             return Err("着工する線路・駅がありません。".into());
         }
@@ -6139,6 +6143,150 @@ mod road_snapshot_transaction_tests {
                 "validation_ms={:.3}",
                 start.elapsed().as_secs_f64() * 1000.0
             );
+        }
+    }
+    #[test]
+    #[ignore = "manual construction phase measurement"]
+    fn measure_construction_phases() {
+        fn measure<T>(label: &str, run: impl FnOnce() -> T) -> T {
+            let begin = std::time::Instant::now();
+            let result = run();
+            eprintln!(
+                "stage={label} ms={:.3}",
+                begin.elapsed().as_secs_f64() * 1000.0
+            );
+            result
+        }
+        for (line_count, road_count) in [(20, 100), (80, 1000), (80, 5000)] {
+            let mut editor = WorldEditor::new();
+            for i in 0..line_count {
+                let mut path = plan();
+                let y = 0.0001 * i as f64;
+                path.points = vec![point(-0.01, y), point(0.01, y)];
+                editor.build_plan(vec![path]).unwrap();
+            }
+            let mut data = roads();
+            let base = data.roads[0].clone();
+            data.roads = (0..road_count)
+                .map(|i| {
+                    let mut road = base.clone();
+                    road.id = format!("way/{i}");
+                    let x = -0.009 + i as f64 * 0.018 / road_count as f64;
+                    road.points = vec![point(x, -0.01), point(x, 0.02)];
+                    road
+                })
+                .collect();
+            eprintln!("fixture lines={line_count} roads={road_count}");
+            for _ in 0..3 {
+                let mut candidate = editor.clone();
+                let snapshot = measure("build_with_roads", || {
+                    candidate.build_construction_plan_with_roads(
+                        vec![plan()],
+                        vec![],
+                        vec![data.clone()],
+                    )
+                })
+                .unwrap();
+                let bytes =
+                    measure("serialize_snapshot", || serde_json::to_vec(&snapshot)).unwrap();
+                let geometry = measure("post_commit_track_geometry", || {
+                    candidate.world.track_render_geometry()
+                })
+                .unwrap();
+                assert!(!geometry.lanes.is_empty());
+                let assessments = measure("post_commit_road_assessments", || {
+                    candidate.road_assessments()
+                });
+                assert!(assessments
+                    .iter()
+                    .all(|(_, assessment)| assessment.crossings.len() == road_count));
+                let response = measure("serialize_road_assessments", || {
+                    serde_json::to_vec(&assessments)
+                })
+                .unwrap();
+                eprintln!("assessment_bytes={}", response.len());
+                eprintln!(
+                    "snapshot_bytes={} assessments={}",
+                    bytes.len(),
+                    assessments.len()
+                );
+            }
+        }
+    }
+    #[test]
+    #[ignore = "manual road and railway reference construction measurement"]
+    fn measure_reference_construction_phases() {
+        use rosenfu_core::world::{
+            AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
+        };
+        for rail in [false, true] {
+            for count in [64, 2048, 4096] {
+                for _ in 0..3 {
+                    let mut editor = WorldEditor::new();
+                    let mut path = plan();
+                    path.points = (0..count)
+                        .map(|i| point(-0.01 + 0.02 * i as f64 / (count - 1) as f64, 0.0))
+                        .collect();
+                    let graph = "a".repeat(64);
+                    let source_hash = "b".repeat(64);
+                    let key = format!("{graph}:{source_hash}");
+                    path.reference = Some(PlannedAlignmentReference {
+                        source_record: SourceRecord {
+                            key: key.clone(),
+                            dataset_id: "fixture".into(),
+                            revision: "R".into(),
+                            graph_sha256: graph,
+                            source_sha256: source_hash,
+                            source: "Synthetic reference".into(),
+                            source_date: None,
+                            license: "ODbL-1.0".into(),
+                            attribution: "© OpenStreetMap contributors".into(),
+                            conversion_format_version: if rail { 2 } else { 1 },
+                        },
+                        provenance: AlignmentProvenanceInput {
+                            source_key: key,
+                            method: if rail {
+                                ProvenanceMethod::RailGraphRouteV1
+                            } else {
+                                ProvenanceMethod::OsmSegmentCopyV1
+                            },
+                            mode: if rail {
+                                ReferenceMode::Rail
+                            } else {
+                                ReferenceMode::Road
+                            },
+                            osm_way_id: if rail { String::new() } else { "1".into() },
+                            start_segment_index: 0,
+                            start_fraction: 0.0,
+                            end_segment_index: 0,
+                            end_fraction: if rail { 0.0 } else { 1.0 },
+                            tile_fragment_id: None,
+                            network_path: if rail {
+                                vec![rosenfu_core::world::RailGraphSpan {
+                                    region: "jp".into(),
+                                    chain_id: 7,
+                                    from_fraction: 0.0,
+                                    to_fraction: 1.0,
+                                }]
+                            } else {
+                                vec![]
+                            },
+                        },
+                    });
+                    let start = std::time::Instant::now();
+                    let snapshot = editor.build_plan(vec![path]).unwrap();
+                    let build_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    let start = std::time::Instant::now();
+                    let geometry = editor
+                        .world_for_ui_preview(snapshot.clone())
+                        .unwrap()
+                        .track_render_geometry()
+                        .unwrap();
+                    let render_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    assert!(!geometry.lanes.is_empty());
+                    eprintln!("reference rail={rail} points={count} build_ms={build_ms:.3} validate_and_geometry_ms={render_ms:.3}");
+                }
+            }
         }
     }
     #[test]
