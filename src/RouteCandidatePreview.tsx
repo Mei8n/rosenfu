@@ -124,7 +124,7 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  return <section className="route-candidate-preview" aria-label={editRoute?`${entityLabel}を編集`:`${entityLabel}を作成`}>
   <h4>{name||initialName}</h4>
   <label>{entityLabel}名<input autoComplete="off" value={name} maxLength={80} disabled={!enabled||saving} onChange={e=>setName(e.target.value)}/></label>
-  {editingMap&&<p>{entityLabel==='系統'?'地図の中間駅をクリックすると停車・通過を切り替えます。起点・終点をクリックすると短縮し、新しい駅をクリックすると経路へ追加します。':'地図の駅をクリックすると経由指定を追加、選択済みの駅をクリックすると指定を外します。起点・終点も変更できます。経路上の中間駅は引き続き路線に所属します。'}選択駅の順序を保って経路を再探索します。元の経路から変わる場合もあるため、地図で確認して編集終了で確定してください。</p>}
+  {editingMap&&<p>{entityLabel==='系統'?'地図の中間駅をクリックすると停車・通過を切り替えます。起点・終点をクリックすると短縮し、新しい駅をクリックすると経路へ追加します。':'地図の駅をクリックすると経由指定を追加、選択済みの駅をクリックすると指定を外します。起点・終点も変更できます。既存の所属設定を保ち、新しく通る駅は路線に追加します。起終点になる駅は所属駅になります。'}選択駅の順序を保って経路を再探索します。元の経路から変わる場合もあるため、地図で確認して編集終了で確定してください。</p>}
   <ol aria-label="選択した駅">{ordered.map((id,i)=><li key={id}>{stationName(id)}{i===0?"（始点）":i===ordered.length-1?"（終点）":"（経由）"}</li>)}</ol>
   {mapPickTarget!=="sequence"&&<button disabled={!enabled||saving} onClick={beginSequence}>駅の選択を再開</button>}
   {stale&&<button disabled={!enabled||loading||saving} onClick={()=>void search([...orderedRef.current])}>経路を再確認</button>}
