@@ -1,3 +1,4 @@
+import {startConstructionTrace,timeConstructionIPC,type ConstructionTrace} from './constructionTiming';
 import {ConstructionLayer} from './ConstructionLayer';
 import {usePointerFrame} from './usePointerFrame';
 import {constructionEditorReducer,constructionEditorState,type PathEdit} from './constructionEditor';
@@ -179,6 +180,7 @@ export function App() {
     return result;
   }
 
+  const constructionCommit=useRef<{world:World;trace:ConstructionTrace;end:()=>void}|null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const cameraRef = useRef<Camera>(DEFAULT_CAMERA);
   const [pixelRatio, setPixelRatio] = useState(() => window.devicePixelRatio || 1);
@@ -263,6 +265,15 @@ export function App() {
   const [status, setStatus] = useState<Status>("loading");
   const [info, setInfo] = useState<EngineInfo | null>(null);
   const [world, setWorld] = useState<World | null>(null);
+  useLayoutEffect(()=>{
+    const pending=constructionCommit.current;
+    if(!pending||pending.world!==world)return;
+    constructionCommit.current=null;pending.end();
+    if(typeof requestAnimationFrame==='function'){
+      const end=pending.trace.span('world.layout-to-frame');
+      requestAnimationFrame(()=>{end();pending.trace.complete();});
+    }else pending.trace.complete();
+  },[world]);
   const [attempt, setAttempt] = useState(0);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -1031,13 +1042,14 @@ export function App() {
     return () => { active = false; };
   }, [attempt]);
 
-  async function perform(operation: () => Promise<void>) {
+  async function perform(operation: () => Promise<void>,trace?:ConstructionTrace) {
     if (status !== "ready" || busyRef.current) return;
+    const endPerform=trace?.span("perform");
     busyRef.current = true;
     setBusy(true); setError(""); setNotice("");
     try { await operation(); }
     catch (failure) { setError(detail(failure)); }
-    finally { busyRef.current = false; setBusy(false); }
+    finally { busyRef.current = false; setBusy(false);endPerform?.();if(trace&&!trace.worldScheduled)trace.complete(); }
   }
 
   async function addStation(lat: number, lon: number) {
@@ -1511,28 +1523,35 @@ export function App() {
   useEffect(()=>()=>{anchorPlacementContext.current={world:null,key:'unmounted'};},[]);
 
   function commitAlignment() {
-    if (!enabled || !planBuildable || anchorGesture.current || anchorPlacementPending.current) return;
+    if (!enabled || busyRef.current || !planBuildable || anchorGesture.current || anchorPlacementPending.current) return;
+    const trace=startConstructionTrace();
     void perform(async () => {
+      const endPrepare=trace?.span("prepare");
       const ids=new Set(buildPaths.map(path=>path.id));
       if(currentStations.some(item=>!item.valid))throw Error("計画駅が線路に収まりません。線形を元に戻すか、計画駅を取り消してください。");
       const {alignments:requests,stations}=constructionRequest;
       const first=requests[0];
       const batch=stations.length>0||requests.length>1||requests.some(request=>request.extension||request.destination||request.reference||request.ofmPath||request.junctionSource);
       let attachment=roadAttachment;
-      let roadConfirmation='';
+      let roadConfirmation='';endPrepare?.();
       if(requests.length){
         setNotice("道路を確認中（最大25秒）。未取得の場合も通常建設を続行します。");
         const controller=new AbortController();roadCheckAbort.current=controller;setRoadCheckPending(true);
         let loaded:Awaited<ReturnType<typeof constructionRoad.ensureCurrent>>;
+        const endRoad=trace?.span("road.ensureCurrent");
         try{loaded=await constructionRoad.ensureCurrent(controller.signal);}
-        finally{roadCheckAbort.current=null;setRoadCheckPending(false);}
+        finally{endRoad?.();roadCheckAbort.current=null;setRoadCheckPending(false);}
         if(controller.signal.aborted){setNotice("着工を取り消しました。下書きは保持しています。");return;}
         if(loaded.status==='stale'||latestBuild.current.world!==world||latestBuild.current.key!==buildIdentity)throw Error("計画またはワールドが変更されたため着工を中止しました。");
+        const endAttachment=trace?.span("road.attachment");
         attachment=constructionRoadAttachment(loaded.status==='ready'?loaded.snapshot:undefined,world);
+        endAttachment?.();
         roadConfirmation=loaded.status==='unavailable'?`踏切未確認：${loaded.reason.replace(/^道路未確認：/,'')}。後から道路を取得しただけでは既設線路へ反映されません。`:attachment.reason;
       }
       const roads=attachment.roads;
-      const snapshot=await invoke<World>(roads.length?"build_plan_with_roads":batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",roads.length?{alignments:requests,stations,roads}:batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,anchorIndices:first.anchorIndices,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh,infrastructure:first.infrastructure,startLevel:first.startLevel,anchorLevels:first.anchorLevels});
+      const snapshot=await timeConstructionIPC("build",()=>invoke<World>(roads.length?"build_plan_with_roads":batch?"build_plan":first.stations.length?"build_alignment_with_stations":"build_alignment",roads.length?{alignments:requests,stations,roads}:batch?{alignments:requests,stations}:first.stations.length?first:{name:first.name,points:first.points,anchorIndices:first.anchorIndices,trackType:first.trackType,designSpeedKmh:first.designSpeedKmh,infrastructure:first.infrastructure,startLevel:first.startLevel,anchorLevels:first.anchorLevels}));
+      const endApply=trace?.span("world.apply-state");
+      if(trace){trace.worldScheduled=true;constructionCommit.current={world:snapshot,trace,end:trace.span("world.schedule-to-layout")};}
       ids.forEach(discardPlanStations);setPlannedStations(items=>items.filter(station=>stationPlanId(station)!==activePlanId));dispatchConstruction({type:"CLEAR_PLAN"});
       const created=snapshot.alignments?.find(a=>!alignments.some(old=>old.id===a.id));
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);dispatchConstruction({type:"RESUME_PATH"});setHeightAnchor(null);setAnchorUndo([]);setAnchorRedo([]);setHoverPoint(null);dispatchConstruction({type:"CLEAR_CONNECTIONS"});
@@ -1543,7 +1562,8 @@ export function App() {
       pendingPathHistory.current=null;clearStationHistory();setTrackDeleteUndo(null);setTrackDeleteRedo(null);
       if(created)setAlignmentId(created.id);
       changeMapMode(activeTool==="stations"?"place":"draw");setNotice((requests.length?"線路を建設しました。計画駅も反映しました。":"計画駅を建設しました。")+(roadConfirmation?` ${roadConfirmation}`:""));
-    });
+      endApply?.();
+    },trace);
   }
   function renamePlannedStation(id:string,name:string) {
     const group=stationDisplayGroup(id);if(group?.members.some(m=>!m.planned))return;

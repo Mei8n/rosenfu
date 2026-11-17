@@ -1,3 +1,4 @@
+import {timeConstructionIPC} from './constructionTiming';
 import {TrackStroke} from './TrackStroke';
 import {memo,useEffect,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
@@ -10,7 +11,7 @@ export function useTrackRenderGeometry(world:unknown,enabled:boolean){
  const [state,setState]=useState<{world:unknown;value:TrackRenderGeometry|null;error:string|null}|null>(null);
  useEffect(()=>{
   if(!enabled||!world)return;let alive=true;
-  void invoke<TrackRenderGeometry>('preview_track_render_geometry',{world}).then(value=>{
+  void timeConstructionIPC('preview_track_render_geometry',()=>invoke<TrackRenderGeometry>('preview_track_render_geometry',{world})).then(value=>{
    if(!Array.isArray(value?.lanes)||!Array.isArray(value?.movements))throw Error('描画データが不正です');
    if(alive)setState({world,value,error:null});
   }).catch(error=>{if(alive)setState({world,value:null,error:String(error)});});

@@ -127,21 +127,36 @@ impl Alignment {
         self.points.windows(2).map(|p| distance(p[0], p[1])).sum()
     }
     pub fn point_at(&self, position: f64) -> GeoPoint {
-        let mut remaining = self.length_m() * position;
-        for pair in self.points.windows(2) {
-            let length = distance(pair[0], pair[1]);
-            if remaining <= length && length > 0.0 {
-                let t = remaining / length;
-                return GeoPoint {
-                    latitude: pair[0].latitude + (pair[1].latitude - pair[0].latitude) * t,
-                    longitude: pair[0].longitude + (pair[1].longitude - pair[0].longitude) * t,
-                };
-            }
-            remaining -= length;
-        }
-        *self.points.last().expect("validated alignment")
+        point_at_distances(
+            &self.points,
+            self.points.windows(2).map(|p| distance(p[0], p[1])),
+            self.length_m(),
+            position,
+        )
     }
 }
+// Shared interpolation keeps the same subtraction order for cached and uncached
+// sampling, including exact output coordinates at joins and sampled vertices.
+pub(super) fn point_at_distances(
+    points: &[GeoPoint],
+    lengths: impl Iterator<Item = f64>,
+    total: f64,
+    position: f64,
+) -> GeoPoint {
+    let mut remaining = total * position;
+    for (pair, length) in points.windows(2).zip(lengths) {
+        if remaining <= length && length > 0.0 {
+            let t = remaining / length;
+            return GeoPoint {
+                latitude: pair[0].latitude + (pair[1].latitude - pair[0].latitude) * t,
+                longitude: pair[0].longitude + (pair[1].longitude - pair[0].longitude) * t,
+            };
+        }
+        remaining -= length;
+    }
+    *points.last().expect("validated alignment")
+}
+
 impl WorldDraft {
     pub(super) fn validate_alignments(&self) -> Result<(), WorldError> {
         for a in &self.alignments {
@@ -684,5 +699,46 @@ mod tests {
         let mut d = w.snapshot().clone();
         d.stations[0].latitude += 0.001;
         assert!(w.replace(d).is_err());
+    }
+}
+
+#[cfg(test)]
+mod cached_sampling_tests {
+    use super::*;
+    #[test]
+    fn cached_distances_preserve_point_at_coordinates_exactly() {
+        let mut world = World::default();
+        let player = world.add_player("P".into()).unwrap();
+        let company = world.add_company(player, "C".into()).unwrap();
+        let points = (0..128)
+            .map(|i| GeoPoint {
+                longitude: 139.0 + i as f64 * 0.0001,
+                latitude: 35.0 + (i as f64 * 0.03).sin() * 0.0001,
+            })
+            .collect();
+        world
+            .build_alignment(company, "Curved".into(), points)
+            .unwrap();
+        let alignment = &world.snapshot().alignments[0];
+        let distances: Vec<_> = alignment
+            .points
+            .windows(2)
+            .map(|p| distance(p[0], p[1]))
+            .collect();
+        let total = distances.iter().sum();
+        for position in (0..=256)
+            .map(|i| i as f64 / 256.0)
+            .chain([-0.00001, 1.00001])
+        {
+            assert_eq!(
+                point_at_distances(
+                    &alignment.points,
+                    distances.iter().copied(),
+                    total,
+                    position
+                ),
+                alignment.point_at(position)
+            );
+        }
     }
 }

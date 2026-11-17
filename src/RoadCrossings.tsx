@@ -1,3 +1,4 @@
+import {timeConstructionIPC} from './constructionTiming';
 import {useEffect,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import type {RoadAssessments,SavedRoadSnapshot} from './constructionRoads';
@@ -8,7 +9,7 @@ export function useRoadAssessments(world:({road_snapshots?:SavedRoadSnapshot[]})
  useEffect(()=>{
   if(!enabled||!world||!world.road_snapshots?.length)return;
   let alive=true;
-  void invoke<RoadAssessments>('road_assessments').then(value=>{
+  void timeConstructionIPC('road_assessments',()=>invoke<RoadAssessments>('road_assessments')).then(value=>{
    if(!Array.isArray(value)||value.some(item=>!Array.isArray(item)||typeof item[0]!=='string'||!Array.isArray(item[1]?.crossings)||typeof item[1]?.roads_ready!=='boolean'||typeof item[1]?.unknown_road_height!=='boolean'))throw Error('道路交差の判定結果が不正です');
    if(alive)setState({world,value,error:null});
   }).catch(error=>{if(alive)setState({world,value:[],error:String(error)});});

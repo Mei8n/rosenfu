@@ -192,11 +192,24 @@ impl World {
         let internal_movements = self.internal_track_movement_geometries()?;
         let mut lanes = Vec::new();
         for a in &self.data.alignments {
-            let length = a.length_m();
+            let segment_lengths: Vec<_> = a
+                .points
+                .windows(2)
+                .map(|p| super::alignment::distance(p[0], p[1]))
+                .collect();
+            let length: f64 = segment_lengths.iter().sum();
+            let point_at = |position| {
+                super::alignment::point_at_distances(
+                    &a.points,
+                    segment_lengths.iter().copied(),
+                    length,
+                    position,
+                )
+            };
             let mut positions = vec![0.0];
             let mut accumulated = 0.0;
-            for pair in a.points.windows(2) {
-                accumulated += super::alignment::distance(pair[0], pair[1]);
+            for segment_length in &segment_lengths {
+                accumulated += segment_length;
                 positions.push(accumulated / length);
             }
             let boundaries = a
@@ -266,14 +279,14 @@ impl World {
                         .into_iter()
                         .map(|t| {
                             let (x, y) = vector(
-                                a.point_at((t - 1e-5).max(0.0)),
-                                a.point_at((t + 1e-5).min(1.0)),
+                                point_at((t - 1e-5).max(0.0)),
+                                point_at((t + 1e-5).min(1.0)),
                             );
                             let norm = x.hypot(y);
                             if norm <= 1e-9 {
-                                a.point_at(t)
+                                point_at(t)
                             } else {
-                                offset(a.point_at(t), -y / norm * lateral, x / norm * lateral)
+                                offset(point_at(t), -y / norm * lateral, x / norm * lateral)
                             }
                         })
                         .collect();

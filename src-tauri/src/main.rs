@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod session;
+use session::construction_timing;
 mod water_zone_delivery;
 use rosenfu_core::world::{AlignmentId, GeoPoint, RouteId, ServiceId, StationId, WorldDraft};
 use session::WorldEditor;
@@ -23,28 +24,32 @@ fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInf
     })
 }
 #[tauri::command]
-fn preview_track_movement_geometry(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn preview_track_movement_geometry(
+    app: tauri::AppHandle,
     world: WorldDraft,
 ) -> Result<Vec<rosenfu_core::world::TrackMovementGeometry>, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .world_for_ui_preview(world)?
-        .track_movement_geometries()
-        .map_err(|e| e.to_string())
+    run_world_snapshot(app, move |snapshot| {
+        let _timing = construction_timing::Phase::new("preview_track_movement_geometry");
+        snapshot
+            .world_for_ui_preview(world)?
+            .track_movement_geometries()
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 #[tauri::command]
-fn preview_track_render_geometry(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn preview_track_render_geometry(
+    app: tauri::AppHandle,
     world: WorldDraft,
 ) -> Result<rosenfu_core::world::TrackRenderGeometry, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .world_for_ui_preview(world)?
-        .track_render_geometry()
-        .map_err(|e| e.to_string())
+    run_world_snapshot(app, move |snapshot| {
+        let _timing = construction_timing::Phase::new("preview_track_render_geometry");
+        snapshot
+            .world_for_ui_preview(world)?
+            .track_render_geometry()
+            .map_err(|error| error.to_string())
+    })
+    .await
 }
 #[tauri::command]
 fn ofm_world_token(editor: State<'_, Mutex<WorldEditor>>) -> Result<String, String> {
@@ -150,8 +155,8 @@ fn add_station(
         .add_station(name, latitude, longitude)
 }
 #[tauri::command]
-fn build_alignment_from_reference(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn build_alignment_from_reference(
+    app: tauri::AppHandle,
     name: String,
     points: Vec<GeoPoint>,
     source_record: rosenfu_core::world::SourceRecord,
@@ -164,10 +169,8 @@ fn build_alignment_from_reference(
     anchor_levels: Option<Vec<rosenfu_core::world::InfrastructureLevel>>,
     junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .build_plan(vec![session::PlannedAlignment {
+    run_world_edit(app, move |editor| {
+        editor.build_plan(vec![session::PlannedAlignment {
             ofm_path: None,
             anchor_levels,
             junction_source,
@@ -186,10 +189,12 @@ fn build_alignment_from_reference(
             extension: None,
             destination: None,
         }])
+    })
+    .await
 }
 #[tauri::command]
-fn build_alignment(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn build_alignment(
+    app: tauri::AppHandle,
     name: String,
     points: Vec<GeoPoint>,
     track_type: rosenfu_core::world::TrackType,
@@ -200,10 +205,8 @@ fn build_alignment(
     anchor_levels: Option<Vec<rosenfu_core::world::InfrastructureLevel>>,
     junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .build_plan(vec![session::PlannedAlignment {
+    run_world_edit(app, move |editor| {
+        editor.build_plan(vec![session::PlannedAlignment {
             ofm_path: None,
             anchor_levels,
             junction_source,
@@ -219,10 +222,12 @@ fn build_alignment(
             extension: None,
             destination: None,
         }])
+    })
+    .await
 }
 #[tauri::command]
-fn build_alignment_with_stations(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn build_alignment_with_stations(
+    app: tauri::AppHandle,
     name: String,
     points: Vec<GeoPoint>,
     track_type: rosenfu_core::world::TrackType,
@@ -235,10 +240,8 @@ fn build_alignment_with_stations(
     anchor_levels: Option<Vec<rosenfu_core::world::InfrastructureLevel>>,
     junction_source: Option<rosenfu_core::world::ConstructionJunctionSource>,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .build_plan(vec![session::PlannedAlignment {
+    run_world_edit(app, move |editor| {
+        editor.build_plan(vec![session::PlannedAlignment {
             ofm_path: None,
             anchor_levels,
             junction_source,
@@ -254,6 +257,8 @@ fn build_alignment_with_stations(
             extension: None,
             destination: None,
         }])
+    })
+    .await
 }
 #[tauri::command]
 async fn preview_construction_plan(
@@ -286,27 +291,27 @@ async fn preview_construction_plan(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-fn build_plan(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn build_plan(
+    app: tauri::AppHandle,
     alignments: Vec<session::PlannedAlignment>,
     stations: Option<Vec<session::PlannedBuiltStation>>,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .build_construction_plan(alignments, stations.unwrap_or_default())
+    run_world_edit(app, move |editor| {
+        editor.build_construction_plan(alignments, stations.unwrap_or_default())
+    })
+    .await
 }
 #[tauri::command]
-fn build_plan_with_roads(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn build_plan_with_roads(
+    app: tauri::AppHandle,
     alignments: Vec<session::PlannedAlignment>,
     stations: Option<Vec<session::PlannedBuiltStation>>,
     roads: Vec<rosenfu_core::world::RoadSnapshot>,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .build_construction_plan_with_roads(alignments, stations.unwrap_or_default(), roads)
+    run_world_edit(app, move |editor| {
+        editor.build_construction_plan_with_roads(alignments, stations.unwrap_or_default(), roads)
+    })
+    .await
 }
 #[tauri::command]
 fn preview_plan_with_roads(
@@ -322,13 +327,14 @@ fn preview_plan_with_roads(
         .build_construction_plan_with_roads(alignments, stations.unwrap_or_default(), roads)
 }
 #[tauri::command]
-fn road_assessments(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn road_assessments(
+    app: tauri::AppHandle,
 ) -> Result<Vec<(AlignmentId, rosenfu_core::world::RoadAssessment)>, String> {
-    Ok(editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .road_assessments())
+    run_world_snapshot(app, move |snapshot| {
+        let _compute = construction_timing::Phase::new("road_assessments.compute");
+        Ok(snapshot.road_assessments())
+    })
+    .await
 }
 #[tauri::command]
 fn place_station_on_alignment(
@@ -408,14 +414,14 @@ async fn undo_world_edit(
     app: tauri::AppHandle,
     expected_world: WorldDraft,
 ) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| editor.undo_world_edit(expected_world)).await
+    run_world_edit(app, move |editor| editor.undo_world_edit(expected_world)).await
 }
 #[tauri::command]
 async fn redo_world_edit(
     app: tauri::AppHandle,
     expected_world: WorldDraft,
 ) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| editor.redo_world_edit(expected_world)).await
+    run_world_edit(app, move |editor| editor.redo_world_edit(expected_world)).await
 }
 #[tauri::command]
 fn rename_station(
@@ -428,20 +434,45 @@ fn rename_station(
         .map_err(|_| "world state unavailable")?
         .rename_station(station_id, name)
 }
+// Read-only work uses an owned snapshot; CPU scans never hold the live mutex.
+async fn run_world_snapshot<T: Send + 'static>(
+    app: tauri::AppHandle,
+    operation: impl FnOnce(WorldEditor) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let queue = construction_timing::Phase::new("world_snapshot.queue");
+    tauri::async_runtime::spawn_blocking(move || {
+        drop(queue);
+        let waiting = construction_timing::Phase::new("world_snapshot.lock_clone");
+        let snapshot = app
+            .state::<Mutex<WorldEditor>>()
+            .lock()
+            .map_err(|_| "world state unavailable")?
+            .clone();
+        drop(waiting);
+        operation(snapshot)
+    })
+    .await
+    .map_err(|error| format!("描画データの計算を完了できませんでした: {error}"))?
+}
 // Keep the atomic editor transaction and its mutex on a blocking worker.
-// Demolition validates/remaps references and snapshots undo state; none of that
+// Construction and demolition validate/remap references and snapshots; none of that
 // work, including waiting for another editor operation, belongs on the UI thread.
-async fn run_demolition(
+async fn run_world_edit(
     app: tauri::AppHandle,
     operation: impl FnOnce(&mut WorldEditor) -> Result<WorldDraft, String> + Send + 'static,
 ) -> Result<WorldDraft, String> {
+    let queue = construction_timing::Phase::new("world_edit.queue");
     tauri::async_runtime::spawn_blocking(move || {
+        drop(queue);
+        let waiting = construction_timing::Phase::new("world_edit.lock");
         let state = app.state::<Mutex<WorldEditor>>();
         let mut editor = state.lock().map_err(|_| "world state unavailable")?;
+        drop(waiting);
+        let _operation = construction_timing::Phase::new("world_edit.transaction");
         operation(&mut editor)
     })
     .await
-    .map_err(|error| format!("撤去処理を完了できませんでした: {error}"))?
+    .map_err(|error| format!("ワールド更新処理を完了できませんでした: {error}"))?
 }
 #[tauri::command]
 async fn delete_station(
@@ -449,7 +480,7 @@ async fn delete_station(
     station_id: StationId,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
 ) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| match construction_plans {
+    run_world_edit(app, move |editor| match construction_plans {
         Some(plans) => editor.delete_station_with_plans(station_id, plans),
         None => editor.delete_station(station_id),
     })
@@ -461,7 +492,7 @@ async fn delete_alignment(
     alignment_id: AlignmentId,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| {
+    run_world_edit(app, move |editor| {
         editor.delete_alignment_with_plans(alignment_id, construction_plans)
     })
     .await
@@ -473,7 +504,7 @@ async fn delete_alignment_section(
     section_index: usize,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| {
+    run_world_edit(app, move |editor| {
         editor.delete_alignment_section(alignment_id, section_index, construction_plans)
     })
     .await
@@ -485,7 +516,7 @@ async fn delete_alignment_sections(
     expected_alignments: Vec<rosenfu_core::world::Alignment>,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| {
+    run_world_edit(app, move |editor| {
         editor.delete_alignment_sections(selections, expected_alignments, construction_plans)
     })
     .await
@@ -538,7 +569,7 @@ async fn update_alignment_section_track_type(
     track_type: rosenfu_core::world::TrackType,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| {
+    run_world_edit(app, move |editor| {
         editor.update_alignment_section_track_type(
             selections,
             expected_alignments,
@@ -550,7 +581,7 @@ async fn update_alignment_section_track_type(
 }
 #[tauri::command]
 async fn undo_alignment_deletion(app: tauri::AppHandle) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| editor.undo_alignment_deletion()).await
+    run_world_edit(app, move |editor| editor.undo_alignment_deletion()).await
 }
 
 #[tauri::command]
