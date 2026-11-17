@@ -1,3 +1,6 @@
+import {BuiltTrackLayer} from './BuiltTrackLayer';
+import {StationLayer} from './StationLayer';
+import {RouteLayer} from './RouteLayer';
 import {EditHistory,planEditKey,worldEditKey,sameWorldEdit,FINAL_WORLD_COMMANDS,UNDO_WORLD_COMMANDS} from "./editHistory";
 import { ServiceDelete } from "./ServiceDelete";
 import {ServiceFromRoute} from './ServiceFromRoute';
@@ -24,14 +27,14 @@ import {AutomaticRailControls} from './AutomaticRailControls';
 import {currentBuiltHeightSelection,equalWorldSnapshots,builtAnchorHeight,BuiltAnchorHeightHandles,BuiltAnchorHeightToolbar,type BuiltHeightSelection} from './BuiltAnchorHeight';
 import {useConstructionPreview} from './useConstructionPreview';
 import {anchorHeights,changeAnchorHeight} from './anchorHeights';
-import {TrackGeometryLayer,useTrackRenderGeometry} from './TrackRenderGeometry';
-import {sharedServiceSections,serviceBandPaths,serviceRenderChains} from './serviceMapAppearance';
+import {useTrackRenderGeometry} from './TrackRenderGeometry';
+import {sharedServiceSections,serviceRenderChains} from './serviceMapAppearance';
 import "./PlanBreakdown.css";
 import {ServiceAppearanceControls,ServiceBadge,initialServiceSymbol, type ServiceSymbolShape} from './ServiceAppearanceControls';
 import {JunctionPoints} from './JunctionPoints';
 import {nearestJunctionSource,junctionDirection,junctionPrevious,type JunctionSource} from './junctionSelection';
 import {constructionPlanFingerprint} from './constructionPlans';
-import {DEFAULT_INFRASTRUCTURE,COUNT_LABELS,LEVEL_LABELS,endpointInfrastructure,displayInfrastructureSections,schematicTrackPaths,type SectionInfrastructure} from './sectionInfrastructure';
+import {DEFAULT_INFRASTRUCTURE,COUNT_LABELS,LEVEL_LABELS,endpointInfrastructure,schematicTrackPaths,type SectionInfrastructure} from './sectionInfrastructure';
 import {mergeSectionSelections,selectAlignmentSections,selectionBounds,type SelectionBox,type SectionSelection} from "./boxSelection";
 import "./boxSelection.css";
 import {HeightControls} from './HeightControls';
@@ -113,7 +116,7 @@ type Station = { id: string; owner: string; name: string; latitude: number; long
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
 type RoutePath = { route_id: string; segments: Segment[]; member_stations: string[] };
-type World = {
+export type World = {
   road_snapshots?:SavedRoadSnapshot[];
   road_evidence_descriptors?:readonly unknown[];
   service_route_bindings?:ServiceRouteBindingRecord[];
@@ -296,7 +299,7 @@ export function App() {
   const [serviceSequenceKey,setServiceSequenceKey]=useState(0);
   const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|"sequence"|null>(null);
   const routeMapSelect=useRef<((id:string)=>void)|null>(null);
-  function cancelRouteMapPick(){routeMapSelect.current=null;setRouteMapPick(null);}
+  const cancelRouteMapPick=useCallback(()=>{routeMapSelect.current=null;setRouteMapPick(null);},[]);
   useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch]);
   useEffect(()=>{setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);},[worldEpoch]);
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
@@ -414,6 +417,7 @@ export function App() {
   const [editLength, setEditLength] = useState("200");
   const [editWidth, setEditWidth] = useState("12");
   const alignments = useMemo(()=>world?.alignments ?? [],[world]);
+  const alignmentConnections=useMemo(()=>world?.alignment_connections??[],[world]);
   const trackRender=useTrackRenderGeometry(world,status==="ready"&&(!!world?.alignment_connections?.length||alignments.some(line=>line.infrastructure?.some((section,index)=>index>0&&section.track_count!==line.infrastructure![index-1].track_count))));
   const detailedStations = camera.zoom >= 13;
   const [stationResizePending,setStationResizePending]=useState(false);
@@ -533,11 +537,11 @@ export function App() {
   const [planHover, setPlanHover] = useState<{id:number;x:number;y:number;point:GeoPoint;anchor?:number} | null>(null);
   const [builtHover,setBuiltHover]=useState<{id:string;point:GeoPoint}|null>(null);
   useEffect(() => { setPlanHover(null);setBuiltHover(null); }, [draftPoints, parkedPaths, activeTool, camera, world]);
-  function hoverBuilt(event:ReactPointerEvent<SVGPathElement>,id:string){
+  const hoverBuilt=useCallback((event:ReactPointerEvent<SVGPathElement>,id:string)=>{
     if(gestureRef.current||anchorGesture.current||event.pointerType==="touch")return;
     const rect=svgRef.current?.getBoundingClientRect();
     if(rect){const point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);if(point){setPlanHover(null);setBuiltHover({id,point});}}
-  }
+  },[camera]);
   const hoveredBuilt=builtHover?alignments.find(line=>line.id===builtHover.id):null;
   const dragDesignSpeed=anchorPreview?.id===activePathId?designSpeedKmh:parkedPaths.find(path=>path.id===anchorPreview?.id)?.designSpeedKmh;
   const dragSpeedLabels=anchorPreview?.preview&&!anchorPreview.error&&dragDesignSpeed!==undefined?anchorDragFeedback(anchorPreview.preview,anchorPreview.index,dragDesignSpeed):[];
@@ -964,7 +968,7 @@ export function App() {
     const services = world?.services.filter(service => service.start === id || world.service_paths?.some(path => {if(path.service_id !== service.id)return false;try{return resolveServicePath(service.start,path.legs,world).some(o=>o.station_id===id);}catch{return true;}})) ?? [];
     return [...routes.map(route=>"路線: "+route.name),...services.map(service=>"系統: "+service.name)].join(" / ");
   }
-  function selectStation(id: string) {
+  const selectStation=useCallback((id: string) => {
     if (busyRef.current) return;
     if ((mainTab === "routes" || mainTab === "services") && routeMapSelect.current) {
       if (!enabled || !stationsById.has(id)) return;
@@ -976,7 +980,14 @@ export function App() {
     setSelected(id); setEditStationName(stationsById.get(id)?.name ?? ""); setPendingStation(null); setPendingDelete(null);
     const placement = world?.station_placements?.find((entry) => entry.station_id === id);
     setEditLength(String(placement?.length_m ?? 200)); setEditWidth(String(placement?.width_m ?? 12)); setPanelCollapsed(false);
-  }
+  },[mainTab,enabled,stationsById,routeMapPick,cancelRouteMapPick,stationSettingsDirty,selected,world]);
+  const selectMapStation=useCallback((id:string)=>{if(!suppressSelectionClick.current)selectStation(id);},[selectStation]);
+  const clearBuiltHover=useCallback(()=>setBuiltHover(null),[]);
+  const selectBuiltTrack=useCallback((event:MouseEvent<SVGPathElement>,id:string)=>{
+    if(mapMode==="move"&&activeTool!=="select"&&!suppressSelectionClick.current){
+      event.stopPropagation();setAlignmentId(id);setSelectedPlanPath(null);setTrackDeleteConfirm(false);
+    }
+  },[mapMode,activeTool]);
   function beginStationNameEdit(){
     if(!enabled || busyRef.current || !selectedStation)return;
     stationNameInput.current?.focus();stationNameInput.current?.select();
@@ -1894,22 +1905,8 @@ export function App() {
                 </g>}
               <ReferenceGraphLayer edges={graphDisplay.edges} camera={camera}/>
               {automaticRailSelected&&automaticRail.view.chains.map(chain=><path key={chain.id} d={drawPath(chain.points)} className="automatic-rail-reference" stroke="#777" strokeWidth="1.5" strokeDasharray="4 4" fill="none" pointerEvents="none"/>)}
-              {alignments.map((alignment) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>
-                {!(mainTab==="construction"&&activeTool==="inactive")&&<title>{alignment.name}</title>}
-
-                {displayInfrastructureSections(alignment).map((section,index)=><g key={index} data-track-count={section.infrastructure.track_count} data-structure-level={section.infrastructure.level} pointerEvents="none">
-                  {section.infrastructure.level.startsWith('elevated')&&<path d={drawPath(section.points)} fill="none" stroke="#8095a7" strokeWidth={section.infrastructure.track_count*3+6} opacity=".4"/>}
-                  {!trackRender.value&&schematicTrackPaths(section.points.map(point=>project(point.latitude,point.longitude,camera)),section.infrastructure.track_count).map((path,rail)=><TrackStroke key={rail} d={path} className={(referenceCopy.active?(manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id):alignmentId)===alignment.id?"alignment-path alignment-selected":"alignment-path"} style={{strokeDasharray:section.infrastructure.level.startsWith('underground')?'5 4':undefined,opacity:1}}/>)}
-                </g>)}
-                <path d={drawPath(alignment.points)} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && activeTool!=="select" && !suppressSelectionClick.current) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
-              </g>)}
-              {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} lines={alignments} selectedId={referenceCopy.active?((manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id)??""):alignmentId}/>}
-              <g className="route-assignment-overlays" pointerEvents="none">{alignments.flatMap(alignment=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
-              {(mainTab==="routes"||mainTab==="services")&&serviceMapSections.map((section,index)=><g key={section.alignmentIds.join(":")+":"+index} className="service-map-section" data-alignment-id={section.alignmentIds[0]} data-service-count={section.bands.length} pointerEvents="none">
-                <title>{section.bands.map(b=>b.name).join(" / ")}</title>
-                <path d={drawPath(section.points)} fill="none" stroke="white" strokeWidth="10" strokeLinecap="butt" strokeLinejoin="round"/>
-                {serviceBandPaths(section.points.map(p=>project(p.latitude,p.longitude,camera)),section.bands).map(band=><path key={band.serviceId} data-service-id={band.serviceId} d={band.d} fill="none" stroke={band.color} strokeWidth={band.width} strokeLinecap="round" strokeLinejoin="round"/>)}
-              </g>)}
+              <BuiltTrackLayer alignments={alignments} camera={camera} geometry={trackRender.value} selectedId={referenceCopy.active?((manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id)??""):alignmentId} showTitles={!(mainTab==="construction"&&activeTool==="inactive")} onHover={hoverBuilt} onLeave={clearBuiltHover} onSelect={selectBuiltTrack}/>
+              <RouteLayer alignments={alignments} camera={camera} routeVisual={routeVisual} serviceMapSections={serviceMapSections} showServices={mainTab==="routes"||mainTab==="services"}/>
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {roadFollowing&&(roadDrawing.preview?.kind==='point'||roadDrawing.preview?.kind==='route')&&focusMarker(roadDrawing.preview.point,'anchor','road-snap-point')}
               {roadFollowing&&roadDrawing.preview?.kind==='route'&&<TrackStroke d={drawInfrastructurePath(roadDrawing.preview.line,infrastructure)} className={'draft-path road-drawing-preview'+(constructionValidationError(nativeConstructionPreview?.value)?' invalid-candidate':'')} pointerEvents="none"/>}
@@ -1918,7 +1915,7 @@ export function App() {
               {parallelMode&&parallelStart&&(()=>{const q=project(parallelStart.point.latitude,parallelStart.point.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
               {parallelMode&&parallelPreview&&<TrackStroke d={drawInfrastructurePath(parallelPreview.line,infrastructure)} data-track-count={infrastructure.track_count} className="draft-path candidate-draft" pointerEvents="none"/>}
               {parallelMode&&parallelCandidate&&!parallelStart&&(()=>{const line=offsetTrack(parallelCandidate.source.points,parallelCandidate.projection!.offset),p=line&&hoverPoint&&parallelProjection(line,hoverPoint)?.point;if(!p)return null;const q=project(p.latitude,p.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
-              <JunctionPoints key={worldEpoch} lines={alignments} connections={world?.alignment_connections??[]} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"}/>
+              <JunctionPoints key={worldEpoch} lines={alignments} connections={alignmentConnections} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"}/>
               {parkedPaths.map(plan=><g key={plan.id} className={plan.planId===activePlanId?undefined:"inactive-plan"}><TrackStroke d={drawInfrastructurePath(plan.line,plan.infrastructure)} data-track-count={plan.infrastructure?.track_count??1} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
 
@@ -1940,14 +1937,7 @@ export function App() {
               {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className={"planned-station"+(stationPlanId(station)===activePlanId?"":" inactive-plan")} pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform" visibility={mergedStationIds.has(station.id)?"hidden":undefined}/>:<circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={p.x} cy={p.y} r="5" fill={valid?"#777":"#b34c4c"}/>}{stationNamesVisible&&stationDisplayGroup(station.id)?.id===station.id&&<text x={p.x+10} y={p.y-8}>{stationDisplayGroup(station.id)?.name??station.name}（計画）</text>}</g>;})}
               {stationPreview.length >= 4 && <path d={drawPath(stationPreview) + "Z"} className="station-platform station-placement-preview" opacity=".65" pointerEvents="none" />}
               {referenceVisible && referenceResult.stations.map(station=>{const p=project(station.latitude,station.longitude,camera);return <g key={station.osmType+"/"+station.osmId} className="reference-station" pointerEvents="none"><title>参考駅: {station.name} ({station.kind})</title><path d={`M${p.x},${p.y-5} l5,5 -5,5 -5,-5 Z`}/><text x={p.x+9} y={p.y-7}>参考: {station.name}</text></g>;})}
-              {world?.stations.map((station) => {
-                const { x, y } = project(station.latitude, station.longitude, camera);
-                const placement = world?.station_placements?.find((p) => p.station_id === station.id);
-                const polygon = stationPolygons.get(station.id);
-                return <g key={station.id} pointerEvents={activeTool==="stations"&&mapMode==="place"?"none":undefined} className={"station-marker" + (selected === station.id ? " selected" : "") + (routeVisual.stations.has(station.id) ? "" : " route-unassigned")} onClick={(event) => { event.stopPropagation(); if (!suppressSelectionClick.current) selectStation(station.id); }}>
-                  <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations ? <circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r="5" className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" style={mergedStationIds.has(station.id)?{fill:"transparent",stroke:"none"}:undefined} /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}{stationNamesVisible&&(!stationDisplayGroup(station.id)||stationDisplayGroup(station.id)?.id===station.id)&&<text x={x + 18} y={y + 5}>{station.name}</text>}
-                </g>;
-              })}
+              <StationLayer stations={world?.stations} placements={world?.station_placements} stationPolygons={stationPolygons} stationGroupDisplay={stationGroupDisplay} camera={camera} selected={selected} routeVisual={routeVisual} placing={activeTool==="stations"&&mapMode==="place"} detailedStations={detailedStations} stationNamesVisible={stationNamesVisible} onSelect={selectMapStation}/>
               {activeTool==="select"&&<g className="range-selection-layer" pointerEvents="none">{rangeSelection.flatMap(row=>{const line=alignments.find(line=>line.id===row.alignmentId);return line?deletionSections(line).filter(section=>row.sectionIndices.includes(section.index)).map(section=><path key={row.alignmentId+":"+section.index} data-selected-alignment={row.alignmentId} data-selected-section={section.index} className="selected-built-section" strokeWidth={8/viewport.scale} d={drawPath(section.points)}/>):[];})}{selectionBox&&(()=>{const b=selectionBounds(selectionBox);return <rect className="selection-box" x={b.left} y={b.top} width={b.right-b.left} height={b.bottom-b.top}/>;})()}</g>}
               {activeTool==="delete"&&enabled&&<g className="deletion-layer">
                 {alignments.flatMap(line=>deletionSections(line).map(section=>{const target:DeleteTarget={kind:"built-section",alignmentId:line.id,sectionIndex:section.index};return <path key={line.id+":"+section.index} data-delete-alignment={line.id} data-delete-section={section.index} d={drawPath(section.points)} {...deleteHitProps(target)}/>;}))}
