@@ -40,3 +40,7 @@
 .save-slot-card-actions > button { max-width: 100%; }
 .company-setup.save-slot-dialog { width: min(600px, 100%); padding: 20px; }
 .save-slot-dialog > h2 { margin-top: 0; }
+
+.save-slot-card-actions { gap: 8px; flex-wrap: wrap; }
+.deleted-saves { margin-top: 12px; }
+.deleted-saves li { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 0; }

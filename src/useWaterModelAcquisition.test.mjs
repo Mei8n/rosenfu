@@ -93,3 +93,34 @@ test('rotated retries give later native zones an opportunity when the first pair
 test('successful partial native rounds continue beyond three rounds but remain bounded',async()=>{
  vi.useFakeTimers();try{vi.resetModules();const {useWaterModelAcquisition}=await import('./useWaterModelAcquisition');let lists=0,installs=0;vi.mocked(invoke).mockImplementation(command=>{if(command==='water_mask_requests'){lists++;return Promise.resolve(lists<=4?[{id:'a',native:true},{id:'b',native:true}]:[]);}installs++;return installs%2?Promise.resolve():Promise.reject(Error('transient'));});const {result,unmount}=renderHook(()=>useWaterModelAcquisition(true,1,[139,35,140,36]));await act(async()=>{});await act(async()=>vi.advanceTimersByTimeAsync(120000));expect(lists).toBe(5);expect(result.current).toBeGreaterThan(3);unmount();}finally{vi.useRealTimers();}
 });
+
+test('viewport animation coalesces water queries until the bounds settle',async()=>{
+ vi.useFakeTimers();try{
+  vi.resetModules();const {useWaterModelAcquisition}=await import('./useWaterModelAcquisition');
+  vi.mocked(invoke).mockResolvedValue([]);
+  const {rerender,unmount}=renderHook(({bounds})=>useWaterModelAcquisition(true,1,bounds),{initialProps:{bounds:[138.6,35.3,138.8,35.5]}});
+  await act(async()=>{});
+  expect(invoke).toHaveBeenCalledTimes(1);
+  for(let i=1;i<=10;i++){
+   rerender({bounds:[138.6+i*.05,35.3,138.8+i*.05,35.5]});
+   await act(async()=>vi.advanceTimersByTimeAsync(16));
+  }
+  expect(invoke).toHaveBeenCalledTimes(1);
+  await act(async()=>vi.advanceTimersByTimeAsync(300));
+  expect(invoke).toHaveBeenCalledTimes(2);
+  expect(invoke).toHaveBeenLastCalledWith('water_mask_requests',{bounds:[139.1,35.3,139.3,35.5]});
+  unmount();
+ }finally{vi.useRealTimers();}
+});
+test('unmount cancels a pending viewport acquisition',async()=>{
+ vi.useFakeTimers();try{
+  vi.resetModules();const {useWaterModelAcquisition}=await import('./useWaterModelAcquisition');
+  vi.mocked(invoke).mockResolvedValue([]);
+  const {rerender,unmount}=renderHook(({bounds})=>useWaterModelAcquisition(true,1,bounds),{initialProps:{bounds:[138.6,35.3,138.8,35.5]}});
+  await act(async()=>{});
+  rerender({bounds:[139,35.3,139.2,35.5]});
+  unmount();
+  await act(async()=>vi.advanceTimersByTimeAsync(500));
+  expect(invoke).toHaveBeenCalledTimes(1);
+ }finally{vi.useRealTimers();}
+});

@@ -67,6 +67,15 @@ export async function acquireWaterMasks(signal:AbortSignal,installed:()=>void,ca
 /** No new UI: native preview/build owns refusal reasons. Fixed bytes remain in the session cache. */
 export function useWaterModelAcquisition(enabled:boolean,world:unknown,bounds?:[number,number,number,number]){
  const boundsKey=JSON.stringify(bounds??null);
+ // Camera animation changes bounds repeatedly. Native acquisition cannot be
+ // cancelled, so wait for a settled viewport instead of dispatching each frame.
+ // Keep the initial request immediate; construction validation remains native.
+ const [settledBoundsKey,setSettledBoundsKey]=useState(boundsKey);
+ useEffect(()=>{
+  if(!enabled||boundsKey===settledBoundsKey)return;
+  const timer=setTimeout(()=>setSettledBoundsKey(boundsKey),300);
+  return()=>clearTimeout(timer);
+ },[enabled,boundsKey,settledBoundsKey]);
  const [revision,setRevision]=useState(0);
  const [cacheChange,setCacheChange]=useState(0);
  useEffect(()=>{if(!enabled)return;const notify=()=>setCacheChange(v=>v+1);lateInstallListeners.add(notify);return()=>{lateInstallListeners.delete(notify);};},[enabled]);
@@ -75,7 +84,7 @@ export function useWaterModelAcquisition(enabled:boolean,world:unknown,bounds?:[
   async function run(round:number,noProgress:number){
    const controller=new AbortController();active=controller;const deadline=setTimeout(()=>controller.abort(new Error('水域取得がタイムアウトしました。')),30000);
    let complete=false,progress=0,listed=0;
-   try{complete=await acquireWaterMasks(controller.signal,()=>{progress++;if(!disposed)setRevision(v=>v+1);},invoke,fetch,JSON.parse(boundsKey)??undefined,{offset:round*2,listed:count=>{listed=count;}});}catch{/* Native retains unavailable rather than treating errors as absence. */}
+   try{complete=await acquireWaterMasks(controller.signal,()=>{progress++;if(!disposed)setRevision(v=>v+1);},invoke,fetch,JSON.parse(settledBoundsKey)??undefined,{offset:round*2,listed:count=>{listed=count;}});}catch{/* Native retains unavailable rather than treating errors as absence. */}
    finally{clearTimeout(deadline);}
    // A previous effect may have completed its native install after cancellation.
    // A fresh empty missing-list is also evidence that preview must be refreshed.
@@ -86,6 +95,6 @@ export function useWaterModelAcquisition(enabled:boolean,world:unknown,bounds?:[
   }
   void run(0,0);
   return()=>{disposed=true;clearTimeout(timer);active?.abort();};
- },[enabled,world,cacheChange,boundsKey]);
+ },[enabled,world,cacheChange,settledBoundsKey]);
  return revision;
 }

@@ -1,7 +1,8 @@
 import type {OfmPathDescriptor} from './ofmPlannedReference';
 import type {JunctionSource} from './junctionSelection';
 import type {SectionInfrastructure} from './sectionInfrastructure';
-import type {EditedGeometry} from "./editedGeometry";
+import {plannedGeometry,type EditedGeometry} from "./editedGeometry";
+import {anchorHeights} from "./anchorHeights";
 import type {ReferenceBuild} from "./referenceCopy";
 import type {TrackType} from "./TrackTypeControls";
 export type GeoPoint={latitude:number;longitude:number};
@@ -53,4 +54,37 @@ export function constructionPlanFingerprint(value:ConstructionPlans):string{
   return item;
  }
  return JSON.stringify(canonical(value));
+}
+
+/** Recover legacy persisted point-Redo as visible, unbuilt plans, not session history.
+ * Call at a load boundary only, never when restoring a current-session Undo snapshot.
+ * Uncertain geometry is retained byte-for-byte for manual recovery, not discarded.
+ */
+export function recoverLegacyRedoPlans(value:ConstructionPlans,previousForExtension?:(extension:Extension)=>GeoPoint|undefined):{plans:ConstructionPlans;recoveredPathIds:number[];unresolvedPathIds:number[]}{
+ const recoveredPathIds:number[]=[],unresolvedPathIds:number[]=[];
+ function recover(id:number,points:GeoPoint[],redo:GeoPoint[],geometry:EditedGeometry|undefined,extension:Extension|null,levels:SectionInfrastructure['level'][]|undefined,redoLevels:SectionInfrastructure['level'][]|undefined,start:SectionInfrastructure['level']|undefined,end:SectionInfrastructure['level'],opaque=false){
+  if(!redo.length)return null;
+  const restored=[...points,...redo.slice().reverse()];
+  const previous=extension?previousForExtension?.(extension):undefined;
+  // Reference/OFM descriptors may bind their own point sequence. Do not invent
+  // replacement provenance or silently detach it to make a recovery succeed.
+  if(opaque||(extension&&!previous)||restored.some(p=>!Number.isFinite(p.latitude)||!Number.isFinite(p.longitude))||(levels&&levels.length!==points.length)||(redoLevels&&redoLevels.length!==redo.length)){
+   unresolvedPathIds.push(id);return null;
+  }
+  const shape=plannedGeometry(restored,geometry,previous);
+  if(shape.error==='編集した線形とアンカーが一致しません'||shape.error==='線形が範囲外です'){
+   unresolvedPathIds.push(id);return null;
+  }
+  const heights=[...anchorHeights(points.length,levels,start,end),...(redoLevels??Array.from({length:redo.length},()=>end)).slice().reverse()];
+  if(!points.length&&!redoLevels&&heights.length)heights[0]=start??end;
+  recoveredPathIds.push(id);return {points:restored,line:shape.points,levels:heights};
+ }
+ const active=recover(value.activePathId,value.draftPoints,value.redoPoints,value.draftEditedGeometry,value.draftExtension,value.draftAnchorLevels,value.redoAnchorLevels,value.startLevel,value.infrastructure?.level??'ground',value.roadFollowing);
+ const parkedPaths=value.parkedPaths.map(path=>{
+  const result=recover(path.id,path.points,path.redo,path.editedGeometry,path.extension,path.anchorLevels,path.redoAnchorLevels,path.startLevel,path.infrastructure?.level??'ground',!!path.reference||!!path.ofmPath||path.roadFollowing);
+  return result?{...path,points:result.points,line:result.line,anchorLevels:result.levels,redo:[],redoAnchorLevels:[],destination:path.redoDestination??path.destination,redoDestination:undefined}:path;
+ });
+ if(!recoveredPathIds.length)return {plans:value,recoveredPathIds,unresolvedPathIds};
+ const plans:ConstructionPlans={...value,parkedPaths,...(active?{draftPoints:active.points,draftAnchorLevels:active.levels,redoPoints:[],redoAnchorLevels:[],draftDestination:value.draftRedoDestination??value.draftDestination,draftRedoDestination:undefined,draftFinished:active.points.length>=2}:{})};
+ return {plans,recoveredPathIds,unresolvedPathIds};
 }

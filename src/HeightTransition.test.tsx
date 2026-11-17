@@ -18,7 +18,7 @@ const built = {...empty,next_id:"4",alignments:[alignment]};
 const placed = {...built,next_id:"5",stations:[{id:"4",owner:"2",name:"新駅",latitude:35.67504,longitude:139.75}],station_placements:[{station_id:"4",alignment_id:"3",position:.5,length_m:200,width_m:12}]};
 async function start(snapshot: unknown = empty) {
   vi.mocked(isTauri).mockReturnValue(true);
-  vi.mocked(invoke).mockImplementation(async command => {
+  vi.mocked(invoke).mockImplementation(async command => {if(command==="preview_construction_plan")return {validationError:null};
     if(command==="engine_info") return {name:"Rosenfu",version:"construction-test"};
     if(command==="world_snapshot") return snapshot;
     if(command==="list_save_slots") return {active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]};
@@ -35,9 +35,9 @@ async function start(snapshot: unknown = empty) {
   return map;
 }
 test('first anchor height stays fixed while destination changes through undo save reload and build request',async()=>{
- let map=await start();fireEvent.click(map,{clientX:120,clientY:100});
+ let map=await start();await act(async()=>{fireEvent.click(map,{clientX:120,clientY:100});});
  const elevated=screen.getByRole('button',{name:LEVEL_LABELS.elevated});expect(elevated.hasAttribute('disabled')).toBe(false);fireEvent.click(elevated);
- fireEvent.click(map,{clientX:300,clientY:100});fireEvent.click(map,{clientX:300,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:300,clientY:100});});await act(async()=>{fireEvent.click(map,{clientX:300,clientY:100});});
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});
  await act(async()=>{fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});});
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?Promise.resolve({saved:true}):original(command,args));
@@ -45,23 +45,23 @@ test('first anchor height stays fixed while destination changes through undo sav
  const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
  expect(saved.startLevel).toBe('ground');expect(saved.infrastructure?.level).toBe('elevated');
  cleanup();map=await start({...empty,construction_plans:saved});expect(screen.queryByText('未保存の変更あり')).toBeNull();
- vi.mocked(invoke).mockImplementation(async command=>{if(command==='build_alignment')throw Error('inspect grade');return {};});
+ vi.mocked(invoke).mockImplementation(async command=>{if(command==="preview_construction_plan")return {validationError:null};if(command==='build_alignment')throw Error('inspect grade');return {};});
  fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/inspect grade/);
  expect(invoke).toHaveBeenCalledWith('build_alignment',expect.objectContaining({startLevel:'ground',infrastructure:{track_count:1,level:'elevated'}}));
 });
 
 test('individual anchor levels survive edits Undo Redo save and reload',async()=>{
  let map=await start();
- fireEvent.click(map,{clientX:100,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:100,clientY:100});});
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
- fireEvent.click(map,{clientX:220,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:220,clientY:100});});
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.ground}));
- fireEvent.click(map,{clientX:340,clientY:100});fireEvent.click(map,{clientX:340,clientY:100});
+ await act(async()=>{fireEvent.click(map,{clientX:340,clientY:100});});await act(async()=>{fireEvent.click(map,{clientX:340,clientY:100});});
  fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}));
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated}).getAttribute('aria-pressed')).toBe('true');
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?Promise.resolve({saved:true}):original(command,args));
  fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText('ワールドと未着工計画を保存しました。');
@@ -71,16 +71,16 @@ test('individual anchor levels survive edits Undo Redo save and reload',async()=
  fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);
  expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
 });
-test('parked anchor height edits keep their own Undo history and save levels',async()=>{
+test('parked anchor height edits follow chronological Undo history and save levels',async()=>{
  const {emptyConstructionPlans}=await import('./constructionPlans');
  const points=[{latitude:35.67504,longitude:139.73},{latitude:35.67504,longitude:139.76},{latitude:35.67504,longitude:139.79}];
  const plans={...emptyConstructionPlans(),parkedPaths:[{id:2,planId:1,name:'parked',points,line:points,redo:[],trackType:'normal',designSpeedKmh:120,roadFollowing:false,extension:null,anchorLevels:['ground','elevated','ground']}]};
  const map=await start({...empty,construction_plans:plans});fireEvent.click(screen.getByRole('button',{name:'選択'}));fireEvent.click(map.querySelector('[data-anchor-path="2"][data-anchor-index="1"]')!);
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}));
  fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated_3}));
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated}).getAttribute('aria-pressed')).toBe('true');
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated}).getAttribute('aria-pressed')).toBe('true');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});fireEvent.click(map.querySelector('[data-anchor-index="1"]')!);expect(screen.getByRole('button',{name:LEVEL_LABELS.elevated_2}).getAttribute('aria-pressed')).toBe('true');
  const original=vi.mocked(invoke).getMockImplementation()!;vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?Promise.resolve({saved:true}):original(command,args));
  fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText('ワールドと未着工計画を保存しました。');
  expect(invoke).toHaveBeenCalledWith('save_world',expect.objectContaining({constructionPlans:expect.objectContaining({parkedPaths:expect.arrayContaining([expect.objectContaining({id:2,anchorLevels:['ground','elevated_2','ground']})])})}));
@@ -89,7 +89,7 @@ test('native cursor preview carries per-anchor heights without building',async()
  if(!window.PointerEvent)window.PointerEvent=MouseEvent as typeof PointerEvent;
  const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
  vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?Promise.resolve(empty):original(command,args));
- fireEvent.click(map,{clientX:100,clientY:100});fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
+ await act(async()=>{fireEvent.click(map,{clientX:100,clientY:100});});fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
  fireEvent.pointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({anchorLevels:['ground','elevated']})])})));
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='build_plan'||command==='build_alignment')).toBe(false);

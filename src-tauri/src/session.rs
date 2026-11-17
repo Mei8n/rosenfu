@@ -1,7 +1,10 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
+#[path = "session/history.rs"]
+mod history;
 pub use deletion::AlignmentSectionSelection;
+pub use history::WorldEditHistory;
 #[path = "session/ofm.rs"]
 mod ofm;
 pub use ofm::{OfmBindingInput, OfmRawInput};
@@ -16,6 +19,15 @@ use std::path::{Path, PathBuf};
 // Prototype edit extent, not a national boundary or map-coverage guarantee.
 fn in_edit_extent(latitude: f64, longitude: f64) -> bool {
     (20.0..=46.0).contains(&latitude) && (122.0..=154.0).contains(&longitude)
+}
+
+/// Compact advisory result; no preview world is serialized across IPC.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstructionPreview {
+    pub new_crossing_count: Option<usize>,
+    pub roads_unverified: Option<bool>,
+    pub validation_error: Option<String>,
 }
 
 /// A station attached to the alignment being constructed, not an existing ID.
@@ -81,6 +93,9 @@ pub struct PlannedAlignment {
     pub destination: Option<PlannedAlignmentExtension>,
 }
 
+// Legacy single-file replacement helpers are retained only for regression tests.
+// Production saves use the slot-aware methods below.
+#[cfg(test)]
 #[derive(Clone)]
 struct PendingManualReplacement {
     path: PathBuf,
@@ -98,6 +113,7 @@ pub struct ManualSaveResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replacement_required: Option<ManualReplacementRequired>,
 }
+#[cfg(test)]
 fn next_manual_token() -> Result<String, String> {
     static NEXT: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
     let mut sequence = NEXT.lock().map_err(|_| "保存確認番号を作成できません。")?;
@@ -124,6 +140,8 @@ pub struct WorldEditor {
     autosave_blocked: bool,
     autosave_replace_allowed: bool,
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
+    edit_history: history::EditHistory,
+    #[cfg(test)]
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
 impl Default for WorldEditor {
@@ -155,7 +173,7 @@ impl WorldEditor {
             .set_service_appearance(candidate.company, service_id, color, shape, symbol)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn set_service_color(
@@ -179,9 +197,51 @@ impl WorldEditor {
             .set_service_color(candidate.company, service_id, color)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
+    /// Delete only the selected service and its own metadata, atomically.
+    pub fn delete_service(
+        &mut self,
+        service_id: ServiceId,
+        expected_path: rosenfu_core::world::ServicePath,
+        expected_name: String,
+    ) -> Result<WorldDraft, String> {
+        let before = self.snapshot();
+        let service = before
+            .services
+            .iter()
+            .find(|s| s.id == service_id && s.owner == self.company)
+            .ok_or("削除する系統が見つかりません。")?;
+        if service.name != expected_name
+            || before
+                .service_paths
+                .iter()
+                .find(|p| p.service_id == service_id)
+                != Some(&expected_path)
+        {
+            return Err(
+                "系統が変更されています。最新の内容を確認してから削除してください。".into(),
+            );
+        }
+        let mut draft = before.clone();
+        draft.services.retain(|s| s.id != service_id);
+        draft.service_paths.retain(|p| p.service_id != service_id);
+        draft
+            .service_route_bindings
+            .retain(|b| b.service_id != service_id);
+        draft
+            .service_appearances
+            .retain(|a| a.service_id != service_id);
+        let mut candidate = self.clone();
+        candidate.world.replace(draft).map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        let after = candidate.snapshot();
+        candidate.deleted_alignment = Some((before, after.clone()));
+        self.commit_edit(candidate, false);
+        Ok(after)
+    }
+
     pub fn duplicate_service(
         &mut self,
         service_id: ServiceId,
@@ -215,7 +275,7 @@ impl WorldEditor {
             .duplicate_service(candidate.company, service_id, name)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn set_service_route_binding(
@@ -232,7 +292,7 @@ impl WorldEditor {
                     .to_owned()
             })?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn preview_service_path(
@@ -244,6 +304,7 @@ impl WorldEditor {
             .preview_service_path(start, segments)
             .map_err(|e| e.to_string())
     }
+    #[cfg(test)]
     pub fn create_service_path(
         &mut self,
         name: String,
@@ -253,6 +314,7 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.create_service_path_with_source_route(name, start, segments, stops, None)
     }
+    #[cfg(test)]
     pub fn create_service_path_with_source_route(
         &mut self,
         name: String,
@@ -296,7 +358,7 @@ impl WorldEditor {
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn update_service_path(
@@ -311,7 +373,7 @@ impl WorldEditor {
             .update_service_path(candidate.company, service_id, name, stops)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn preview_service_path_replacement(
@@ -324,6 +386,7 @@ impl WorldEditor {
             .preview_service_path_replacement(self.company, service_id, start, segments)
             .map_err(|e| e.to_string())
     }
+    #[cfg(test)]
     pub fn replace_service_path(
         &mut self,
         service_id: ServiceId,
@@ -345,6 +408,7 @@ impl WorldEditor {
     }
     // Keep the established session/IPC call shape; all arguments form one atomic edit.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn replace_service_path_with_source_route(
         &mut self,
         service_id: ServiceId,
@@ -414,7 +478,7 @@ impl WorldEditor {
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn create_service_path_unchecked(
@@ -475,6 +539,8 @@ impl WorldEditor {
             autosave_blocked: false,
             autosave_replace_allowed: false,
             deleted_alignment: None,
+            edit_history: Default::default(),
+            #[cfg(test)]
             pending_manual_replacement: None,
         }
     }
@@ -485,27 +551,27 @@ impl WorldEditor {
         self.water_model.national_enabled()
     }
     pub fn missing_water_zones(&self, bounds: [f64; 4]) -> Result<Vec<String>, String> {
-        // Existing connected track can be validated far beyond a newly edited endpoint.
-        // Query each existing segment, not one country-spanning world bounding box.
-        let mut ids: std::collections::BTreeSet<String> = self
-            .water_model
-            .missing_zones(bounds)?
-            .into_iter()
-            .collect();
-        for line in &self.world.snapshot().alignments {
-            for pair in line.points.windows(2) {
+        // Preserve connected-track coverage, but query the immutable region
+        // registry once instead of allocating a result for every track segment.
+        let segments = self.world.snapshot().alignments.iter().flat_map(|line| {
+            line.points.windows(2).map(|pair| {
                 let a = pair[0];
                 let b = pair[1];
-                ids.extend(self.water_model.missing_zones([
+                [
                     a.longitude.min(b.longitude),
                     a.latitude.min(b.latitude),
                     a.longitude.max(b.longitude),
                     a.latitude.max(b.latitude),
-                ])?);
-            }
-        }
-        Ok(ids.into_iter().collect())
+                ]
+            })
+        });
+        let mut ids = self
+            .water_model
+            .missing_zones_many(std::iter::once(bounds).chain(segments))?;
+        ids.sort();
+        Ok(ids)
     }
+
     pub fn install_water_zone(
         &mut self,
         zone: std::sync::Arc<rosenfu_core::water_zone::WaterZone>,
@@ -535,7 +601,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     fn add_station_unchecked(
@@ -558,6 +624,7 @@ impl WorldEditor {
             .map_err(|e| e.to_string())?;
         Ok(self.snapshot())
     }
+    #[cfg(test)]
     pub fn build_alignment_from_reference(
         &mut self,
         name: String,
@@ -573,6 +640,7 @@ impl WorldEditor {
             rosenfu_core::world::TrackType::Normal,
         )
     }
+    #[cfg(test)]
     pub fn build_alignment_from_reference_typed(
         &mut self,
         name: String,
@@ -592,7 +660,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     fn build_alignment_from_reference_typed_unchecked(
@@ -662,10 +730,11 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
 
+    #[cfg(test)]
     pub fn build_alignment(
         &mut self,
         name: String,
@@ -673,6 +742,7 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.build_alignment_typed(name, points, rosenfu_core::world::TrackType::Normal)
     }
+    #[cfg(test)]
     pub fn build_alignment_typed(
         &mut self,
         name: String,
@@ -684,10 +754,11 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     /// Publish the alignment and all planned stations together, or change nothing.
+    #[cfg(test)]
     pub fn build_alignment_with_stations(
         &mut self,
         name: String,
@@ -721,12 +792,87 @@ impl WorldEditor {
     }
     /// Read-only preview runs the exact construction pipeline on an isolated
     /// editor clone; neither IDs, undo state nor saved data are changed.
+    #[cfg(test)]
     pub fn preview_construction_plan(
         &self,
         alignments: Vec<PlannedAlignment>,
         stations: Vec<PlannedBuiltStation>,
     ) -> Result<WorldDraft, String> {
         self.clone().build_construction_plan(alignments, stations)
+    }
+    /// Click placement needs only the exact build verdict, not world-wide crossing
+    /// totals. Keep all build/water/saveability checks, without computing those totals.
+    pub fn validate_construction_placement(
+        mut self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+        roads: Vec<rosenfu_core::world::RoadSnapshot>,
+    ) -> Result<ConstructionPreview, String> {
+        for snapshot in roads {
+            self.world
+                .add_road_snapshot(snapshot)
+                .map_err(|e| e.to_string())?;
+        }
+        let validation_error = self.build_construction_plan(alignments, stations).err();
+        Ok(ConstructionPreview {
+            // Not computed, rather than falsely reporting zero/verified.
+            new_crossing_count: None,
+            roads_unverified: None,
+            validation_error,
+        })
+    }
+    /// Use the same road snapshots and construction pipeline as commit, without
+    /// changing the live editor. Existing crossings are not charged again.
+    pub fn preview_construction_summary(
+        mut self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+        roads: Vec<rosenfu_core::world::RoadSnapshot>,
+    ) -> Result<ConstructionPreview, String> {
+        for snapshot in roads {
+            self.world
+                .add_road_snapshot(snapshot)
+                .map_err(|e| e.to_string())?;
+        }
+        let before = self.snapshot();
+        let prior_crossings: Vec<_> = self
+            .road_assessments()
+            .into_iter()
+            .flat_map(|(_, assessment)| assessment.crossings)
+            .collect();
+        if let Err(error) = self.build_construction_plan(alignments, stations) {
+            return Ok(ConstructionPreview {
+                new_crossing_count: None,
+                roads_unverified: None,
+                validation_error: Some(error),
+            });
+        }
+        let after = self.snapshot();
+        let changed: std::collections::BTreeSet<_> = after
+            .alignments
+            .iter()
+            .filter(|line| !before.alignments.contains(line))
+            .map(|line| line.id)
+            .collect();
+        let assessments = self.road_assessments();
+        let roads_unverified = assessments
+            .iter()
+            .any(|(id, a)| changed.contains(id) && (!a.roads_ready || a.unknown_road_height));
+        // Endpoint splitting may change IDs or ownership, not the physical asset.
+        let new_crossing_count = assessments
+            .iter()
+            .flat_map(|(_, a)| &a.crossings)
+            .filter(|crossing| {
+                !prior_crossings
+                    .iter()
+                    .any(|old| old.road_id == crossing.road_id && old.point == crossing.point)
+            })
+            .count();
+        Ok(ConstructionPreview {
+            new_crossing_count: Some(new_crossing_count),
+            roads_unverified: Some(roads_unverified),
+            validation_error: None,
+        })
     }
     /// Reference snapshots and construction commit together; failures leave the
     /// current editor (including Undo state) untouched. Road coverage is advisory.
@@ -736,8 +882,6 @@ impl WorldEditor {
         stations: Vec<PlannedBuiltStation>,
         roads: Vec<rosenfu_core::world::RoadSnapshot>,
     ) -> Result<WorldDraft, String> {
-        let before = self.snapshot();
-        let has_junction = alignments.iter().any(|path| path.junction_source.is_some());
         let mut candidate = self.clone();
         for snapshot in roads {
             candidate
@@ -748,10 +892,8 @@ impl WorldEditor {
         candidate.build_construction_plan(alignments, stations)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world)
             .map_err(|error| error.to_string())?;
-        if has_junction {
-            candidate.deleted_alignment = Some((before, candidate.snapshot()));
-        }
-        *self = candidate;
+        candidate.deleted_alignment = None;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     pub fn road_assessments(&self) -> Vec<(AlignmentId, rosenfu_core::world::RoadAssessment)> {
@@ -765,8 +907,6 @@ impl WorldEditor {
         if alignments.is_empty() && stations.is_empty() {
             return Err("着工する線路・駅がありません。".into());
         }
-        let has_junction = alignments.iter().any(|path| path.junction_source.is_some());
-        let before_junction = self.snapshot();
         let mut candidate = self.clone();
         // Track only pieces created by this transaction. This permits several
         // planned splits of one observed source without accepting external edits.
@@ -1252,10 +1392,9 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        if has_junction {
-            candidate.deleted_alignment = Some((before_junction, candidate.snapshot()));
-        }
-        *self = candidate;
+        // Construction is final. Only a successful atomic commit ends prior history.
+        candidate.deleted_alignment = None;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     /// A rising/falling extension is a new explicit span, never a rewrite of old track.
@@ -1509,7 +1648,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     fn place_station_on_alignment_unchecked(
@@ -1545,7 +1684,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     fn update_station_placement_unchecked(
@@ -1575,7 +1714,7 @@ impl WorldEditor {
         let mut candidate = self.clone();
         candidate.rename_station_unchecked(station_id, name)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn rename_station_unchecked(
@@ -1606,7 +1745,7 @@ impl WorldEditor {
         let mut candidate = self.clone();
         candidate.delete_station_unchecked(station_id)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn delete_station_unchecked(&mut self, station_id: StationId) -> Result<WorldDraft, String> {
@@ -1657,7 +1796,7 @@ impl WorldEditor {
         draft.construction_plans = Some(plans);
         candidate.world.replace(draft).map_err(|e| e.to_string())?;
         let result = candidate.delete_alignment(id)?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(result)
     }
     /// Delete one whole alignment, never its dependent equipment or services.
@@ -1718,7 +1857,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(after)
     }
 
@@ -1731,20 +1870,19 @@ impl WorldEditor {
         if &self.snapshot() != after {
             return Err("削除後に変更・保存したため、この削除は元に戻せません。".into());
         }
-        let mut candidate = self.clone();
-        // Exact post-delete snapshot equality above permits restoration of retired IDs.
-        candidate.world = World::new(before.clone()).map_err(|e| e.to_string())?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        candidate.deleted_alignment = None;
-        *self = candidate;
-        Ok(self.snapshot())
+        // Keep the legacy entry point coherent with the common chronology.
+        // Its exact equality guard above also permits restoration of old plans.
+        let mut expected = self.snapshot();
+        expected.construction_plans = before.construction_plans.clone();
+        expected.view_state = before.view_state;
+        self.undo_world_edit(expected)
     }
 
     pub fn rename_company(&mut self, name: String) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.rename_company_unchecked(name)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn rename_company_unchecked(&mut self, name: String) -> Result<WorldDraft, String> {
@@ -1787,7 +1925,7 @@ impl WorldEditor {
         route.name = name.trim().to_owned();
         candidate.world.replace(draft).map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
 
@@ -1808,7 +1946,7 @@ impl WorldEditor {
             excluded_stations,
         )?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn save_planned_route_unchecked(
@@ -1883,6 +2021,7 @@ impl WorldEditor {
 
     /// A fresh world may replace an existing healthy save only after approval of
     /// this exact observed version. Loaded-session conflicts stay ordinary errors.
+    #[cfg(test)]
     pub fn request_manual_save(
         &mut self,
         path: &Path,
@@ -1926,6 +2065,7 @@ impl WorldEditor {
             replacement_required: None,
         })
     }
+    #[cfg(test)]
     pub fn cancel_manual_save(&mut self, token: &str) {
         if self
             .pending_manual_replacement
@@ -1935,6 +2075,7 @@ impl WorldEditor {
             self.pending_manual_replacement = None;
         }
     }
+    #[cfg(test)]
     pub fn confirm_manual_save(
         &mut self,
         path: &Path,
@@ -1979,6 +2120,7 @@ impl WorldEditor {
         })
     }
     /// Save a candidate atomically: a failed validation/write leaves editor state unchanged.
+    #[cfg(test)]
     pub fn save_with_plans(
         &mut self,
         path: &Path,
@@ -2027,7 +2169,10 @@ impl WorldEditor {
             rosenfu_storage::save_world_if_version(path, &self.world, expected)
         };
         let (_, version) = result.map_err(|e| e.to_string())?;
-        self.pending_manual_replacement = None;
+        #[cfg(test)]
+        {
+            self.pending_manual_replacement = None;
+        }
         self.loaded_path = Some(path.to_owned());
         self.manual_version = Some(version);
         self.manual_repair_allowed = false;
@@ -2157,6 +2302,8 @@ impl WorldEditor {
         candidate.autosave_version = Some((autosave_path.to_owned(), auto_version));
         candidate.autosave_blocked = false;
         candidate.autosave_replace_allowed = false;
+        candidate.edit_history = self.edit_history.clone();
+        candidate.clear_edit_history();
         *self = candidate;
         Ok(self.snapshot())
     }
@@ -2186,10 +2333,14 @@ impl WorldEditor {
         }
         let company = data.companies[0].id;
         self.deleted_alignment = None;
+        self.clear_edit_history();
         self.world = candidate;
         self.company = company;
         self.company_setup_required = false;
-        self.pending_manual_replacement = None;
+        #[cfg(test)]
+        {
+            self.pending_manual_replacement = None;
+        }
         self.loaded_path = Some(path.to_owned());
         self.active_slot_id = None;
         self.manual_version = Some(version);
@@ -2497,6 +2648,104 @@ mod tests {
             WorldEditor::new().load(&path).unwrap().service_appearances,
             second.service_appearances
         );
+    }
+
+    #[test]
+    fn service_delete_preserves_infrastructure_others_and_roundtrips_undo_redo_save() {
+        let (mut e, a, stations) = alignment_fixture();
+        let route = e
+            .save_planned_route(
+                None,
+                "R".into(),
+                stations[0],
+                vec![span(a, stations[0], stations[2])],
+                vec![],
+            )
+            .unwrap()
+            .routes[0]
+            .id;
+        let service =
+            create_test_service(&mut e, stations[0], vec![span(a, stations[0], stations[2])])
+                .services[0]
+                .id;
+        e.set_service_route_binding(
+            service,
+            rosenfu_core::world::ServiceRouteBindingKind::Route { route_id: route },
+        )
+        .unwrap();
+        e.set_service_color(service, "#ab12ef".into(), None)
+            .unwrap();
+        let original = e.snapshot();
+        let path = original.service_paths[0].clone();
+        e.duplicate_service(service, path.clone(), "系統".into())
+            .unwrap();
+        let before = e.snapshot();
+        let after = e
+            .delete_service(service, path.clone(), "系統".into())
+            .unwrap();
+        let mut expected = before.clone();
+        expected.services.retain(|s| s.id != service);
+        expected.service_paths.retain(|p| p.service_id != service);
+        expected
+            .service_route_bindings
+            .retain(|b| b.service_id != service);
+        expected
+            .service_appearances
+            .retain(|a| a.service_id != service);
+        assert_eq!(after, expected);
+        assert_eq!(after.services.len(), 1);
+        for _ in 0..3 {
+            assert_eq!(e.undo_alignment_deletion().unwrap(), before);
+            assert_eq!(
+                e.delete_service(service, path.clone(), "系統".into())
+                    .unwrap(),
+                after
+            );
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("deleted-service.json");
+        e.save(&file).unwrap();
+        let loaded = WorldEditor::new().load(&file).unwrap();
+        assert_eq!(loaded.services, after.services);
+        assert_eq!(loaded.service_paths, after.service_paths);
+        assert_eq!(loaded.service_route_bindings, after.service_route_bindings);
+        assert_eq!(loaded.service_appearances, after.service_appearances);
+        assert_eq!(loaded.routes, before.routes);
+        assert_eq!(loaded.stations, before.stations);
+    }
+
+    #[test]
+    fn service_delete_rejects_stale_and_foreign_requests_atomically() {
+        let (mut e, a, stations) = alignment_fixture();
+        let service =
+            create_test_service(&mut e, stations[0], vec![span(a, stations[0], stations[2])])
+                .services[0]
+                .id;
+        let before = e.snapshot();
+        let path = before.service_paths[0].clone();
+        assert!(e
+            .delete_service(service, path.clone(), "古い名前".into())
+            .is_err());
+        let mut stale = path.clone();
+        stale.stops.clear();
+        assert!(e.delete_service(service, stale, "系統".into()).is_err());
+        assert_eq!(e.snapshot(), before);
+        let owner = e.company;
+        e.company = rosenfu_core::world::CompanyId(999);
+        assert!(e
+            .delete_service(service, path.clone(), "系統".into())
+            .is_err());
+        assert_eq!(e.snapshot(), before);
+        e.company = owner;
+        e.delete_service(service, path.clone(), "系統".into())
+            .unwrap();
+        let after = e.snapshot();
+        assert!(e.delete_service(service, path, "系統".into()).is_err());
+        assert_eq!(e.snapshot(), after);
+        e.rename_company("後の編集".into()).unwrap();
+        let later = e.snapshot();
+        assert!(e.undo_alignment_deletion().is_err());
+        assert_eq!(e.snapshot(), later);
     }
 
     #[test]
@@ -4853,7 +5102,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_junction_transaction_preserves_provenance_through_undo() {
+    fn imported_junction_transaction_preserves_provenance_and_ends_undo_history() {
         use rosenfu_core::world::{
             AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
         };
@@ -4938,7 +5187,8 @@ mod tests {
             World::new(serde_json::from_str(&serde_json::to_string(&after).unwrap()).unwrap())
                 .unwrap();
         assert_eq!(restored.snapshot(), &after);
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), after);
     }
 
     #[test]
@@ -5036,12 +5286,13 @@ mod tests {
             assert_eq!(after.alignment_connections.len(), 4);
             let saved = serde_json::to_string(&after).unwrap();
             assert!(World::new(serde_json::from_str(&saved).unwrap()).is_ok());
-            assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+            assert!(editor.undo_alignment_deletion().is_err());
+            assert_eq!(editor.snapshot(), after);
         }
     }
 
     #[test]
-    fn arbitrary_position_junction_commit_undo_and_stale_source_are_atomic() {
+    fn arbitrary_position_junction_commit_is_final_and_stale_source_are_atomic() {
         use rosenfu_core::world::ConstructionJunctionSource;
         let mut editor = WorldEditor::new();
         let mut flat = planned_path(0.);
@@ -5079,7 +5330,8 @@ mod tests {
             after.alignments[0].points.last().unwrap().longitude,
             139.005
         );
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), after);
         let mut stale = planned_path(0.);
         stale.stations.clear();
         stale.junction_source = Some(source);
@@ -5132,7 +5384,8 @@ mod tests {
             after.alignment_connections[1].a.endpoint,
             AlignmentEndpoint::Start
         );
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), after);
     }
 
     #[test]
@@ -5181,7 +5434,8 @@ mod tests {
             .abs()
                 < 1e-9
         );
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), after);
     }
 
     fn planned_path(offset: f64) -> PlannedAlignment {
@@ -5810,6 +6064,196 @@ mod road_snapshot_transaction_tests {
             extension: None,
             destination: None,
         }
+    }
+    #[test]
+    fn placement_verdict_matches_summary_without_reporting_uncomputed_crossings() {
+        let editor = WorldEditor::new();
+        let before = editor.snapshot();
+        for valid in [true, false] {
+            let make_path = || {
+                let mut path = plan();
+                if !valid {
+                    path.points.truncate(1);
+                }
+                path
+            };
+            let summary = editor
+                .clone()
+                .preview_construction_summary(vec![make_path()], vec![], vec![roads()])
+                .unwrap();
+            let verdict = editor
+                .clone()
+                .validate_construction_placement(vec![make_path()], vec![], vec![roads()])
+                .unwrap();
+            assert_eq!(verdict.validation_error, summary.validation_error);
+            assert_eq!(verdict.validation_error.is_none(), valid);
+            assert_eq!(verdict.new_crossing_count, None);
+            assert_eq!(verdict.roads_unverified, None);
+            assert_eq!(editor.snapshot(), before);
+        }
+        let mut invalid_roads = roads();
+        invalid_roads.source_sha256 = "invalid".into();
+        assert!(editor
+            .clone()
+            .validate_construction_placement(vec![plan()], vec![], vec![invalid_roads])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+    }
+    #[test]
+    #[ignore = "manual latency measurement"]
+    fn measure_anchor_preview_latency() {
+        let mut editor = WorldEditor::new();
+        for i in 0..20 {
+            let mut path = plan();
+            let y = i as f64 * 0.0001;
+            path.points = vec![point(-0.01, y), point(0.01, y)];
+            editor.build_construction_plan(vec![path], vec![]).unwrap();
+        }
+        let mut data = roads();
+        let base = data.roads[0].clone();
+        data.roads = (0..100)
+            .map(|i| {
+                let mut road = base.clone();
+                road.id = format!("way/{i}");
+                let x = -0.009 + i as f64 * 0.000018;
+                road.points = vec![point(x, -0.01), point(x, 0.02)];
+                road
+            })
+            .collect();
+        editor.world.add_road_snapshot(data).unwrap();
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            let result = editor
+                .clone()
+                .preview_construction_summary(vec![plan()], vec![], vec![])
+                .unwrap();
+            assert!(result.validation_error.is_none());
+            eprintln!("summary_ms={:.3}", start.elapsed().as_secs_f64() * 1000.0);
+            let start = std::time::Instant::now();
+            let fast = editor
+                .clone()
+                .validate_construction_placement(vec![plan()], vec![], vec![])
+                .unwrap();
+            assert_eq!(fast.validation_error, result.validation_error);
+            eprintln!(
+                "validation_ms={:.3}",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+    #[test]
+    fn preview_counts_crossings_without_mutating_editor() {
+        let mut editor = WorldEditor::new();
+        let old = editor.snapshot();
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(preview.new_crossing_count, Some(1));
+        assert!(preview.validation_error.is_none());
+        assert_eq!(preview.roads_unverified, Some(false));
+        assert_eq!(editor.snapshot(), old);
+        editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(
+            editor.road_assessments()[0].1.crossings.len(),
+            preview.new_crossing_count.unwrap()
+        );
+    }
+    #[test]
+    fn preview_missing_roads_stays_unknown_and_invalid_plan_keeps_world() {
+        let editor = WorldEditor::new();
+        let old = editor.snapshot();
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![plan()], vec![], vec![])
+            .unwrap();
+        assert_eq!(preview.new_crossing_count, Some(0));
+        assert_eq!(preview.roads_unverified, Some(true));
+        let mut invalid = plan();
+        invalid.points.clear();
+        assert!(editor
+            .clone()
+            .preview_construction_summary(vec![invalid], vec![], vec![roads()])
+            .unwrap()
+            .validation_error
+            .is_some());
+        assert_eq!(editor.snapshot(), old);
+    }
+    #[test]
+    fn preview_does_not_count_existing_crossings_again() {
+        let mut editor = WorldEditor::new();
+        editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        let mut next = plan();
+        next.points = vec![point(-0.01, 0.02), point(0.01, 0.02)];
+        let preview = editor
+            .preview_construction_summary(vec![next], vec![], vec![])
+            .unwrap();
+        assert_eq!(preview.new_crossing_count, Some(0));
+    }
+    #[test]
+    fn preview_shared_anchor_crossing_count_matches_commit_once() {
+        let mut editor = WorldEditor::new();
+        let split = || {
+            let mut split = plan();
+            split.points = vec![point(-0.01, 0.0), point(0.0, 0.0), point(0.01, 0.0)];
+            split.anchor_indices = Some(vec![0, 1, 2]);
+            split
+        };
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![split()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(preview.validation_error, None);
+        assert_eq!(preview.new_crossing_count, Some(1));
+        editor
+            .build_construction_plan_with_roads(vec![split()], vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(
+            editor
+                .road_assessments()
+                .iter()
+                .map(|(_, a)| a.crossings.len())
+                .sum::<usize>(),
+            1
+        );
+    }
+    #[test]
+    fn preview_extension_keeps_existing_crossing_count_zero() {
+        let mut editor = WorldEditor::new();
+        editor
+            .build_construction_plan_with_roads(vec![plan()], vec![], vec![roads()])
+            .unwrap();
+        let original = editor.snapshot().alignments[0].clone();
+        let extension = || {
+            let mut extension = plan();
+            extension.points = vec![*original.points.last().unwrap(), point(0.02, 0.0)];
+            extension.extension = Some(PlannedAlignmentExtension {
+                alignment_id: original.id,
+                endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+            });
+            extension
+        };
+        let preview = editor
+            .clone()
+            .preview_construction_summary(vec![extension()], vec![], vec![])
+            .unwrap();
+        assert_eq!(preview.validation_error, None);
+        assert_eq!(preview.new_crossing_count, Some(0));
+        editor
+            .build_construction_plan_with_roads(vec![extension()], vec![], vec![])
+            .unwrap();
+        assert_eq!(
+            editor
+                .road_assessments()
+                .iter()
+                .map(|(_, a)| a.crossings.len())
+                .sum::<usize>(),
+            1
+        );
     }
     #[test]
     fn road_snapshot_and_alignment_commit_atomically_and_survive_serialization() {

@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -17,7 +18,7 @@ const built = {...empty,next_id:"4",alignments:[alignment]};
 const placed = {...built,next_id:"5",stations:[{id:"4",owner:"2",name:"新駅",latitude:35.67504,longitude:139.75}],station_placements:[{station_id:"4",alignment_id:"3",position:.5,length_m:200,width_m:12}]};
 async function start(snapshot: unknown = empty) {
   vi.mocked(isTauri).mockReturnValue(true);
-  vi.mocked(invoke).mockImplementation(async command => {
+  vi.mocked(invoke).mockImplementation(async command => {if(command==="preview_construction_plan")return {validationError:null};
     if(command==="engine_info") return {name:"Rosenfu",version:"construction-test"};
     if(command==="world_snapshot") return snapshot;
     throw Error("unexpected "+command);
@@ -32,21 +33,21 @@ const panel=()=>within(document.getElementById("workspace-panel-construction")!)
 test("track kind survives independent plans, undo, failed construction and is sent to backend",async()=>{
  const map=await start();const kind=()=>screen.getByRole("button",{name:"高速"});
  expect(kind().getAttribute("aria-pressed")).toBe("false");fireEvent.click(kind());
- fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
+ await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:230,clientY:130});
  fireEvent.click(panel().getByRole("button",{name:"別の線路計画を追加"}));fireEvent.click(screen.getByRole("button",{name:"通常"}));
- fireEvent.click(map,{clientX:320,clientY:200});fireEvent.click(map,{clientX:360,clientY:200});
+ await settledMapClick(map,{clientX:320,clientY:200});await settledMapClick(map,{clientX:360,clientY:200});
  fireEvent.click(panel().getByRole("button",{name:/計画 1 を編集/}));expect(kind().getAttribute("aria-pressed")).toBe("true");
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(kind().getAttribute("aria-pressed")).toBe("true");
  const original=vi.mocked(invoke).getMockImplementation()!;
- vi.mocked(invoke).mockImplementation(async (command,args)=>{if(command==="build_alignment")throw Error("kind build rejected");return original(command,args);});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/kind build rejected/);expect(kind().getAttribute("aria-pressed")).toBe("true");
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{if(command==="preview_construction_plan")return {validationError:null};if(command==="build_alignment")throw Error("kind build rejected");return original(command,args);});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/kind build rejected/);expect(kind().getAttribute("aria-pressed")).toBe("true");
  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="build_alignment")?.[1]).toMatchObject({trackType:"high_speed"});
- vi.mocked(invoke).mockImplementation(async (command,args)=>command==="build_alignment"?{...built,alignments:[{...alignment,track_type:"high_speed"}]}:original(command,args));fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);expect(panel().queryByRole("button",{name:"試験線"})).toBeNull();fireEvent.click(screen.getByRole("button",{name:"選択"}));expect(panel().getByRole("button",{name:"試験線"})).toBeTruthy();
+ vi.mocked(invoke).mockImplementation(async (command,args)=>command==="build_alignment"?{...built,alignments:[{...alignment,track_type:"high_speed"}]}:original(command,args));fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);expect(panel().queryByRole("button",{name:"試験線"})).toBeNull();fireEvent.click(screen.getByRole("button",{name:"選択"}));expect(panel().queryByRole("button",{name:"試験線"})).toBeNull();expect(map.querySelector('[data-alignment-id="3"]')).toBeTruthy();
 });
-test("tram defaults road following on, blocks unsupported drawing and construction, permits explicit off",async()=>{
+test("tram defaults road following on without invalidating an existing ordinary draft",async()=>{
  const map=await start();const kind=screen.getByRole("button",{name:"トラム"});
- fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
+ await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:230,clientY:130});
  fireEvent.click(kind);const road=screen.getByRole("button",{name:"道路に合わせる"});expect(road.getAttribute("aria-pressed")).toBe("true");
- fireEvent.click(map,{clientX:300,clientY:130});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.click(map,{clientX:300,clientY:130});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
  fireEvent.click(road);expect((panel().getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
  vi.mocked(invoke).mockResolvedValueOnce({...built,alignments:[{...alignment,track_type:"tram"}]});fireEvent.click(panel().getByRole("button",{name:"計画を着工"}));await screen.findByText(/線路を建設しました/);
  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="build_alignment")?.[1]).toMatchObject({trackType:"tram"});
@@ -54,11 +55,11 @@ test("tram defaults road following on, blocks unsupported drawing and constructi
 
 test('individual path design speeds survive plan switches and are sent together',async()=>{
  const map=await start(),speed=()=>screen.getByRole('spinbutton',{name:'線路の目標最高速度'}) as HTMLInputElement;
- const click=(x:number,y:number)=>fireEvent.click(map,{clientX:x,clientY:y,detail:1});
- fireEvent.change(speed(),{target:{value:'95'}});click(180,130);click(230,130);click(230,130);
- click(300,200);fireEvent.change(speed(),{target:{value:'80'}});click(360,200);
+ const click=async (x:number,y:number)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
+ fireEvent.change(speed(),{target:{value:'95'}});await click(180,130);await click(230,130);await click(230,130);
+ await click(300,200);fireEvent.change(speed(),{target:{value:'80'}});await click(360,200);
  fireEvent.click(panel().getByRole('button',{name:'別の線路計画を追加'}));
- fireEvent.change(speed(),{target:{value:'60'}});click(150,240);click(200,240);
+ fireEvent.change(speed(),{target:{value:'60'}});await click(150,240);await click(200,240);
  fireEvent.click(panel().getByRole('button',{name:/計画 1 を編集/}));expect(speed().value).toBe('95');
  vi.mocked(invoke).mockRejectedValueOnce(Error('retain speed'));fireEvent.click(panel().getByRole('button',{name:'計画を着工'}));await screen.findByText(/retain speed/);
  const requests=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='build_plan')![1] as {alignments:{designSpeedKmh:number}[]};
@@ -77,7 +78,7 @@ test('target speed accepts exact input and adjusts by 20 within existing limits'
 test('parallel mode creates an independent sampled line with undo, redo and persisted geometry',async()=>{
  const map=await start(built);fireEvent.click(screen.getByRole('button',{name:'線路の横に沿わせる'}));
  const point=(longitude:number)=>project(35.67514,longitude,DEFAULT_CAMERA);
- for(const longitude of [139.745,139.755]){const p=point(longitude);fireEvent.click(map,{clientX:p.x/2,clientY:p.y/2,detail:1});}
+ for(const longitude of [139.745,139.755]){const p=point(longitude);await settledMapClick(map,{clientX:p.x/2,clientY:p.y/2,detail:1});}
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect((panel().getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
@@ -89,19 +90,19 @@ test('parallel mode creates an independent sampled line with undo, redo and pers
 
 test('cancelling a parallel start never creates an orphan plan; tram leaves parallel mode',async()=>{
  const map=await start(built),p=project(35.67514,139.745,DEFAULT_CAMERA);
- fireEvent.click(screen.getByRole('button',{name:'線路の横に沿わせる'}));fireEvent.click(map,{clientX:p.x/2,clientY:p.y/2,detail:1});
+ fireEvent.click(screen.getByRole('button',{name:'線路の横に沿わせる'}));await settledMapClick(map,{clientX:p.x/2,clientY:p.y/2,detail:1});
  fireEvent.click(screen.getByRole('button',{name:'トラム'}));
  expect(screen.getByRole('button',{name:'線路の横に沿わせる'}).getAttribute('aria-pressed')).toBe('false');
  expect(screen.getByRole('button',{name:'道路に合わせる'}).getAttribute('aria-pressed')).toBe('true');
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
- fireEvent.click(screen.getByRole('button',{name:'通常'}));fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
+ fireEvent.click(screen.getByRole('button',{name:'通常'}));await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:230,clientY:130});
  expect((panel().getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
 });
 
 test('undo of a transient parallel start leaves the existing draft untouched',async()=>{
- const map=await start(built);fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:230,clientY:130});
+ const map=await start(built);await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:230,clientY:130});
  const before=map.querySelector('.confirmed-draft')?.getAttribute('d');
- fireEvent.click(screen.getByRole('button',{name:'線路の横に沿わせる'}));const p=project(35.67514,139.745,DEFAULT_CAMERA);fireEvent.click(map,{clientX:p.x/2,clientY:p.y/2,detail:1});
+ fireEvent.click(screen.getByRole('button',{name:'線路の横に沿わせる'}));const p=project(35.67514,139.745,DEFAULT_CAMERA);await settledMapClick(map,{clientX:p.x/2,clientY:p.y/2,detail:1});
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);expect(map.querySelector('.confirmed-draft')?.getAttribute('d')).toBe(before);
 });

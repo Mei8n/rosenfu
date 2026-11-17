@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
@@ -9,7 +10,7 @@ window.PointerEvent=MouseEvent as typeof PointerEvent;
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 const empty={next_id:"3",players:[{id:"1",name:"Player"}],companies:[{id:"2",owner:"1",name:"Railway"}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
 async function start(){
- vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>{if(command==="preview_construction_plan")return {validationError:null};
  if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};if(command==="engine_info")return {name:"Rosenfu",version:"direct-test"};
  if(command==="world_snapshot"||command==="load_save_slot")return empty;
  if(command==="save_world")return {saved:true};
@@ -19,7 +20,7 @@ async function start(){
  await act(async()=>{});
  const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});
  map.getBoundingClientRect=()=>({left:0,top:0,right:500,bottom:300,x:0,y:0,width:500,height:300,toJSON:()=>({})});
- fireEvent.click(map,{clientX:180,clientY:150});fireEvent.click(map,{clientX:320,clientY:150});
+ await settledMapClick(map,{clientX:180,clientY:150});await settledMapClick(map,{clientX:320,clientY:150});
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));return map;
 }
 test("direct hover and click places planned stations without committing tracks; repeated placement, undo, tabs and save keep plans",async()=>{
@@ -29,7 +30,7 @@ test("direct hover and click places planned stations without committing tracks; 
  fireEvent.pointerMove(map,{clientX:230,clientY:150});
  expect(map.querySelector(".station-platform")).toBeTruthy();
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
- fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
+ await settledMapClick(map,{clientX:230,clientY:150});await settledMapClick(map,{clientX:280,clientY:150});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
  expect(map.classList.contains("placement-enabled")).toBe(true);
@@ -45,7 +46,7 @@ test("direct hover and click places planned stations without committing tracks; 
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
 });
 test("atomic plan construction submits stations together; failure preserves draft and success clears it",async()=>{
- const map=await start();fireEvent.click(map,{clientX:250,clientY:150});
+ const map=await start();await settledMapClick(map,{clientX:250,clientY:150});
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));
  vi.mocked(invoke).mockRejectedValueOnce(Error("atomic failure"));
  fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await screen.findByText(/atomic failure/);
@@ -56,21 +57,26 @@ test("atomic plan construction submits stations together; failure preserves draf
 });
 test("drag does not place a station and clearing one independent plan only removes its stations",async()=>{
  const map=await start();
- fireEvent.pointerDown(map,{clientX:240,clientY:150,button:0,pointerId:1});fireEvent.pointerMove(map,{clientX:250,clientY:150,pointerId:1});fireEvent.pointerUp(map,{clientX:250,clientY:150,pointerId:1});fireEvent.click(map,{clientX:250,clientY:150});
+ fireEvent.pointerDown(map,{clientX:240,clientY:150,button:0,pointerId:1});fireEvent.pointerMove(map,{clientX:250,clientY:150,pointerId:1});fireEvent.pointerUp(map,{clientX:250,clientY:150,pointerId:1});await settledMapClick(map,{clientX:250,clientY:150});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
- fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(map,{clientX:250,clientY:150});
+ fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));await settledMapClick(map,{clientX:250,clientY:150});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("button",{name:"別の線路計画を追加"}));
- fireEvent.click(map,{clientX:180,clientY:180});fireEvent.click(map,{clientX:320,clientY:180});
- fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(map,{clientX:250,clientY:180});expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
+ await settledMapClick(map,{clientX:180,clientY:180});await settledMapClick(map,{clientX:320,clientY:180});
+ fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));await settledMapClick(map,{clientX:250,clientY:180});expect(map.querySelectorAll(".planned-station")).toHaveLength(2);
  fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.click(screen.getByRole("button",{name:"下書きを消去"}));
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
  expect(map.querySelector(".planned-station title")?.textContent).toContain("新駅");
 });
 test("changing a plan so its station no longer fits blocks construction until station is removed",async()=>{
- const map=await start();fireEvent.click(map,{clientX:310,clientY:150});
- fireEvent.click(screen.getByRole("tab",{name:"線路"}));fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
- fireEvent.click(map,{clientX:250,clientY:150});fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));
+ const map=await start();await settledMapClick(map,{clientX:310,clientY:150});
+ fireEvent.click(screen.getByRole("tab",{name:"線路"}));
+ // Undo would remove the later station first. Shorten the actual geometry to
+ // retain coverage of invalid-station protection instead of relying on old tool-local history.
+ const endpoint=map.querySelector('[data-anchor-index="1"]')!;
+ fireEvent.pointerDown(endpoint,{clientX:320,clientY:150,button:0});
+ fireEvent.pointerMove(map,{clientX:250,clientY:150});fireEvent.pointerUp(map,{clientX:250,clientY:150});
+ fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));
  await screen.findByText(/計画駅が線路に収まりません/);
  expect(invoke).not.toHaveBeenCalledWith("build_alignment_with_stations",expect.anything());
  expect(invoke).not.toHaveBeenCalledWith("build_alignment",expect.anything());
@@ -79,7 +85,7 @@ test("changing a plan so its station no longer fits blocks construction until st
 });
 
 test("saving the built world preserves both undo and redo for unbuilt stations",async()=>{
- const map=await start();fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
+ const map=await start();await settledMapClick(map,{clientX:230,clientY:150});await settledMapClick(map,{clientX:280,clientY:150});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
  fireEvent.click(screen.getByRole("button",{name:"保存"}));await screen.findByText(/ワールドと未着工計画を保存しました/);
  // The notice can render before perform() releases the async busy guard.
@@ -91,7 +97,7 @@ test("saving the built world preserves both undo and redo for unbuilt stations",
 
 
 test("pending save locks editing without consuming a planned-station redo",async()=>{
- const map=await start();fireEvent.click(map,{clientX:230,clientY:150});fireEvent.click(map,{clientX:280,clientY:150});
+ const map=await start();await settledMapClick(map,{clientX:230,clientY:150});await settledMapClick(map,{clientX:280,clientY:150});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
  let complete!:(value:{saved:boolean})=>void;
  vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>{complete=resolve;}));
@@ -111,7 +117,7 @@ test("station controls are on the map, invalid placement is boxed and names are 
  const tip=document.querySelector('.station-placement-error');expect(tip?.tagName).toBe('DIV');expect(tip?.textContent).toBe('駅は線路上に置いてください');
  fireEvent.pointerMove(map,{clientX:230,clientY:150});expect(document.querySelector('.station-placement-error')).toBeNull();
  expect(map.querySelector('.station-placement-preview')?.tagName).toBe('path');
- fireEvent.click(map,{clientX:230,clientY:150});expect(map.querySelector('.planned-station text')).toBeNull();
+ await settledMapClick(map,{clientX:230,clientY:150});expect(map.querySelector('.planned-station text')).toBeNull();
  fireEvent.click(screen.getByLabelText('駅名を表示'));expect(map.querySelector('.planned-station text')?.textContent).toContain('新駅');
  expect(JSON.parse(localStorage.getItem('rosenfu.display-settings')!).settings.stationNamesVisible).toBe(true);
  fireEvent.click(screen.getByLabelText('駅名を表示'));expect(map.querySelector('.planned-station text')).toBeNull();
@@ -119,16 +125,20 @@ test("station controls are on the map, invalid placement is boxed and names are 
 
 test("planned station hover names it, blocks duplicate placement and edits persist in saved plans",async()=>{
  const map=await start();
- fireEvent.click(map,{clientX:250,clientY:150});
+ await settledMapClick(map,{clientX:250,clientY:150});
  fireEvent.pointerMove(map,{clientX:250,clientY:150});
  expect(screen.getByText("新駅 · 10両")).toBeTruthy();
  expect(map.querySelector(".station-placement-preview")).toBeNull();
- fireEvent.click(map,{clientX:250,clientY:150});
+ await settledMapClick(map,{clientX:250,clientY:150});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
  fireEvent.change(screen.getByLabelText("計画駅名"),{target:{value:"中央"}});
  expect(screen.getByText("中央 · 10両")).toBeTruthy();
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
+ expect(map.querySelectorAll(".planned-station")).toHaveLength(1);
+ expect((screen.getByLabelText("計画駅名") as HTMLInputElement).value).toBe("新駅");
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});
  expect(map.querySelectorAll(".planned-station")).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true,shiftKey:true});
  expect((screen.getByLabelText("計画駅名") as HTMLInputElement).value).toBe("中央");
  fireEvent.click(screen.getByRole("button",{name:"保存"}));

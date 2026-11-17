@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
+import {settledMapClick} from './testMapClick';
 import {afterEach,expect,test,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,within,waitFor} from '@testing-library/react';
 import {invoke,isTauri} from '@tauri-apps/api/core';
@@ -7,12 +8,13 @@ import {App} from './App';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:vi.fn()}));
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 const world={next_id:'3',players:[{id:'1',name:'Player'}],companies:[{id:'2',owner:'1',name:'現在会社'}],stations:[],routes:[],services:[],route_paths:[],service_paths:[]};
-async function setup(){
+const alignedWorld={...world,alignments:[{id:'50',owner:'2',name:'試験線',points:[{latitude:35.67504,longitude:139.72},{latitude:35.67504,longitude:139.78}]}],station_placements:[]};
+async function setup(withAlignment=false){
  const state={active:'one' as string|null,failLoad:false,failSave:false};
  vi.mocked(isTauri).mockReturnValue(true);
  vi.mocked(invoke).mockImplementation(async(command,args)=>{
   if(command==='engine_info')return {name:'Rosenfu',version:'slots-test'};
-  if(command==='world_snapshot')return world;
+  if(command==='world_snapshot')return withAlignment?alignedWorld:world;
   if(command==='list_save_slots')return {active_slot_id:state.active,slots:[{id:'one',name:'第一ワールド',loadable:true},{id:'two',name:'第二ワールド',loadable:true},{id:'old',name:'旧保存',loadable:false,error:'非対応の保存形式'}]};
   if(command==='autosave_status')return {available:false};
   if(command==='load_save_slot'){if(state.failLoad)throw Error('読込失敗');state.active=(args as any).slotId;return {...world,companies:[{...world.companies[0],name:'読込会社'}]};}
@@ -38,8 +40,8 @@ test('new world asks before discarding edits and never overwrites a slot',async(
  fireEvent.click(screen.getByRole('button',{name:'戻る'}));expect((document.getElementById('company-name') as HTMLInputElement).value).toBe('未適用会社');
  fireEvent.click(modal.getByRole('button',{name:'作成'}));fireEvent.click(screen.getByRole('button',{name:'変更を破棄して作成'}));await screen.findByText(/新しいワールドを作成しました/);
  expect(invoke).toHaveBeenCalledWith('create_new_world',{companyName:'新会社'});
- expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world'||c==='confirm_manual_save'||c==='save_world_as')).toBe(false);
- expect(screen.getByText('初回保存後に自動保存を開始します。')).toBeTruthy();
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world'||c==='confirm_manual_save')).toBe(false);
+ expect(invoke).toHaveBeenCalledWith('save_world_as',expect.objectContaining({name:'新会社'}));
 });
 test('save as creates a separate slot, keeps name on failure and never calls overwrite',async()=>{
  const state=await setup();fireEvent.click(screen.getByRole('button',{name:'別のセーブとして保存'}));const modal=within(screen.getByRole('dialog',{name:'別のセーブとして保存'}));
@@ -50,15 +52,19 @@ test('save as creates a separate slot, keeps name on failure and never calls ove
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='confirm_manual_save'||c==='save_world')).toBe(false);
 });
 test('switching worlds clears deletion confirmation and station undo even when IDs coincide',async()=>{
- await setup();
+ await setup(true);
  const sameId={...world,stations:[{id:'7',owner:'2',name:'別ワールドの駅',latitude:35.67,longitude:139.75}]};
  let rejectLoad=true;const previous=vi.mocked(invoke).getMockImplementation()!;
  vi.mocked(invoke).mockImplementation(async(command,args)=>{
-  if(command==='add_station')return {...sameId,stations:[{...sameId.stations[0],name:'旧ワールドの駅'}]};
+  if(command==='build_plan')return {...sameId,stations:[{...sameId.stations[0],name:'旧ワールドの駅'}]};
   if(command==='load_save_slot'){if(rejectLoad){rejectLoad=false;throw Error('切替失敗');}return sameId;}
   return previous(command,args);
  });
- fireEvent.click(screen.getByRole('tab',{name:'駅'}));fireEvent.click(screen.getByRole('button',{name:'指定座標に配置'}));await screen.findByText('新駅を配置しました。');
+ fireEvent.click(screen.getByRole('tab',{name:'建設'}));fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
+ const map=screen.getByRole('img',{name:'駅配置用OpenStreetMap'});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
+ await settledMapClick(map,{clientX:250,clientY:150});await screen.findByText(/を計画に追加しました/);
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));await screen.findByText('計画駅を建設しました。');
+ fireEvent.click(screen.getByRole('tab',{name:'駅'}));
  fireEvent.click(document.querySelector('.station-entry')!);fireEvent.click(screen.getByRole('button',{name:'選択駅を削除'}));expect(screen.getByRole('button',{name:'削除を確定'})).toBeTruthy();
  fireEvent.click(screen.getByRole('tab',{name:'セーブデータ'}));fireEvent.click(screen.getByRole('button',{name:'第二ワールド'}));fireEvent.click(screen.getByRole('button',{name:'読込を続ける'}));await screen.findByText(/処理できませんでした: 切替失敗/);
  expect(screen.getByRole('button',{name:'削除を確定'})).toBeTruthy();expect(document.querySelector('.station-entry')?.textContent).toContain('旧ワールドの駅');
@@ -89,4 +95,17 @@ test('world name dialogs disable saved-info autocomplete without preventing inpu
   expect(input.value).toBe('試験セーブ');
   fireEvent.click(modal.getByRole('button',{name:'キャンセル'}));
  }
+});
+
+test('failed initial save detaches the old slot and leaves the new world editable',async()=>{
+ const state=await setup();state.failSave=true;
+ fireEvent.click(screen.getByRole('button',{name:'新しいワールド'}));
+ const modal=within(screen.getByRole('dialog',{name:'新しいワールド'}));
+ fireEvent.change(modal.getByLabelText('名前'),{target:{value:'未保存の新世界'}});
+ fireEvent.click(modal.getByRole('button',{name:'作成'}));
+ await screen.findByText(/処理できませんでした: 保存失敗/);
+ expect(screen.queryByRole('button',{name:'第一ワールド（現在）'})).toBeNull();
+ expect((document.getElementById('company-name') as HTMLInputElement).value).toBe('未保存の新世界');
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('save_world',expect.anything()));
 });

@@ -14,8 +14,8 @@ describe('compact track toolbar',()=>{
   expect(app).not.toContain('<label className="target-speed-control">');
   expect(app).toContain('<input id="track-target-speed"');
  });
- it('road follow blocking applies to every type; switching types selects defaults',()=>{
-  expect(app).toContain('const roadFollowingBlocked=roadFollowing;');
+ it('road assistance does not mark normal geometry unbuildable; types retain defaults',()=>{
+  expect(app).toContain('const roadFollowingBlocked=false;');
   expect(app).toContain('setRoadFollowing(value==="tram")');
  });
 });

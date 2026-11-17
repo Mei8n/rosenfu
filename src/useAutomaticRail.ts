@@ -1,5 +1,5 @@
-import {useEffect,useRef,useState} from 'react';
-import type {ReferenceCopyState} from './useReferenceCopy';
+import {useEffect,useMemo,useRef,useState} from 'react';
+import {sameReferenceSession,type ReferenceCopyState,type ReferenceSessionSnapshot} from './useReferenceCopy';
 import type {ReferenceBuild} from './referenceCopy';
 import type {SourceRecord} from './AlignmentProvenance';
 import type {GraphBounds,GraphPoint} from './referenceGraph';
@@ -12,6 +12,25 @@ export function useAutomaticRail({selected,enabled,canStart,worldEpoch,name,boun
  const [status,setStatus]=useState<RailStatus>('unknown'),[message,setMessage]=useState(''),[view,setView]=useState<RailView>(emptyView),[active,setActive]=useState(false),[busy,setBusy]=useState(false),[confirmed,setConfirmed]=useState(false),[picks,setPicks]=useState<RailPick[]>([]),[redo,setRedo]=useState<RailPick[]>([]),[route,setRoute]=useState<RailRoute|null>(null),[attempt,setAttempt]=useState(0);
  const worker=useRef<Worker|null>(null),source=useRef<SourceRecord|null>(null),sequence=useRef(0),pickRequest=useRef(0),viewRequest=useRef(0),pending=useRef(false),callbacks=useRef(new Map<number,(r:RailResponse)=>void>());
  const boundsKey=JSON.stringify(bounds),viewKey=useRef('');
+ const datasetIdentity=useMemo(()=>({source:source.current,worldEpoch,attempt,selected}),[source.current,worldEpoch,attempt,selected]);
+ // Only snapshots emitted by this hook may restore worker-derived geometry.
+ const issuedSessions=useRef(new WeakMap<ReferenceSessionSnapshot,{active:boolean;token:object;picks:RailPick[];redo:RailPick[];route:RailRoute|null}>());
+ const sessionSnapshot=useMemo<ReferenceSessionSnapshot>(()=>{
+  const payload={active,token:{},picks:structuredClone(picks),redo:structuredClone(redo),route:structuredClone(route)};
+  const encode=(items:RailPick[])=>items.map(p=>({datasetId:'trainsworld-realgraph-jp',revision:source.current?.revision??'',edgeId:String(p.chain),fraction:p.position}));
+  const snapshot:ReferenceSessionSnapshot={provider:'automatic',bundleIdentity:datasetIdentity,opaqueState:payload.token,roadFollow:false,active,mode:'rail',picks:encode(picks),redo:encode(redo)};
+  issuedSessions.current.set(snapshot,payload);return snapshot;
+ },[active,picks,redo,route,status,datasetIdentity]);
+ const currentSession=useRef(sessionSnapshot);currentSession.current=sessionSnapshot;
+ function restoreSession(target:ReferenceSessionSnapshot,expected:ReferenceSessionSnapshot):boolean {
+  const payload=issuedSessions.current.get(target);
+  if(!enabled||pending.current||status!=='ready'||!source.current||!payload||target.provider!=='automatic'||target.bundleIdentity!==datasetIdentity||!sameReferenceSession(currentSession.current,expected))return false;
+  // Do not trust public pick arrays after callers have retained the snapshot.
+  const encode=(items:RailPick[])=>items.map(p=>({datasetId:'trainsworld-realgraph-jp',revision:source.current!.revision,edgeId:String(p.chain),fraction:p.position}));
+  if(!sameReferenceSession(target,{...target,opaqueState:payload.token,active:payload.active,roadFollow:false,mode:'rail',picks:encode(payload.picks),redo:encode(payload.redo)}))return false;
+  pickRequest.current++;currentSession.current=target;setActive(target.active);setPicks(payload.picks);setRedo(payload.redo);setRoute(payload.route);setConfirmed(false);setBusy(false);setMessage('');return true;
+ }
+
  function request(message:Omit<Extract<RailRequest,{kind:'route'}>,'id'>|Omit<Extract<RailRequest,{kind:'pick'}>,'id'>|Omit<Extract<RailRequest,{kind:'view'}>,'id'>,callback:(r:RailResponse)=>void){const id=++sequence.current;callbacks.current.set(id,callback);worker.current?.postMessage({...message,id});return id;}
  function clear(){pickRequest.current++;pending.current=false;setBusy(false);setActive(false);setPicks([]);setRedo([]);setRoute(null);setConfirmed(false);}
  useEffect(()=>{
@@ -65,6 +84,6 @@ export function useAutomaticRail({selected,enabled,canStart,worldEpoch,name,boun
  }
 
  async function commit(){if(!enabled||pending.current||!active||!confirmed||!build||!name.trim())return;const token=pickRequest.current;pending.current=true;setBusy(true);try{await onBuild(build);if(token===pickRequest.current){clear();setMessage('実在形状の経路を計画に追加しました。');}}catch(error){if(token===pickRequest.current)setMessage(String(error));}finally{if(token===pickRequest.current){pending.current=false;setBusy(false);}}}
- const copy:ReferenceCopyState={active,mode:'rail',picks:picks.map(p=>({datasetId:'trainsworld-realgraph-jp',revision:source.current?.revision??'',edgeId:String(p.chain),fraction:p.position})),redo:redo.map(p=>({datasetId:'trainsworld-realgraph-jp',revision:source.current?.revision??'',edgeId:String(p.chain),fraction:p.position})),candidates:[],roadFollow:false,roadAvailable:false,hoverCandidates:[],hover:async()=>{},clearHover:()=>{},message,confirmed,setConfirmed,busy,plan:{build,error:''},begin,clear,click:async p=>click(p),choose:()=>{},undo,redoPick,build:commit,setMode:()=>{}};
+ const copy:ReferenceCopyState={sessionSnapshot,restoreSession,active,mode:'rail',picks:picks.map(p=>({datasetId:'trainsworld-realgraph-jp',revision:source.current?.revision??'',edgeId:String(p.chain),fraction:p.position})),redo:redo.map(p=>({datasetId:'trainsworld-realgraph-jp',revision:source.current?.revision??'',edgeId:String(p.chain),fraction:p.position})),candidates:[],roadFollow:false,roadAvailable:false,hoverCandidates:[],hover:async()=>{},clearHover:()=>{},message,confirmed,setConfirmed,busy,plan:{build,error:''},begin,clear,click:async p=>click(p),choose:()=>{},undo,redoPick,build:commit,setMode:()=>{}};
  return {copy,status,message,view,ready:status==='ready',retry:()=>setAttempt(n=>n+1)};
 }
