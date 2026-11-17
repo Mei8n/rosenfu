@@ -1,7 +1,10 @@
 //! Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
+#[path = "session/history.rs"]
+mod history;
 pub use deletion::AlignmentSectionSelection;
+pub use history::WorldEditHistory;
 #[path = "session/ofm.rs"]
 mod ofm;
 pub use ofm::{OfmBindingInput, OfmRawInput};
@@ -137,6 +140,7 @@ pub struct WorldEditor {
     autosave_blocked: bool,
     autosave_replace_allowed: bool,
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
+    edit_history: history::EditHistory,
     #[cfg(test)]
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
@@ -169,7 +173,7 @@ impl WorldEditor {
             .set_service_appearance(candidate.company, service_id, color, shape, symbol)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn set_service_color(
@@ -193,9 +197,51 @@ impl WorldEditor {
             .set_service_color(candidate.company, service_id, color)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
+    /// Delete only the selected service and its own metadata, atomically.
+    pub fn delete_service(
+        &mut self,
+        service_id: ServiceId,
+        expected_path: rosenfu_core::world::ServicePath,
+        expected_name: String,
+    ) -> Result<WorldDraft, String> {
+        let before = self.snapshot();
+        let service = before
+            .services
+            .iter()
+            .find(|s| s.id == service_id && s.owner == self.company)
+            .ok_or("削除する系統が見つかりません。")?;
+        if service.name != expected_name
+            || before
+                .service_paths
+                .iter()
+                .find(|p| p.service_id == service_id)
+                != Some(&expected_path)
+        {
+            return Err(
+                "系統が変更されています。最新の内容を確認してから削除してください。".into(),
+            );
+        }
+        let mut draft = before.clone();
+        draft.services.retain(|s| s.id != service_id);
+        draft.service_paths.retain(|p| p.service_id != service_id);
+        draft
+            .service_route_bindings
+            .retain(|b| b.service_id != service_id);
+        draft
+            .service_appearances
+            .retain(|a| a.service_id != service_id);
+        let mut candidate = self.clone();
+        candidate.world.replace(draft).map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        let after = candidate.snapshot();
+        candidate.deleted_alignment = Some((before, after.clone()));
+        self.commit_edit(candidate, false);
+        Ok(after)
+    }
+
     pub fn duplicate_service(
         &mut self,
         service_id: ServiceId,
@@ -229,7 +275,7 @@ impl WorldEditor {
             .duplicate_service(candidate.company, service_id, name)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn set_service_route_binding(
@@ -246,7 +292,7 @@ impl WorldEditor {
                     .to_owned()
             })?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn preview_service_path(
@@ -312,7 +358,7 @@ impl WorldEditor {
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn update_service_path(
@@ -327,7 +373,7 @@ impl WorldEditor {
             .update_service_path(candidate.company, service_id, name, stops)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     pub fn preview_service_path_replacement(
@@ -432,7 +478,7 @@ impl WorldEditor {
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn create_service_path_unchecked(
@@ -493,6 +539,7 @@ impl WorldEditor {
             autosave_blocked: false,
             autosave_replace_allowed: false,
             deleted_alignment: None,
+            edit_history: Default::default(),
             #[cfg(test)]
             pending_manual_replacement: None,
         }
@@ -554,7 +601,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     fn add_station_unchecked(
@@ -613,7 +660,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     fn build_alignment_from_reference_typed_unchecked(
@@ -683,7 +730,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
 
@@ -707,7 +754,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     /// Publish the alignment and all planned stations together, or change nothing.
@@ -835,8 +882,6 @@ impl WorldEditor {
         stations: Vec<PlannedBuiltStation>,
         roads: Vec<rosenfu_core::world::RoadSnapshot>,
     ) -> Result<WorldDraft, String> {
-        let before = self.snapshot();
-        let has_junction = alignments.iter().any(|path| path.junction_source.is_some());
         let mut candidate = self.clone();
         for snapshot in roads {
             candidate
@@ -847,10 +892,8 @@ impl WorldEditor {
         candidate.build_construction_plan(alignments, stations)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world)
             .map_err(|error| error.to_string())?;
-        if has_junction {
-            candidate.deleted_alignment = Some((before, candidate.snapshot()));
-        }
-        *self = candidate;
+        candidate.deleted_alignment = None;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     pub fn road_assessments(&self) -> Vec<(AlignmentId, rosenfu_core::world::RoadAssessment)> {
@@ -864,8 +907,6 @@ impl WorldEditor {
         if alignments.is_empty() && stations.is_empty() {
             return Err("着工する線路・駅がありません。".into());
         }
-        let has_junction = alignments.iter().any(|path| path.junction_source.is_some());
-        let before_junction = self.snapshot();
         let mut candidate = self.clone();
         // Track only pieces created by this transaction. This permits several
         // planned splits of one observed source without accepting external edits.
@@ -1351,10 +1392,9 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        if has_junction {
-            candidate.deleted_alignment = Some((before_junction, candidate.snapshot()));
-        }
-        *self = candidate;
+        // Construction is final. Only a successful atomic commit ends prior history.
+        candidate.deleted_alignment = None;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     /// A rising/falling extension is a new explicit span, never a rewrite of old track.
@@ -1608,7 +1648,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     fn place_station_on_alignment_unchecked(
@@ -1644,7 +1684,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(self.snapshot())
     }
     fn update_station_placement_unchecked(
@@ -1674,7 +1714,7 @@ impl WorldEditor {
         let mut candidate = self.clone();
         candidate.rename_station_unchecked(station_id, name)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn rename_station_unchecked(
@@ -1705,7 +1745,7 @@ impl WorldEditor {
         let mut candidate = self.clone();
         candidate.delete_station_unchecked(station_id)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn delete_station_unchecked(&mut self, station_id: StationId) -> Result<WorldDraft, String> {
@@ -1756,7 +1796,7 @@ impl WorldEditor {
         draft.construction_plans = Some(plans);
         candidate.world.replace(draft).map_err(|e| e.to_string())?;
         let result = candidate.delete_alignment(id)?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(result)
     }
     /// Delete one whole alignment, never its dependent equipment or services.
@@ -1817,7 +1857,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(after)
     }
 
@@ -1830,20 +1870,19 @@ impl WorldEditor {
         if &self.snapshot() != after {
             return Err("削除後に変更・保存したため、この削除は元に戻せません。".into());
         }
-        let mut candidate = self.clone();
-        // Exact post-delete snapshot equality above permits restoration of retired IDs.
-        candidate.world = World::new(before.clone()).map_err(|e| e.to_string())?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        candidate.deleted_alignment = None;
-        *self = candidate;
-        Ok(self.snapshot())
+        // Keep the legacy entry point coherent with the common chronology.
+        // Its exact equality guard above also permits restoration of old plans.
+        let mut expected = self.snapshot();
+        expected.construction_plans = before.construction_plans.clone();
+        expected.view_state = before.view_state;
+        self.undo_world_edit(expected)
     }
 
     pub fn rename_company(&mut self, name: String) -> Result<WorldDraft, String> {
         let mut candidate = self.clone();
         candidate.rename_company_unchecked(name)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn rename_company_unchecked(&mut self, name: String) -> Result<WorldDraft, String> {
@@ -1886,7 +1925,7 @@ impl WorldEditor {
         route.name = name.trim().to_owned();
         candidate.world.replace(draft).map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
 
@@ -1907,7 +1946,7 @@ impl WorldEditor {
             excluded_stations,
         )?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(self.snapshot())
     }
     fn save_planned_route_unchecked(
@@ -2263,6 +2302,8 @@ impl WorldEditor {
         candidate.autosave_version = Some((autosave_path.to_owned(), auto_version));
         candidate.autosave_blocked = false;
         candidate.autosave_replace_allowed = false;
+        candidate.edit_history = self.edit_history.clone();
+        candidate.clear_edit_history();
         *self = candidate;
         Ok(self.snapshot())
     }
@@ -2292,6 +2333,7 @@ impl WorldEditor {
         }
         let company = data.companies[0].id;
         self.deleted_alignment = None;
+        self.clear_edit_history();
         self.world = candidate;
         self.company = company;
         self.company_setup_required = false;
@@ -2606,6 +2648,104 @@ mod tests {
             WorldEditor::new().load(&path).unwrap().service_appearances,
             second.service_appearances
         );
+    }
+
+    #[test]
+    fn service_delete_preserves_infrastructure_others_and_roundtrips_undo_redo_save() {
+        let (mut e, a, stations) = alignment_fixture();
+        let route = e
+            .save_planned_route(
+                None,
+                "R".into(),
+                stations[0],
+                vec![span(a, stations[0], stations[2])],
+                vec![],
+            )
+            .unwrap()
+            .routes[0]
+            .id;
+        let service =
+            create_test_service(&mut e, stations[0], vec![span(a, stations[0], stations[2])])
+                .services[0]
+                .id;
+        e.set_service_route_binding(
+            service,
+            rosenfu_core::world::ServiceRouteBindingKind::Route { route_id: route },
+        )
+        .unwrap();
+        e.set_service_color(service, "#ab12ef".into(), None)
+            .unwrap();
+        let original = e.snapshot();
+        let path = original.service_paths[0].clone();
+        e.duplicate_service(service, path.clone(), "系統".into())
+            .unwrap();
+        let before = e.snapshot();
+        let after = e
+            .delete_service(service, path.clone(), "系統".into())
+            .unwrap();
+        let mut expected = before.clone();
+        expected.services.retain(|s| s.id != service);
+        expected.service_paths.retain(|p| p.service_id != service);
+        expected
+            .service_route_bindings
+            .retain(|b| b.service_id != service);
+        expected
+            .service_appearances
+            .retain(|a| a.service_id != service);
+        assert_eq!(after, expected);
+        assert_eq!(after.services.len(), 1);
+        for _ in 0..3 {
+            assert_eq!(e.undo_alignment_deletion().unwrap(), before);
+            assert_eq!(
+                e.delete_service(service, path.clone(), "系統".into())
+                    .unwrap(),
+                after
+            );
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("deleted-service.json");
+        e.save(&file).unwrap();
+        let loaded = WorldEditor::new().load(&file).unwrap();
+        assert_eq!(loaded.services, after.services);
+        assert_eq!(loaded.service_paths, after.service_paths);
+        assert_eq!(loaded.service_route_bindings, after.service_route_bindings);
+        assert_eq!(loaded.service_appearances, after.service_appearances);
+        assert_eq!(loaded.routes, before.routes);
+        assert_eq!(loaded.stations, before.stations);
+    }
+
+    #[test]
+    fn service_delete_rejects_stale_and_foreign_requests_atomically() {
+        let (mut e, a, stations) = alignment_fixture();
+        let service =
+            create_test_service(&mut e, stations[0], vec![span(a, stations[0], stations[2])])
+                .services[0]
+                .id;
+        let before = e.snapshot();
+        let path = before.service_paths[0].clone();
+        assert!(e
+            .delete_service(service, path.clone(), "古い名前".into())
+            .is_err());
+        let mut stale = path.clone();
+        stale.stops.clear();
+        assert!(e.delete_service(service, stale, "系統".into()).is_err());
+        assert_eq!(e.snapshot(), before);
+        let owner = e.company;
+        e.company = rosenfu_core::world::CompanyId(999);
+        assert!(e
+            .delete_service(service, path.clone(), "系統".into())
+            .is_err());
+        assert_eq!(e.snapshot(), before);
+        e.company = owner;
+        e.delete_service(service, path.clone(), "系統".into())
+            .unwrap();
+        let after = e.snapshot();
+        assert!(e.delete_service(service, path, "系統".into()).is_err());
+        assert_eq!(e.snapshot(), after);
+        e.rename_company("後の編集".into()).unwrap();
+        let later = e.snapshot();
+        assert!(e.undo_alignment_deletion().is_err());
+        assert_eq!(e.snapshot(), later);
     }
 
     #[test]
@@ -4962,7 +5102,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_junction_transaction_preserves_provenance_through_undo() {
+    fn imported_junction_transaction_preserves_provenance_and_ends_undo_history() {
         use rosenfu_core::world::{
             AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
         };
@@ -5047,7 +5187,8 @@ mod tests {
             World::new(serde_json::from_str(&serde_json::to_string(&after).unwrap()).unwrap())
                 .unwrap();
         assert_eq!(restored.snapshot(), &after);
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), after);
     }
 
     #[test]
@@ -5145,12 +5286,13 @@ mod tests {
             assert_eq!(after.alignment_connections.len(), 4);
             let saved = serde_json::to_string(&after).unwrap();
             assert!(World::new(serde_json::from_str(&saved).unwrap()).is_ok());
-            assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+            assert!(editor.undo_alignment_deletion().is_err());
+            assert_eq!(editor.snapshot(), after);
         }
     }
 
     #[test]
-    fn arbitrary_position_junction_commit_undo_and_stale_source_are_atomic() {
+    fn arbitrary_position_junction_commit_is_final_and_stale_source_are_atomic() {
         use rosenfu_core::world::ConstructionJunctionSource;
         let mut editor = WorldEditor::new();
         let mut flat = planned_path(0.);
@@ -5188,7 +5330,8 @@ mod tests {
             after.alignments[0].points.last().unwrap().longitude,
             139.005
         );
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), after);
         let mut stale = planned_path(0.);
         stale.stations.clear();
         stale.junction_source = Some(source);
@@ -5241,7 +5384,8 @@ mod tests {
             after.alignment_connections[1].a.endpoint,
             AlignmentEndpoint::Start
         );
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), after);
     }
 
     #[test]
@@ -5290,7 +5434,8 @@ mod tests {
             .abs()
                 < 1e-9
         );
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), built);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), after);
     }
 
     fn planned_path(offset: f64) -> PlannedAlignment {

@@ -50,7 +50,7 @@ test('missing road data remains advisory and ordinary construction still succeed
 });
 
 
-test('junction Undo and Redo use exactly the same road snapshot payload',async()=>{
+test('junction construction keeps its road snapshot and cannot be replayed by Undo or Redo',async()=>{
  provider.load.mockImplementation(async bounds=>parseRoadResponse({osm3s:{timestamp_osm_base:'2026-11-14T21:20:41Z'},elements:[]},bounds,0));
  const source={id:'3',owner:'2',name:'Main',track_type:'normal',points:[unproject(100,300,empty.view_state),unproject(900,300,empty.view_state)],anchor_indices:[0,1]};
  const before={...empty,next_id:'4',alignments:[source]};
@@ -66,10 +66,10 @@ test('junction Undo and Redo use exactly the same road snapshot payload',async()
  await act(async()=>fireEvent.click(screen.getByRole('button',{name:'計画を着工'})));
  expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(2);
  await act(async()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true}));
- expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(1);
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='undo_world_edit'||command==='undo_alignment_deletion')).toBe(false);expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(2);
  await act(async()=>fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true}));
  const builds=vi.mocked(invoke).mock.calls.filter(([command])=>command==='build_plan_with_roads');
- expect(builds).toHaveLength(2);expect(builds[1][1]).toEqual(builds[0][1]);
+ expect(builds).toHaveLength(1);expect((builds[0][1] as any).roads).toHaveLength(1);expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(2);
 });
 
 

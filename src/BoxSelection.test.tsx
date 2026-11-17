@@ -14,7 +14,7 @@ HTMLDialogElement.prototype.close=function(){this.removeAttribute('open');};
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 async function start(initial:object=built){
  vi.stubGlobal('PointerEvent',MouseEvent);vi.mocked(isTauri).mockReturnValue(true);
- vi.mocked(invoke).mockImplementation(async command=>{if(command==='engine_info')return {name:'Rosenfu',version:'box-test'};if(command==='world_snapshot')return initial;if(command==='list_save_slots')return {active_slot_id:null,slots:[]};if(command==='delete_alignment_sections')return empty;if(command==='undo_alignment_deletion')return built;throw Error(command);});
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{if(command==='engine_info')return {name:'Rosenfu',version:'box-test'};if(command==='world_snapshot')return initial;if(command==='list_save_slots')return {active_slot_id:null,slots:[]};if(command==='delete_alignment_sections')return empty;if(command==='undo_world_edit'||command==='redo_world_edit')return {...(command==='undo_world_edit'?built:empty),construction_plans:(args as any).expectedWorld.construction_plans,view_state:(args as any).expectedWorld.view_state};throw Error(command);});
  await act(async()=>{render(<App/>);});await screen.findByText(/box-test/);
  const map=screen.getByRole('img',{name:'駅配置用OpenStreetMap'});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
  fireEvent.click(screen.getByRole('tab',{name:'選択'}));return map;
@@ -25,8 +25,8 @@ test('rectangle selects one real section; batch deletion snapshots source and su
  fireEvent.click(screen.getByRole('button',{name:'選択区間を撤去'}));fireEvent.click(screen.getByRole('button',{name:'削除する'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('delete_alignment_sections',expect.objectContaining({selections:[{alignmentId:'3',sectionIndices:[0]}],expectedAlignments:[alignment]})));
  await waitFor(()=>expect(map.querySelector('[data-alignment-id="3"]')).toBeNull());
- await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});await waitFor(()=>expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion'));
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='delete_alignment_sections')).toHaveLength(2));
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});await waitFor(()=>expect(invoke).toHaveBeenCalledWith('undo_world_edit',expect.objectContaining({expectedWorld:expect.any(Object)})));expect(map.querySelector('[data-alignment-id="3"]')).not.toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='redo_world_edit')).toHaveLength(1));await waitFor(()=>expect(map.querySelector('[data-alignment-id="3"]')).toBeNull());expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='delete_alignment_sections')).toHaveLength(1);
 });
 test('middle drag pans instead of selecting or building and pointer cancel does not select',async()=>{
  const map=await start();const before=map.querySelector('.alignment-hit')?.getAttribute('d');drag(map,1);
@@ -38,16 +38,16 @@ test('infrastructure change keeps unspecified field, snapshots selected alignmen
  const map=await start();drag(map);
  expect(screen.getByLabelText('選択区間の線路数').textContent).toBe('単線');
  const count=screen.getByLabelText('選択区間の線路数変更');fireEvent.change(count,{target:{value:'4'}});
- vi.mocked(invoke).mockImplementation(async command=>{if(command==='update_alignment_section_infrastructure')throw Error('更新競合');throw Error(command);});
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{if(command==='update_alignment_section_infrastructure')throw Error('更新競合');throw Error(command);});
  fireEvent.click(screen.getByRole('button',{name:'選択区間へ適用'}));
  await screen.findByText(/更新競合/);expect((count as HTMLSelectElement).value).toBe('4');expect(map.querySelectorAll('[data-selected-section]')).toHaveLength(1);
  expect(invoke).toHaveBeenCalledWith('update_alignment_section_infrastructure',expect.objectContaining({trackCount:4,level:null,selections:[{alignmentId:'3',sectionIndices:[0]}],expectedAlignments:[alignment]}));
  const changed={...built,alignments:[{...alignment,infrastructure:[{track_count:4,level:'underground_3'},{track_count:1,level:'ground'}]}]};
- vi.mocked(invoke).mockImplementation(async command=>command==='update_alignment_section_infrastructure'?changed:built);
+ vi.mocked(invoke).mockImplementation(async (command,args)=>command==='update_alignment_section_infrastructure'?changed:built);
  fireEvent.change(screen.getByLabelText('選択区間の高さ変更'),{target:{value:'underground_3'}});
  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'選択区間へ適用'}));});
  expect(map.querySelector('[data-selected-section]')).toBeNull();
- await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='undo_world_edit'||command==='undo_alignment_deletion')).toBe(false);
 });
 test.each(['線路','駅設置','削除'])('middle pan does not place or delete in %s mode',async mode=>{
  const map=await start();fireEvent.click(screen.getByRole('tab',{name:mode}));const before=map.querySelector('.alignment-hit')?.getAttribute('d');drag(map,1);
@@ -97,22 +97,22 @@ test('Delete confirmation clears a previous action error just like the delete bu
  expect(invoke).not.toHaveBeenCalledWith('delete_alignment_sections',expect.anything());
 });
 
-test('selected track category is applied explicitly and supports undo/redo',async()=>{
+test('built track category is applied explicitly and is a final construction operation',async()=>{
  const map=await start();drag(map);
  const apply=screen.getByRole('button',{name:'線路種別を適用'});expect(apply.hasAttribute('disabled')).toBe(true);
  fireEvent.change(screen.getByLabelText('選択区間の線路種別変更'),{target:{value:'high_speed'}});
  const changed={...built,alignments:[{...alignment,track_type:'high_speed'}]};
- vi.mocked(invoke).mockImplementation(async command=>command==='update_alignment_section_track_type'?changed:built);
+ vi.mocked(invoke).mockImplementation(async (command,args)=>command==='update_alignment_section_track_type'?changed:built);
  await act(async()=>{fireEvent.click(apply);});
  expect(invoke).toHaveBeenCalledWith('update_alignment_section_track_type',expect.objectContaining({trackType:'high_speed',selections:[{alignmentId:'3',sectionIndices:[0]}],expectedAlignments:[alignment]}));
  expect(map.querySelector('[data-selected-section]')).toBeNull();
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});
- expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='undo_world_edit'||command==='undo_alignment_deletion')).toBe(false);
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});});
- expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='update_alignment_section_track_type')).toHaveLength(2);
+ expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='update_alignment_section_track_type')).toHaveLength(1);
 });
 
-test('category split restores pending extension targets through save and undo redo',async()=>{
+test('final category split keeps remapped pending extension targets through save and attempted undo redo',async()=>{
  const endpoint={alignmentId:'3',endpoint:'end' as const};
  const parked={id:2,planId:1,name:'保留線',points:[unproject(950,350),alignment.points[2]],line:[unproject(950,350),alignment.points[2]],redo:[],extension:null,destination:endpoint,redoDestination:endpoint,designSpeedKmh:120,trackType:'normal' as const,roadFollowing:false};
  const original={...emptyConstructionPlans(),draftPoints:[alignment.points[2],unproject(1000,300)],draftExtension:endpoint,draftFinished:true,parkedPaths:[parked]};
@@ -121,9 +121,9 @@ test('category split restores pending extension targets through save and undo re
  const remappedEndpoint={alignmentId:'30',endpoint:'end' as const};
  const remapped={...original,draftExtension:remappedEndpoint,parkedPaths:[{...parked,destination:remappedEndpoint,redoDestination:remappedEndpoint}]};
  const after={...built,alignments:[alignment,{...alignment,id:'30',track_type:'high_speed'}],construction_plans:remapped};
- vi.mocked(invoke).mockImplementation(async command=>{
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{
   if(command==='update_alignment_section_track_type')return after;
-  if(command==='undo_alignment_deletion')return before;
+  if(command==='undo_world_edit'||command==='redo_world_edit')throw Error('final construction must not invoke history');
   if(command==='save_world')return {saved:true};
   if(command==='list_save_slots')return {active_slot_id:'test-slot',slots:[]};
   throw Error(command);
@@ -131,9 +131,9 @@ test('category split restores pending extension targets through save and undo re
  fireEvent.change(screen.getByLabelText('選択区間の線路種別変更'),{target:{value:'high_speed'}});
  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'線路種別を適用'}));});
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});
- expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='undo_world_edit'||command==='undo_alignment_deletion')).toBe(false);
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});});
- expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='update_alignment_section_track_type')).toHaveLength(2);
+ expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='update_alignment_section_track_type')).toHaveLength(1);
  fireEvent.click(screen.getByRole('button',{name:'保存'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('save_world',expect.objectContaining({constructionPlans:expect.objectContaining({draftExtension:remappedEndpoint,parkedPaths:expect.arrayContaining([expect.objectContaining({destination:remappedEndpoint,redoDestination:remappedEndpoint})])})})));
 });

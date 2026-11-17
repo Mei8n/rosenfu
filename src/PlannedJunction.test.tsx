@@ -61,15 +61,15 @@ test('junction source survives Undo Redo and save reload without changing origin
  expect(saved.draftJunctionSource?.reverse).toBe(true);expect(saved.draftJunctionSource?.expectedAlignment).toEqual(source);
  cleanup();map=await start({...empty,next_id:'4',alignments:[source],construction_plans:saved});expect(screen.queryByText('未保存の変更あり')).toBeNull();expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(1);
 });
-test('successful branch construction uses guarded world Undo and exact build Redo',async()=>{
+test('successful branch construction clears history and cannot be undone or replayed',async()=>{
  const source={id:'3',owner:'2',name:'本線',track_type:'normal',points:[unproject(100,300),unproject(900,300)],anchor_indices:[0,1]};
  const before={...empty,next_id:'4',alignments:[source]},after={...before,next_id:'6',alignments:[source,{...source,id:'4'},{...source,id:'5'}]};
  const map=await start(before);await settledMapClick(map,{clientX:200,clientY:150});await settledMapClick(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});
  vi.mocked(invoke).mockImplementation(async c=>c==='build_plan'?after:c==='undo_alignment_deletion'?before:{});
  await act(async()=>{fireEvent.click(trackPanel().getByRole('button',{name:'計画を着工'}));});expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(3);
- await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(1);expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion');
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(3);expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='undo_world_edit'||command==='undo_alignment_deletion')).toBe(false);
  await act(async()=>{fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});});expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(3);
- const calls=vi.mocked(invoke).mock.calls.filter(([c])=>c==='build_plan');expect(calls).toHaveLength(2);expect(calls[1][1]).toEqual(calls[0][1]);
+ const calls=vi.mocked(invoke).mock.calls.filter(([c])=>c==='build_plan');expect(calls).toHaveLength(1);
 });
 
 test('branch hover marks the exact allowed connection before click and clears when drawing starts',async()=>{

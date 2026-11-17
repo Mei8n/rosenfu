@@ -371,6 +371,18 @@ fn set_service_color(
         .set_service_color(service_id, color, expected_color)
 }
 #[tauri::command]
+fn delete_service(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    expected_path: rosenfu_core::world::ServicePath,
+    expected_name: String,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .delete_service(service_id, expected_path, expected_name)
+}
+#[tauri::command]
 fn duplicate_service(
     editor: State<'_, Mutex<WorldEditor>>,
     service_id: ServiceId,
@@ -381,6 +393,29 @@ fn duplicate_service(
         .lock()
         .map_err(|_| "world state unavailable")?
         .duplicate_service(service_id, expected_path, expected_name)
+}
+#[tauri::command]
+fn world_edit_history(
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<session::WorldEditHistory, String> {
+    Ok(editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .world_edit_history())
+}
+#[tauri::command]
+async fn undo_world_edit(
+    app: tauri::AppHandle,
+    expected_world: WorldDraft,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| editor.undo_world_edit(expected_world)).await
+}
+#[tauri::command]
+async fn redo_world_edit(
+    app: tauri::AppHandle,
+    expected_world: WorldDraft,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| editor.redo_world_edit(expected_world)).await
 }
 #[tauri::command]
 fn rename_station(
@@ -858,10 +893,14 @@ fn main() {
             road_assessments,
             update_station_placement,
             place_station_on_alignment,
+            world_edit_history,
+            undo_world_edit,
+            redo_world_edit,
             rename_station,
             set_service_color,
             set_service_appearance,
             duplicate_service,
+            delete_service,
             delete_station,
             delete_alignment,
             delete_alignment_section,

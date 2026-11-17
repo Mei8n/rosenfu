@@ -2,7 +2,7 @@
 
 ## 現行形式：schema 25
 
-開発統合 `9e1aa5c1` は `format: "rosenfu-world"` と `schema_version: 25` を読み書きする。旧1〜24と未来の形式は、ワールドの復元前に非対応として拒否する。18読込・19保存の旧方針は廃止。自動移行や旧版との往復互換はない。本人のアルファ期の互換破棄承認に基づき、新規ワールドを作成する。これは旧ファイルの削除許可ではなく、読込失敗・通常保存拒否では本体と既存バックアップを変更しない。
+照合基準の開発統合 `a171619b` は `format: "rosenfu-world"` と `schema_version: 25` を読み書きする。旧1〜24と未来の形式は、ワールドの復元前に非対応として拒否する。18読込・19保存の旧方針は廃止。自動移行や旧版との往復互換はない。本人のアルファ期の互換破棄承認に基づき、新規ワールドを作成する。これは旧ファイルの削除許可ではなく、読込失敗・通常保存拒否では本体と既存バックアップを変更しない。
 
 設備は Alignment と端点接続。すべての路線・系統に RoutePath / ServicePath が必要で、旧 Track、Route.tracks、OperatingService.tracks/stops は非対応。旧データを現形式番号に書き換えただけの偽装も拒否する。
 
@@ -57,7 +57,7 @@ cargo test --locked -p rosenfu-storage
 
 セッションは読込・保存時のSHA-256を保持し、保存先が外部変更・削除されていれば拒否する。協調するプロセス間は`.lock` sidecarのOS try-lockで排他し、ロック競合は待ち続けずエラーにする。失敗した保存を成功扱いにせず、再読込／明示確認が必要。ロックを無視する外部編集やネットワークFSの完全なトランザクション保証ではない。
 
-オートセーブの状態確認は既に承認済みの同一ファイル版を無効化しない。古い応答は画面の世代識別で無視し、復元直後に遅れて状態確認が実行されても同一版への承認を保持する。既存スロットは状態確認時の版に対する明示置換許可を要求し、確認後に変化した場合は拒否する。競合後は自動再試行せず、ユーザーの再確認を待つ。不存在の再確認後はMissing版との比較で新規作成できる。
+オートセーブの状態確認は既に承認済みの同一ファイル版を無効化しない。古い応答は画面の世代識別で無視し、復元直後に遅れて状態確認が実行されても同一版への承認を保持する。自動保存は対象スロットの状態・版を確認して自動開始する。確認後の外部変更は拒否する。競合後は自動再試行せず、ユーザーの再確認を待つ。不存在の再確認後はMissing版との比較で新規作成できる。
 
 オートセーブ復元後の通常保存では、正常な既存manualを従来どおり.bakへ保存する。破損／容量超過manualのみ明示的復元に基づく修復保存を許し、既存.bakを保持する。未知の将来スキーマや読み取り権限エラーは破損と見なして上書きしない。
 
@@ -81,10 +81,9 @@ before replacing the active in-memory world.
 
 The previous fixed-path world remains available as a legacy list entry. Unsupported
 schemas are explained rather than migrated, erased or overwritten. A new current
-world can coexist with that file. Slot deletion is not exposed by this change.
+world can coexist with that file. Slot deletion is available after confirmation. It moves the slot into a recoverable archive; the deleted-save list can restore it. Deleting the active slot detaches the save target while preserving in-memory edits. A new company/world creates its own slot automatically; creation failure must not retain another world's save target. Legacy deletion moves only its manual save and leaves legacy autosave/backup untouched.
 Current-format storage tests cover independent labels/files/backups, incomplete
-creation visibility, invalid IDs and directory symlink rejection. Full session,
-UI and real-device acceptance remain separate verification gates.
+creation visibility, invalid IDs and directory symlink rejection. Session and frontend regression tests cover these operations. Native GUI and real-device acceptance remain separate verification gates.
 
 ### 現行形式の拡張メタデータ（schema 20で導入）
 

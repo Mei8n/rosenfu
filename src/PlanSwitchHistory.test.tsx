@@ -21,21 +21,20 @@ async function start(extra={}){
 }
 
 
-test.each([false,true])('full Undo then plan switch preserves the completed-segment Redo step (extension=%s)',async extension=>{
+test.each([false,true])('Undo follows edits across plan selection rather than the selected plan (extension=%s)',async extension=>{
  const map=await start();
  const click=async (x:number,y=200)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  if(extension){await click(250,130);await click(350,130);await click(350,130);}else{await click(120);await click(240);await click(240);}
- const before=Array.from(map.querySelectorAll('.draft-anchor')).map(node=>[node.getAttribute('x'),node.getAttribute('y')]);
+ const firstShape=map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d');
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
- await settledMapClick(map,{clientX:100,clientY:60,detail:1});
+ await click(100,60);await click(200,60);await click(200,60);
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
- fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));
- fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
- fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
- fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
- expect(Array.from(map.querySelectorAll('.draft-anchor')).map(node=>[node.getAttribute('x'),node.getAttribute('y')])).toEqual(before);
+ const count=()=>map.querySelectorAll('.draft-anchor,.parked-anchor').length;
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(count()).toBe(2);
+ expect(Array.from(map.querySelectorAll('.draft-path')).some(path=>path.getAttribute('d')===firstShape)).toBe(true);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(count()).toBe(0);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(count()).toBe(2);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(count()).toBe(4);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
 });
 
@@ -55,20 +54,24 @@ test('switching preserves drag geometry Redo and does not automatically resume d
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(shape()).toBe(before);
 });
 
-test('histories remain separate across repeated switches between plans',async()=>{
+test('repeated plan navigation keeps one chronological history and new editing discards global Redo',async()=>{
  const map=await start({alignments:[]});
  const click=async (x:number,y:number)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  const undo=()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  const redo=()=>fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ const count=()=>map.querySelectorAll('.draft-anchor,.parked-anchor').length;
  await click(120,200);await click(240,200);await click(240,200);
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
- await click(120,80);await click(240,80);await click(240,80);undo();
- fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));undo();undo();
- fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));
- fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));redo();
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
- fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));redo();
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
- fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));redo();
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ await click(120,80);await click(240,80);await click(240,80);
+ for(let i=0;i<2;i++){
+  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
+  fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));
+ }
+ undo();expect(count()).toBe(2);undo();expect(count()).toBe(0);
+ redo();expect(count()).toBe(2);redo();expect(count()).toBe(4);
+ undo();expect(count()).toBe(2);
+ await click(120,60);await click(240,60);await click(240,60);
+ const shape=Array.from(map.querySelectorAll('.draft-path')).map(path=>path.getAttribute('d'));
+ redo();expect(count()).toBe(4);
+ expect(Array.from(map.querySelectorAll('.draft-path')).map(path=>path.getAttribute('d'))).toEqual(shape);
 });
