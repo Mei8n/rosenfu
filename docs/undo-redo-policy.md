@@ -40,7 +40,7 @@ Worldと計画を同時変更した操作では、UIが**復元先の計画**と
 
 ## TrainsWorld の一次コードとの対応
 
-調査対象: TrainsWorld `6b8ef91729e1e5812f3dcbaedd6c0a49fed6a84b`。
+調査対象: [TrainsWorld `6b8ef91729e1e5812f3dcbaedd6c0a49fed6a84b`](https://github.com/circularsquare/trainsworld/tree/6b8ef91729e1e5812f3dcbaedd6c0a49fed6a84b/trainworld/sim/src/track)。
 TrainsWorld の `line` は Rosenfu の「系統」に近く、Rosenfu 固有の「路線」と同一視しない。
 参照は挙動の確認のためで、コードを移植したものではない。
 
@@ -55,3 +55,9 @@ TrainsWorld の `line` は Rosenfu の「系統」に近く、Rosenfu 固有の�
 - `wasm/upgrades.rs:12–36`, `wasm/onetrack.rs:110–114`: 既設駅設備変更も確定
 
 古いコメントの「undoable」「final」だけでは判断せず、実行経路を優先する。
+
+## 参照形状の選択中と旧保存の互換
+
+実在形状の起終点選択と、そのプレビュー上の計画駅は、確定計画へ追加する前の一時履歴で時系列に戻す。参照データ/worker世代が変わった履歴は適用しない。計画追加成功後は一時履歴を閉じ、追加した経路・駅を共通履歴の一操作として戻す（選択プレビューは再開しない）。追加失敗時は選択中の内容と履歴を保持する。
+
+新履歴は保存しないが、旧形式の `redoPoints` / parked `redo` に残った未着工幾何は消去しない。ロード時に整合する点列・高さ・接続先を未着工候補として復旧し、確認と保存を促す。出典や幾何が曖昧なものは元データを保持して警告する。この復旧は自動着工ではなく、新セッションに旧操作履歴を復活させるものでもない。

@@ -56,3 +56,16 @@ test.each([true,false])('App retains water OSM attribution on sample background 
  const credits=screen.queryAllByRole('link',{name:'© OpenStreetMap contributors'});expect(credits).toHaveLength(1);expect(credits[0].closest('details')).toBeNull();
  expect(FakeWorker.instances).toHaveLength(0);
 });
+
+test('session history restores exact worker route synchronously and rejects stale, forged and old-epoch snapshots',()=>{
+ const h=setup();ready(h);pick(h);const one=h.result.current.copy.sessionSnapshot;
+ pick(h,true);const two=h.result.current.copy.sessionSnapshot,preview=h.result.current.copy.plan.build;
+ act(()=>h.result.current.copy.setConfirmed(true));const messages=h.worker.messages.length;
+ act(()=>expect(h.result.current.copy.restoreSession(one,two)).toBe(true));expect(h.result.current.copy.picks).toHaveLength(1);expect(h.result.current.copy.confirmed).toBe(false);
+ act(()=>expect(h.result.current.copy.restoreSession(two,h.result.current.copy.sessionSnapshot)).toBe(true));expect(h.result.current.copy.plan.build).toEqual(preview);expect(h.worker.messages).toHaveLength(messages);
+ act(()=>expect(h.result.current.copy.restoreSession(one,one)).toBe(false));
+ act(()=>expect(h.result.current.copy.restoreSession({...two},h.result.current.copy.sessionSnapshot)).toBe(false));
+ act(()=>{void h.result.current.copy.click(a.point);expect(h.result.current.copy.restoreSession(one,h.result.current.copy.sessionSnapshot)).toBe(false);});
+ h.rerender({...h.props,worldEpoch:1});const worker=FakeWorker.instances.at(-1)!;act(()=>worker.reply({id:0,kind:'loaded',source}));
+ act(()=>expect(h.result.current.copy.restoreSession(two,h.result.current.copy.sessionSnapshot)).toBe(false));expect(h.result.current.copy.active).toBe(false);
+});

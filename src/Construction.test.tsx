@@ -64,11 +64,12 @@ test("draft undo, cancel and load confirmation preserve intentional construction
   const drawButton=screen.getByRole("tab",{name:"線路"});
   drawButton.focus();
   fireEvent.keyDown(drawButton,{key:"z",ctrlKey:true});
-  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
   fireEvent.keyDown(drawButton,{key:"Z",ctrlKey:true,shiftKey:true});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
   fireEvent.keyDown(drawButton,{key:"z",ctrlKey:true});
-  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
+  await settledMapClick(map,{clientX:200,clientY:130}); // a new explicit draft after atomic AB Undo
   fireEvent.keyDown(document.body,{key:"Escape"});await settledMapClick(map,{clientX:300,clientY:170});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button",{name:"読込"}));
@@ -134,7 +135,7 @@ test("keyboard position previews a platform and too-long platform is blocked",as
 test("plan redo, duplicate rejection and display controls",async()=>{
  const map=await start();
  await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:250,clientY:160});
- fireEvent.keyDown(document.body,{key:"z",ctrlKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:"z",ctrlKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true}); expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  await settledMapClick(map,{clientX:250,clientY:160});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect(screen.queryByText("敷設不可：重複する点があります")).toBeNull();
@@ -322,6 +323,6 @@ test("automatic drawing dragging at the endpoint never finishes or adds an ancho
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(3);expect(map.querySelectorAll(".parked-plan")).toHaveLength(0);
 });
 
- test("construction omits redundant controls without removing keyboard editing",async()=>{await start();expect(screen.queryByRole("button",{name:"1点戻す"})).toBeNull();expect(screen.queryByRole("button",{name:"やり直す"})).toBeNull();expect(document.querySelector(".reference-tools")?.hasAttribute("hidden")).toBe(true);expect(document.querySelector(".track-editor")?.textContent).not.toContain("運行経路用：駅間接続");});
+ test("construction omits redundant controls without removing keyboard editing",async()=>{await start();expect(screen.queryByRole("button",{name:"1点戻す"})).toBeNull();expect(screen.getByRole("button",{name:"やり直す"})).toBeTruthy();expect(document.querySelector(".reference-tools")?.hasAttribute("hidden")).toBe(true);expect(document.querySelector(".track-editor")?.textContent).not.toContain("運行経路用：駅間接続");});
 
 test("station placement hides management controls while retaining management access",async()=>{await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));expect(screen.queryByRole("region",{name:"駅名の自動設定"})).toBeNull();expect(screen.queryByRole("button",{name:"指定座標に配置"})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置を取り消す"})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置をやり直す"})).toBeNull();expect(screen.queryByRole("heading",{name:"配置済みの駅"})).toBeNull();fireEvent.click(screen.getByRole("tab",{name:"駅"}));expect(screen.getByRole("heading",{name:"配置済みの駅"})).toBeTruthy();expect(screen.queryByRole("button",{name:"指定座標に配置",hidden:true})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置を取り消す",hidden:true})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置をやり直す",hidden:true})).toBeNull();});

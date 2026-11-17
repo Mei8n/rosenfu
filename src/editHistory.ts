@@ -13,6 +13,9 @@ export class EditHistory<T> {
 export function planEditKey(value:ConstructionPlans):string {
  const path={id:value.activePathId,planId:value.activePlanId,points:value.draftPoints,editedGeometry:value.draftEditedGeometry,extension:value.draftExtension,destination:value.draftDestination,anchorLevels:value.draftAnchorLevels,junctionSource:value.draftJunctionSource,startLevel:value.startLevel,infrastructure:value.infrastructure,trackType:value.trackType,designSpeedKmh:value.designSpeedKmh};
  const paths=[...value.parkedPaths.map(p=>({id:p.id,planId:p.planId,points:p.points,editedGeometry:p.editedGeometry,extension:p.extension,destination:p.destination,anchorLevels:p.anchorLevels,junctionSource:p.junctionSource,startLevel:p.startLevel,infrastructure:p.infrastructure,trackType:p.trackType,designSpeedKmh:p.designSpeedKmh,reference:p.reference,ofmPath:p.ofmPath})),path].filter(p=>p.points.length||('reference' in p&&p.reference)||('ofmPath' in p&&p.ofmPath)).sort((a,b)=>a.id-b.id);
+ // A first junction anchor previews its outgoing direction under the cursor;
+ // only the second committed anchor makes that direction a document edit.
+ for(const path of paths)if(path.points.length<2&&path.junctionSource)path.junctionSource={...path.junctionSource,reverse:undefined};
  const occupied=new Set(paths.map(path=>path.planId));
  return constructionPlanFingerprint({plans:value.plans.filter(plan=>occupied.has(plan.id)||value.plannedStations.some(station=>station.planId===plan.id)),paths,stations:value.plannedStations} as unknown as ConstructionPlans);
 }

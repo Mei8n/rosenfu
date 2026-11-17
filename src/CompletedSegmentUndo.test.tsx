@@ -45,68 +45,74 @@ test('completed three-anchor path undoes C first then the last AB segment, redoi
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
 });
 
-test('loaded completed AB has the same atomic last-segment Undo and Redo',async()=>{
+test('loaded completed AB has no session Undo or Redo history',async()=>{
  const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(120,200),point(240,200)],draftFinished:true}});
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
- fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ const before=map.querySelector('.draft-path')!.getAttribute('d');
+ for(const key of [{key:'z',ctrlKey:true},{key:'Z',ctrlKey:true,shiftKey:true}]){
+  fireEvent.keyDown(document.body,key);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+  expect(map.querySelector('.draft-path')!.getAttribute('d')).toBe(before);
+ }
 });
+
 test('atomic segment history survives switching to an existing plan',async()=>{
  const map=await start({alignments:[]});const click=async (x:number)=>await settledMapClick(map,{clientX:x,clientY:200,detail:1});
  await click(120);await click(240);await click(240);
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
- fireEvent.click(screen.getByRole('button',{name:/計画 2 を編集/}));
- fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
 });
-test('station draft stays with Undo for Redo and a replacement drawing discards only old dependencies',async()=>{
+test('station placement and its line undo chronologically without orphan dependencies',async()=>{
  const map=await start({alignments:[]});const click=async (x:number,y=200)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  await click(120);await click(240);await click(240);
  fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));await click(180);fireEvent.click(screen.getByRole('tab',{name:'線路'}));
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
- expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
- fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);expect(map.querySelectorAll('.planned-station')).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  await click(120,80);await click(240,80);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.planned-station')).toHaveLength(0);
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
 });
 
-test('loaded ABC supports repeated undo/redo cycles across the final segment boundary',async()=>{
+test('loaded ABC remains intact across repeated Undo and Redo keys',async()=>{
  const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[point(100,200),point(200,200),point(300,200)],draftFinished:true}});
+ const before=map.querySelector('.draft-path')!.getAttribute('d');
  for(let cycle=0;cycle<2;cycle++){
-  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
-  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
-  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
-  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
+  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);expect(map.querySelector('.draft-path')!.getAttribute('d')).toBe(before);
  }
 });
 
-test('saved fully undone completed path restores AB together without session history',async()=>{
+test('legacy saved redoPoints recover visible plans without becoming session history',async()=>{
  const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:[],redoPoints:[point(300,200),point(200,200),point(100,200)],draftFinished:true}});
- fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
- fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(3);
 });
 
-test('atomic Undo saves explicit sampled geometry for exact Redo after reload',async()=>{
- const anchors=[point(100,200),point(300,200)],geometry={version:1,anchors,line:[anchors[0],point(200,190),anchors[1]]};
- const map=await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:anchors,draftEditedGeometry:geometry,draftFinished:true}});
+test('saving preserves session Redo but loading clears it and preserves saved geometry',async()=>{
+ const map=await start({alignments:[]});
+ for(const x of [100,300,300])await settledMapClick(map,{clientX:x,clientY:200,detail:1});
  const before=map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d');
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
  vi.mocked(invoke).mockResolvedValueOnce({saved:true});
  fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/ワールドと未着工計画を保存しました/);
- const payload=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='save_world')![1] as any;
- expect(payload.constructionPlans.draftEditedGeometry).toEqual(geometry);
- vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[],construction_plans:payload.constructionPlans});
- await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'読込'}));});
- expect(screen.getByText(/保存したワールドを読み込みました/)).toBeTruthy();
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
  expect(map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d')).toBe(before);
+ const anchors=[point(100,200),point(300,200)],geometry={version:1,anchors,line:[anchors[0],point(200,190),anchors[1]]};
+ vi.mocked(invoke).mockResolvedValueOnce({...world,alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:anchors,draftEditedGeometry:geometry,draftFinished:true}});
+ await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'読込'}));});
+ const confirm=screen.queryByRole('button',{name:'読込を続ける'});if(confirm)await act(async()=>{fireEvent.click(confirm);});
+ expect(screen.getByText(/保存したワールドを読み込みました/)).toBeTruthy();
+ const loaded=map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d');expect(loaded).not.toBe(before);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);expect(map.querySelector('.draft-path:not(.parked-plan)')!.getAttribute('d')).toBe(loaded);
 });
 
 test('fully undone second path does not block construction of the first path',async()=>{
@@ -115,7 +121,7 @@ test('fully undone second path does not block construction of the first path',as
  await click(100,220);await click(300,220);await click(300,220);
  expect(map.querySelectorAll('.parked-anchor')).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
- expect(map.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ expect(map.querySelectorAll('.draft-anchor,.parked-anchor')).toHaveLength(2);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
@@ -127,7 +133,7 @@ test('fully undone second path does not block construction of the first path',as
  expect(map.querySelectorAll('.draft-anchor,.parked-anchor')).toHaveLength(0);
 });
 
-test('loaded parked redo-only paths do not block a real active path',async()=>{
+test('loaded parked redo-only paths recover as unbuilt candidates beside the active path',async()=>{
  const a=[point(100,100),point(300,100)],b=[point(100,220),point(300,220)];
  await start({alignments:[],construction_plans:{...emptyConstructionPlans(),draftPoints:a,draftFinished:true,parkedPaths:[{id:2,planId:1,name:'',points:[],redo:[...b].reverse(),line:[],trackType:'normal',designSpeedKmh:120,roadFollowing:false,extension:null}]}});
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
@@ -139,15 +145,17 @@ test('unfinished one-anchor path still blocks construction of another path',asyn
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
 });
 
-test('stations on an undone path block construction until the path is restored',async()=>{
+test('Undo removes the later station before its path, without an orphan blocking construction',async()=>{
  const map=await start({alignments:[]});const click=async (x:number,y:number)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  await click(100,100);await click(300,100);await click(300,100);await click(100,220);await click(300,220);await click(300,220);
  fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));await click(200,220);fireEvent.click(screen.getByRole('tab',{name:'線路'}));
  expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
- expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
- fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('.planned-station')).toHaveLength(0);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor,.parked-anchor')).toHaveLength(2);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
 });
 
@@ -177,7 +185,7 @@ test('Undo crosses independent paths within one plan and Redo restores each in o
  }
 });
 
-test('Undo does not cross into another construction plan when active plan is exhausted',async()=>{
+test('Undo crosses construction plans in global chronological order',async()=>{
  const map=await start({alignments:[]});
  const click=async (x:number,y:number)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  await click(100,100);await click(300,100);await click(300,100);
@@ -185,6 +193,8 @@ test('Undo does not cross into another construction plan when active plan is exh
  await click(100,220);await click(300,220);await click(300,220);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(map.querySelectorAll('.draft-anchor, .parked-anchor')).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor, .parked-anchor')).toHaveLength(2);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});
  expect(map.querySelectorAll('.draft-anchor, .parked-anchor')).toHaveLength(4);

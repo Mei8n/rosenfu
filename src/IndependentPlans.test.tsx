@@ -65,7 +65,7 @@ test("disconnected plans remain visible and build separately without losing the 
   // then each keyboard event's history update before dispatching the next event.
   await act(async()=>{});
   await act(async()=>{fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});});
-  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(0);
+  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2); // successful construction ends all previous history
   await act(async()=>{fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});});
   expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
   expect(map.querySelector(".draft-path:not(.parked-plan)")!.getAttribute("d")).toBe(second);
@@ -139,27 +139,27 @@ test("resuming a parked path preserves its point redo and station within the sam
  fireEvent.click(trackPanel().getByRole("button",{name:"下書きを消去"}));expect(map.querySelectorAll(".planned-station")).toHaveLength(0);expect(map.querySelectorAll(".draft-path")).toHaveLength(0);
 });
 
-test("a parked redo-only path remains selectable and can recover without deleting its plan",async()=>{
+test("a fully undone second path recovers through chronological Redo without a phantom selectable path",async()=>{
  const map=await start();const click=async (x:number,y:number)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  await click(180,130);await click(230,130);await click(230,130);await click(320,200);
  fireEvent.keyDown(document.body,{key:"z",ctrlKey:true});await click(230,130);
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
- fireEvent.click(screen.getByText("内訳"));fireEvent.click(screen.getByRole("button",{name:"経路 2",hidden:true}));
+ expect(map.querySelectorAll(".parked-anchor")).toHaveLength(0);
  fireEvent.keyDown(document.body,{key:"Z",ctrlKey:true,shiftKey:true});expect(map.querySelectorAll(".draft-anchor")).toHaveLength(1);
  await click(360,200);expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  expect((screen.getByRole("button",{name:"計画を着工"}) as HTMLButtonElement).disabled).toBe(false);
 });
 
-test("manual round-trip restores multiple plans, paths, stations, redo and independent IDs",async()=>{
+test("manual round-trip restores multiple plans paths stations and IDs but not session history",async()=>{
  const map=await start();const click=async (x:number,y:number)=>await settledMapClick(map,{clientX:x,clientY:y,detail:1});
  await click(180,130);await click(230,130);fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));await click(205,130);fireEvent.click(screen.getByRole('tab',{name:'線路'}));await click(230,130);
  await click(320,200);await click(360,200);
  fireEvent.click(trackPanel().getByRole('button',{name:'別の線路計画を追加'}));
  fireEvent.change(trackPanel().getByLabelText('計画名（任意）'),{target:{value:'第二計画'}});
- await click(180,240);await click(230,240);fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ await click(180,240);await click(230,240);await click(280,240);fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
  vi.mocked(invoke).mockResolvedValueOnce({saved:true});fireEvent.click(screen.getByRole('button',{name:'保存'}));await screen.findByText(/ワールドと未着工計画を保存しました/);
  const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
- expect(saved.plans).toHaveLength(2);expect(saved.parkedPaths).toHaveLength(2);expect(saved.plannedStations).toHaveLength(1);expect(saved.redoPoints).toHaveLength(1);
+ expect(saved.plans).toHaveLength(2);expect(saved.parkedPaths).toHaveLength(2);expect(saved.plannedStations).toHaveLength(1);expect(saved.redoPoints).toHaveLength(0);expect(saved.draftPoints).toHaveLength(2);
  await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
  const beforeUnload=new Event('beforeunload',{cancelable:true});window.dispatchEvent(beforeUnload);expect(beforeUnload.defaultPrevented).toBe(false);
  fireEvent.click(trackPanel().getByRole('button',{name:'下書きを消去'}));
@@ -276,7 +276,9 @@ test('single plan selector appears with its first anchor and follows name, undo 
  fireEvent.click(within(selector()!).getByRole('button',{name:'山側'}));
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
- expect(selector()).toBeNull();
+ expect(within(selector()!).getByRole('button',{name:'海沿い',pressed:true})).toBeTruthy(); // Undo rename before the earlier anchor
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(selector()).toBeNull();
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
  expect(within(selector()!).getByRole('button',{name:'山側',pressed:true})).toBeTruthy();
  fireEvent.change(screen.getByLabelText('計画名（任意）'),{target:{value:'   '}});
@@ -310,7 +312,7 @@ test("delayed slot discovery does not turn the early load picker into a world mu
   throw Error("unexpected mutation "+command);
  });
  render(<App/>);await screen.findByText(/delayed-slots/);
- await waitFor(()=>expect(invoke).toHaveBeenCalledWith("list_save_slots"));
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([cmd])=>cmd==="list_save_slots")).toBe(true));
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="autosave_status")).toBe(false);
  fireEvent.click(screen.getByRole("button",{name:"読込"}));
  expect(screen.getByRole("dialog",{name:"ワールドを選択"})).toBeTruthy();
@@ -351,6 +353,7 @@ test("section infrastructure survives plan switching Undo Redo save reload and b
  expect(count().value).toBe('2');expect(level('elevated').getAttribute('aria-pressed')).toBe('true');
  await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});
  await act(async()=>{fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});});
+ const selectFirst=trackPanel().queryByRole('button',{name:/計画 1 を編集/});if(selectFirst)fireEvent.click(selectFirst);
  expect(count().value).toBe('2');expect(level('elevated').getAttribute('aria-pressed')).toBe('true');
  vi.mocked(invoke).mockResolvedValueOnce({saved:true});
  fireEvent.click(screen.getByRole('button',{name:'保存'}));

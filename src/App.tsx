@@ -54,7 +54,7 @@ import {anchorDragPreview} from "./anchorDragPreview";
 import {plannedGeometry, type EditedGeometry} from "./editedGeometry";
 import {plannedTrackHeight} from "./plannedTrackHeight";
 import {plannedTrackSpeed} from "./plannedTrackSpeed";
-import {emptyConstructionPlans,compactEmptyPlans,removeConstructionPlan,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
+import {emptyConstructionPlans,recoverLegacyRedoPlans,compactEmptyPlans,removeConstructionPlan,nextConstructionIds,type ConstructionPlans,type PlannedPath,type PlannedStation,type Extension} from "./constructionPlans";
 import {UserGuide} from "./UserGuide";
 import {MapCredits} from "./MapCredits";
 import {snapReferenceStart} from "./referenceEndpointSnap";
@@ -71,7 +71,7 @@ import {UnsavedCloseDialog} from "./UnsavedCloseDialog";
 import {useUnsavedCloseGuard} from "./useUnsavedCloseGuard";
 import { ErrorNotice } from "./ErrorNotice";
 import { routeAppearance } from "./routeAppearance";
-import {useReferenceCopy} from "./useReferenceCopy";
+import {useReferenceCopy,sameReferenceSession,type ReferenceSessionSnapshot} from "./useReferenceCopy";
 import {ReferenceCopyControls} from "./ReferenceCopyControls";
 import type {ReferenceBuild} from "./referenceCopy";
 import {AlignmentProvenance} from "./AlignmentProvenance";
@@ -165,7 +165,7 @@ export function App() {
   const historyRestoring=useRef(false);
   const pendingWorldAction=useRef<{kind:"edit"|"final"|"load"|"stage";result:unknown}|null>(null);
   async function invoke<T>(command:string,args?:Record<string,unknown>):Promise<T>{
-    const result=await nativeInvoke<T>(command,args);
+    const result=await (args===undefined?nativeInvoke<T>(command):nativeInvoke<T>(command,args));
     if(FINAL_WORLD_COMMANDS.has(command)||UNDO_WORLD_COMMANDS.has(command)||['load_save_slot','load_autosave','create_new_world','stage_ofm_construction_plan'].includes(command)){
       pendingWorldAction.current={kind:FINAL_WORLD_COMMANDS.has(command)?"final":UNDO_WORLD_COMMANDS.has(command)?"edit":command==='stage_ofm_construction_plan'?"stage":"load",result};
     }
@@ -263,6 +263,7 @@ export function App() {
   const [errorRevision,setErrorRevision]=useState(0);
   function setError(message:string){setErrorMessage(message);setErrorRevision(value=>value+1);}
   const [notice, setNotice] = useState("");
+  const [planRecoveryNotice,setPlanRecoveryNotice]=useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [editStationName, setEditStationName] = useState("");
   const stationNameInput=useRef<HTMLInputElement>(null);
@@ -679,6 +680,31 @@ export function App() {
   useEffect(()=>{roadDrawing.cancel();},[draftPoints,draftFinished,infrastructure,world,activeTool,mapMode]);
   const roadFinishAfterPlacement=useRef(false);
   const referenceCopy={...referenceCopyState,plan:referenceExtension?{build:referenceExtension.build,error:referenceCopyState.plan.error}:referenceCopyState.plan};
+  type ReferenceDraftEdit={session:ReferenceSessionSnapshot;stations:PlannedStation[];extension:string;seamExtension:string;seamDestination:string};
+  const referenceJournal=useRef(new EditHistory<ReferenceDraftEdit>());
+  const referenceBaseline=useRef<ReferenceDraftEdit|null>(null);
+  const referenceRestoring=useRef(false);
+  const [referenceHistoryAvailable,setReferenceHistoryAvailable]=useState({undo:false,redo:false});
+  function refreshReferenceHistory(){const next={undo:!!referenceJournal.current.peek(false),redo:!!referenceJournal.current.peek(true)};setReferenceHistoryAvailable(old=>old.undo===next.undo&&old.redo===next.redo?old:next);}
+  useLayoutEffect(()=>{
+    if(busyRef.current||referenceCopy.busy)return;
+    if(!referenceCopy.active){referenceJournal.current.clear();referenceBaseline.current=null;referenceRestoring.current=false;refreshReferenceHistory();return;}
+    const next:ReferenceDraftEdit={session:referenceCopy.sessionSnapshot,stations:plannedStations.filter(s=>s.pathId===-1),extension:referenceExtensionKey,seamExtension:seamExtensionKey,seamDestination:seamDestinationKey};
+    const before=referenceBaseline.current;
+    if(referenceRestoring.current){referenceRestoring.current=false;referenceBaseline.current=next;return;}
+    if(before&&before.session.bundleIdentity===next.session.bundleIdentity&&before.session.provider===next.session.provider){
+      if(!sameReferenceSession(before.session,next.session)||JSON.stringify([before.stations,before.extension,before.seamExtension,before.seamDestination])!==JSON.stringify([next.stations,next.extension,next.seamExtension,next.seamDestination]))referenceJournal.current.record(before,next,false);
+    }else referenceJournal.current.clear();
+    referenceBaseline.current=next;refreshReferenceHistory();
+  },[referenceCopy.sessionSnapshot,referenceCopy.busy,plannedStations,referenceExtensionKey,seamExtensionKey,seamDestinationKey,busy]);
+  function stepReferenceHistory(redo:boolean){
+    if(!enabled||busyRef.current||referenceCopy.busy||!referenceCopy.active||saveBlocked)return;
+    const entry=referenceJournal.current.peek(redo);if(!entry)return;
+    const target=redo?entry.after:entry.before;
+    if(!referenceCopy.restoreSession(target.session,referenceCopy.sessionSnapshot)){setError('参照経路の状態が変わったため履歴を復元できません。');return;}
+    referenceRestoring.current=true;referenceJournal.current.complete(redo);
+    setPlannedStations(items=>[...items.filter(s=>s.pathId!==-1),...target.stations]);setReferenceExtensionKey(target.extension);setSeamExtensionKey(target.seamExtension);setSeamDestinationKey(target.seamDestination);refreshReferenceHistory();
+  }
   useEffect(()=>{setReferenceExtensionKey("");setSeamExtensionKey("");setSeamDestinationKey("");setSeamFocusKey("");if(!referenceCopy.active){setFrozenRoadBundle(null);setFrozenRoadTiles(old=>old.length?[]:old);}},[referenceCopy.active,graphBundle]);
   useEffect(()=>{
     if(roadFollowing&&referenceCopy.active&&graphBundle&&!frozenRoadBundle){
@@ -749,7 +775,7 @@ export function App() {
     const target=redo?entry.after:entry.before;
     const restore=(snapshot:World)=>{
       historyRestoring.current=true;editJournal.current.complete(redo);refreshHistoryAvailability();
-      const saved=savedPlanFingerprint;restoreConstructionPlans(target.plans);setSavedPlanFingerprint(saved);
+      const saved=savedPlanFingerprint;restoreConstructionPlans({...target.plans,draftFinished:target.plans.draftPoints.length>=2});setSavedPlanFingerprint(saved);
       setWorld(snapshot);setDirty(true);setTrackDeleteUndo(null);setTrackDeleteRedo(null);clearStationHistory();
       setPathDraftEpoch(value=>value+1);resetRoute();resetService();setStationCursor(null);setSelected(null);setEditStationName("");setPendingDelete(null);setPendingStation(null);setCompanyName(snapshot.companies[0]?.name??"");
       setNotice(redo?"操作をやり直しました。":"操作を元に戻しました。");
@@ -777,6 +803,13 @@ export function App() {
     setDraftJunctionSource(restored.draftJunctionSource);setDraftAnchorLevels(restored.draftAnchorLevels);setRedoAnchorLevels(restored.redoAnchorLevels??[]);setHeightAnchor(null);setStartLevel(restored.startLevel);setInfrastructure(restored.infrastructure??DEFAULT_INFRASTRUCTURE);setTrackType(restored.trackType);setDesignSpeedKmh(restored.designSpeedKmh);setRoadFollowing(restored.roadFollowing);setLegacyRoadDraft(restored.roadFollowing);setPlannedStations(restored.plannedStations);
     nextPlanId.current=ids.plan;nextPathId.current=ids.path;nextPlannedStationId.current=ids.station;
     setSavedPlanFingerprint(constructionPlanFingerprint(restored));
+  }
+  function restoreLoadedPlans(snapshot:World){
+    const original=snapshot.construction_plans??emptyConstructionPlans();
+    const recovery=recoverLegacyRedoPlans(original,extension=>{const line=snapshot.alignments?.find(a=>a.id===extension.alignmentId);return extension.endpoint==='start'?line?.points[1]:line?.points.at(-2);});
+    restoreConstructionPlans(recovery.plans,true);
+    setSavedPlanFingerprint(constructionPlanFingerprint(compactEmptyPlans(original)));
+    setPlanRecoveryNotice([recovery.recoveredPathIds.length?`旧形式の取り消し中データから未着工経路を${recovery.recoveredPathIds.length}件復旧しました。内容を確認して保存してください。`:'',recovery.unresolvedPathIds.length?`復旧を確定できない旧経路（${recovery.unresolvedPathIds.join('、')}）は元データを保持しています。保存を上書きせず確認してください。`:''].filter(Boolean).join(' '));
   }
   function alignmentReferences(id:string){
     if(world?.alignments?.find(a=>a.id===id)?.owner!==world?.companies[0]?.id)return "他社の線路";
@@ -954,7 +987,7 @@ export function App() {
     void perform(async () => {
       const snapshot = await invoke<World>("rename_station", { stationId: selectedStation.id, name: editStationName.trim() });
       setWorld(snapshot); setEditStationName(snapshot.stations.find((station) => station.id === selectedStation.id)?.name ?? "");
-      setDirty(true); setConfirmLoad(false); setNotice("駅名を変更しました。保存でファイルに反映します。駅設置履歴は終了しました。");clearStationHistory();
+      setDirty(true); setConfirmLoad(false); setNotice("駅名を変更しました。保存でファイルに反映します。Undoで駅名を戻せます。");clearStationHistory();
     });
   }
   function deleteEquipment() {
@@ -984,7 +1017,7 @@ export function App() {
     setStatus("loading");
     Promise.all([invoke<EngineInfo>("engine_info"), invoke<World>("world_snapshot")]).then(
       ([engine, snapshot]) => {
-        if (active) { setInfo(engine); setCompanySetupRequired(engine.company_setup_required===true); setWorld(snapshot); restoreConstructionPlans(snapshot.construction_plans,true);restoreView(snapshot.view_state);setCompanyName(snapshot.companies[0]?.name ?? ""); setStatus("ready"); }
+        if (active) { setInfo(engine); setCompanySetupRequired(engine.company_setup_required===true); setWorld(snapshot); restoreLoadedPlans(snapshot);restoreView(snapshot.view_state);setCompanyName(snapshot.companies[0]?.name ?? ""); setStatus("ready"); }
       },
       (failure) => {
         if (active) { setError(detail(failure)); setStatus("error"); }
@@ -1564,7 +1597,7 @@ export function App() {
         event.preventDefault();if(event.repeat || busyRef.current)return;
         if(parallelStart){if(!event.shiftKey)cancelParallel();return;}
         if(anchorGesture.current){cancelAnchorGesture();return;}
-        if(referenceCopy.active&&activeTool==='tracks'){if(event.shiftKey)referenceCopy.redoPick();else referenceCopy.undo();return;}
+        if(referenceCopy.active){stepReferenceHistory(event.shiftKey);return;}
         stepEditHistory(event.shiftKey);return;
       }
       if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
@@ -1728,7 +1761,7 @@ export function App() {
       referenceCopy.clear();setCandidateDirty(false);setPendingGraphChange(null);
       setCompanySetupRequired(false);
       clearStationHistory();
-      setTrackDeleteUndo(null);setSelectedPlanPath(null);setTrackDeleteConfirm(false);setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreConstructionPlans(snapshot.construction_plans,true);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
+      setTrackDeleteUndo(null);setSelectedPlanPath(null);setTrackDeleteConfirm(false);setPathDraftEpoch(value=>value+1);setPathServiceDirty(false);setWorld(snapshot); setDirty(source==="auto"); restoreLoadedPlans(snapshot);setStationCursor(null); setHoverPoint(null); setStationCursor(null); setAlignmentId(""); setSelected(null); setEditStationName(""); setPendingStation(null); setPendingDelete(null); setCompanyName(snapshot.companies[0]?.name ?? ""); resetRoute(); resetService();
   }
   function requestLoad(source:"manual"|"auto"){setSlotAction(null);setLoadSource(source);if(dirty||plansDirty||viewDirty||unapplied)setConfirmLoad(true);else load(source);}
   function load(source: "manual"|"auto" = loadSource) {
@@ -1758,6 +1791,7 @@ export function App() {
       <div className="workspace">
         <section className="map-panel" aria-labelledby="map-title">
           <div className="map-notices" aria-label="通知">
+            {planRecoveryNotice&&<p role="status">{planRecoveryNotice}</p>}
       {closeGuard.closeError && !closeGuard.confirmClose && <div className="banner" role="alert">{closeGuard.closeError}</div>}
 
       {status === "preview" && <p className="banner">ブラウザでの画面確認です。表示はサンプルデータで、駅の配置・線路接続・保存・読込はデスクトップ版で利用できます。</p>}
@@ -1794,8 +1828,8 @@ export function App() {
           <div className="track-selection-controls" role="group" aria-label="線路選択">
             <button type="button" className="secondary" disabled={!enabled} aria-pressed={mapMode==="move"&&activeTool==="inactive"} onClick={()=>{setActiveTool("inactive");changeMapMode("move");setTrackDeleteConfirm(false);}}>選択</button>
             {selectedTrackExists&&mapMode==="move"&&<>{!(mainTab==="construction"&&activeTool==="inactive")&&<span>{selectedPlanPath!==null?"計画線路":selectedAlignment?.name?.trim()||"名前未設定の線路"}</span>}<button type="button" className="danger" disabled={!enabled||unapplied||!!selectedTrackReferences} onClick={()=>setTrackDeleteConfirm(true)}>選択線路を削除</button>{selectedTrackReferences&&<small>削除不可：{selectedTrackReferences}が使用中</small>}</>}
-            <button type="button" className="secondary" disabled={!enabled||unapplied||!historyAvailability.undo} onClick={()=>stepEditHistory(false)}>元に戻す</button>
-            <button type="button" className="secondary" disabled={!enabled||unapplied||!historyAvailability.redo} onClick={()=>stepEditHistory(true)}>やり直す</button>
+            <button type="button" className="secondary" disabled={!enabled||saveBlocked||!(referenceCopy.active?referenceHistoryAvailable.undo:historyAvailability.undo)} onClick={()=>referenceCopy.active?stepReferenceHistory(false):stepEditHistory(false)}>元に戻す</button>
+            <button type="button" className="secondary" disabled={!enabled||saveBlocked||!(referenceCopy.active?referenceHistoryAvailable.redo:historyAvailability.redo)} onClick={()=>referenceCopy.active?stepReferenceHistory(true):stepEditHistory(true)}>やり直す</button>
           </div>
           {trackDeleteConfirm&&selectedTrackExists&&<TrackDeleteDialog busy={busy} blocked={!enabled||unapplied||!!selectedTrackReferences} error={error} onCancel={()=>setTrackDeleteConfirm(false)} onDelete={deleteSelectedTrack}/>}
           <div className="camera-controls" aria-label="地図表示操作">
