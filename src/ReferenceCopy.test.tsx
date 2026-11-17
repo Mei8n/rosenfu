@@ -120,17 +120,22 @@ test('reference picks and unbuilt station add, rename and delete share one chron
  async function pick(p:typeof start,id:string){const point=project(p.latitude+dy,p.longitude+dx,DEFAULT_CAMERA);await settledMapClick(map,{clientX:point.x,clientY:point.y});fireEvent.click(await copyPanel().findByRole('button',{hidden:true,name:new RegExp('候補 .*way 101 / 区間 '+id)}));}
  await pick(start,'0');await pick(end,'1');const preview=()=>map.querySelector('.reference-copy-preview')?.getAttribute('d');const line=preview();expect(line).toBeTruthy();
  const count=()=>map.querySelectorAll('.planned-station').length;
- const step=async(redo=false,button=false)=>{await act(async()=>{if(button)fireEvent.click(screen.getByRole('button',{name:redo?'やり直す':'元に戻す'}));else fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:redo});});};
+ const referenceButton=(redo=false)=>copyPanel().getByRole('button',{name:redo?'参考計画をやり直す':'参考計画を戻す',hidden:true}) as HTMLButtonElement;
+ const step=async(redo=false,button:false|true|'reference'=false)=>{await act(async()=>{if(button==='reference'){expect(referenceButton(redo).disabled).toBe(false);fireEvent.click(referenceButton(redo));}else if(button)fireEvent.click(screen.getByRole('button',{name:redo?'やり直す':'元に戻す'}));else fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:redo});});};
  fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));fireEvent.change(screen.getByLabelText('駅の長さ'),{target:{value:'3'}});
  await settledMapClick(map,{clientX:500,clientY:300});expect(count()).toBe(1);
- await step();expect(count()).toBe(0);expect(preview()).toBe(line);
- await step(true,true);expect(count()).toBe(1);
+ await step(false,'reference');expect(count()).toBe(0);expect(preview()).toBe(line);
+ // Station Undo creates no hook-level pick redo, but the shared reference Redo must be enabled.
+ expect(referenceButton(true).disabled).toBe(false);
+ await step(true);expect(count()).toBe(1);
+ await step();expect(count()).toBe(0);expect(referenceButton(true).disabled).toBe(false);
+ await step(true,'reference');expect(count()).toBe(1);
  const name=()=>screen.getByLabelText('計画駅名') as HTMLInputElement;const original=name().value;
- fireEvent.change(name(),{target:{value:'参照駅'}});await step(false,true);expect(name().value).toBe(original);await step(true);expect(name().value).toBe('参照駅');
+ fireEvent.change(name(),{target:{value:'参照駅'}});await step(false,true);expect(name().value).toBe(original);await step(true,'reference');expect(name().value).toBe('参照駅');
  fireEvent.click(screen.getByRole('button',{name:'計画駅 参照駅 を削除'}));expect(count()).toBe(0);
  await step();expect(count()).toBe(1);expect(name().value).toBe('参照駅');
  await step();expect(name().value).toBe(original);await step();expect(count()).toBe(0);
- await step();expect(preview()).toBeUndefined();await step(true);expect(preview()).toBe(line);
+ await step(false,'reference');expect(preview()).toBeUndefined();await step(true);expect(preview()).toBe(line);
  await step(true);expect(count()).toBe(1);await step(true);expect(name().value).toBe('参照駅');await step(true);expect(count()).toBe(0);
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_plan'||c==='undo_world_edit'||c==='redo_world_edit')).toBe(false);
 });

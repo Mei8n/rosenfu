@@ -63,10 +63,14 @@ impl WorldEditor {
     }
     fn restore_world_edit(
         &mut self,
-        expected: WorldDraft,
+        mut expected: WorldDraft,
         redo: bool,
     ) -> Result<WorldDraft, String> {
         let current = editable(self.snapshot());
+        // IPC omits the backend-only immutable evidence store. Reattach only
+        // the current store for comparison, never change the claimed manifest.
+        // The historical target below retains its own evidence, not this store.
+        expected.runtime_road_evidence = current.runtime_road_evidence.clone();
         if current != editable(expected.clone()) {
             return Err("ワールドが変更されています。最新の状態を確認してください。".into());
         }
@@ -109,6 +113,61 @@ impl WorldEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ipc_history_retains_evidence_and_rejects_changed_manifest() {
+        use rosenfu_core::ofm_evidence::{
+            raw_sha256, EvidenceStore, RawEvidence, TileBinding, DECODER_RULE,
+        };
+        let mut layer = vec![10, 14];
+        layer.extend(b"transportation");
+        layer.extend([120, 2, 40, 128, 32]);
+        let mut raw = vec![26, layer.len() as u8];
+        raw.extend(layer);
+        let sha = raw_sha256(&raw);
+        let store = EvidenceStore::from_parts(
+            vec![RawEvidence {
+                sha256: sha.clone(),
+                bytes: raw,
+            }],
+            vec![TileBinding {
+                canonical_url: "https://tiles.openfreemap.org/planet/test/14/1/2.pbf".into(),
+                revision: "test".into(),
+                z: 14,
+                x: 1,
+                y: 2,
+                raw_sha256: sha,
+                decoder_rule: DECODER_RULE.into(),
+            }],
+        )
+        .unwrap();
+        let ipc = |draft: &WorldDraft| -> WorldDraft {
+            serde_json::from_slice(&serde_json::to_vec(draft).unwrap()).unwrap()
+        };
+        let mut e = WorldEditor::new();
+        e.add_station("A".into(), 35.68, 139.76).unwrap();
+        e.world = World::new(e.snapshot().with_road_evidence(store.clone()).unwrap()).unwrap();
+        let before = e.snapshot();
+        let id = before.stations[0].id;
+        e.rename_station(id, "B".into()).unwrap();
+        let after = e.snapshot();
+        assert_ne!(ipc(&after).runtime_road_evidence, store);
+        let mut invalid = ipc(&after);
+        invalid.road_evidence_descriptors.clear();
+        let revision = e.world_edit_history().revision;
+        assert!(e.undo_world_edit(invalid).is_err());
+        assert_eq!(e.snapshot(), after);
+        assert_eq!(e.world_edit_history().revision, revision);
+        assert_eq!(e.world_edit_history().undo_depth, 1);
+        assert_eq!(e.undo_world_edit(ipc(&after)).unwrap(), before);
+        assert_eq!(e.snapshot().runtime_road_evidence, store);
+        let mut invalid = ipc(&before);
+        invalid.road_evidence_descriptors.clear();
+        assert!(e.redo_world_edit(invalid).is_err());
+        assert_eq!(e.snapshot(), before);
+        assert_eq!(e.world_edit_history().redo_depth, 1);
+        assert_eq!(e.redo_world_edit(ipc(&before)).unwrap(), after);
+        assert_eq!(e.snapshot().runtime_road_evidence, store);
+    }
     #[test]
     fn world_history_live_plans_view_and_invalid_restore_are_atomic() {
         let mut e = WorldEditor::new();
