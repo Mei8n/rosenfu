@@ -19,7 +19,7 @@ test('map station sequence finds path and creates independent service stopping a
  render(<ServiceMapCreator world={world} stations={stations} enabled defaultName="系統1" onDirty={vi.fn()} onSave={save} onCancel={vi.fn()} onMapPick={(_target,handler)=>{if(handler)select=handler;}} mapPickTarget="sequence" startSequenceKey={1}/>);
  await act(async()=>{select('a');});await act(async()=>{select('c');});
  await waitFor(()=>expect((screen.getByRole('button',{name:'編集終了'}) as HTMLButtonElement).disabled).toBe(false));
- fireEvent.click(screen.getByRole('button',{name:'編集終了'}));await waitFor(()=>expect(save).toHaveBeenCalledWith({name:'系統1',start:'a',segments,sourceRouteIds:[],stops:preview.occurrences.map(o=>o.reference)}));
+ fireEvent.click(screen.getByRole('button',{name:'編集終了'}));await waitFor(()=>expect(save).toHaveBeenCalledWith({name:'系統1',start:'a',segments,stops:preview.occurrences.map(o=>o.reference)}));
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_planned_route')).toBe(false);
 });
 test('saved route selection automatically previews all stops and preserves explicit binding',async()=>{
