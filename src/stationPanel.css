@@ -23,3 +23,8 @@
 .station-inspector .equipment-editor>.danger{width:100%;margin-top:14px}
 
 .station-inspector [hidden]{display:none}
+
+/* Keep station name primary; separate route memberships without a dense prose line. */
+.station-route-chips{display:flex;flex-wrap:wrap;gap:3px 5px;margin-top:3px}
+.station-directory .station-route-chips small{margin:0;padding:1px 5px;border-radius:3px;background:var(--surface-alt);color:var(--muted);font-weight:400}
+.station-directory .station-route-chips .unassigned{background:none;padding-inline:0}

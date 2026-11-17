@@ -1,3 +1,4 @@
+import './directoryPanel.css';
 import {useEffect,useRef,useState} from 'react';
 import {alignmentLength,type GeoPoint} from './alignment';
 import {corridorSpans} from './connectedCorridor';
@@ -26,11 +27,14 @@ export function routeLength(route:Route,world:World):number|null {
 }
 export function RouteDirectory({world,enabled,selected,onChoose,onRename,onDirty}:{world:World;enabled:boolean;selected:string|null;onChoose:(id:string|null)=>void;onRename?:(id:string,name:string,expectedName:string)=>Promise<void>;onDirty?:(dirty:boolean)=>void}){
  const [edit,setEdit]=useState<{id:string;expectedName:string;name:string}|null>(null),[error,setError]=useState(''),[saving,setSaving]=useState(false),pending=useRef(false);
+ const [query,setQuery]=useState('');
+ const normalized=query.trim().normalize('NFKC').toLocaleLowerCase('ja');
+ const visible=world.routes.filter(route=>route.name.normalize('NFKC').toLocaleLowerCase('ja').includes(normalized)||route.id===edit?.id);
  useEffect(()=>{onDirty?.(!!edit&&edit.name!==edit.expectedName);},[edit,onDirty]);
  useEffect(()=>()=>onDirty?.(false),[onDirty]);
  async function rename(){if(!edit||!onRename||!enabled||pending.current||!edit.name.trim())return;pending.current=true;setSaving(true);setError('');try{await onRename(edit.id,edit.name.trim(),edit.expectedName);setEdit(null);}catch(e){setError(String(e));}finally{pending.current=false;setSaving(false);}}
- return <div className="route-directory"><button className="secondary" disabled={!enabled||!!edit} onClick={()=>onChoose(null)}>新規路線</button>
- <table aria-label="路線一覧"><thead><tr><th>名前</th><th>距離</th></tr></thead><tbody>{world.routes.map(route=>{const length=routeLength(route,world);return <tr key={route.id}><th>
- {edit?.id===route.id?<form autoComplete="off" onSubmit={event=>{event.preventDefault();void rename();}}><input aria-label="変更後の路線名" autoComplete="off" maxLength={80} value={edit.name} disabled={saving} onChange={event=>setEdit({...edit,name:event.target.value})}/><button disabled={!enabled||saving||!edit.name.trim()||edit.name.trim()===edit.expectedName}>保存</button><button type="button" disabled={saving} onClick={()=>{setEdit(null);setError('');}}>取消</button>{error&&<p role="alert">{error}</p>}</form>:<><button className={`route-choice ${selected===route.id?'selected':''}`} aria-label={`編集: ${route.name}`} disabled={!enabled||!!edit} onClick={()=>onChoose(route.id)}>{route.name}</button>{onRename&&<button type="button" className="secondary" aria-label={`路線名を変更: ${route.name}`} disabled={!enabled||!!edit} onClick={()=>{setEdit({id:route.id,expectedName:route.name,name:route.name});setError('');}}>名前を変更</button>}</>}
- </th><td>{length===null?'—':`${(length/1000).toFixed(2)} km`}</td></tr>;})}</tbody></table></div>;
+ return <div className="route-directory network-directory"><div className="directory-toolbar"><span className="directory-total">{world.routes.length}路線</span><button className="secondary" disabled={!enabled||!!edit} onClick={()=>onChoose(null)}>新規路線</button></div><label className="directory-search">路線を探す<input type="search" value={query} disabled={!!edit} placeholder="路線名" onChange={event=>setQuery(event.target.value)}/></label>
+ <table aria-label="路線一覧"><thead><tr><th>名前</th><th>距離</th></tr></thead><tbody>{visible.map(route=>{const length=routeLength(route,world);return <tr key={route.id}><th>
+ {edit?.id===route.id?<form autoComplete="off" onSubmit={event=>{event.preventDefault();void rename();}}><input aria-label="変更後の路線名" autoComplete="off" maxLength={80} value={edit.name} disabled={saving} onChange={event=>setEdit({...edit,name:event.target.value})}/><button disabled={!enabled||saving||!edit.name.trim()||edit.name.trim()===edit.expectedName}>保存</button><button type="button" disabled={saving} onClick={()=>{setEdit(null);setError('');}}>取消</button>{error&&<p role="alert">{error}</p>}</form>:<div className="route-directory-name"><button className={`route-choice ${selected===route.id?'selected':''}`} aria-label={`編集: ${route.name}`} aria-pressed={selected===route.id} disabled={!enabled||!!edit} onClick={()=>onChoose(route.id)}>{route.name}</button>{onRename&&<button type="button" className="secondary" aria-label={`路線名を変更: ${route.name}`} disabled={!enabled||!!edit} onClick={()=>{setEdit({id:route.id,expectedName:route.name,name:route.name});setError('');}}>✎</button>}</div>}
+ </th><td>{length===null?'—':`${(length/1000).toFixed(2)} km`}</td></tr>;})}</tbody></table>{!visible.length&&<p className="empty-state">{world.routes.length?"一致する路線がありません":"まだ路線はありません。新規路線から地図上の駅を選択してください。"}</p>}</div>;
 }
