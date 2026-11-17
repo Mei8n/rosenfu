@@ -159,6 +159,8 @@ const detail = (error: unknown) => error instanceof Error ? error.message : Stri
 export function App() {
   type EditSnapshot={world:World;plans:ConstructionPlans};
   const editJournal=useRef(new EditHistory<EditSnapshot>());
+  const [historyAvailability,setHistoryAvailability]=useState({undo:false,redo:false});
+  function refreshHistoryAvailability(){const next={undo:!!editJournal.current.peek(false),redo:!!editJournal.current.peek(true)};setHistoryAvailability(old=>old.undo===next.undo&&old.redo===next.redo?old:next);}
   const editBaseline=useRef<EditSnapshot|null>(null);
   const historyRestoring=useRef(false);
   const pendingWorldAction=useRef<{kind:"edit"|"final"|"load"|"stage";result:unknown}|null>(null);
@@ -722,15 +724,23 @@ export function App() {
     const changedWorld=worldEditKey(before.world)!==worldEditKey(world),changedPlan=planEditKey(before.plans)!==planEditKey(constructionPlans);
     if(action&&worldEditKey(action.result)===worldEditKey(world)){
       pendingWorldAction.current=null;
-      if(action.kind==='load'||(action.kind==='final'&&changedWorld)){editJournal.current.clear();editBaseline.current=next;return;}
-      if(action.kind==='stage'){editJournal.current.record(before,next,false);editBaseline.current=next;return;}
+      if(action.kind==='load'||(action.kind==='final'&&changedWorld)){editJournal.current.clear();editBaseline.current=next;refreshHistoryAvailability();return;}
+      if(action.kind==='stage'&&(changedWorld||changedPlan)){editJournal.current.record(before,next,changedWorld);editBaseline.current=next;refreshHistoryAvailability();return;}
     }
     if(changedWorld){
       // World mutation must have a matching successful native editing operation.
       if(action?.kind==='edit')editJournal.current.record(before,next,true);
       else editJournal.current.clear();
-    }else if(changedPlan)editJournal.current.record(before,next,false);
-    editBaseline.current=next;
+    }else if(changedPlan){
+      const last=editJournal.current.peek(false);
+      // A stroke's first segment is one edit; its first anchor alone is only its start.
+      if(last&&!last.world&&last.after.plans.activePathId===next.plans.activePathId&&(last.before.plans.draftPoints.length===0||last.before.plans.activePathId!==next.plans.activePathId)&&last.after.plans.draftPoints.length===1&&next.plans.draftPoints.length===2&&last.after.plans.parkedPaths.length===next.plans.parkedPaths.length){last.after=next;editJournal.current.redo=[];}
+      else editJournal.current.record(before,next,false);
+    }else {
+      const last=editJournal.current.peek(false);
+      if(last&&planEditKey(last.after.plans)===planEditKey(next.plans)&&worldEditKey(last.after.world)===worldEditKey(next.world))last.after=next;
+    }
+    editBaseline.current=next;refreshHistoryAvailability();
   },[world,constructionPlans,busy]);
   function stepEditHistory(redo:boolean){
     if(!enabled||busyRef.current||historyRestoring.current||!world)return;
@@ -738,7 +748,7 @@ export function App() {
     const entry=editJournal.current.peek(redo);if(!entry){setNotice("元に戻せる操作はありません。");return;}
     const target=redo?entry.after:entry.before;
     const restore=(snapshot:World)=>{
-      historyRestoring.current=true;editJournal.current.complete(redo);
+      historyRestoring.current=true;editJournal.current.complete(redo);refreshHistoryAvailability();
       const saved=savedPlanFingerprint;restoreConstructionPlans(target.plans);setSavedPlanFingerprint(saved);
       setWorld(snapshot);setDirty(true);setTrackDeleteUndo(null);setTrackDeleteRedo(null);clearStationHistory();
       setPathDraftEpoch(value=>value+1);resetRoute();resetService();setStationCursor(null);setSelected(null);setEditStationName("");setPendingDelete(null);setPendingStation(null);setCompanyName(snapshot.companies[0]?.name??"");
@@ -1784,7 +1794,8 @@ export function App() {
           <div className="track-selection-controls" role="group" aria-label="線路選択">
             <button type="button" className="secondary" disabled={!enabled} aria-pressed={mapMode==="move"&&activeTool==="inactive"} onClick={()=>{setActiveTool("inactive");changeMapMode("move");setTrackDeleteConfirm(false);}}>選択</button>
             {selectedTrackExists&&mapMode==="move"&&<>{!(mainTab==="construction"&&activeTool==="inactive")&&<span>{selectedPlanPath!==null?"計画線路":selectedAlignment?.name?.trim()||"名前未設定の線路"}</span>}<button type="button" className="danger" disabled={!enabled||unapplied||!!selectedTrackReferences} onClick={()=>setTrackDeleteConfirm(true)}>選択線路を削除</button>{selectedTrackReferences&&<small>削除不可：{selectedTrackReferences}が使用中</small>}</>}
-            {trackDeleteUndo&&activeTool!=="delete"&&<button type="button" className="secondary" disabled={!enabled||!canUndoTrackDelete} onClick={undoTrackDelete}>{trackDeleteUndo.kind==="built"&&trackDeleteUndo.command==="delete_service"?"系統削除を元に戻す":"線路削除を元に戻す"}</button>}
+            <button type="button" className="secondary" disabled={!enabled||unapplied||!historyAvailability.undo} onClick={()=>stepEditHistory(false)}>元に戻す</button>
+            <button type="button" className="secondary" disabled={!enabled||unapplied||!historyAvailability.redo} onClick={()=>stepEditHistory(true)}>やり直す</button>
           </div>
           {trackDeleteConfirm&&selectedTrackExists&&<TrackDeleteDialog busy={busy} blocked={!enabled||unapplied||!!selectedTrackReferences} error={error} onCancel={()=>setTrackDeleteConfirm(false)} onDelete={deleteSelectedTrack}/>}
           <div className="camera-controls" aria-label="地図表示操作">

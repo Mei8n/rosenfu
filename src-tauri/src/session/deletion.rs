@@ -114,7 +114,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(after)
     }
 
@@ -265,7 +265,7 @@ impl WorldEditor {
             rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
             let after = candidate.snapshot();
             candidate.deleted_alignment = Some((before, after.clone()));
-            *self = candidate;
+            self.commit_edit(candidate, true);
             return Ok(after);
         }
         let mut after = before.clone();
@@ -294,7 +294,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(after)
     }
 
@@ -385,7 +385,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        *self = candidate;
+        self.commit_edit(candidate, true);
         Ok(after)
     }
 
@@ -437,7 +437,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(after)
     }
 
@@ -820,7 +820,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(after)
     }
 
@@ -840,7 +840,7 @@ impl WorldEditor {
         candidate.delete_station(id)?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        *self = candidate;
+        self.commit_edit(candidate, false);
         Ok(after)
     }
 }
@@ -882,7 +882,7 @@ mod tests {
         (editor, id)
     }
     #[test]
-    fn selected_track_type_splits_only_middle_and_undo_restores() {
+    fn selected_track_type_splits_only_middle_and_is_final() {
         let (mut editor, id) = setup();
         let before = editor.snapshot();
         let result = editor
@@ -921,8 +921,9 @@ mod tests {
                 .sum::<usize>(),
             3
         );
-        editor.undo_alignment_deletion().unwrap();
-        assert_eq!(editor.snapshot().alignments, before.alignments);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert!(editor.undo_world_edit(editor.snapshot()).is_err());
+        assert_eq!(editor.snapshot(), result);
     }
 
     #[test]
@@ -1028,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_track_type_platform_rejection_preserves_references_plans_and_previous_undo() {
+    fn selected_track_type_platform_rejection_preserves_references_plans_and_final_boundary() {
         use rosenfu_core::world::ServiceRouteBindingKind;
         let (mut editor, id) = setup();
         let a = editor
@@ -1105,7 +1106,7 @@ mod tests {
             )
             .unwrap();
         let previous_undo = editor.deleted_alignment.clone();
-        assert!(previous_undo.is_some());
+        assert!(previous_undo.is_none());
         let error = editor
             .update_alignment_section_track_type(
                 vec![AlignmentSectionSelection {
@@ -1120,7 +1121,8 @@ mod tests {
         assert_eq!(error, "InvalidStationPlacement");
         assert_eq!(editor.snapshot(), before);
         assert_eq!(editor.deleted_alignment, previous_undo);
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), original);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert_eq!(editor.snapshot(), before);
     }
 
     #[test]
@@ -1212,7 +1214,11 @@ mod tests {
         let loaded = WorldEditor::new().load(&path).unwrap();
         assert_eq!(loaded.service_paths, after.service_paths);
         assert_eq!(loaded.route_paths, after.route_paths);
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert!(editor.undo_world_edit(editor.snapshot()).is_err());
+        assert_eq!(editor.snapshot(), after);
+        // Start an independent fixture for subsequent edit validation, not an Undo.
+        editor.world = World::new(before.clone()).unwrap();
         let redo = editor
             .update_alignment_section_track_type(
                 vec![AlignmentSectionSelection {
@@ -1412,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn built_anchor_height_is_atomic_local_reversible_and_saved() {
+    fn built_anchor_height_is_atomic_local_final_and_saved() {
         use rosenfu_core::world::InfrastructureLevel;
         let (mut editor, id) = setup();
         let mut draft = editor.snapshot();
@@ -1461,7 +1467,9 @@ mod tests {
             .unwrap();
         assert_eq!(unchanged, after);
         assert_eq!(editor.deleted_alignment, previous_undo);
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert!(editor.undo_world_edit(editor.snapshot()).is_err());
+        assert_eq!(editor.snapshot(), after);
         let (mut short, id) = setup();
         let initial = short.snapshot();
         assert!(short
@@ -1521,7 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_height_redevelopment_is_one_undo_and_short_run_is_atomic() {
+    fn selected_height_redevelopment_is_final_and_short_run_is_atomic() {
         use rosenfu_core::world::InfrastructureLevel;
         let (mut editor, id) = setup();
         let mut draft = editor.snapshot();
@@ -1547,7 +1555,9 @@ mod tests {
         assert!(after.alignments.iter().any(|a| a
             .vertical_profile
             .is_some_and(|p| p.is_flat() && p.start_height_m == 6.)));
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert!(editor.undo_world_edit(editor.snapshot()).is_err());
+        assert_eq!(editor.snapshot(), after);
         let (mut short, id) = setup();
         let before = short.snapshot();
         let error = short
@@ -1567,7 +1577,7 @@ mod tests {
     }
 
     #[test]
-    fn section_infrastructure_is_local_atomic_and_saved_with_one_undo() {
+    fn section_infrastructure_is_local_atomic_and_saved_and_final() {
         use rosenfu_core::world::{InfrastructureLevel, SectionInfrastructure};
         let (mut editor, id) = setup();
         editor
@@ -1600,7 +1610,11 @@ mod tests {
         );
         assert_eq!(after.alignments[0].points, before.alignments[0].points);
         assert_eq!(after.station_placements, before.station_placements);
-        assert_eq!(editor.undo_alignment_deletion().unwrap(), before);
+        assert!(editor.undo_alignment_deletion().is_err());
+        assert!(editor.undo_world_edit(editor.snapshot()).is_err());
+        assert_eq!(editor.snapshot(), after);
+        // Start an independent fixture for subsequent edit validation, not an Undo.
+        editor.world = World::new(before.clone()).unwrap();
         for count in [None, Some(0), Some(3)] {
             assert!(editor
                 .update_alignment_section_infrastructure(

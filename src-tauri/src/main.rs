@@ -395,6 +395,29 @@ fn duplicate_service(
         .duplicate_service(service_id, expected_path, expected_name)
 }
 #[tauri::command]
+fn world_edit_history(
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<session::WorldEditHistory, String> {
+    Ok(editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .world_edit_history())
+}
+#[tauri::command]
+async fn undo_world_edit(
+    app: tauri::AppHandle,
+    expected_world: WorldDraft,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| editor.undo_world_edit(expected_world)).await
+}
+#[tauri::command]
+async fn redo_world_edit(
+    app: tauri::AppHandle,
+    expected_world: WorldDraft,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| editor.redo_world_edit(expected_world)).await
+}
+#[tauri::command]
 fn rename_station(
     editor: State<'_, Mutex<WorldEditor>>,
     station_id: StationId,
@@ -870,6 +893,9 @@ fn main() {
             road_assessments,
             update_station_placement,
             place_station_on_alignment,
+            world_edit_history,
+            undo_world_edit,
+            redo_world_edit,
             rename_station,
             set_service_color,
             set_service_appearance,

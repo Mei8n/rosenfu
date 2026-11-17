@@ -36,6 +36,8 @@ impl WorldEditor {
         // Provider configuration and immutable data cache belong to the app, not a save slot.
         candidate.water_model = self.water_model.clone();
         candidate.rename_company(company_name)?;
+        candidate.edit_history = self.edit_history.clone();
+        candidate.clear_edit_history();
         *self = candidate;
         Ok(self.snapshot())
     }
