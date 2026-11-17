@@ -75,3 +75,26 @@ test('one saved segment exposes all physical stations so clicking the start shor
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'5',end:'4'}));
  expect(screen.queryByText(/2駅以上必要/)).toBeNull();expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_planned_route')).toBe(false);
 });
+
+test('saved membership exclusion survives rename and cancelling map edits',async()=>{
+ const three=[...stations,{...stations[1],id:'5',name:'中間',longitude:139.755}];
+ const segment={kind:'alignment',alignment_id:'a',from:'3',to:'4'};
+ const physical={...world,stations:three,alignments:[{id:'a',owner:'2',name:'線',points:[stations[0],stations[1]]}],station_placements:[{station_id:'3',alignment_id:'a',position:0},{station_id:'5',alignment_id:'a',position:.5},{station_id:'4',alignment_id:'a',position:1}],route_paths:[{route_id:'r',segments:[segment],member_stations:['3','4'],excluded_stations:[]}]};
+ const shortened={stations:['5','4'],segments:[{...segment,from:'5'}]};
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'intermediate-test'};
+  if(command==='list_save_slots')return {active_slot_id:null,slots:[]};
+  if(command==='preview_route_candidates')return {status:'unique',candidates:[shortened],truncated:false};
+  if(command==='preview_route_membership')return {path:shortened,member_stations:shortened.stations,excluded_stations:[]};
+  return physical;
+ });
+ const view=render(<App/>);await screen.findByText(/intermediate-test/);await act(async()=>{});
+ fireEvent.click(screen.getByRole('tab',{name:'路線'}));fireEvent.click(screen.getByRole('button',{name:'編集: 既存路線'}));fireEvent.click(screen.getByText('地図で路線を編集'));
+ expect(screen.getAllByText('所属駅: 東 → 西')).toHaveLength(2);
+ fireEvent.change(screen.getByLabelText('路線名'),{target:{value:'名前だけ変更'}});
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_planned_route')).toBe(false);
+ await act(async()=>fireEvent.click(screen.getByText('編集終了')));
+ expect(invoke).toHaveBeenCalledWith('save_planned_route',{routeId:'r',name:'名前だけ変更',start:'3',segments:[segment],excludedStations:['5']});
+ fireEvent.click(screen.getByText('地図で路線を編集'));fireEvent.click(screen.getByRole('button',{name:'キャンセル'}));
+ expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='save_planned_route')).toHaveLength(1);
+});
