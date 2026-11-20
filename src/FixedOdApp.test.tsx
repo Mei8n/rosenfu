@@ -30,3 +30,24 @@ test('older engine leaves the city panel unavailable',async()=>{
  fireEvent.click(screen.getByRole('tab',{name:'都市'}));
  expect(screen.queryByRole('button',{name:'需要を試算'})).toBeNull();
 });
+
+test('explicit recording uses the token captured with initial native read and marks the active world unsaved',async()=>{
+ const scenario={origin_station_id:'3',destination_station_id:'4',trips:100,alternative_seconds:null};
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'od-app-test',fixed_od_enabled:true,fixed_od_scenario_enabled:true};
+  if(command==='list_save_slots')return {active_slot_id:null,slots:[]};
+  if(command==='fixed_od_scenario')return {token:'mounted-world',scenario:null};
+  if(command==='set_fixed_od_scenario')return {token:'next-revision',scenario};
+  return world;
+ });
+ render(<App/>);await screen.findByText(/od-app-test/);
+ fireEvent.click(screen.getByRole('tab',{name:'都市'}));
+ const panel=within(screen.getByRole('region',{name:'固定ODの需要試算'}));
+ fireEvent.change(panel.getByLabelText('出発駅'),{target:{value:'3'}});
+ fireEvent.change(panel.getByLabelText('到着駅'),{target:{value:'4'}});
+ fireEvent.click(panel.getByRole('button',{name:'この試算条件をワールドに記録'}));
+ expect(await panel.findByText('記録済みの条件は次のセーブに含まれます。')).toBeTruthy();
+ expect(invoke).toHaveBeenCalledWith('set_fixed_od_scenario',{expectedToken:'mounted-world',scenario});
+ expect(invoke).not.toHaveBeenCalledWith('ofm_world_token');
+ expect(screen.getByText('未保存の変更あり')).toBeTruthy();
+});

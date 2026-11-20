@@ -10,6 +10,7 @@ mod history;
 mod operation;
 pub use deletion::AlignmentSectionSelection;
 pub use history::WorldEditHistory;
+pub use operation::FixedOdScenarioView;
 pub use operation::OperationView;
 #[path = "session/ofm.rs"]
 mod ofm;
@@ -148,6 +149,8 @@ pub struct WorldEditor {
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
     edit_history: history::EditHistory,
     operation_tick: Option<std::time::Instant>,
+    // Per-mounted-world and scenario-revision correlation, not a credential.
+    fixed_od_token: u64,
     #[cfg(test)]
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
@@ -548,6 +551,7 @@ impl WorldEditor {
             deleted_alignment: None,
             edit_history: Default::default(),
             operation_tick: None,
+            fixed_od_token: operation::next_fixed_od_token(),
             #[cfg(test)]
             pending_manual_replacement: None,
         }
@@ -808,6 +812,32 @@ impl WorldEditor {
     ) -> Result<WorldDraft, String> {
         self.clone().build_construction_plan(alignments, stations)
     }
+    /// Clone only the construction inputs while holding the live editor lock.
+    /// The worker never applies an edit, so undo, saves and tick bookkeeping
+    /// are deliberately not copied. Keep the World itself (including its
+    /// operation state): the size guard must see what the build would check.
+    pub fn construction_validation_snapshot(&self) -> Self {
+        Self {
+            water_model: self.water_model.clone(),
+            world: self.world.clone(),
+            company: self.company,
+            loaded_path: None,
+            active_slot_id: None,
+            company_setup_required: self.company_setup_required,
+            fixed_od_token: self.fixed_od_token,
+            manual_version: None,
+            manual_repair_allowed: false,
+            autosave_version: None,
+            observed_autosave: None,
+            autosave_blocked: false,
+            autosave_replace_allowed: false,
+            deleted_alignment: None,
+            edit_history: history::EditHistory::default(),
+            operation_tick: None,
+            #[cfg(test)]
+            pending_manual_replacement: None,
+        }
+    }
     /// Click placement needs only the exact build verdict, not world-wide crossing
     /// totals. Keep all build/water/saveability checks, without computing those totals.
     pub fn validate_construction_placement(
@@ -821,7 +851,13 @@ impl WorldEditor {
                 .add_road_snapshot(snapshot)
                 .map_err(|e| e.to_string())?;
         }
-        let validation_error = self.build_construction_plan(alignments, stations).err();
+        // Water compares against the snapshot after road staging, but before
+        // any candidate track/station changes. This copies just the draft, not
+        // a second editor or its active operation state.
+        let before = self.world.snapshot().clone();
+        let validation_error = self
+            .prepare_construction_candidate(&before, alignments, stations)
+            .err();
         Ok(ConstructionPreview {
             // Not computed, rather than falsely reporting zero/verified.
             new_crossing_count: None,
@@ -912,10 +948,27 @@ impl WorldEditor {
         alignments: Vec<PlannedAlignment>,
         stations: Vec<PlannedBuiltStation>,
     ) -> Result<WorldDraft, String> {
+        let mut candidate = self.clone();
+        candidate.prepare_construction_candidate(self.world.snapshot(), alignments, stations)?;
+        // Construction is final. Only a successful atomic commit ends prior history.
+        candidate.deleted_alignment = None;
+        self.commit_edit(candidate, true);
+        Ok(self.snapshot())
+    }
+
+    /// Mutate only the isolated candidate. Both full commit and compact click
+    /// validation pass exactly the same topology, water and save-size checks.
+    fn prepare_construction_candidate(
+        &mut self,
+        before: &WorldDraft,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+    ) -> Result<(), String> {
         if alignments.is_empty() && stations.is_empty() {
             return Err("着工する線路・駅がありません。".into());
         }
-        let mut candidate = self.clone();
+        // Keep the candidate explicit throughout the shared mutation body.
+        let candidate = self;
         // Track only pieces created by this transaction. This permits several
         // planned splits of one observed source without accepting external edits.
         let mut split_sources: std::collections::BTreeMap<
@@ -1397,13 +1450,11 @@ impl WorldEditor {
                 )?;
             }
         }
-        self.water_model
-            .validate(self.world.snapshot(), candidate.world.snapshot())?;
+        candidate
+            .water_model
+            .validate(before, candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        // Construction is final. Only a successful atomic commit ends prior history.
-        candidate.deleted_alignment = None;
-        self.commit_edit(candidate, true);
-        Ok(self.snapshot())
+        Ok(())
     }
     /// A rising/falling extension is a new explicit span, never a rewrite of old track.
     fn build_sloped_plan(
@@ -2116,6 +2167,7 @@ impl WorldEditor {
         }
         candidate.world = World::new(draft).map_err(|e| e.to_string())?;
         candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
         let (_, version) =
             rosenfu_storage::save_world_if_version(path, &candidate.world, &pending.version)
                 .map_err(|e| e.to_string())?;
@@ -2158,6 +2210,7 @@ impl WorldEditor {
         }
         candidate.world = World::new(draft).map_err(|e| e.to_string())?;
         candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
         if automatic {
             candidate.autosave(path)?;
         } else {
@@ -2349,6 +2402,7 @@ impl WorldEditor {
         self.clear_edit_history();
         self.world = candidate;
         self.operation_tick = None;
+        self.fixed_od_token = operation::next_fixed_od_token();
         self.company = company;
         self.company_setup_required = false;
         #[cfg(test)]
@@ -6096,7 +6150,7 @@ mod road_snapshot_transaction_tests {
                 .preview_construction_summary(vec![make_path()], vec![], vec![roads()])
                 .unwrap();
             let verdict = editor
-                .clone()
+                .construction_validation_snapshot()
                 .validate_construction_placement(vec![make_path()], vec![], vec![roads()])
                 .unwrap();
             assert_eq!(verdict.validation_error, summary.validation_error);
@@ -6108,11 +6162,159 @@ mod road_snapshot_transaction_tests {
         let mut invalid_roads = roads();
         invalid_roads.source_sha256 = "invalid".into();
         assert!(editor
-            .clone()
+            .construction_validation_snapshot()
             .validate_construction_placement(vec![plan()], vec![], vec![invalid_roads])
             .is_err());
         assert_eq!(editor.snapshot(), before);
     }
+    #[test]
+    fn compact_candidate_discard_keeps_live_state_and_full_build_history_boundary() {
+        let mut editor = WorldEditor::new();
+        editor.rename_company("First".into()).unwrap();
+        editor.rename_company("Second".into()).unwrap();
+        editor.undo_world_edit(editor.snapshot()).unwrap();
+        let before = editor.snapshot();
+        let history = editor.world_edit_history();
+        assert_eq!((history.undo_depth, history.redo_depth), (1, 1));
+
+        for valid in [true, false] {
+            let make_plan = || {
+                let mut p = plan();
+                if !valid {
+                    p.points.truncate(1);
+                }
+                p
+            };
+            let mut build_reference = editor.clone();
+            let build_result = build_reference.build_construction_plan(vec![make_plan()], vec![]);
+            let fast = editor
+                .construction_validation_snapshot()
+                .validate_construction_placement(vec![make_plan()], vec![], vec![])
+                .unwrap();
+            assert_eq!(fast.validation_error, build_result.err());
+            assert_eq!(fast.validation_error.is_none(), valid);
+            let after = editor.world_edit_history();
+            assert_eq!(editor.snapshot(), before);
+            assert_eq!(after.revision, history.revision);
+            assert_eq!(after.undo_depth, history.undo_depth);
+            assert_eq!(after.redo_depth, history.redo_depth);
+        }
+
+        let built = editor
+            .build_construction_plan(vec![plan()], vec![])
+            .unwrap();
+        assert_eq!(built.alignments[0].id, AlignmentId(before.next_id));
+        let after = editor.world_edit_history();
+        assert_eq!(after.revision, history.revision + 1);
+        assert_eq!((after.undo_depth, after.redo_depth), (0, 0));
+    }
+
+    /// To isolate RSS, select one mode and one size and run the test binary in
+    /// its own process; the fixture compiles identical inputs for both cases.
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn measure_compact_construction_preview() {
+        use std::time::Instant;
+        let n: usize = std::env::var("ROSENFU_PREVIEW_MEASURE_LINES")
+            .unwrap_or_else(|_| "100".into())
+            .parse()
+            .unwrap();
+        assert!([100, 1_000, 10_000].contains(&n));
+        let mode = std::env::var("ROSENFU_PREVIEW_MEASURE_MODE").unwrap_or_else(|_| "fast".into());
+        assert!(matches!(mode.as_str(), "baseline" | "fast"));
+
+        let mut editor = WorldEditor::new();
+        let mut draft = editor.snapshot();
+        for i in 0..n {
+            let x = 0.2 + ((i % 100) as f64) * 0.01;
+            let y = 0.2 + ((i / 100) as f64) * 0.01;
+            draft.alignments.push(rosenfu_core::world::Alignment {
+                id: AlignmentId(draft.next_id),
+                owner: editor.company,
+                name: format!("Fixture {i}"),
+                points: vec![point(x, y), point(x + 0.009, y)],
+                anchor_indices: None,
+                infrastructure: vec![],
+                vertical_profile: None,
+                section_profiles: vec![],
+                track_type: rosenfu_core::world::TrackType::Normal,
+                design_speed_kmh: None,
+            });
+            draft.next_id += 1;
+        }
+        editor.world = World::new(draft).unwrap();
+        let serialized_save_bytes = rosenfu_storage::encode(&editor.world).unwrap().len();
+        let mut save_guard_samples = Vec::new();
+        for i in 0..25 {
+            let start = Instant::now();
+            rosenfu_storage::ensure_world_saveable(&editor.world).unwrap();
+            if i >= 5 {
+                save_guard_samples.push(start.elapsed());
+            }
+        }
+        let editor = std::sync::Mutex::new(editor);
+        let mut samples = Vec::new();
+        let mut lock_samples = Vec::new();
+        let mut worker_samples = Vec::new();
+        let mut result_bytes = 0;
+        for i in 0..25 {
+            let start = Instant::now();
+            let mut snap = {
+                let editor = editor.lock().unwrap();
+                if mode == "baseline" {
+                    editor.clone()
+                } else {
+                    editor.construction_validation_snapshot()
+                }
+            };
+            let lock_done = Instant::now();
+            let result = if mode == "baseline" {
+                // The old IPC made a whole-editor clone, staged roads, then
+                // performed a full throwaway commit and discarded its draft.
+                snap.world.add_road_snapshot(roads()).unwrap();
+                ConstructionPreview {
+                    new_crossing_count: None,
+                    roads_unverified: None,
+                    validation_error: snap.build_construction_plan(vec![plan()], vec![]).err(),
+                }
+            } else {
+                snap.validate_construction_placement(vec![plan()], vec![], vec![roads()])
+                    .unwrap()
+            };
+            let end = Instant::now();
+            assert!(
+                result.validation_error.is_none(),
+                "{:?}",
+                result.validation_error
+            );
+            if i >= 5 {
+                samples.push(end.duration_since(start));
+                lock_samples.push(lock_done.duration_since(start));
+                worker_samples.push(end.duration_since(lock_done));
+            }
+            result_bytes = serde_json::to_vec(&result).unwrap().len();
+        }
+        for durations in [
+            &mut samples,
+            &mut lock_samples,
+            &mut worker_samples,
+            &mut save_guard_samples,
+        ] {
+            durations.sort_unstable();
+        }
+        let ms = |durations: &[std::time::Duration], index: usize| {
+            durations[index].as_secs_f64() * 1_000.
+        };
+        eprintln!(
+            "{mode} lines={n} p50_ms={:.3} p95_ms={:.3} lock_plus_snapshot_p50_ms={:.3}              worker_p50_ms={:.3} save_guard_p50_ms={:.3} serialized_save_bytes={serialized_save_bytes}              compact_ipc_bytes={result_bytes}",
+            ms(&samples, 9),
+            ms(&samples, 18),
+            ms(&lock_samples, 9),
+            ms(&worker_samples, 9),
+            ms(&save_guard_samples, 9),
+        );
+    }
+
     #[test]
     #[ignore = "manual latency measurement"]
     fn measure_anchor_preview_latency() {
@@ -6145,7 +6347,7 @@ mod road_snapshot_transaction_tests {
             eprintln!("summary_ms={:.3}", start.elapsed().as_secs_f64() * 1000.0);
             let start = std::time::Instant::now();
             let fast = editor
-                .clone()
+                .construction_validation_snapshot()
                 .validate_construction_placement(vec![plan()], vec![], vec![])
                 .unwrap();
             assert_eq!(fast.validation_error, result.validation_error);

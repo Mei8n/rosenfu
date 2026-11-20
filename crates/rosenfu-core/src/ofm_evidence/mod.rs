@@ -12,7 +12,9 @@ pub use candidates::{boundary_candidates, validate_boundary_candidates, Boundary
 mod wire;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-pub use store::{EvidenceDescriptor, EvidenceStore, RawEvidence};
+pub use store::{
+    EvidenceDescriptor, EvidenceStore, RawEvidence, MAX_PINNED_BINDINGS, MAX_PINNED_RAW_BYTES,
+};
 use wire::{bytes, once, var, Field, Reader};
 
 pub const DECODER_RULE: &str = "ofm_transportation_z14_v1";
@@ -117,7 +119,7 @@ impl TileBinding {
 }
 /// Checks the whole request before decoding any tile, including reused evidence.
 /// Duplicate tile bindings and mixed provider revisions are rejected atomically.
-pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> {
+fn validate_request(inputs: &[EvidenceInput<'_>]) -> Result<()> {
     if inputs.is_empty() || inputs.len() > MAX_TILES {
         return Err(Error::Limit);
     }
@@ -135,6 +137,10 @@ pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> 
             return Err(Error::Limit);
         }
     }
+    Ok(())
+}
+pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> {
+    validate_request(inputs)?;
     inputs
         .iter()
         .map(|input| decode_tile(input.binding, input.raw))

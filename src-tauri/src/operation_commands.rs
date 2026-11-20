@@ -52,6 +52,28 @@ pub fn reset_operation(editor: State<'_, Mutex<WorldEditor>>) -> Result<Operatio
 }
 
 #[tauri::command]
+pub fn fixed_od_scenario(
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<crate::session::FixedOdScenarioView, String> {
+    Ok(editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .fixed_od_scenario())
+}
+
+#[tauri::command]
+pub fn set_fixed_od_scenario(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_token: String,
+    scenario: Option<rosenfu_core::world::FixedOdScenario>,
+) -> Result<crate::session::FixedOdScenarioView, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .set_fixed_od_scenario(&expected_token, scenario)
+}
+
+#[tauri::command]
 pub fn preview_fixed_od(
     editor: State<'_, Mutex<WorldEditor>>,
     origin_station_id: String,

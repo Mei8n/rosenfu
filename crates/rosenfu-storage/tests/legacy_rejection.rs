@@ -7,13 +7,13 @@ use std::fs;
 
 #[test]
 fn every_old_schema_is_rejected_before_world_parsing_without_touching_files() {
-    assert_eq!(SCHEMA_VERSION, 26);
+    assert_eq!(SCHEMA_VERSION, 27);
     assert!(matches!(
         decode(include_bytes!("fixtures/schema-1-world.json")),
         Err(StorageError::UnsupportedVersion(1))
     ));
     let dir = tempfile::tempdir().unwrap();
-    for version in 1..SCHEMA_VERSION {
+    for version in 1..26 {
         let bytes = serde_json::to_vec(
             &json!({"format":"rosenfu-world", "schema_version":version, "world":"legacy contents"}),
         )

@@ -122,7 +122,9 @@ fn intermediate_stop_affects_passenger_time() {
     let r = OperationRuntime::new(vec![s]).unwrap();
     let offers = r.passenger_offers();
     assert_eq!(offers[0].ride_seconds, 20.);
-    assert_eq!(offers[1].ride_seconds, 30.);
+    assert_eq!(offers[0].through_seconds, 0.);
+    assert_eq!(offers[1].ride_seconds, 20.);
+    assert_eq!(offers[1].through_seconds, 10.);
 }
 
 #[test]
@@ -143,4 +145,119 @@ fn corrupted_waiting_and_duplicate_train_restore_is_rejected() {
         *arrival_ms += 1;
     }
     assert!(OperationRuntime::restore(saved).is_err());
+}
+
+const FIRST: &str = "rail:1:section:0:lane:0";
+const SECOND: &str = "rail:1:section:1:lane:0";
+const THIRD: &str = "rail:1:section:2:lane:0";
+
+fn occupancy_fixture() -> Vec<ServiceRunSpec> {
+    let mut leader = service("1", FIRST);
+    leader.legs[0]
+        .sections
+        .extend([SECOND, THIRD].map(|r| service("1", r).legs[0].sections[0].clone()));
+    // An identical following service needs all three locks and must wait until
+    // the end. A short service on the cleared block, in either direction, can
+    // depart earlier. Parallel uses a distinct lane.
+    vec![
+        leader.clone(),
+        service("2", FIRST),
+        service("3", "rail:1:section:0:lane:1"),
+        ServiceRunSpec {
+            service_id: "4".into(),
+            ..leader
+        },
+    ]
+}
+
+#[test]
+fn progressive_tail_release_allows_only_subset_following() {
+    let mut specs = occupancy_fixture();
+    specs[1].legs[0].from = "2".into();
+    specs[1].legs[0].to = "1".into();
+    let mut r = OperationRuntime::new_with_progressive_rail(specs.clone()).unwrap();
+    let mut legacy = OperationRuntime::new(specs).unwrap();
+    r.advance_to(0, 100).unwrap();
+    let key = |id: &str| TrainKey {
+        service_id: id.to_owned(),
+        scheduled_ms: 0,
+    };
+    assert!(matches!(
+        r.trains[&key("2")].state,
+        TrainState::Waiting { .. }
+    ));
+    assert!(matches!(
+        r.trains[&key("3")].state,
+        TrainState::Moving { .. }
+    ));
+    assert!(matches!(
+        r.trains[&key("4")].state,
+        TrainState::Waiting { .. }
+    ));
+    let at = r.services["1"].legs[0].early_releases[FIRST];
+    let leg_end = r.services["1"].legs[0].duration_ms + r.services["1"].legs[0].clearance_ms;
+    assert!(at < leg_end);
+    r.advance_to(at - 1, 100).unwrap();
+    assert_eq!(r.occupied[FIRST], key("1"));
+    r.advance_to(at, 100).unwrap();
+    legacy.advance_to(at, 100).unwrap();
+    assert_eq!(r.occupied[FIRST], key("2"));
+    assert_eq!(r.occupied[THIRD], key("1"));
+    assert_eq!(legacy.occupied[FIRST], key("1"));
+    assert_eq!(legacy.save().format, 2);
+    assert_eq!(r.save().format, 3);
+    assert!(matches!(
+        r.trains[&key("4")].state,
+        TrainState::Waiting { .. }
+    ));
+    r.advance_to(leg_end, 100).unwrap();
+    // Old owner cannot remove the new train's lock at its final release.
+    assert_eq!(r.occupied[FIRST], key("2"));
+}
+
+#[test]
+fn repeated_last_use_and_unknown_point_or_bus_never_release_early() {
+    let mut spec = occupancy_fixture().remove(0);
+    spec.legs[0].sections[0]
+        .resources
+        .push("rail:1:point:1".into());
+    let mut bus = spec.clone();
+    bus.service_id = "bus:1".into();
+    let mut repeated = spec.clone();
+    repeated.service_id = "5".into();
+    repeated.legs[0].sections[2].resources.push(FIRST.into());
+    let r = OperationRuntime::new_with_progressive_rail(vec![spec, repeated, bus]).unwrap();
+    assert_eq!(
+        r.services["1"].legs[0]
+            .early_releases
+            .keys()
+            .collect::<Vec<_>>(),
+        vec![FIRST]
+    );
+    assert!(r.services["5"].legs[0].early_releases.is_empty());
+    assert!(r.services["bus:1"].legs[0].early_releases.is_empty());
+}
+
+#[test]
+fn progressive_snapshot_mid_release_and_event_chunking_match() {
+    let specs = occupancy_fixture();
+    let mut r = OperationRuntime::new_with_progressive_rail(specs).unwrap();
+    let mut stepped = r.clone();
+    let boundary = r.services["1"].legs[0].early_releases[FIRST];
+    let mut events = r.advance_to(boundary, 100).unwrap().arrivals;
+    let bytes = serde_json::to_vec(&r.save()).unwrap();
+    let restored = OperationRuntime::restore(serde_json::from_slice(&bytes).unwrap()).unwrap();
+    assert_eq!(restored, r);
+    events.extend(r.advance_to(200_000, 100).unwrap().arrivals);
+    let mut stepped_events = Vec::new();
+    loop {
+        let result = stepped.advance_to(200_000, 1).unwrap();
+        stepped_events.extend(result.arrivals);
+        if result.reached_target {
+            break;
+        }
+    }
+    assert_eq!(events, stepped_events);
+    assert_eq!(r.save(), stepped.save());
+    assert!(r.occupied.is_empty());
 }

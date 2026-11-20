@@ -61,6 +61,8 @@ pub struct PassengerOffer {
     pub from: String,
     pub to: String,
     pub ride_seconds: f64,
+    /// Scheduled time at the origin already spent aboard a continuing run.
+    pub through_seconds: f64,
     pub headway_seconds: f64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -99,6 +101,9 @@ struct CompiledLeg {
     duration_ms: u64,
     clearance_ms: u64,
     resources: BTreeSet<String>,
+    // Milliseconds from entry; absence means reserved through the ordinary rear-clear event.
+    early_releases: BTreeMap<String, u64>,
+    release_events: BTreeSet<u64>,
 }
 #[derive(Debug, Clone, PartialEq)]
 struct CompiledService {
@@ -115,6 +120,7 @@ pub struct OperationRuntime {
     services: BTreeMap<String, CompiledService>,
     trains: BTreeMap<TrainKey, Train>,
     occupied: BTreeMap<String, TrainKey>,
+    progressive_rail: bool,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +154,14 @@ fn millis(s: f64) -> Result<u64, OperationError> {
 /// Forward/backward speed envelope, stopping at both ends. Short runs never
 /// assume that the maximum speed is reached. Gradients do not change speed.
 pub fn running_time_ms(sections: &[Section], vehicle: &Vehicle) -> Result<u64, OperationError> {
+    running_time_profile(sections, vehicle, None)
+}
+
+fn running_time_profile(
+    sections: &[Section],
+    vehicle: &Vehicle,
+    mut boundaries: Option<&mut Vec<u64>>,
+) -> Result<u64, OperationError> {
     if !positive(vehicle.max_speed_kmh)
         || !positive(vehicle.acceleration_mps2)
         || !positive(vehicle.braking_mps2)
@@ -193,11 +207,69 @@ pub fn running_time_ms(sections: &[Section], vehicle: &Vehicle) -> Result<u64, O
         seconds += (peak - v[i]) / a
             + (peak - v[i + 1]) / b
             + (s.length_m - accelerate - brake).max(0.0) / peak;
+        if let Some(times) = boundaries.as_deref_mut() {
+            times.push(millis(seconds)?);
+        }
     }
     millis(seconds)
 }
+/// Only adapter lane keys may release progressively. Joins, point locks,
+/// roads and any unknown resource stay reserved for the whole leg.
+fn rail_lane(resource: &str) -> bool {
+    let mut parts = resource.split(':');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some("rail"), Some(alignment), Some("section"), Some(section), Some("lane"), Some(lane), None)
+            if alignment.parse::<u64>().is_ok() && section.parse::<usize>().is_ok()
+                && matches!(lane, "0" | "1" | "2" | "3")
+    )
+}
+
+fn progressive_release_offsets(
+    sections: &[Section],
+    times: &[u64],
+    train_length: f64,
+) -> BTreeMap<String, u64> {
+    let mut last = BTreeMap::new();
+    let mut distance = Vec::with_capacity(sections.len() + 1);
+    distance.push(0.0);
+    for (index, section) in sections.iter().enumerate() {
+        distance.push(distance[index] + section.length_m);
+        for resource in section.resources.iter().filter(|r| rail_lane(r)) {
+            last.insert(resource.clone(), index);
+        }
+    }
+    // The head must reach a later section boundary strictly beyond the tail-
+    // clearing position, so use the cumulative true motion profile there, not
+    // a nominal section speed. Margin covers accumulation/cancellation on
+    // finite values. If no such boundary exists, keep the original rear-clear.
+    let margin = f64::EPSILON * (sections.len() as f64 + 2.0) * distance[sections.len()] * 4.0;
+    last.into_iter()
+        .filter_map(|(resource, i)| {
+            let threshold = distance[i + 1] + train_length + margin;
+            let boundary = distance.partition_point(|p| *p <= threshold);
+            (boundary > 0 && boundary < sections.len()).then(|| (resource, times[boundary - 1]))
+        })
+        .collect()
+}
+
 impl OperationRuntime {
     pub fn new(specs: Vec<ServiceRunSpec>) -> Result<Self, OperationError> {
+        Self::compile(specs, false)
+    }
+
+    /// Opt-in experiment for trusted, directional rail-section resource IDs.
+    /// Admission still reserves all resources to the next stop atomically; only
+    /// a lane proven to have cleared the tail is released early. No station
+    /// capacity or rolling block acquisition is implied.
+    #[cfg(test)]
+    pub(crate) fn new_with_progressive_rail(
+        specs: Vec<ServiceRunSpec>,
+    ) -> Result<Self, OperationError> {
+        Self::compile(specs, true)
+    }
+
+    fn compile(specs: Vec<ServiceRunSpec>, progressive_rail: bool) -> Result<Self, OperationError> {
         let mut services = BTreeMap::new();
         for spec in specs {
             let t = &spec.timetable;
@@ -220,7 +292,19 @@ impl OperationRuntime {
             let mut legs = Vec::new();
             let mut journey = 0u64;
             for l in &spec.legs {
-                let duration_ms = running_time_ms(&l.sections, &spec.vehicle)?;
+                let progressive = progressive_rail && spec.service_id.parse::<u64>().is_ok();
+                let mut boundaries = Vec::new();
+                let duration_ms = running_time_profile(
+                    &l.sections,
+                    &spec.vehicle,
+                    progressive.then_some(&mut boundaries),
+                )?;
+                let early_releases = if progressive {
+                    progressive_release_offsets(&l.sections, &boundaries, spec.vehicle.length_m)
+                } else {
+                    BTreeMap::new()
+                };
+                let release_events = early_releases.values().copied().collect();
                 let lowest = l
                     .sections
                     .iter()
@@ -241,6 +325,8 @@ impl OperationRuntime {
                         .iter()
                         .flat_map(|s| s.resources.iter().cloned())
                         .collect(),
+                    early_releases,
+                    release_events,
                 });
             }
             if t.last_departure_ms.checked_add(journey).is_none() {
@@ -264,6 +350,7 @@ impl OperationRuntime {
             services,
             trains: BTreeMap::new(),
             occupied: BTreeMap::new(),
+            progressive_rail,
         })
     }
     pub fn paused(&self) -> bool {
@@ -308,13 +395,14 @@ impl OperationRuntime {
                         alight_allowed: true,
                         from: l.from.clone(),
                         to: l.to.clone(),
-                        ride_seconds: (c.duration_ms
-                            + if i == 0 {
-                                0
-                            } else {
-                                s.spec.legs[i - 1].dwell_ms.max(s.legs[i - 1].clearance_ms)
-                            }) as f64
-                            / 1000.0,
+                        ride_seconds: c.duration_ms as f64 / 1000.0,
+                        through_seconds: i.checked_sub(1).map_or(0.0, |previous| {
+                            s.spec.legs[previous]
+                                .dwell_ms
+                                .max(s.legs[previous].clearance_ms)
+                                as f64
+                                / 1000.0
+                        }),
                         headway_seconds: s.spec.timetable.headway_ms as f64 / 1000.0,
                     })
             })
@@ -385,9 +473,9 @@ impl OperationRuntime {
             for key in keys {
                 let train = &self.trains[&key];
                 if let TrainState::Moving {
+                    entered_ms,
                     arrival_ms,
                     release_ms,
-                    ..
                 } = train.state
                 {
                     if arrival_ms == at {
@@ -400,11 +488,27 @@ impl OperationRuntime {
                             delay_ms: train.delay_ms,
                         });
                     }
+                    if self.progressive_rail {
+                        let leg = &self.services[&key.service_id].legs[train.leg];
+                        if leg.release_events.contains(&(at - entered_ms)) {
+                            for (resource, &offset) in &leg.early_releases {
+                                if offset == at - entered_ms
+                                    && self.occupied.get(resource) == Some(&key)
+                                {
+                                    self.occupied.remove(resource);
+                                }
+                            }
+                        }
+                    }
                     if release_ms == at {
                         let mut train = self.trains.remove(&key).expect("collected existing train");
                         let service = &self.services[&key.service_id];
                         for resource in &service.legs[train.leg].resources {
-                            self.occupied.remove(resource);
+                            // This train may have cleared the lane earlier and
+                            // another train may now own it.
+                            if self.occupied.get(resource) == Some(&key) {
+                                self.occupied.remove(resource);
+                            }
                         }
                         let ready_ms = arrival_ms
                             .checked_add(service.spec.legs[train.leg].dwell_ms)
@@ -486,15 +590,24 @@ impl OperationRuntime {
         for t in self.trains.values() {
             let at = match t.state {
                 TrainState::Moving {
+                    entered_ms,
                     arrival_ms,
                     release_ms,
-                    ..
                 } => {
-                    if arrival_ms > self.now_ms {
-                        Some(arrival_ms)
+                    let next = if arrival_ms > self.now_ms {
+                        arrival_ms
                     } else {
-                        Some(release_ms)
-                    }
+                        release_ms
+                    };
+                    let event = self.services[&t.key.service_id].legs[t.leg]
+                        .release_events
+                        .range((
+                            std::ops::Bound::Excluded(self.now_ms - entered_ms),
+                            std::ops::Bound::Unbounded,
+                        ))
+                        .next()
+                        .map(|offset| entered_ms + offset);
+                    Some(event.map_or(next, |at| next.min(at)))
                 }
                 TrainState::Waiting { ready_ms } => {
                     if ready_ms > self.now_ms {
@@ -514,7 +627,7 @@ impl OperationRuntime {
     /// Restore validates schedule times and exclusive occupancy before acceptance.
     pub fn save(&self) -> OperationSave {
         OperationSave {
-            format: 2,
+            format: if self.progressive_rail { 3 } else { 2 },
             trains: self.trains.values().cloned().collect(),
             next_departures: self
                 .services
@@ -529,11 +642,11 @@ impl OperationRuntime {
         }
     }
     pub fn restore(saved: OperationSave) -> Result<Self, OperationError> {
-        if saved.format != 2 || (!saved.started && (saved.now_ms != 0 || !saved.trains.is_empty()))
-        {
+        let supported = saved.format == 2 || (cfg!(test) && saved.format == 3);
+        if !supported || (!saved.started && (saved.now_ms != 0 || !saved.trains.is_empty())) {
             return Err(OperationError::InvalidClock);
         }
-        let mut runtime = Self::new(saved.services)?;
+        let mut runtime = Self::compile(saved.services, saved.format == 3)?;
         runtime.set_speed(saved.speed)?;
         runtime.now_ms = saved.now_ms;
         runtime.started = saved.started;
@@ -605,6 +718,13 @@ impl OperationRuntime {
                     return Err(OperationError::InvalidClock);
                 }
                 for resource in &leg.resources {
+                    if leg
+                        .early_releases
+                        .get(resource)
+                        .is_some_and(|offset| *offset <= saved.now_ms - entered_ms)
+                    {
+                        continue;
+                    }
                     if runtime
                         .occupied
                         .insert(resource.clone(), train.key.clone())

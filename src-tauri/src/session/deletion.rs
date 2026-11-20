@@ -817,6 +817,7 @@ impl WorldEditor {
                 }
             }
         }
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));

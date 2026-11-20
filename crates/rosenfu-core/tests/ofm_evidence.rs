@@ -1301,3 +1301,22 @@ fn road_path_exact_endpoint_connection_requires_actual_height_and_preserves_asse
     assert_eq!(world.snapshot().route_paths, before.route_paths);
     assert_eq!(world.snapshot().service_paths, before.service_paths);
 }
+
+#[test]
+fn retained_archive_keeps_the_request_byte_budget_even_when_raw_blobs_are_shared() {
+    let mut raw = tile(LINE, None);
+    raw.extend(field(20, &vec![0; MAX_REQUEST_BYTES / 2]));
+    let a = binding(&raw);
+    let mut b = a.clone();
+    b.x += 1;
+    b.canonical_url = b.canonical_url.replace("14553", "14554");
+    let keys = [a.canonical_url.clone(), b.canonical_url.clone()];
+    let archive = EvidenceStore::from_archive_parts(vec![raw_entry(&raw)], vec![a, b]).unwrap();
+    assert_eq!(archive.blobs().count(), 1);
+    assert!(matches!(archive.scope(&keys), Err(Error::Limit)));
+    for key in &keys {
+        let scope = archive.scope(std::slice::from_ref(key)).unwrap();
+        let tile = scope.decoded(key).unwrap();
+        assert_eq!(scope.raw(&tile.binding.raw_sha256).unwrap(), raw);
+    }
+}

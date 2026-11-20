@@ -149,6 +149,7 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  }
  return <section className="route-candidate-preview" aria-label={editRoute?`${entityLabel}を編集`:`${entityLabel}を作成`}>
   <h4>{name||initialName}</h4>
+  <p className="muted">編集終了でワールドに適用します。ファイルに残すには「保存」が必要です。</p>
   <label>{entityLabel}名<input autoComplete="off" value={name} maxLength={80} disabled={!enabled||saving} onChange={e=>setName(e.target.value)}/></label>
   {editingMap&&<p>{entityLabel==='系統'?'中間駅をクリックすると停車・通過を切り替えます。':'中間駅をクリックすると経由指定を追加・解除できます。'}始点・終点を変更するには、地図の端の駅をクリックしてから新しい駅を選んでください。</p>}
   {editingMap&&(mapPickTarget==="start"||mapPickTarget==="end")&&<p role="status">地図で新しい{mapPickTarget==="start"?"始点":"終点"}を選択してください。</p>}

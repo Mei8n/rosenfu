@@ -15,6 +15,7 @@ struct EngineSessionInfo {
     company_setup_required: bool,
     operation_enabled: bool,
     fixed_od_enabled: bool,
+    fixed_od_scenario_enabled: bool,
     road_transport_enabled: bool,
     road_tram_enabled: bool,
     bus_operation_enabled: bool,
@@ -25,6 +26,7 @@ fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInf
         engine: rosenfu_core::engine_info(),
         operation_enabled: true,
         fixed_od_enabled: true,
+        fixed_od_scenario_enabled: true,
         road_transport_enabled: true,
         road_tram_enabled: true,
         bus_operation_enabled: true,
@@ -275,13 +277,18 @@ async fn preview_construction_plan(
     roads: Option<Vec<rosenfu_core::world::RoadSnapshot>>,
     validation_only: Option<bool>,
 ) -> Result<session::ConstructionPreview, String> {
-    let snapshot = editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .clone();
+    let validation_only = validation_only.unwrap_or(false);
+    let snapshot = {
+        let editor = editor.lock().map_err(|_| "world state unavailable")?;
+        if validation_only {
+            editor.construction_validation_snapshot()
+        } else {
+            editor.clone()
+        }
+    };
     // Validation can be expensive: never run it on the UI event-loop thread.
     tauri::async_runtime::spawn_blocking(move || {
-        if validation_only.unwrap_or(false) {
+        if validation_only {
             return snapshot.validate_construction_placement(
                 alignments,
                 stations.unwrap_or_default(),
@@ -893,6 +900,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             operation_commands::operation_snapshot,
             operation_commands::preview_fixed_od,
+            operation_commands::fixed_od_scenario,
+            operation_commands::set_fixed_od_scenario,
             operation_commands::configure_bus_operation,
             operation_commands::configure_operation_service,
             operation_commands::set_operation_clock,

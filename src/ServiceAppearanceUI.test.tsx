@@ -31,7 +31,7 @@ test('colour draft blocks switching, save and other editor until applied; matchi
  fireEvent.click(screen.getByRole('button',{name:'新規系統'}));expect(screen.getByText(/先に系統色の変更/)).toBeTruthy();
  expect((screen.getByLabelText('保存済み系統名') as HTMLInputElement).closest('fieldset')?.disabled).toBe(true);
  expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(true);
- fireEvent.click(screen.getByRole('button',{name:'色を適用'}));await screen.findByText(/系統色を適用しました/);
+ fireEvent.click(screen.getByRole('button',{name:'色を適用'}));await screen.findByText(/系統の色・記号・形を適用しました/);
  expect(invoke).toHaveBeenCalledWith('set_service_appearance',{serviceId:'6',color:'#aabbcc',shape:'circle',symbol:'普',expectedAppearance:base.service_appearances[0]});
  await waitFor(()=>expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(false));
  expect((screen.getByLabelText('系統色') as HTMLInputElement).value).toBe('#aabbcc');

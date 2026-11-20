@@ -260,6 +260,7 @@ impl std::error::Error for WorldError {}
 pub struct World {
     data: WorldDraft,
     operation: Option<WorldOperation>,
+    fixed_od_scenario: Option<FixedOdScenario>,
 }
 impl World {
     pub fn new(data: WorldDraft) -> Result<Self, WorldError> {
@@ -267,6 +268,7 @@ impl World {
         Ok(Self {
             data,
             operation: None,
+            fixed_od_scenario: None,
         })
     }
     /// UI JSON omits runtime evidence. Preserve the CURRENT table and reject
@@ -487,6 +489,7 @@ impl WorldDraft {
         let geometry_world = World {
             data: self.clone(),
             operation: None,
+            fixed_od_scenario: None,
         };
         geometry_world.validate_turnout_geometry()?;
         self.validate_service_paths()?;
@@ -515,10 +518,12 @@ impl WorldDraft {
 mod alignment_connections;
 pub use alignment_connections::{AlignmentConnection, AlignmentEndpointRef};
 mod alignment;
+mod fixed_od_scenario;
 pub use alignment::{
     Alignment, AlignmentEndpoint, GeoPoint, InfrastructureLevel, SectionInfrastructure,
     StationPlacement, TrackType,
 };
+pub use fixed_od_scenario::FixedOdScenario;
 
 #[cfg(test)]
 mod tests {

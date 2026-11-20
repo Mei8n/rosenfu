@@ -30,6 +30,7 @@ impl WorldEditor {
         // file identity after a successful archive, so autosave cannot recreate it.
         rosenfu_storage::move_save_slot(root, id, restore).map_err(|e| e.to_string())?;
         if !restore && self.active_slot_id.as_deref() == Some(id) {
+            self.fixed_od_token = super::operation::next_fixed_od_token();
             self.active_slot_id = None;
             self.loaded_path = None;
             self.manual_version = None;
@@ -136,12 +137,15 @@ impl WorldEditor {
         }
         candidate.world = World::new(draft).map_err(|e| e.to_string())?;
         candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
         let (slot, version) = rosenfu_storage::create_save_slot(root, &name, &candidate.world)
             .map_err(|e| e.to_string())?;
         // Creation returned a validated, unique directory; derive without another fallible IO
         // step so a successful file publication cannot leave session identity behind.
         candidate.loaded_path = Some(root.join("saves").join(&slot.id).join("world.rosenfu.json"));
         candidate.active_slot_id = Some(slot.id);
+        // Saving this live world to a new destination does not replace its
+        // contents or invalidate an already mounted OD editor.
         candidate.manual_version = Some(version);
         candidate.manual_repair_allowed = false;
         #[cfg(test)]

@@ -108,13 +108,18 @@ mutating a descriptor cannot mutate or attest to the store. `decoded(url)` and
 `raw(sha)` provide read-only references and reject missing keys. `bindings()` and
 `blobs()` provide read-only iterators for future bounded atomic save encoding.
 
-The **initial whole-store capacity is deliberately the same as one request**:
-16 bindings, 8 MiB counting reused raw once per binding, 5 MiB per tile. Repeated
-requests cannot silently accumulate past the limit. This is a conservative initial
-API, not a finished nationwide-world storage policy. A larger immutable table
-requires a separately reviewed distinction between store budgets and per-path
-context budgets. Empty stores are valid but attest to no data. No garbage
-collection, WorldDraft mutation, or save-envelope encoding is implemented here.
+A calculation still takes at most 16 bindings, 8 MiB counting reused raw per
+binding, and 5 MiB per tile. The retained-world archive is separate: sequential
+bounded requests can retain up to 256 bindings, 8 MiB unique raw, and 64 MiB
+counting repeated binding bytes to bound verification work. All share one pinned
+provider revision. Restore derives each digest from validated raw bytes before
+publishing; it does not load a world-wide decoded geometry graph. A calculation
+materializes the full recorded scope on request, never a silent subset. A small
+LRU retains at most 16 decoded tiles with a 16 MiB estimated geometry weight;
+eviction does not change raw bytes, validation or save contents. The
+archive keeps raw for Undo and offline reconstruction; it does not imply
+complete coverage, multiple revisions, unbounded allocation or real-road
+vehicle access. Overall save-file and provenance-count limits still apply.
 
 License/attribution remain mandatory external source-binding metadata in the
 future save envelope. This low-level decoder/store does not validate legal source
@@ -313,9 +318,10 @@ records, not raw evidence; restoration/Undo can reuse immutable snapshots. Geome
 edits not covered by explicit range-preserving commands fail closed.
 
 Plan plus built path records are capped at 32 per world, bounding repeated full
-path validation. Full store limits remain unchanged. `EvidenceStore::scope(keys)`
-is a read-only projection of **already validated** full tiles, sharing raw/decoded
-Arcs. Missing/duplicate keys reject; individual roads cannot be filtered. This is
+path validation. Retained raw archive and per-request limits are separate as
+described above. `EvidenceStore::scope(keys)`
+is a read-only projection of **already validated** full tiles, sharing raw
+Arcs and decoding only the selected complete scope when needed. Missing/duplicate keys reject; individual roads cannot be filtered. This is
 not a constructor for untrusted input. Each descriptor is reconstructed against its
 recorded scope, so adding unrelated world tiles does not invalidate prior paths.
 A caller can omit an external tile from its declared scope; this API cannot prove

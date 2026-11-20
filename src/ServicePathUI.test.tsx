@@ -47,10 +47,18 @@ test('saved new-format stops edit blocks selection and saves through atomic comm
  fireEvent.change(editor.getByLabelText('保存済み系統名'),{target:{value:'  更新系統  '}});fireEvent.click(editor.getByLabelText('保存済み停車 2'));
  vi.mocked(invoke).mockImplementation(async(command)=>command==='update_service_path'?{...saved,services:[{...saved.services[0],name:'更新系統'}],service_paths:[{...saved.service_paths[0],stops:preview.occurrences.map(o=>o.reference)}]}:saved);
  fireEvent.click(editor.getByRole('button',{name:'保存済み系統の変更を適用'}));await screen.findByText(/系統名と停車設定を適用しました/);
+ expect(screen.getByText('系統名と停車設定を適用しました。保存でファイルに反映します。')).toBeTruthy();
+ expect(screen.getByText('未保存の変更あり')).toBeTruthy();
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='save_world')).toBe(false);
+
  expect(screen.queryByText(/保存済み系統が変更されています/)).toBeNull();
  expect(invoke).toHaveBeenCalledWith('update_service_path',{serviceId:'10',name:'更新系統',stops:preview.occurrences.map(o=>o.reference)});
  fireEvent.click(editor.getByLabelText('保存済み停車 2'));
  expect((editor.getByRole('button',{name:'保存済み系統の変更を適用'}) as HTMLButtonElement).disabled).toBe(false);
+ expect(screen.getByText('未適用の下書きあり')).toBeTruthy();
+ expect(screen.getByText('未保存の変更あり')).toBeTruthy();
+ expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(true);
+
  fireEvent.click(editor.getByRole('button',{name:'保存済み系統の変更を取り消す'}));
  expect((editor.getByLabelText('保存済み停車 2') as HTMLInputElement).checked).toBe(true);
  expect(screen.queryByText(/保存済み系統が変更されています/)).toBeNull();

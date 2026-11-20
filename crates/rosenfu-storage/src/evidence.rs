@@ -2,9 +2,11 @@
 //! atomically publish the document only after core revalidation and byte limits.
 use crate::StorageError;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use rosenfu_core::ofm_evidence::{MAX_REQUEST_BYTES, MAX_TILES};
 use rosenfu_core::{
     ofm_evidence::{
-        EvidenceStore, RawEvidence, TileBinding, MAX_REQUEST_BYTES, MAX_TILES, MAX_TILE_BYTES,
+        EvidenceStore, RawEvidence, TileBinding, MAX_PINNED_BINDINGS, MAX_PINNED_RAW_BYTES,
+        MAX_TILE_BYTES,
     },
     world::WorldError,
 };
@@ -39,8 +41,13 @@ impl EvidenceEnvelope {
             bindings: store.bindings().cloned().collect(),
         }
     }
-    pub(super) fn restore(self) -> Result<EvidenceStore, StorageError> {
-        if self.raw_blobs.len() > MAX_TILES || self.bindings.len() > MAX_TILES {
+    pub(super) fn restore(self, legacy_limits: bool) -> Result<EvidenceStore, StorageError> {
+        let (count, budget) = if legacy_limits {
+            (MAX_TILES, MAX_REQUEST_BYTES)
+        } else {
+            (MAX_PINNED_BINDINGS, MAX_PINNED_RAW_BYTES)
+        };
+        if self.raw_blobs.len() > count || self.bindings.len() > count {
             return Err(invalid());
         }
         let mut total = 0usize;
@@ -49,7 +56,7 @@ impl EvidenceEnvelope {
             total = total.checked_add(b.byte_length).ok_or_else(invalid)?;
             if b.byte_length == 0
                 || b.byte_length > MAX_TILE_BYTES
-                || total > MAX_REQUEST_BYTES
+                || total > budget
                 || b.base64.len() != 4 * b.byte_length.div_ceil(3)
             {
                 return Err(invalid());
@@ -69,6 +76,11 @@ impl EvidenceEnvelope {
                 })
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
-        EvidenceStore::from_parts(raw, self.bindings).map_err(|_| invalid())
+        if legacy_limits {
+            EvidenceStore::from_parts(raw, self.bindings)
+        } else {
+            EvidenceStore::from_archive_parts(raw, self.bindings)
+        }
+        .map_err(|_| invalid())
     }
 }

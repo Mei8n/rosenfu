@@ -1,5 +1,6 @@
 use super::*;
 use rosenfu_core::operation::{PassengerOffer, Timetable, Train, Vehicle};
+use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::OperationServiceConfig;
 #[derive(serde::Serialize)]
 pub struct OperationView {
@@ -13,6 +14,18 @@ pub struct OperationView {
     pub trains: Vec<Train>,
     pub offers: Vec<PassengerOffer>,
 }
+pub(super) fn next_fixed_od_token() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct FixedOdScenarioView {
+    token: String,
+    scenario: Option<FixedOdScenario>,
+}
+
 impl WorldEditor {
     pub fn operation_snapshot(&self) -> OperationView {
         let Some(o) = self.world.operation() else {
@@ -225,6 +238,35 @@ impl WorldEditor {
         o.pending_target = (!result.reached_target).then_some(target);
         Ok(self.operation_snapshot())
     }
+    pub fn fixed_od_scenario(&self) -> FixedOdScenarioView {
+        FixedOdScenarioView {
+            token: self.fixed_od_token.to_string(),
+            scenario: self.world.fixed_od_scenario().cloned(),
+        }
+    }
+
+    pub fn set_fixed_od_scenario(
+        &mut self,
+        expected_token: &str,
+        scenario: Option<FixedOdScenario>,
+    ) -> Result<FixedOdScenarioView, String> {
+        if self.company_setup_required || expected_token != self.fixed_od_token.to_string() {
+            return Err("ワールドまたは保存済み需要条件が変更されています。".into());
+        }
+        if let Some(scenario) = scenario.as_ref() {
+            scenario.validate()?;
+            if !scenario.endpoints_exist(self.world.snapshot()) {
+                return Err("異なる既存の駅・停留所を選択してください。".into());
+            }
+        }
+        let mut candidate = self.world.clone();
+        candidate.restore_fixed_od_scenario(scenario)?;
+        rosenfu_storage::ensure_world_saveable(&candidate).map_err(|err| err.to_string())?;
+        self.world = candidate;
+        self.fixed_od_token = next_fixed_od_token();
+        Ok(self.fixed_od_scenario())
+    }
+
     pub fn preview_fixed_od(
         &self,
         origin_station_id: String,
@@ -233,30 +275,15 @@ impl WorldEditor {
         alternative_seconds: Option<f64>,
     ) -> Result<rosenfu_core::demand::OdAssignment, String> {
         use rosenfu_core::demand::*;
-        let exists = |id: &str| {
-            if let Some(bus) = id.strip_prefix("bus:") {
-                self.world
-                    .snapshot()
-                    .road_transport
-                    .bus_stops
-                    .iter()
-                    .any(|s| s.id == bus)
-            } else {
-                self.world
-                    .snapshot()
-                    .stations
-                    .iter()
-                    .any(|s| s.id.0.to_string() == id)
-            }
+        let scenario = FixedOdScenario {
+            origin_station_id: origin_station_id.clone(),
+            destination_station_id: destination_station_id.clone(),
+            trips,
+            alternative_seconds,
         };
-        if origin_station_id == destination_station_id
-            || !exists(&origin_station_id)
-            || !exists(&destination_station_id)
-        {
+        scenario.validate()?;
+        if !scenario.endpoints_exist(self.world.snapshot()) {
             return Err("異なる既存の駅・停留所を選択してください。".into());
-        }
-        if trips.is_some_and(|n| !n.is_finite() || !(0.0..=1e9).contains(&n)) {
-            return Err("人数は0〜10億の範囲で入力してください。".into());
         }
         let operation = self
             .world
@@ -278,6 +305,7 @@ impl WorldEditor {
                 from: l.from,
                 to: l.to,
                 ride_seconds: l.ride_seconds,
+                through_seconds: l.through_seconds,
                 headway_seconds: l.headway_seconds,
             })
             .collect::<Vec<_>>();
@@ -310,6 +338,120 @@ impl WorldEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn od_mount_token_survives_automatic_first_save_but_not_active_archive() {
+        let mut editor = WorldEditor::new();
+        editor.create_new_world("New world".into()).unwrap();
+        let mounted = editor.fixed_od_scenario();
+        let root = tempfile::tempdir().unwrap();
+        assert!(
+            editor
+                .save_world_as_slot(root.path(), "New world".into(), None, None)
+                .unwrap()
+                .saved
+        );
+        assert_eq!(editor.fixed_od_scenario().token, mounted.token);
+        let a = editor
+            .world
+            .add_station(editor.company, "A".into(), 35.0, 139.0)
+            .unwrap();
+        let b = editor
+            .world
+            .add_station(editor.company, "B".into(), 35.0, 139.02)
+            .unwrap();
+        let scenario = FixedOdScenario {
+            origin_station_id: a.0.to_string(),
+            destination_station_id: b.0.to_string(),
+            trips: Some(12.0),
+            alternative_seconds: None,
+        };
+        let recorded = editor
+            .set_fixed_od_scenario(&mounted.token, Some(scenario.clone()))
+            .unwrap();
+        let id = editor.active_slot_id.clone().unwrap();
+        editor.move_save_slot(root.path(), &id, false).unwrap();
+        assert!(editor.active_slot_id.is_none());
+        assert_eq!(editor.fixed_od_scenario().scenario, Some(scenario));
+        assert!(editor.set_fixed_od_scenario(&recorded.token, None).is_err());
+    }
+
+    #[test]
+    fn fixed_od_scenario_roundtrips_and_remains_separate_from_preview_and_reset() {
+        let mut editor = editor();
+        let snapshot = editor.snapshot();
+        let scenario = FixedOdScenario {
+            origin_station_id: snapshot.stations[0].id.0.to_string(),
+            destination_station_id: snapshot.stations[1].id.0.to_string(),
+            trips: Some(100.0),
+            alternative_seconds: Some(800.0),
+        };
+        let token = editor.fixed_od_scenario().token;
+        assert!(editor
+            .set_fixed_od_scenario("stale", Some(scenario.clone()))
+            .is_err());
+        editor
+            .set_fixed_od_scenario(&token, Some(scenario.clone()))
+            .unwrap();
+        assert!(editor.set_fixed_od_scenario(&token, None).is_err());
+        let preview = editor
+            .preview_fixed_od(
+                scenario.origin_station_id.clone(),
+                scenario.destination_station_id.clone(),
+                scenario.trips,
+                scenario.alternative_seconds,
+            )
+            .unwrap();
+        assert_eq!(preview.rail[0].time.wait_seconds, 30.0);
+        assert!(preview.rail[0].time.ride_seconds > 0.0);
+        assert_eq!(editor.fixed_od_scenario().scenario, Some(scenario.clone()));
+        editor
+            .world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1234, 100)
+            .unwrap();
+        let expected_operation = editor.world.operation_save().unwrap();
+        assert!(!editor.operation_snapshot().trains.is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        editor.save_with_view(&path, None, None, false).unwrap();
+        assert_eq!(
+            rosenfu_storage::load_world(&path)
+                .unwrap()
+                .fixed_od_scenario(),
+            Some(&scenario)
+        );
+        let mut other = WorldEditor::new();
+        assert!(other.fixed_od_scenario().scenario.is_none());
+        other.load(&path).unwrap();
+        assert_eq!(other.fixed_od_scenario().scenario, Some(scenario.clone()));
+        assert_eq!(other.world.operation_save(), Some(expected_operation));
+        assert_eq!(other.operation_snapshot().now_ms, 1234);
+        assert!(!other.operation_snapshot().trains.is_empty());
+        editor.reset_operation().unwrap();
+        assert_eq!(editor.fixed_od_scenario().scenario, Some(scenario.clone()));
+        let old_epoch = other.fixed_od_scenario().token;
+        other.load(&path).unwrap(); // identical byte-for-byte, same slot/destination
+        let reopened = other.fixed_od_scenario();
+        assert_ne!(reopened.token, old_epoch);
+        assert_eq!(reopened.scenario.as_ref(), Some(&scenario));
+        assert!(other.set_fixed_od_scenario(&old_epoch, None).is_err());
+        let autosave = dir.path().join("auto.json");
+        other.save_with_view(&autosave, None, None, true).unwrap();
+        assert_eq!(
+            rosenfu_storage::load_world(&autosave)
+                .unwrap()
+                .fixed_od_scenario(),
+            Some(&scenario)
+        );
+        other.create_new_world("Other company".into()).unwrap();
+        assert!(other.fixed_od_scenario().scenario.is_none());
+        assert!(other
+            .set_fixed_od_scenario(&reopened.token, Some(scenario))
+            .is_err());
+    }
+
     fn editor() -> WorldEditor {
         let mut e = WorldEditor::new();
         e.company_setup_required = false;
