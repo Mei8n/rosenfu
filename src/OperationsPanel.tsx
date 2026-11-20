@@ -150,15 +150,29 @@ export function ServiceOperations({serviceId,enabled}:{serviceId:string;enabled:
   <h4>運行</h4>
   <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={!enabled||busy||blocked||clockLocked} send={send}/>
   {clockLocked&&<p>運行開始後にダイヤを変更するには、時刻欄から運行をリセットしてください。</p>}
-  <ActiveVehicles trains={trains} configured={!!config}/>
+  <ActiveVehicles trains={trains} configured={!!config} now={view.now_ms} invalidated={view.invalidated}/>
   {error&&<p role="status">時刻欄の運行エラーを確認してください。</p>}
  </section>;
 }
 
-function ActiveVehicles({trains,configured,bus=false}:{trains:Train[];configured:boolean;bus?:boolean}){
+function vehicleStatus(train:Train,now:number,invalidated:boolean,bus:boolean){
+ const {state}=train;
+ if(invalidated)return {status:'運行停止中',delayMs:train.delay_ms};
+ if(bus)return {status:state.state==='waiting'?'待機中':'走行中',delayMs:train.delay_ms};
+ if(state.state==='moving')return {status:now>=state.arrival_ms?'到着済み':'走行中',delayMs:train.delay_ms};
+ if(now<state.ready_ms)return {status:train.leg>0?'停車中':'発車待ち',delayMs:train.delay_ms};
+ // The native clock has already attempted dispatch at ready_ms. The engine
+ // books the wait on entry, so accrue it in the view only while waiting.
+ return {status:'進路待ち',delayMs:train.delay_ms+(now-state.ready_ms)};
+}
+
+function ActiveVehicles({trains,configured,now,invalidated,bus=false}:{trains:Train[];configured:boolean;now:number;invalidated:boolean;bus?:boolean}){
  const label=bus?"バス":"列車";
  return <div className="operation-trains">
-  {trains.length?<ul aria-label={`運行中・待機中の${label}`}>{trains.map(train=><li key={train.key.scheduled_ms}><span>{scheduleTime(train.key.scheduled_ms)} 発</span><strong>{train.state.state==='waiting'?'待機中':'走行中'}</strong>{train.delay_ms>0&&<span>遅れ {Math.ceil(train.delay_ms/1000)}秒</span>}</li>)}</ul>:<p>{configured?`現在、運行中・待機中の${label}はありません。`:'この系統のダイヤは未設定です。'}</p>}
+  {trains.length?<ul aria-label={`運行中・待機中の${label}`}>{trains.map(train=>{
+   const {status,delayMs}=vehicleStatus(train,now,invalidated,bus);
+   return <li key={train.key.scheduled_ms}><span>{scheduleTime(train.key.scheduled_ms)} 発</span><strong>{status}</strong>{delayMs>0&&<span>遅れ {Math.ceil(delayMs/1000)}秒</span>}</li>;
+  })}</ul>:<p>{configured?`現在、運行中・待機中の${label}はありません。`:'この系統のダイヤは未設定です。'}</p>}
  </div>;
 }
 
@@ -176,7 +190,7 @@ export function BusOperations({routes,enabled}:{routes:{id:string;name:string}[]
   <label>運行するバス系統<select value={route.id} disabled={disabled} onChange={e=>setRouteId(e.target.value)}>{routes.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
   <TimetableForm key={route.id+':'+JSON.stringify(config??null)} bus serviceId={route.id} config={config} now={view.now_ms} disabled={disabled||clockLocked} send={send}/>
   {clockLocked&&<p>運行開始後にダイヤを変更するには、時刻欄から運行をリセットしてください。</p>}
-  <ActiveVehicles trains={trains} configured={!!config} bus/>
+  <ActiveVehicles trains={trains} configured={!!config} now={view.now_ms} invalidated={view.invalidated} bus/>
   {error&&<p role="status">時刻欄の運行エラーを確認してください。</p>}
  </section>;
 }
