@@ -272,6 +272,9 @@ impl OperationRuntime {
     pub fn speed(&self) -> u32 {
         self.speed
     }
+    pub fn service_spec(&self, id: &str) -> Option<&ServiceRunSpec> {
+        self.services.get(id).map(|s| &s.spec)
+    }
     pub fn now_ms(&self) -> u64 {
         self.now_ms
     }

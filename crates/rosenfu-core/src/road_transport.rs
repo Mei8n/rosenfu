@@ -466,6 +466,7 @@ impl RoadTransport {
                 let first = stops[pair[0].stop_id.as_str()];
                 let last = stops[pair[1].stop_id.as_str()];
                 let mut length_m = 0.0;
+                let mut traversed_edges = Vec::new();
                 for index in pair[0].edge_index..=pair[1].edge_index {
                     let start = if index == pair[0].edge_index {
                         first.position
@@ -477,7 +478,11 @@ impl RoadTransport {
                     } else {
                         1.0
                     };
+                    if end <= start {
+                        continue;
+                    }
                     let edge = edges[route.edges[index].as_str()];
+                    traversed_edges.push(edge.id.clone());
                     length_m += edge
                         .geometry
                         .windows(2)
@@ -489,6 +494,7 @@ impl RoadTransport {
                     return Err(InvalidStopOrder);
                 }
                 Ok(BusLeg {
+                    traversed_edges,
                     from_stop_id: first.id.clone(),
                     to_stop_id: last.id.clone(),
                     length_m,
@@ -765,6 +771,68 @@ mod tests {
         assert_eq!(d, before);
     }
     #[test]
+    fn boundary_only_edges_do_not_reserve_adjacent_bus_corridor() {
+        let (w, mut d) = fixture();
+        let b = d.nodes[1].point;
+        let c = GeoPoint {
+            latitude: 35.002,
+            longitude: 135.,
+        };
+        d.nodes.push(RoadNode {
+            id: "c".into(),
+            point: c,
+        });
+        let mut edge = d.edges[0].clone();
+        edge.id = "bc".into();
+        edge.from = "b".into();
+        edge.to = "c".into();
+        edge.geometry = vec![b, c];
+        d.edges.push(edge);
+        d.bus_stops[0].position = 0.;
+        d.bus_stops[1].position = 1.;
+        for (id, position) in [("s3", 0.), ("s4", 1.)] {
+            d.bus_stops.push(BusStop {
+                id: id.into(),
+                owner: CompanyId(1),
+                name: id.into(),
+                edge_id: "bc".into(),
+                position,
+            });
+        }
+        d.bus_routes[0].edges = vec!["ab".into(), "bc".into()];
+        d.bus_routes[0].stops = vec![
+            BusStopOccurrence {
+                stop_id: "s1".into(),
+                edge_index: 0,
+            },
+            BusStopOccurrence {
+                stop_id: "s3".into(),
+                edge_index: 1,
+            },
+        ];
+        let mut second = d.bus_routes[0].clone();
+        second.id = "second".into();
+        second.stops = vec![
+            BusStopOccurrence {
+                stop_id: "s2".into(),
+                edge_index: 0,
+            },
+            BusStopOccurrence {
+                stop_id: "s4".into(),
+                edge_index: 1,
+            },
+        ];
+        d.bus_routes.push(second);
+        let first = d.bus_legs(&w, "route").unwrap();
+        let second = d.bus_legs(&w, "second").unwrap();
+        assert_eq!(first[0].traversed_edges, vec!["ab"]);
+        assert_eq!(second[0].traversed_edges, vec!["bc"]);
+        assert!(first[0]
+            .traversed_edges
+            .iter()
+            .all(|e| !second[0].traversed_edges.contains(e)));
+    }
+    #[test]
     fn invalid_stop_position_rejected() {
         let (w, mut d) = fixture();
         d.bus_stops[0].position = f64::NAN;
@@ -782,6 +850,8 @@ fn distance_m(a: GeoPoint, b: GeoPoint) -> f64 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BusLeg {
+    /// Only positive-distance edge occurrences, excludes boundary-only edges.
+    pub traversed_edges: Vec<String>,
     pub from_stop_id: String,
     pub to_stop_id: String,
     pub length_m: f64,

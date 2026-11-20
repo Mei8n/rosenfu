@@ -384,11 +384,7 @@ impl World {
             !o.invalidated
                 && o.configs.iter().any(|config| {
                     self.compile_operation(config).ok().as_ref()
-                        != o.runtime
-                            .save()
-                            .services
-                            .iter()
-                            .find(|s| s.service_id == config.service_id.0.to_string())
+                        != o.runtime.service_spec(&config.service_id.0.to_string())
                 })
         });
         let invalid = invalid
@@ -396,11 +392,7 @@ impl World {
                 !o.invalidated
                     && o.bus_configs.iter().any(|config| {
                         self.compile_bus_operation(config).ok().as_ref()
-                            != o.runtime
-                                .save()
-                                .services
-                                .iter()
-                                .find(|s| s.service_id == format!("bus:{}", config.route_id))
+                            != o.runtime.service_spec(&format!("bus:{}", config.route_id))
                     })
             });
         if invalid {
@@ -423,26 +415,20 @@ impl World {
             return Err(OperationError::InvalidVehicle);
         }
         let roads = &self.data.road_transport;
-        let route = roads
-            .bus_routes
-            .iter()
-            .find(|r| r.id == config.route_id)
-            .ok_or(OperationError::InvalidPath)?;
         let legs = roads
             .bus_legs(&self.data, &config.route_id)
             .map_err(|_| OperationError::InvalidPath)?;
         let runs = legs
             .into_iter()
-            .enumerate()
-            .map(|(i, leg)| RunLeg {
+            .map(|leg| RunLeg {
                 from: format!("bus:{}", leg.from_stop_id),
                 to: format!("bus:{}", leg.to_stop_id),
                 dwell_ms: config.dwell_ms,
                 sections: vec![Section {
                     length_m: leg.length_m,
                     speed_limit_kmh: config.assumed_speed_kmh,
-                    resources: route.edges
-                        [route.stops[i].edge_index..=route.stops[i + 1].edge_index]
+                    resources: leg
+                        .traversed_edges
                         .iter()
                         .map(|id| format!("road:edge:{id}"))
                         .collect(),

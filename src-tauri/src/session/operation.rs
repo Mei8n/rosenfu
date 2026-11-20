@@ -28,11 +28,10 @@ impl WorldEditor {
                 offers: vec![],
             };
         };
-        let save = o.runtime.save();
         OperationView {
-            now_ms: save.now_ms,
-            paused: save.paused,
-            speed: save.speed,
+            now_ms: o.runtime.now_ms(),
+            paused: o.runtime.paused(),
+            speed: o.runtime.speed(),
             invalidated: o.invalidated,
             catching_up: o.pending_target.is_some(),
             services: o.configs.clone(),
