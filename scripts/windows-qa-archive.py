@@ -1,6 +1,7 @@
 """Build and verify the Windows QA payload. Run after the installer smoke gate."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path, PureWindowsPath
 import re
@@ -53,6 +54,9 @@ def ci_build_context(environment):
         "ref": environment["GITHUB_REF"],
         "run": environment["GITHUB_RUN_ID"],
         "attempt": environment["GITHUB_RUN_ATTEMPT"],
+        "workflow_commit": environment["GITHUB_WORKFLOW_SHA"],
+        "workflow_ref": environment["GITHUB_WORKFLOW_REF"],
+        "checks": environment["QA_CHECK_RESULT"],
     }
 
 
@@ -78,6 +82,8 @@ def build(stage, output, expected):
         "data-and-notices/LINE-Seed-JP-OFL.txt",
         "data-and-notices/software/DEPENDENCIES.json",
         "data-and-notices/software/README.txt",
+        "data-and-notices/native/NATIVE-PROVENANCE.json",
+        "data-and-notices/native/Microsoft-WebView2-SDK-1.0.3800.47-LICENSE.txt",
     }
     installer = [name for name in files if re.fullmatch(
         r"Rosenfu-alpha02-(?:preview|integration)-[a-f0-9]{12}-windows-x64-setup\.exe", name
@@ -107,12 +113,24 @@ def build(stage, output, expected):
         raise ValueError("Invalid GitHub run/attempt metadata")
     if metadata.get("audience") != "internal-QA-only":
         raise ValueError("Invalid QA audience")
-    if any(metadata[key] != expected[key] for key in ("commit", "kind", "ref", "run", "attempt")):
-        raise ValueError("Build metadata does not match the GitHub workflow context")
-    if any(key.lower().endswith(".exe") for key in files.keys() - {name}):
-        raise ValueError("Unexpected executable in QA payload")
+    for key in ("commit", "kind", "ref", "run", "attempt", "workflow_commit", "workflow_ref", "checks"):
+        if metadata.get(key) != expected[key]:
+            raise ValueError("Build metadata does not match the GitHub workflow context")
+    if not re.fullmatch(r"[a-f0-9]{40}", metadata["workflow_commit"]) or metadata["checks"] != "success":
+        raise ValueError("Missing workflow version or required CI pass")
+    if metadata["workflow_ref"] != f"Mei8n/rosenfu/.github/workflows/check.yml@{ref}":
+        raise ValueError("Unexpected packaging workflow ref")
+    if kind == "integration" and metadata["workflow_commit"] != commit:
+        raise ValueError("Integration push workflow and source commits differ")
     if (stage / "SHA256SUMS.txt").read_text(encoding="ascii").strip() != f"{files[name]}  {name}":
         raise ValueError("Installer checksum mismatch")
+    if metadata.get("windows_smoke") != "pass" or metadata.get("windows_smoke_installer_sha256") != files[name]:
+        raise ValueError("Missing smoke receipt for the exact installer")
+    native = json.loads((stage / "data-and-notices/native/NATIVE-PROVENANCE.json").read_text(encoding="utf-8"))
+    if native.get("installer_sha256") != files[name]:
+        raise ValueError("Native provenance refers to a different installer")
+    if any(key.lower().endswith(".exe") for key in files.keys() - {name}):
+        raise ValueError("Unexpected executable in QA payload")
     manifest = "".join(f"{value}  {key}\n" for key, value in sorted(files.items()))
     with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for key in sorted(files):

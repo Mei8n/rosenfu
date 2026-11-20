@@ -14,6 +14,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -59,6 +61,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -71,11 +75,16 @@ jobs:
           python-version: '3.12'
       - run: npm ci
       - name: Test the archive verifier
-        run: python scripts/windows-qa-archive.test.py
+        run: |
+          python scripts/windows-qa-archive.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/windows-qa-native.test.py
       - name: Bundle Windows installer
         run: npm run tauri -- build --target x86_64-pc-windows-msvc --config src-tauri/tauri.alpha02-qa.conf.json --ci
       - name: Stage test package and checksum
         shell: pwsh
+        env:
+          QA_CHECK_RESULT: ${{ needs.check.result }}
         run: |
           $ErrorActionPreference = 'Stop'
           $source = (git rev-parse HEAD).Trim()
@@ -102,6 +111,7 @@ jobs:
           Set-Content -LiteralPath (Join-Path $stage.FullName 'SHA256SUMS.txt') -Encoding ascii -Value "$digest  $name"
           Set-Content -LiteralPath (Join-Path $stage.FullName 'BUILD.txt') -Encoding ascii -Value @(
             "commit=$source", "ref=$env:GITHUB_REF", "kind=$kind", "run=$env:GITHUB_RUN_ID", "attempt=$env:GITHUB_RUN_ATTEMPT",
+            "workflow_commit=$env:GITHUB_WORKFLOW_SHA", "workflow_ref=$env:GITHUB_WORKFLOW_REF", "checks=$env:QA_CHECK_RESULT",
             'audience=internal-QA-only', 'native-installer-notices-review=pending'
           )
           if ($kind -eq 'preview') {
@@ -109,11 +119,43 @@ jobs:
           }
       - name: Stage Windows application software notices
         run: node scripts/windows-qa-notices.mjs qa-artifact/data-and-notices/software
+      - name: Verify installer native components and stage their notices
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = 'x86_64-pc-windows-msvc'
+          $metadataJson = cargo metadata --locked --filter-platform $target --format-version 1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows cargo metadata failed' }
+          $source = ($metadataJson | ConvertFrom-Json).packages | Where-Object {
+            $_.name -ceq 'webview2-com-sys' -and $_.version -ceq '0.39.1' -and
+            $_.source -ceq 'registry+https://github.com/rust-lang/crates.io-index'
+          }
+          if (@($source).Count -ne 1) { throw 'Pinned Cargo WebView2 loader package missing' }
+          $loader = Join-Path (Split-Path -Parent $source.manifest_path) 'x64/WebView2LoaderStatic.lib'
+          $sdk = Join-Path $env:RUNNER_TEMP ("rosenfu-webview2-" + [guid]::NewGuid().ToString('N') + ".nupkg")
+          $url = 'https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3800.47/microsoft.web.webview2.1.0.3800.47.nupkg'
+          Invoke-WebRequest -Uri $url -OutFile $sdk -TimeoutSec 60
+          $seven = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          $bundle = (Get-ChildItem -LiteralPath qa-artifact -Filter '*-setup.exe' -File).FullName
+          python scripts/windows-qa-native.py --repo . --installer $bundle --seven-zip $seven --sdk-package $sdk --cargo-loader $loader --output qa-artifact/data-and-notices/native
+          if ($LASTEXITCODE -ne 0) { throw 'Unverified native installer composition or SDK license' }
       - name: Smoke the staged Windows installer
         shell: pwsh
-        run: ./scripts/Smoke-WindowsAlpha02.ps1 -ArtifactDirectory qa-artifact -TimeoutSeconds 60
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $file = @(Get-ChildItem -LiteralPath qa-artifact -Filter '*-setup.exe' -File)
+          if ($file.Count -ne 1) { throw 'Expected one staged installer' }
+          $digest = (Get-FileHash -LiteralPath $file[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          ./scripts/Smoke-WindowsAlpha02.ps1 -ArtifactDirectory qa-artifact -TimeoutSeconds 60
+          $after = (Get-FileHash -LiteralPath $file[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($after -cne $digest) { throw 'Installer changed during the smoke test' }
+          Add-Content -LiteralPath qa-artifact/BUILD.txt -Encoding ascii -Value @(
+            'windows_smoke=pass', "windows_smoke_installer_sha256=$digest"
+          )
       - name: Build and reverify the Windows QA ZIP
         shell: pwsh
+        env:
+          QA_CHECK_RESULT: ${{ needs.check.result }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path qa-verified | Out-Null

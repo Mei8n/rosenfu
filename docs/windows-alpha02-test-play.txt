@@ -74,3 +74,18 @@ Checkの3OS成功後、Windowsパッケージ工程まで成功した同一SHA�
 Actions runの存在しない過去SHAは、別のSHAの成果物で代用しない
 過去SHAを再現する場合、隔離したWindows実行環境で対象コミットを完全SHAで固定し、
 検証スクリプトの版とビルド元コミットを別々に記録する。通常の統合成果物とは区別する
+
+7. ネイティブ通知と統合コミットの検証
+Windows QAの圧縮はzlibを使用する。CIはNSISの実ペイロードを一覧化して
+未知の実行ファイル・DLL・圧縮方式を拒否し、NSIS/Tauriと同梱DLLの通知、
+Microsoft WebView2 SDK 1.0.3800.47の公式ライセンスを
+data-and-notices/native に記録する。SDKのx64静的ローダーとCargo入力の
+SHA256が一致する場合にだけ通す。WebView2本体は引き続き同梱しない
+NSIS Tauri DLLの配布ビルドに使われた完全な依存版は別途確認し、
+ライセンスの最終レビューが済むまでpendingの成果物を配布しない
+
+通常の統合pushでは、Checkの実行に使ったワークフローSHAとビルドした
+ソースSHAの完全一致を確認し、3OS checksの結果をBUILD.txtへ記録する
+Windowsスモークを通過したインストーラーのSHA256をZIP直前に
+再照合し、同梱のネイティブ情報も同じインストーラーを指すことを確認する
+統合pushのCheckがないときは、この記録のない成果物を統合版と呼ばない
