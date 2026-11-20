@@ -10,11 +10,11 @@ vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn()}));
 afterEach(()=>{cleanup();vi.resetAllMocks();});
 const world={station_placements:['0','1','2','3','4'].map((station_id,i)=>({station_id,alignment_id:'a',position:i/4}))};
 const path:ServicePath={service_id:'s',next_leg_key:'9',legs:[{key:'7',segment:{kind:'alignment',alignment_id:'a',from:'1',to:'3'}}],stops:[{kind:'start'},{kind:'on_leg',leg_key:'7',station_id:'3'}]};
-function setup(){
+function setup(candidateGate?:Promise<void>){
  let pick:((id:string)=>void)|undefined;const onSave=vi.fn().mockResolvedValue(undefined);
  vi.mocked(invoke).mockImplementation(async(command,args)=>{
   const a=args as {start:string;end:string;segments:Segment[];viaStationIds?:string[]};
-  if(command==='preview_route_candidates'){const ids=[a.start,...(a.viaStationIds??[]),a.end];const segments=ids.slice(1).map((to,i)=>({kind:'alignment',alignment_id:'a',from:ids[i],to}));return {status:'unique',candidates:[{stations:ids,segments}],truncated:false,shortest_candidate_index:0};}
+  if(command==='preview_route_candidates'){await candidateGate;const ids=[a.start,...(a.viaStationIds??[]),a.end];const segments=ids.slice(1).map((to,i)=>({kind:'alignment',alignment_id:'a',from:ids[i],to}));return {status:'unique',candidates:[{stations:ids,segments}],truncated:false,shortest_candidate_index:0};}
   if(command==='preview_route_membership')return {path:{stations:[a.start,...a.segments.map(s=>s.to)],segments:a.segments},member_stations:[a.start,...a.segments.map(s=>s.to)],excluded_stations:[]};
   if(command==='preview_service_path_replacement'){const legs=a.segments.map((segment,i)=>({key:String(9+i),segment}));return {legs,occurrences:resolveServicePath(a.start,legs,world),requires_stop_selection:true};}
   throw Error(command);
@@ -53,4 +53,16 @@ test('clicking a new station without a designated endpoint keeps both endpoints'
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_route_candidates',expect.objectContaining({start:'1',end:'3'})));
  expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='preview_route_candidates').every(([,args])=>((args as {start:string;end:string}).start==='1'&&(args as {start:string;end:string}).end==='3'))).toBe(true);
  expect(h.props.onSave).not.toHaveBeenCalled();
+});
+
+test('a cancelled endpoint lookup cannot restore the old draft preview',async()=>{
+ let resolve!:()=>void;const gate=new Promise<void>(done=>{resolve=done;});
+ const h=setup(gate);await h.click('3');await h.click('4');
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'4',viaStationIds:['2']}));
+ fireEvent.click(screen.getByText('キャンセル'));
+ await act(async()=>resolve());
+ expect(h.props.onCandidateChange.mock.lastCall?.[0]).toBeNull();
+ expect(h.props.onSelectionChange.mock.lastCall?.[0]).toEqual([]);
+ expect(h.props.onSave).not.toHaveBeenCalled();
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='preview_route_membership')).toBe(false);
 });
