@@ -229,6 +229,9 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::InvalidRoadTransport) {
+            return write!(f,"道路交通の参照が不整合です。併用軌道の関連付けを外してから線路を延伸・変更・撤去してください。");
+        }
         if matches!(self, Self::StationOnGradient) {
             return write!(f,"ホーム全長が平坦な場所に駅を設置してください。勾配やその境界に重なるホームは設置できません。");
         }
@@ -400,9 +403,6 @@ impl WorldDraft {
         if self.road_evidence_descriptors != self.runtime_road_evidence.descriptors() {
             return Err(WorldError::InvalidRoadEvidence);
         }
-        self.road_transport
-            .validate(self)
-            .map_err(|_| WorldError::InvalidRoadTransport)?;
         roads::validate_road_snapshots(&self.road_snapshots)?;
         if let Some(view) = self.view_state {
             view.validate()?;
@@ -417,6 +417,10 @@ impl WorldDraft {
         ids(self.services.iter().map(|x| x.id.0), "service")?;
         ids(self.alignments.iter().map(|x| x.id.0), "alignment")?;
         self.validate_alignments()?;
+        self.road_transport
+            .validate(self)
+            .map_err(|_| WorldError::InvalidRoadTransport)?;
+
         self.validate_station_groups()?;
         self.validate_alignment_connections()?;
         let maximum_id = self

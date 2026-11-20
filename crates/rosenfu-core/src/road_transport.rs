@@ -30,6 +30,8 @@ pub struct RoadEdge {
     pub geometry: Vec<GeoPoint>,
     pub bus_access: Access,
     pub tram_access: Access,
+    #[serde(default)]
+    pub level: Option<crate::world::InfrastructureLevel>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +67,8 @@ pub enum TramPlacement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TramSection {
+    /// Frozen physical reference. Structural rail edits must detach/rebind explicitly.
+    pub alignment_geometry: Vec<GeoPoint>,
     pub alignment_id: AlignmentId,
     pub from_position: f64,
     pub to_position: f64,
@@ -183,6 +187,7 @@ impl RoadTransport {
                     geometry,
                     bus_access: permission,
                     tram_access: Access::Unknown,
+                    level: None,
                 });
             }
         }
@@ -271,7 +276,7 @@ impl RoadTransport {
                 return Err(InvalidData);
             }
             path(&r.edges, false)?;
-            let mut prior = None;
+            let mut prior: Option<(usize, f64)> = None;
             for occurrence in &r.stops {
                 let s = stops
                     .get(occurrence.stop_id.as_str())
@@ -283,7 +288,9 @@ impl RoadTransport {
                     return Err(MissingReference);
                 }
                 let current = (occurrence.edge_index, s.position);
-                if prior.is_some_and(|p| p >= current) {
+                if prior.is_some_and(|p| {
+                    p >= current || (p.0 + 1 == current.0 && p.1 == 1.0 && current.1 == 0.0)
+                }) {
                     return Err(InvalidStopOrder);
                 }
                 prior = Some(current);
@@ -296,7 +303,8 @@ impl RoadTransport {
                 .iter()
                 .find(|a| a.id == s.alignment_id)
                 .ok_or(MissingReference)?;
-            if a.track_type != TrackType::Tram
+            if a.points != s.alignment_geometry
+                || a.track_type != TrackType::Tram
                 || !position(s.from_position)
                 || !position(s.to_position)
                 || s.from_position >= s.to_position
@@ -313,32 +321,33 @@ impl RoadTransport {
             spans.push((s.from_position, s.to_position));
             if let TramPlacement::SharedRoad { edges: ids } = &s.placement {
                 path(ids, true)?;
-                let road_points: Vec<GeoPoint> = ids
-                    .iter()
-                    .flat_map(|id| edges[id.as_str()].geometry.iter().copied())
-                    .collect();
-                let start = a.point_at(s.from_position);
-                let end = a.point_at(s.to_position);
-                if distance_m(start, road_points[0]) > 15.0
-                    || distance_m(end, *road_points.last().unwrap()) > 15.0
+                // Deliberately narrow until a verified lane/grade adapter exists:
+                // only an entire ground alignment with exact directed sample identity.
+                if s.from_position != 0.0
+                    || s.to_position != 1.0
+                    || ids.iter().any(|id| {
+                        edges[id.as_str()].level != Some(crate::world::InfrastructureLevel::Ground)
+                    })
                 {
                     return Err(InvalidTramSection);
                 }
-                // Explicit correspondence, not an intersection with a road on another level.
-                for i in 0..=100 {
-                    let position =
-                        s.from_position + (s.to_position - s.from_position) * i as f64 / 100.0;
-                    if a.height_and_grade_at_position(position)
-                        .is_none_or(|(height, _)| height.abs() > 0.01)
-                    {
-                        return Err(InvalidTramSection);
-                    }
-                    let point = a.point_at(position);
-                    if road_points
-                        .windows(2)
-                        .map(|pair| segment_distance_m(point, pair[0], pair[1]))
-                        .fold(f64::INFINITY, f64::min)
-                        > 15.0
+                let mut road_points: Vec<GeoPoint> = ids
+                    .iter()
+                    .flat_map(|id| edges[id.as_str()].geometry.iter().copied())
+                    .collect();
+                road_points.dedup();
+                if road_points != a.points
+                    || a.infrastructure
+                        .iter()
+                        .any(|i| i.level != crate::world::InfrastructureLevel::Ground)
+                {
+                    return Err(InvalidTramSection);
+                }
+                for profile in a.vertical_profile.iter().chain(a.section_profiles.iter()) {
+                    if profile.start_height_m != 0.0
+                        || profile.end_height_m != 0.0
+                        || profile.start_tangent_m != 0.0
+                        || profile.end_tangent_m != 0.0
                     {
                         return Err(InvalidTramSection);
                     }
@@ -544,6 +553,7 @@ mod tests {
                 geometry: vec![a, b],
                 bus_access: Access::Allowed,
                 tram_access: Access::Unknown,
+                level: None,
             }],
             bus_stops: vec![
                 BusStop {
@@ -585,6 +595,7 @@ mod tests {
     fn tram_must_match_road_geometry_not_just_share_an_id() {
         let (mut w, mut d) = fixture();
         d.edges[0].tram_access = Access::Allowed;
+        d.edges[0].level = Some(crate::world::InfrastructureLevel::Ground);
         w.alignments.push(crate::world::Alignment {
             id: AlignmentId(5),
             owner: CompanyId(1),
@@ -598,6 +609,7 @@ mod tests {
             design_speed_kmh: None,
         });
         d.tram_sections.push(TramSection {
+            alignment_geometry: w.alignments[0].points.clone(),
             alignment_id: AlignmentId(5),
             from_position: 0.0,
             to_position: 1.0,
@@ -606,8 +618,76 @@ mod tests {
             },
         });
         assert_eq!(d.validate(&w), Ok(()));
+        let mut snapshot = w.clone();
+        snapshot.road_transport = d.clone();
+        snapshot.players.push(crate::world::Player {
+            id: PlayerId(2),
+            name: "Player".into(),
+        });
+        snapshot.next_id = 6;
+        let mut physical = crate::world::World::new(snapshot.clone()).unwrap();
+        let end = *snapshot.alignments[0].points.last().unwrap();
+        assert!(physical
+            .extend_alignment(
+                CompanyId(1),
+                AlignmentId(5),
+                crate::world::AlignmentEndpoint::End,
+                vec![
+                    end,
+                    GeoPoint {
+                        latitude: 35.002,
+                        longitude: 135.0
+                    }
+                ]
+            )
+            .is_err());
+        assert_eq!(physical.snapshot(), &snapshot);
+        d.edges[0].level = None;
+        assert_eq!(d.validate(&w), Err(InvalidTramSection));
+        d.edges[0].level = Some(crate::world::InfrastructureLevel::Ground);
+        let original = d.edges[0].geometry.clone();
+        d.edges[0].geometry.insert(
+            1,
+            GeoPoint {
+                latitude: 35.1,
+                longitude: 135.1,
+            },
+        );
+        assert_eq!(d.validate(&w), Err(InvalidTramSection));
+        d.edges[0].geometry = original;
+        w.alignments[0].vertical_profile = Some(crate::world::VerticalProfile {
+            start_height_m: 0.,
+            end_height_m: 0.,
+            start_tangent_m: 0.01,
+            end_tangent_m: 0.,
+        });
+        assert_eq!(d.validate(&w), Err(InvalidTramSection));
+        w.alignments[0].vertical_profile = None;
         w.alignments[0].points[0].longitude += 0.01;
         assert_eq!(d.validate(&w), Err(InvalidTramSection));
+        w.alignments[0].points.clear();
+        w.road_transport = d;
+        let decoded: WorldDraft =
+            serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        assert!(std::panic::catch_unwind(|| decoded.validate())
+            .unwrap()
+            .is_err());
+    }
+    #[test]
+    fn zero_distance_boundary_stops_are_rejected_at_validation() {
+        let (w, mut d) = fixture();
+        let mut reverse = d.edges[0].clone();
+        reverse.id = "ba".into();
+        reverse.from = "b".into();
+        reverse.to = "a".into();
+        reverse.geometry.reverse();
+        d.edges.push(reverse);
+        d.bus_routes[0].edges.push("ba".into());
+        d.bus_stops[0].position = 1.;
+        d.bus_stops[1].edge_id = "ba".into();
+        d.bus_stops[1].position = 0.;
+        d.bus_routes[0].stops[1].edge_index = 1;
+        assert_eq!(d.validate(&w), Err(InvalidStopOrder));
     }
     #[test]
     fn directed_search_excludes_unknown_and_reverse() {
@@ -698,26 +778,6 @@ fn distance_m(a: GeoPoint, b: GeoPoint) -> f64 {
     let h = (lat / 2.0).sin().powi(2)
         + a.latitude.to_radians().cos() * b.latitude.to_radians().cos() * (lon / 2.0).sin().powi(2);
     2.0 * 6_371_000.0 * h.clamp(0.0, 1.0).sqrt().asin()
-}
-
-fn segment_distance_m(p: GeoPoint, a: GeoPoint, b: GeoPoint) -> f64 {
-    let scale = p.latitude.to_radians().cos();
-    let xy = |q: GeoPoint| {
-        (
-            (q.longitude - p.longitude) * scale,
-            (q.latitude - p.latitude),
-        )
-    };
-    let (ax, ay) = xy(a);
-    let (bx, by) = xy(b);
-    let (dx, dy) = (bx - ax, by - ay);
-    let d = dx * dx + dy * dy;
-    let t = if d > 0.0 {
-        (-(ax * dx + ay * dy) / d).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    ((ax + t * dx).powi(2) + (ay + t * dy).powi(2)).sqrt() * 111_195.0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

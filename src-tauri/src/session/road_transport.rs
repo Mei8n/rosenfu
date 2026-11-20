@@ -36,19 +36,20 @@ impl WorldEditor {
         {
             return Err("他社の道路交通は変更できません。".into());
         }
-        for section in replacement
-            .tram_sections
-            .iter()
-            .chain(expected.tram_sections.iter())
-        {
-            if before
-                .alignments
+        let foreign_trams = |d: &RoadTransport| {
+            d.tram_sections
                 .iter()
-                .any(|a| a.id == section.alignment_id && a.owner != self.company)
-                && replacement.tram_sections != expected.tram_sections
-            {
-                return Err("他社の併用軌道は変更できません。".into());
-            }
+                .filter(|s| {
+                    before
+                        .alignments
+                        .iter()
+                        .any(|a| a.id == s.alignment_id && a.owner != self.company)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if foreign_trams(&replacement) != foreign_trams(&expected) {
+            return Err("他社の併用軌道は変更できません。".into());
         }
         let mut draft = before.clone();
         draft.road_transport = replacement;
@@ -106,6 +107,7 @@ impl WorldEditor {
                 geometry: vec![pts[a], pts[b]],
                 bus_access: Access::Allowed,
                 tram_access: Access::Allowed,
+                level: Some(rosenfu_core::world::InfrastructureLevel::Ground),
             });
         }
         draft.road_transport = graph;
