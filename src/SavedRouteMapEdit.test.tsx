@@ -56,7 +56,7 @@ test('route apply waits for membership validation before invoking a backend reje
  expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='save_planned_route')).toHaveLength(1);
  expect((screen.getByLabelText('路線名') as HTMLInputElement).value).toBe('既存路線');
 });
-test('one saved segment exposes all physical stations so clicking the start shortens to the intermediate station',async()=>{
+test('one saved segment exposes all physical stations and explicitly choosing a new start shortens to the intermediate station',async()=>{
  const three=[...stations,{...stations[1],id:'5',name:'中間',longitude:139.755}];
  const segment={kind:'alignment',alignment_id:'a',from:'3',to:'4'};
  const physical={...world,stations:three,alignments:[{id:'a',owner:'2',name:'線',points:[stations[0],stations[1]]}],station_placements:[{station_id:'3',alignment_id:'a',position:0},{station_id:'5',alignment_id:'a',position:.5},{station_id:'4',alignment_id:'a',position:1}],route_paths:[{route_id:'r',segments:[segment],member_stations:['3','5','4'],excluded_stations:[]}]};
@@ -72,6 +72,9 @@ test('one saved segment exposes all physical stations so clicking the start shor
  fireEvent.click(screen.getByRole('tab',{name:'路線'}));fireEvent.click(screen.getByRole('button',{name:'編集: 既存路線'}));fireEvent.click(screen.getByText('地図で路線を編集'));
  expect(screen.getByLabelText('2 経由 中間')).toBeTruthy();
  await act(async()=>{fireEvent.click(view.container.querySelectorAll('.station-marker')[0]);});
+ expect(screen.getByText('地図で新しい始点を選択してください。')).toBeTruthy();
+ expect(invoke).not.toHaveBeenCalledWith('preview_route_candidates',{start:'5',end:'4'});
+ await act(async()=>{fireEvent.click(view.container.querySelectorAll('.station-marker')[2]);});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'5',end:'4'}));
  expect(screen.queryByText(/2駅以上必要/)).toBeNull();expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_planned_route')).toBe(false);
 });

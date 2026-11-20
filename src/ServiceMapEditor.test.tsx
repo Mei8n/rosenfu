@@ -23,12 +23,12 @@ function setup(){
  const view=render(<ServiceMapEditor {...props}/>);fireEvent.click(screen.getByText('地図で系統を編集'));return {...view,props,click:async(id:string)=>{await act(async()=>pick?.(id));}};
 }
 test('map endpoint extension preserves express passing and through binding until explicit Finish',async()=>{
- const h=setup();await h.click('4');await waitFor(()=>expect(h.props.onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['1','2','3','4']));
+ const h=setup();await h.click('3');await h.click('4');await waitFor(()=>expect(h.props.onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['1','2','4']));
  expect(h.props.onSave).not.toHaveBeenCalled();fireEvent.click(screen.getByText('編集終了'));await waitFor(()=>expect(h.props.onSave).toHaveBeenCalledOnce());
- const saved=h.props.onSave.mock.calls[0][0];expect(saved.sourceRouteIds).toEqual(['r1','r2']);expect(saved.name).toBe('急行');expect(saved.stops).toEqual([{kind:'start'},{kind:'on_leg',leg_key:'10',station_id:'3'},{kind:'on_leg',leg_key:'11',station_id:'4'}]);
+ const saved=h.props.onSave.mock.calls[0][0];expect(saved.sourceRouteIds).toEqual(['r1','r2']);expect(saved.name).toBe('急行');expect(saved.stops).toEqual([{kind:'start'},{kind:'on_leg',leg_key:'10',station_id:'3'},{kind:'on_leg',leg_key:'10',station_id:'4'}]);
 });
 test('cancel preserves persisted service and stale world blocks application',async()=>{
- const h=setup();await h.click('4');h.rerender(<ServiceMapEditor {...h.props} world={{...world}}/>);
+ const h=setup();await h.click('3');await h.click('4');h.rerender(<ServiceMapEditor {...h.props} world={{...world}}/>);
  expect((screen.getByText('編集終了') as HTMLButtonElement).disabled).toBe(true);fireEvent.click(screen.getByText('キャンセル'));expect(h.props.onSave).not.toHaveBeenCalled();expect(screen.getByText('地図で系統を編集')).toBeTruthy();
 });
 test('clicking an existing middle pass station makes it stop without rerouting',async()=>{
@@ -38,12 +38,19 @@ test('clicking an existing middle pass station makes it stop without rerouting',
 });
 
 test('map start extension keeps existing pass settings and binding until explicit Finish',async()=>{
- const h=setup();await h.click('0');await waitFor(()=>expect(h.props.onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['0','1','2','3']));
+ const h=setup();await h.click('1');await h.click('0');await waitFor(()=>expect(h.props.onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['0','2','3']));
  expect(h.props.onSave).not.toHaveBeenCalled();fireEvent.click(screen.getByText('編集終了'));await waitFor(()=>expect(h.props.onSave).toHaveBeenCalledOnce());
- expect(h.props.onSave.mock.calls[0][0]).toMatchObject({start:'0',sourceRouteIds:['r1','r2'],stops:[{kind:'start'},{kind:'on_leg',leg_key:'9',station_id:'1'},{kind:'on_leg',leg_key:'11',station_id:'3'}]});
+ expect(h.props.onSave.mock.calls[0][0]).toMatchObject({start:'0',sourceRouteIds:['r1','r2'],stops:[{kind:'start'},{kind:'on_leg',leg_key:'9',station_id:'1'},{kind:'on_leg',leg_key:'10',station_id:'3'}]});
 });
 test.each([['1','2',['2','3']],['3','1',['1','2']]])('removing endpoint %s shortens draft and preserves mandatory endpoints',async(id,start,ids)=>{
- const h=setup();await h.click(id as string);await waitFor(()=>expect(h.props.onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(ids));
+ const h=setup();await h.click(id as string);await h.click('2');await waitFor(()=>expect(h.props.onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(ids));
  expect(h.props.onSave).not.toHaveBeenCalled();fireEvent.click(screen.getByText('編集終了'));await waitFor(()=>expect(h.props.onSave).toHaveBeenCalledOnce());
  expect(h.props.onSave.mock.calls[0][0]).toMatchObject({start,sourceRouteIds:['r1','r2'],stops:[{kind:'start'},{kind:'on_leg',leg_key:'9',station_id:(ids as string[])[1]}]});
+});
+
+test('clicking a new station without a designated endpoint keeps both endpoints',async()=>{
+ const h=setup();await h.click('4');
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_route_candidates',expect.objectContaining({start:'1',end:'3'})));
+ expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='preview_route_candidates').every(([,args])=>((args as {start:string;end:string}).start==='1'&&(args as {start:string;end:string}).end==='3'))).toBe(true);
+ expect(h.props.onSave).not.toHaveBeenCalled();
 });
