@@ -1,4 +1,6 @@
-//! Desktop application operations. The core owns IDs and referential integrity.
+#[path = "session/road_transport.rs"]
+mod road_transport;
+// Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
 #[path = "session/history.rs"]

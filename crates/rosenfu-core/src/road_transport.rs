@@ -73,6 +73,8 @@ pub struct TramSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RoadTransport {
+    #[serde(default)]
+    pub evidence: Vec<crate::world::RoadSnapshot>,
     pub nodes: Vec<RoadNode>,
     pub edges: Vec<RoadEdge>,
     pub bus_stops: Vec<BusStop>,
@@ -122,12 +124,85 @@ fn indexed<'a, T>(
     Ok(out)
 }
 impl RoadTransport {
+    /// Preserve real source geometry as evidence, NOT a certified routable network.
+    /// Tile seam hypotheses and coincident vertices never become junctions here.
+    pub fn from_road_evidence(
+        snapshot: &crate::world::RoadSnapshot,
+    ) -> Result<Self, RoadTransportError> {
+        snapshot.validate().map_err(|_| InvalidData)?;
+        if snapshot.roads.len() > 50_000 {
+            return Err(InvalidData);
+        }
+        let mut result = Self::default();
+        result.evidence.push(snapshot.clone());
+        for (index, way) in snapshot.roads.iter().enumerate() {
+            let start = format!("evidence:{index}:start");
+            let end = format!("evidence:{index}:end");
+            result.nodes.push(RoadNode {
+                id: start.clone(),
+                point: way.points[0],
+            });
+            result.nodes.push(RoadNode {
+                id: end.clone(),
+                point: *way.points.last().ok_or(InvalidData)?,
+            });
+            let forbidden = way.classification.as_ref().is_some_and(|c| {
+                matches!(
+                    c.class.as_str(),
+                    "path" | "pedestrian" | "steps" | "cycleway"
+                ) || c.access.as_deref() == Some("no")
+            });
+            let permission = if forbidden {
+                Access::Forbidden
+            } else {
+                Access::Unknown
+            };
+            let one = way
+                .classification
+                .as_ref()
+                .and_then(|c| c.oneway.as_deref());
+            for reverse in [false, true] {
+                if (reverse && matches!(one, Some("yes" | "1" | "true")))
+                    || (!reverse && one == Some("-1"))
+                {
+                    continue;
+                }
+                let mut geometry = way.points.clone();
+                if reverse {
+                    geometry.reverse();
+                }
+                result.edges.push(RoadEdge {
+                    id: format!(
+                        "evidence:{index}:{}",
+                        if reverse { "reverse" } else { "forward" }
+                    ),
+                    from: if reverse { end.clone() } else { start.clone() },
+                    to: if reverse { start.clone() } else { end.clone() },
+                    source: snapshot.source.clone(),
+                    revision: snapshot.revision.clone(),
+                    geometry,
+                    bus_access: permission,
+                    tram_access: Access::Unknown,
+                });
+            }
+        }
+        result.validate(&WorldDraft::default())?;
+        Ok(result)
+    }
     pub fn validate(&self, world: &WorldDraft) -> Result<(), RoadTransportError> {
         if self.nodes.len() > 100_000
             || self.edges.len() > 200_000
             || self.bus_stops.len() > 10_000
             || self.bus_routes.len() > 10_000
             || self.tram_sections.len() > 10_000
+        {
+            return Err(InvalidData);
+        }
+        for evidence in &self.evidence {
+            evidence.validate().map_err(|_| InvalidData)?;
+        }
+        if self.edges.iter().map(|e| e.geometry.len()).sum::<usize>() > 500_000
+            || self.evidence.len() > 32
         {
             return Err(InvalidData);
         }
@@ -238,6 +313,36 @@ impl RoadTransport {
             spans.push((s.from_position, s.to_position));
             if let TramPlacement::SharedRoad { edges: ids } = &s.placement {
                 path(ids, true)?;
+                let road_points: Vec<GeoPoint> = ids
+                    .iter()
+                    .flat_map(|id| edges[id.as_str()].geometry.iter().copied())
+                    .collect();
+                let start = a.point_at(s.from_position);
+                let end = a.point_at(s.to_position);
+                if distance_m(start, road_points[0]) > 15.0
+                    || distance_m(end, *road_points.last().unwrap()) > 15.0
+                {
+                    return Err(InvalidTramSection);
+                }
+                // Explicit correspondence, not an intersection with a road on another level.
+                for i in 0..=100 {
+                    let position =
+                        s.from_position + (s.to_position - s.from_position) * i as f64 / 100.0;
+                    if a.height_and_grade_at_position(position)
+                        .is_none_or(|(height, _)| height.abs() > 0.01)
+                    {
+                        return Err(InvalidTramSection);
+                    }
+                    let point = a.point_at(position);
+                    if road_points
+                        .windows(2)
+                        .map(|pair| segment_distance_m(point, pair[0], pair[1]))
+                        .fold(f64::INFINITY, f64::min)
+                        > 15.0
+                    {
+                        return Err(InvalidTramSection);
+                    }
+                }
             }
         }
         Ok(())
@@ -330,6 +435,58 @@ impl RoadTransport {
         }
         Err(DisconnectedPath)
     }
+    /// Distances between successive stop occurrences, clipping the first/last edge.
+    /// Does not invent a speed limit, timetable, vehicle or road capacity.
+    pub fn bus_legs(
+        &self,
+        world: &WorldDraft,
+        route_id: &str,
+    ) -> Result<Vec<BusLeg>, RoadTransportError> {
+        self.validate(world)?;
+        let route = self
+            .bus_routes
+            .iter()
+            .find(|r| r.id == route_id)
+            .ok_or(MissingReference)?;
+        let edges = indexed(&self.edges, |e| &e.id)?;
+        let stops = indexed(&self.bus_stops, |s| &s.id)?;
+        route
+            .stops
+            .windows(2)
+            .map(|pair| {
+                let first = stops[pair[0].stop_id.as_str()];
+                let last = stops[pair[1].stop_id.as_str()];
+                let mut length_m = 0.0;
+                for index in pair[0].edge_index..=pair[1].edge_index {
+                    let start = if index == pair[0].edge_index {
+                        first.position
+                    } else {
+                        0.0
+                    };
+                    let end = if index == pair[1].edge_index {
+                        last.position
+                    } else {
+                        1.0
+                    };
+                    let edge = edges[route.edges[index].as_str()];
+                    length_m += edge
+                        .geometry
+                        .windows(2)
+                        .map(|p| distance_m(p[0], p[1]))
+                        .sum::<f64>()
+                        * (end - start);
+                }
+                if length_m <= 0.0 || !length_m.is_finite() {
+                    return Err(InvalidStopOrder);
+                }
+                Ok(BusLeg {
+                    from_stop_id: first.id.clone(),
+                    to_stop_id: last.id.clone(),
+                    length_m,
+                })
+            })
+            .collect()
+    }
     /// Caller must authorize the requested changes. Rejection never mutates state.
     /// History and file persistence belong to the session/world transaction layer.
     pub fn replace_checked(
@@ -367,6 +524,7 @@ mod tests {
             longitude: 135.0,
         };
         let data = RoadTransport {
+            evidence: vec![],
             nodes: vec![
                 RoadNode {
                     id: "a".into(),
@@ -424,6 +582,34 @@ mod tests {
         (world, data)
     }
     #[test]
+    fn tram_must_match_road_geometry_not_just_share_an_id() {
+        let (mut w, mut d) = fixture();
+        d.edges[0].tram_access = Access::Allowed;
+        w.alignments.push(crate::world::Alignment {
+            id: AlignmentId(5),
+            owner: CompanyId(1),
+            name: "Tram".into(),
+            points: d.edges[0].geometry.clone(),
+            anchor_indices: None,
+            infrastructure: vec![],
+            vertical_profile: None,
+            section_profiles: vec![],
+            track_type: TrackType::Tram,
+            design_speed_kmh: None,
+        });
+        d.tram_sections.push(TramSection {
+            alignment_id: AlignmentId(5),
+            from_position: 0.0,
+            to_position: 1.0,
+            placement: TramPlacement::SharedRoad {
+                edges: vec!["ab".into()],
+            },
+        });
+        assert_eq!(d.validate(&w), Ok(()));
+        w.alignments[0].points[0].longitude += 0.01;
+        assert_eq!(d.validate(&w), Err(InvalidTramSection));
+    }
+    #[test]
     fn directed_search_excludes_unknown_and_reverse() {
         let (w, mut d) = fixture();
         assert_eq!(d.shortest_path(&w, "a", "b", false), Ok(vec!["ab".into()]));
@@ -438,6 +624,9 @@ mod tests {
         let restored: RoadTransport =
             serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         assert_eq!(d, restored);
+        let legs = d.bus_legs(&w, "route").unwrap();
+        assert_eq!(legs.len(), 1);
+        assert!((legs[0].length_m - 88.956).abs() < 0.1);
         assert_eq!(restored.validate(&w), Ok(()));
     }
     #[test]
@@ -509,4 +698,31 @@ fn distance_m(a: GeoPoint, b: GeoPoint) -> f64 {
     let h = (lat / 2.0).sin().powi(2)
         + a.latitude.to_radians().cos() * b.latitude.to_radians().cos() * (lon / 2.0).sin().powi(2);
     2.0 * 6_371_000.0 * h.clamp(0.0, 1.0).sqrt().asin()
+}
+
+fn segment_distance_m(p: GeoPoint, a: GeoPoint, b: GeoPoint) -> f64 {
+    let scale = p.latitude.to_radians().cos();
+    let xy = |q: GeoPoint| {
+        (
+            (q.longitude - p.longitude) * scale,
+            (q.latitude - p.latitude),
+        )
+    };
+    let (ax, ay) = xy(a);
+    let (bx, by) = xy(b);
+    let (dx, dy) = (bx - ax, by - ay);
+    let d = dx * dx + dy * dy;
+    let t = if d > 0.0 {
+        (-(ax * dx + ay * dy) / d).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ((ax + t * dx).powi(2) + (ay + t * dy).powi(2)).sqrt() * 111_195.0
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BusLeg {
+    pub from_stop_id: String,
+    pub to_stop_id: String,
+    pub length_m: f64,
 }

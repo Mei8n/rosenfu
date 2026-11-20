@@ -99,6 +99,8 @@ impl ViewState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    #[serde(default)]
+    pub road_transport: crate::road_transport::RoadTransport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
     /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
@@ -161,6 +163,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            road_transport: crate::road_transport::RoadTransport::default(),
             road_path_provenance: vec![],
             runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
             road_evidence_descriptors: vec![],
@@ -194,6 +197,7 @@ pub enum WorldError {
     InvalidCoordinate,
     InvalidConstructionPlans,
     InvalidRoadSnapshot,
+    InvalidRoadTransport,
     InvalidRoadEvidence,
     InvalidViewState,
     InvalidAlignment,
@@ -396,6 +400,9 @@ impl WorldDraft {
         if self.road_evidence_descriptors != self.runtime_road_evidence.descriptors() {
             return Err(WorldError::InvalidRoadEvidence);
         }
+        self.road_transport
+            .validate(self)
+            .map_err(|_| WorldError::InvalidRoadTransport)?;
         roads::validate_road_snapshots(&self.road_snapshots)?;
         if let Some(view) = self.view_state {
             view.validate()?;
