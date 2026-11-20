@@ -22,3 +22,6 @@ pub mod water_observations;
 
 /// Independent offline reader; not wired to a provider or construction session.
 pub mod water_zone;
+
+/// Explicit road-transport domain; display evidence alone never grants access.
+pub mod road_transport;
