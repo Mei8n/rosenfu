@@ -22,3 +22,6 @@ pub mod water_observations;
 
 /// Independent offline reader; not wired to a provider or construction session.
 pub mod water_zone;
+
+/// Shared clock, timetable and headless resource-constrained operation.
+pub mod operation;
