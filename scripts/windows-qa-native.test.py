@@ -65,15 +65,16 @@ class NativeQa(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             cargo_loader = directory / "WebView2LoaderStatic.lib"
-            cargo_loader.write_bytes(b"test loader")
+            loader_fixture = b"L" * mod["LOADER_SIZE_BYTES"]
+            cargo_loader.write_bytes(loader_fixture)
             sdk = directory / "WebView2.nupkg"
-            expected = hashlib.sha256(cargo_loader.read_bytes()).hexdigest()
+            expected = hashlib.sha256(loader_fixture).hexdigest()
 
             notice = "Fixture: Microsoft Corporation Redistribution binary form disclaimer"
             notice_hash = hashlib.sha256(notice.encode()).hexdigest()
 
-            def sdk_bytes(version=SDK, loader=b"test loader", notice_override=notice):
-                with zipfile.ZipFile(sdk, "w") as archive:
+            def sdk_bytes(version=SDK, loader=loader_fixture, notice_override=notice):
+                with zipfile.ZipFile(sdk, "w", zipfile.ZIP_DEFLATED) as archive:
                     archive.writestr("Microsoft.Web.WebView2.nuspec", f'''<package xmlns="https://schemas.microsoft.com/packaging/2013/05/nuspec.xsd"><metadata><id>Microsoft.Web.WebView2</id><version>{version}</version><license type="file">LICENSE.txt</license></metadata></package>''')
                     archive.writestr("build/native/x64/WebView2LoaderStatic.lib", loader)
                     archive.writestr("LICENSE.txt", notice_override)
@@ -84,8 +85,15 @@ class NativeQa(unittest.TestCase):
                 sdk_bytes(notice_override=notice + " substituted terms")
                 with self.assertRaisesRegex(ValueError, "official license"):
                     get_sdk_license(sdk, cargo_loader)
-                sdk_bytes(loader=b"wrong loader")
+                sdk_bytes(loader=loader_fixture[:-1] + b"X")
                 with self.assertRaisesRegex(ValueError, "bytes differ"):
+                    get_sdk_license(sdk, cargo_loader)
+                for loader in (loader_fixture[:-1], loader_fixture + b"X"):
+                    sdk_bytes(loader=loader)
+                    with self.assertRaisesRegex(ValueError, "static loader size"):
+                        get_sdk_license(sdk, cargo_loader)
+                sdk_bytes(notice_override=" " * (64 * 1024 + 1))
+                with self.assertRaisesRegex(ValueError, "SDK license size"):
                     get_sdk_license(sdk, cargo_loader)
                 sdk_bytes(version="0.0.0")
                 with self.assertRaisesRegex(ValueError, "identity"):

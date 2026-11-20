@@ -14,6 +14,8 @@ SDK = "1.0.3800.47"
 SDK_URL = f"https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/{SDK}/microsoft.web.webview2.{SDK}.nupkg"
 # NuGet version-specific official license display, UTF-8 after collapsing whitespace.
 SDK_LICENSE_TEXT_SHA256 = "009bc47dc0881d95f92e240040400d3d32c4b291e3097dc4063c8c3df1efe279"
+# Size of the x64 static loader in the exact pinned Cargo input (not the DLL).
+LOADER_SIZE_BYTES = 10_500_472
 LOADER_SHA256 = "89c6b872783b8f6c3cedbff618adb42082d455c615453ae10cfc753f1e8f25d8"
 UTIL_SHA1 = "75197fee3c6a814fe035788d1c34ead39349b860"
 NSIS_ARCHIVE_SHA1 = "db14f8af2ea346b786c6ae19343f61aaf5e09b8e"
@@ -99,7 +101,7 @@ def list_nsis(text):
 def get_sdk_license(package, cargo_loader):
     if package.stat().st_size > 25 * 1024 * 1024:
         raise ValueError("Unexpected SDK package size")
-    if sha(cargo_loader) != LOADER_SHA256:
+    if cargo_loader.stat().st_size != LOADER_SIZE_BYTES or sha(cargo_loader) != LOADER_SHA256:
         raise ValueError("Pinned Cargo WebView2 SDK loader has changed")
     with zipfile.ZipFile(package) as archive:
         if len(archive.infolist()) > 2_000:
@@ -124,8 +126,12 @@ def get_sdk_license(package, cargo_loader):
         loader, = [name for name in names if re.search(r"(?:^|/)x64/webview2loaderstatic\.lib$", name)]
         loader_info = archive.getinfo(names[loader])
         license_info = archive.getinfo(names[str(license_name).casefold()])
-        if loader_info.file_size > 5 * 1024 * 1024 or license_info.file_size > 64 * 1024:
-            raise ValueError("Unexpected SDK member size")
+        if loader_info.file_size != LOADER_SIZE_BYTES:
+            raise ValueError(
+                f"Unexpected SDK x64 static loader size: {loader_info.file_size} bytes; expected {LOADER_SIZE_BYTES}"
+            )
+        if not 0 < license_info.file_size <= 64 * 1024:
+            raise ValueError(f"Unexpected SDK license size: {license_info.file_size} bytes")
         if hashlib.sha256(archive.read(loader_info)).hexdigest() != LOADER_SHA256:
             raise ValueError("Microsoft SDK and linked Cargo loader bytes differ")
         notice = archive.read(license_info)
