@@ -98,7 +98,7 @@ test('alternative window defaults to the certified shortest and can return to ma
  await h.click('2');expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'2',viaStationIds:['3']});
 });
 
-test('saved path editing removes a clicked endpoint and inserts new stations without saving',async()=>{
+test('saved path editing explicitly replaces endpoints and retains the last candidate on failure',async()=>{
  let pick:((id:string)=>void)|undefined;
  const onSave=vi.fn(),onCandidateChange=vi.fn();
  vi.mocked(invoke).mockImplementation(async(command,args)=>{
@@ -107,11 +107,15 @@ test('saved path editing removes a clicked endpoint and inserts new stations wit
   return {path:{stations:[a.start,...a.segments.map(s=>s.to)],segments:a.segments},member_stations:[a.start,...a.segments.map(s=>s.to)],excluded_stations:[]};
  });
  render(<RouteCandidatePreview editRoute={{id:'r',name:'本線',path}} candidateLength={p=>p.stations.at(-1)==='4'?1:10} stations={[...stations,{id:'4',name:'延伸先'}]} worldVersion={world} enabled canApply onSave={onSave} onCandidateChange={onCandidateChange} startSequenceKey={1} mapPickTarget="sequence" onMapPick={(_,cb)=>{pick=cb;}}/>);
- await act(async()=>pick?.('1'));await waitFor(()=>expect(onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['2','3']));
- await act(async()=>pick?.('4'));await waitFor(()=>expect(onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['2','3','4']));
+ await act(async()=>pick?.('1'));
+ expect(invoke).not.toHaveBeenCalledWith('preview_route_candidates',expect.anything());
+ await act(async()=>pick?.('2'));await waitFor(()=>expect(onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['2','3']));
+ await act(async()=>pick?.('3'));await act(async()=>pick?.('4'));
+ await waitFor(()=>expect(onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['2','4']));
+ await act(async()=>pick?.('3'));await waitFor(()=>expect(onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['2','3','4']));
  expect(onSave).not.toHaveBeenCalled();
  vi.mocked(invoke).mockResolvedValue({status:'no_path',candidates:[],truncated:false});
- await act(async()=>pick?.('2'));await screen.findByText(/この駅には接続できません/);
+ await act(async()=>pick?.('2'));await act(async()=>pick?.('1'));await screen.findByText(/この駅には接続できません/);
  expect(onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['2','3','4']);
 });
 test('selected station sequence is published for map markers and cleared on reset/unmount',async()=>{
@@ -190,13 +194,16 @@ test.each([false,true])('queued map edits preserve click order; cancelled=%s ign
   }
   const ids=[a.start,...a.segments.map(s=>s.to)];return {path:{stations:ids,segments:a.segments},member_stations:ids,excluded_stations:[]};
  });
- render(<RouteCandidatePreview editRoute={{id:'r',name:'本線',path}} stations={[...stations,{id:'4',name:'追加4'},{id:'5',name:'追加5'}]} worldVersion={world} enabled canApply onSave={onSave} onCandidateChange={onCandidateChange} onSelectionChange={onSelectionChange} candidateLength={p=>p.stations.slice(1).reduce((sum,id,i)=>sum+Math.abs(Number(id)-Number(p.stations[i])),0)} startSequenceKey={1} onMapPick={(target,callback)=>{pick=target?callback:undefined;}} mapPickTarget="sequence"/>);
+ render(<RouteCandidatePreview editRoute={{id:'r',name:'本線',path}} stations={[...stations,{id:'4',name:'追加4'},{id:'5',name:'追加5'}]} worldVersion={world} enabled canApply onSave={onSave} onCandidateChange={onCandidateChange} onSelectionChange={onSelectionChange} candidateLength={p=>p.stations.join(',')==='1,2,4,5,3'?1:p.stations.join(',')==='1,2,4,3'?2:10} startSequenceKey={1} onMapPick={(target,callback)=>{pick=target?callback:undefined;}} mapPickTarget="sequence"/>);
  await act(async()=>{pick?.('4');pick?.('5');});
  expect(onSelectionChange).toHaveBeenLastCalledWith(['1','2','3']);
  if(cancel)fireEvent.click(screen.getByText('キャンセル'));
  await act(async()=>release());
  if(cancel){await waitFor(()=>expect(onCandidateChange).toHaveBeenLastCalledWith(null));expect(onSelectionChange).toHaveBeenLastCalledWith(['1','2','3']);}
- else await waitFor(()=>expect(onSelectionChange).toHaveBeenLastCalledWith(['1','2','3','4','5']));
+ else {
+  await waitFor(()=>expect(onSelectionChange).toHaveBeenLastCalledWith(['1','2','4','5','3']));
+  expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'3',viaStationIds:['2','4','5']});
+ }
  expect(onSave).not.toHaveBeenCalled();
 });
 test('rename-only and cancellation preserve saved intermediate membership exclusion',async()=>{
@@ -218,9 +225,9 @@ test('changed route retains excluded intermediate stations but promotes a new en
   const ids=[a.start,...a.segments.map(s=>s.to)];return {path:{stations:ids,segments:a.segments},member_stations:ids.filter(id=>!a.excludedStations?.includes(id)),excluded_stations:a.excludedStations??[]};
  });
  render(<RouteCandidatePreview editRoute={{id:'r',name:'本線',path,memberStations:['1','3'],excludedStations:['2']}} candidateLength={p=>p.stations.at(-1)==='4'?1:10} stations={[...stations,{id:'4',name:'新駅'}]} worldVersion={world} enabled canApply startSequenceKey={1} onSave={onSave} onMapPick={(_,cb)=>{pick=cb;}}/>);
- await act(async()=>pick?.('4'));await screen.findByText('所属駅: 始発 → 終点 → 新駅');
+ await act(async()=>pick?.('3'));await act(async()=>pick?.('4'));await screen.findByText('所属駅: 始発 → 新駅');
  expect(invoke).toHaveBeenCalledWith('preview_route_membership',expect.objectContaining({excludedStations:['2']}));
- await act(async()=>pick?.('1'));await screen.findByText('所属駅: 中間 → 終点 → 新駅');
+ await act(async()=>pick?.('1'));await act(async()=>pick?.('2'));await screen.findByText('所属駅: 中間 → 新駅');
  expect(onSave).not.toHaveBeenCalled();await act(async()=>fireEvent.click(screen.getByText('編集終了')));
  expect(onSave.mock.calls[0][1].excluded_stations).toEqual([]);
 });

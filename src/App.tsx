@@ -1,3 +1,6 @@
+import {BusOperations,OperationClock,OperationProvider,ServiceOperations} from "./OperationsPanel";
+import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection} from "./RoadTransportPanel";
+import {FixedOdPanel} from "./FixedOdPanel";
 import {mapRenderMetrics} from './mapRenderMetrics';
 import {ServiceDirectory} from "./ServiceDirectory";
 import { EditingMapFrame } from "./EditingMapFrame";
@@ -113,12 +116,13 @@ type GeoPoint = { latitude: number; longitude: number };
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { name: string; version: string; company_setup_required?: boolean };
+type EngineInfo = { road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
 type RoutePath = { route_id: string; segments: Segment[]; member_stations: string[] };
 type World = {
+  road_transport?:RoadTransportData;
   road_snapshots?:SavedRoadSnapshot[];
   road_evidence_descriptors?:readonly unknown[];
   service_route_bindings?:ServiceRouteBindingRecord[];
@@ -290,6 +294,8 @@ export function App() {
   const [slotPicker,setSlotPicker]=useState(false);
   const [loadSource,setLoadSource]=useState<"manual"|"auto">("manual");
   const [worldEpoch,setWorldEpoch]=useState(0);
+  const [operationRunning,setOperationRunning]=useState(false);
+  const [operationRevision,setOperationRevision]=useState(0);
   const [railLoadEpoch,setRailLoadEpoch]=useState(0);
   const [restoredAutosaveEpoch,setRestoredAutosaveEpoch]=useState(-1);
   const [mainTab,setMainTab]=useState<WorkspaceTab>("construction");
@@ -307,7 +313,11 @@ export function App() {
   useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch]);
   useEffect(()=>{setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);},[worldEpoch]);
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
-  const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "select" | "inactive">("tracks");
+  const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "select" | "road-transport" | "inactive">("tracks");
+  const [roadMapFrom,setRoadMapFrom]=useState<string|null>(null);
+  const [roadMapSelection,setRoadMapSelection]=useState<RoadMapSelection>();
+  const roadMapRevision=useRef(0);
+  useEffect(()=>{setRoadMapFrom(null);setRoadMapSelection(undefined);},[mainTab,activeTool,worldEpoch,world?.road_transport]);
   function chooseMainTab(tab:WorkspaceTab){if(seamMutationPending.current)return;setError("");setMainTab(tab);setPanelCollapsed(false);setActiveTool(tab==="construction"?"tracks":tab==="stations"?"station-management":tab==="settings"?"company":tab==="routes"?"routes":tab==="services"?"services":"inactive");changeMapMode(tab==="construction"?"draw":"move");}
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   // Internal compatibility label only; physical tracks are not user-named routes.
@@ -598,7 +608,7 @@ export function App() {
   const drawAnchors=(points:GeoPoint[],parked=false,id=activePathId)=>points.map((point,index) => {
     const p=project(point.latitude,point.longitude,camera),size=5/viewport.scale,hit=22/viewport.scale,endpoint=index===0||index===points.length-1;
     return <g key={index}><rect x={p.x-size/2} y={p.y-size/2} width={size} height={size} className={(parked?"parked-anchor":"draft-anchor")+(endpoint?" draft-endpoint":"")} vectorEffect="non-scaling-stroke"/>
-      <rect onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(id);setBuiltHeightSelection(null);setHeightAnchor({id,index});}}} onPointerEnter={event=>hoverPlan(event,id,index)} onPointerMove={event=>hoverPlan(event,id,index)} onPointerLeave={()=>setPlanHover(null)} onPointerDown={event=>beginAnchorGesture(event,id,index)} data-anchor-index={index} data-anchor-path={id} x={p.x-hit/2} y={p.y-hit/2} width={hit} height={hit} className="anchor-drag-hit"/></g>;
+      <rect onClick={event=>{if(mapMode==="move"&&!roadMapPicking){event.stopPropagation();selectTrackPath(id);setBuiltHeightSelection(null);setHeightAnchor({id,index});}}} onPointerEnter={event=>hoverPlan(event,id,index)} onPointerMove={event=>hoverPlan(event,id,index)} onPointerLeave={()=>setPlanHover(null)} onPointerDown={event=>beginAnchorGesture(event,id,index)} data-anchor-index={index} data-anchor-path={id} x={p.x-hit/2} y={p.y-hit/2} width={hit} height={hit} className="anchor-drag-hit"/></g>;
   });
   const [companyName, setCompanyName] = useState("");
   const [routeId, setRouteId] = useState<string | null>(null);
@@ -806,8 +816,9 @@ export function App() {
   const plansDirty=planFingerprint!==savedPlanFingerprint;
   const unapplied = saveBlocked || referenceCopy.active;
   const viewDirty=JSON.stringify(camera)!==savedViewFingerprint;
-  const autosaveSnapshot=useMemo(()=>({world,constructionPlans,camera}),[world,constructionPlans,camera]);
-  const autosave=useAutosave({slotId:activeSlotId,ready:status==="ready"&&slotsReady&&activeSlotId!==null,dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
+  const autosaveSnapshot=useMemo(()=>({world,constructionPlans,camera,operationRevision}),[world,constructionPlans,camera,operationRevision]);
+  const autosave=useAutosave({slotId:activeSlotId,ready:status==="ready"&&slotsReady&&activeSlotId!==null,dirty:(dirty||plansDirty||viewDirty||operationRunning)&&!companySetupRequired,continuous:operationRunning,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
+  const demandVersion=useMemo(()=>({world,operationRevision}),[world,operationRevision]);
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined,compact=false){
     parkedAnchorHistory.current.clear();
@@ -979,7 +990,7 @@ export function App() {
     return [...routes.map(route=>"路線: "+route.name),...services.map(service=>"系統: "+service.name)].join(" / ");
   }
   function selectStation(id: string) {
-    if (busyRef.current) return;
+    if (busyRef.current||roadMapFrom!==null) return;
     if ((mainTab === "routes" || mainTab === "services") && routeMapSelect.current) {
       if (!enabled || !stationsById.has(id)) return;
       const select=routeMapSelect.current;if(routeMapPick!=="sequence")cancelRouteMapPick();select(id);return;
@@ -1445,7 +1456,7 @@ export function App() {
   function mapClick(event: MouseEvent<SVGSVGElement>) {
     if(anchorPlacementPending.current){const at=pendingPlacementPoint.current;if(event.detail>=2&&at&&Math.hypot(event.clientX-at.x,event.clientY-at.y)<=8){finishPendingPlacement.current=true;if(roadFollowing)roadFinishAfterPlacement.current=true;}return;}
     smoothZoom.cancel();
-    if (!enabled || suppressSelectionClick.current) return;
+    if (!enabled || suppressSelectionClick.current || roadMapFrom!==null) return;
     // Track hit targets stop propagation in selection mode. A background click
     // clears only the highlight, without consuming drawing/placement clicks.
     clearTrackSelection();
@@ -1602,6 +1613,7 @@ export function App() {
     const key = (event: KeyboardEvent) => {
       if(seamMutationPending.current)return;
       if(slotDialog||slotPicker||confirmLoad)return;
+      if(event.key==="Escape"&&roadMapFrom!==null&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();setRoadMapFrom(null);return;}
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete||document.querySelector('[aria-label="系統削除の確認"]'))return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
@@ -1727,6 +1739,15 @@ export function App() {
     finally{if(generation===slotGeneration.current)setSlotsLoading(false);}
   }
   useEffect(()=>{if(status==="ready")void refreshSaveSlots();return()=>{slotGeneration.current++;};},[status]);
+  async function renameSavedWorld(id:string,expectedName:string,name:string){
+    if(busyRef.current||status!=="ready")throw Error("ほかの処理が完了してから操作してください。");
+    busyRef.current=true;setBusy(true);
+    try{
+      await invoke("rename_save_slot",{slotId:id,expectedName,name});
+      await refreshSaveSlots();
+      setNotice("セーブデータの名前を変更しました。");
+    }finally{busyRef.current=false;setBusy(false);}
+  }
   async function moveSavedWorld(id:string,restore:boolean){
     if(busyRef.current||status!=="ready")throw Error("ほかの処理が完了してから操作してください。");
     busyRef.current=true;setBusy(true);
@@ -1801,13 +1822,53 @@ export function App() {
 
   const showPlanHover=!!planHover&&!!hoveredPlan&&!referenceCopy.active&&!dragging&&(activeTool==="tracks"||activeTool==="inactive");
   const mapMetrics=mapRenderMetrics(camera.zoom,lineWidth,viewport.scale);
+  const roadTransportAvailable=info?.road_transport_enabled===true;
+  const constructionTools=[["tracks","線路"],["stations","駅設置"],["delete","削除"],["select","選択"],...(roadTransportAvailable?[["road-transport","道路交通（検証）"]] as const:[])] as const;
+  const qaRoadEdges=useMemo(()=>{
+    const edges=world?.road_transport?.edges??[];
+    return edges.length<=150&&edges.every(edge=>edge.source==="synthetic-qa-not-real-roads")
+      ? edges.filter(edge=>(edge.bus_access==="allowed"||edge.tram_access==="allowed")&&Array.isArray(edge.geometry))
+      : [];
+  },[world?.road_transport]);
+  const qaRoadNodes=useMemo(()=>{
+    const ids=new Set(qaRoadEdges.flatMap(edge=>[edge.from,edge.to]));
+    return (world?.road_transport?.nodes??[]).filter(node=>ids.has(node.id)&&Number.isFinite(node.point.latitude)&&Number.isFinite(node.point.longitude));
+  },[qaRoadEdges,world?.road_transport]);
+  const roadMapPicking=roadTransportAvailable&&mainTab==="construction"&&activeTool==="road-transport"&&roadMapFrom!==null;
+  function startRoadMapPick(){
+    if(!roadTransportAvailable||!enabled||unapplied||busyRef.current||activeTool!=="road-transport"||qaRoadNodes.length<2)return;
+    cancelMapGesture();cancelRouteMapPick();clearTrackSelection();changeMapMode("move");
+    // The QA fixture may be outside the current viewport. Center its actual
+    // coordinates rather than moving the fixture to the current map.
+    let next={...cameraRef.current,latitude:qaRoadNodes.reduce((sum,node)=>sum+node.point.latitude,0)/qaRoadNodes.length,longitude:qaRoadNodes.reduce((sum,node)=>sum+node.point.longitude,0)/qaRoadNodes.length,zoom:16};
+    const fits=()=>qaRoadNodes.every(({point})=>{const p=project(point.latitude,point.longitude,next);return p.x>=viewport.x+20&&p.y>=viewport.y+20&&p.x<=viewport.x+viewport.width-20&&p.y<=viewport.y+viewport.height-20;});
+    while(next.zoom>6&&!fits())next={...next,zoom:next.zoom-1};
+    changeCamera(next);setRoadMapFrom("");
+  }
+  function pickRoadMapNode(id:string){
+    if(!roadMapPicking||!enabled||unapplied||busyRef.current||!qaRoadNodes.some(node=>node.id===id))return;
+    if(!roadMapFrom){setRoadMapFrom(id);return;}
+    if(id===roadMapFrom)return;
+    setRoadMapSelection({from:roadMapFrom,to:id,revision:++roadMapRevision.current});setRoadMapFrom(null);
+  }
+  async function runRoadTransport(command:RoadTransportMutation,args:RoadTransportArgs){
+    if(!roadTransportAvailable||command==="edit_road_tram"&&info?.road_tram_enabled!==true||!enabled||unapplied||busyRef.current||activeTool!=="road-transport"||roadMapPicking)throw Error("別の操作を完了してから、道路交通を変更してください。");
+    busyRef.current=true;setBusy(true);
+    try{
+      const expectedWorldToken=await invoke<string>("ofm_world_token");
+      const snapshot=await invoke<World>(command,{...args,expectedWorldToken});
+      setWorld(snapshot);setDirty(true);setConfirmLoad(false);return snapshot;
+    }finally{busyRef.current=false;setBusy(false);}
+  }
   return (
+    <OperationProvider available={status==="ready"&&!companySetupRequired&&info?.operation_enabled===true} blocked={busy} epoch={worldEpoch} worldVersion={world} onChange={()=>{setDirty(true);setOperationRevision(n=>n+1);}} onRunningChange={setOperationRunning} acquireMutation={()=>{if(busyRef.current)return null;busyRef.current=true;setBusy(true);return ()=>{busyRef.current=false;setBusy(false);};}}>
     <main className="workbench" data-theme={theme} style={{"--rail-width":lineWidth,"--map-track-width":mapMetrics.track+"px","--map-track-casing":mapMetrics.trackCasing+"px","--station-label-size":mapMetrics.stationLabelSize+"px","--map-contrast":contrast/100,"--panel-width":panelWidth+"px","--ui-font":textSize+"px"} as CSSProperties}>
       <header className="app-header">
         <div className="session-status"><span className={`connection-dot ${status}`} aria-hidden="true" />{status === "ready" ? `${info?.version} / エンジン接続済み` : status === "preview" ? "ブラウザプレビュー" : status === "loading" ? "接続中" : "接続エラー"}</div>
       </header>
       <div className="toolbar">
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
+        <OperationClock key={worldEpoch}/>
         <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={()=>activeSlotId?requestSlotAction({kind:"load",id:activeSlotId}):openSlotPicker()}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
       </div>
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
@@ -1867,6 +1928,7 @@ export function App() {
           </details>
             <div className="map-surface">
             <EditingMapFrame enabled={status==="ready"&&!companySetupRequired} tab={mainTab} tool={activeTool} mapMode={mapMode} pickingStations={routeMapPick!==null}/>
+            {roadMapPicking&&<div className="construction-toolbar" role="group" aria-label="道路交通の地図選択"><span role="status">検証用道路の{roadMapFrom?"終点":"起点"}を選択</span> <button type="button" className="secondary" onClick={()=>setRoadMapFrom(null)}>選択をやめる</button></div>}
             {trackRender.error&&<div role="status" className="field-error">ポイント形状を表示できません: {trackRender.error}</div>}
             {confirmRangeDelete&&<DeletionDialog defaultDelete label={`選択した${rangeCount}区間`} busy={busy} blocked={unapplied?"編集中の変更を適用または取り消してください":rangeCount?"":"区間が選択されていません"} error={error} onCancel={()=>setConfirmRangeDelete(false)} onDelete={deleteRange}/>}
             {deleteTarget&&<DeletionDialog defaultDelete={deleteTarget.kind==='built-section'||deleteTarget.kind==='plan-section'} label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
@@ -1928,7 +1990,7 @@ export function App() {
                   {section.infrastructure.level.startsWith('elevated')&&<path d={drawPath(section.points)} fill="none" stroke="#8095a7" strokeWidth={section.infrastructure.track_count*3+6} opacity=".4"/>}
                   {!trackRender.value&&schematicTrackPaths(section.points.map(point=>project(point.latitude,point.longitude,camera)),section.infrastructure.track_count).map((path,rail)=><TrackStroke key={rail} d={path} className={(referenceCopy.active?(manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id):alignmentId)===alignment.id?"alignment-path alignment-selected":"alignment-path"} style={{strokeDasharray:section.infrastructure.level.startsWith('underground')?'5 4':undefined,opacity:1}}/>)}
                 </g>)}
-                <path d={drawPath(alignment.points)} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && activeTool!=="select" && !suppressSelectionClick.current) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
+                <path d={drawPath(alignment.points)} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && activeTool!=="select" && !suppressSelectionClick.current && !roadMapPicking) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
               </g>)}
               {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} lines={alignments} selectedId={referenceCopy.active?((manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id)??""):alignmentId}/>}
               <g className="route-assignment-overlays" pointerEvents="none">{alignments.flatMap(alignment=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
@@ -1937,7 +1999,7 @@ export function App() {
                 <path d={drawPath(section.points)} fill="none" stroke="white" strokeWidth={mapMetrics.serviceCasing} strokeLinecap="butt" strokeLinejoin="round"/>
                 {serviceBandPaths(section.points.map(p=>project(p.latitude,p.longitude,camera)),section.bands,mapMetrics.service).map(band=><path key={band.serviceId} data-service-id={band.serviceId} d={band.d} fill="none" stroke={band.color} strokeWidth={band.width} strokeLinecap="round" strokeLinejoin="round"/>)}
               </g>)}
-              {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&extensionServiceDirty))&&<g className="route-candidate-selection" pointerEvents="none" aria-label="選択した経路">{[...selectedRouteSections].flatMap(([id,sections])=>sections.map((points:GeoPoint[],index:number)=><path key={id+":"+index} d={drawPath(points)} fill="none" stroke="#18a6a6" strokeWidth={7/viewport.scale} strokeOpacity=".65" strokeLinecap="round" strokeLinejoin="round"/>))}</g>}
+              {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<g className="route-candidate-selection" pointerEvents="none" aria-label="選択した経路">{[...selectedRouteSections].flatMap(([id,sections])=>sections.map((points:GeoPoint[],index:number)=><path key={id+":"+index} d={drawPath(points)} fill="none" stroke="#18a6a6" strokeWidth={7/viewport.scale} strokeOpacity=".65" strokeLinecap="round" strokeLinejoin="round"/>))}</g>}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
               {roadFollowing&&(roadDrawing.preview?.kind==='point'||roadDrawing.preview?.kind==='route')&&focusMarker(roadDrawing.preview.point,'anchor','road-snap-point')}
               {roadFollowing&&roadDrawing.preview?.kind==='route'&&<TrackStroke d={drawInfrastructurePath(roadDrawing.preview.line,infrastructure)} className={'draft-path road-drawing-preview'+(constructionValidationError(nativeConstructionPreview?.value)?' invalid-candidate':'')} pointerEvents="none"/>}
@@ -1946,14 +2008,14 @@ export function App() {
               {parallelMode&&parallelStart&&(()=>{const q=project(parallelStart.point.latitude,parallelStart.point.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
               {parallelMode&&parallelPreview&&<TrackStroke d={drawInfrastructurePath(parallelPreview.line,infrastructure)} data-track-count={infrastructure.track_count} className="draft-path candidate-draft" pointerEvents="none"/>}
               {parallelMode&&parallelCandidate&&!parallelStart&&(()=>{const line=offsetTrack(parallelCandidate.source.points,parallelCandidate.projection!.offset),p=line&&hoverPoint&&parallelProjection(line,hoverPoint)?.point;if(!p)return null;const q=project(p.latitude,p.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
-              <JunctionPoints key={worldEpoch} lines={alignments} connections={world?.alignment_connections??[]} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"}/>
-              {parkedPaths.map(plan=><g key={plan.id} className={plan.planId===activePlanId?undefined:"inactive-plan"}><TrackStroke d={drawInfrastructurePath(plan.line,plan.infrastructure)} data-track-count={plan.infrastructure?.track_count??1} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
+              <JunctionPoints key={worldEpoch} lines={alignments} connections={world?.alignment_connections??[]} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"&&!roadMapPicking}/>
+              {parkedPaths.map(plan=><g key={plan.id} className={plan.planId===activePlanId?undefined:"inactive-plan"}><TrackStroke d={drawInfrastructurePath(plan.line,plan.infrastructure)} data-track-count={plan.infrastructure?.track_count??1} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"&&!roadMapPicking){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
 
               {!roadCursorPreview && !parallelMode && !referenceCopy.active && guideCenter && guideEdge && <circle className="curve-circle-guide" cx={guideCenter.x} cy={guideCenter.y} r={Math.hypot(guideEdge.x-guideCenter.x,guideEdge.y-guideCenter.y)} fill="none" stroke={previewError ? "#b34c4c" : "#65716b"} strokeWidth="1" opacity=".6" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
               {!referenceCopy.active&&draftLine.length > 1 && <TrackStroke d={drawInfrastructurePath(draftLine,infrastructure)} data-track-count={infrastructure.track_count} className={"draft-path confirmed-draft"+(mapMode==="move"&&selectedPlanPath===activePathId?" track-explicit-selection":"")} pointerEvents="none" />}
               {!roadCursorPreview&&!parallelMode&&!referenceCopy.active&&candidateLine.length > 1 && <TrackStroke d={drawInfrastructurePath(candidateLine,infrastructure)} data-track-count={infrastructure.track_count} className={"draft-path candidate-draft"+(previewError||nativeValidationError?" invalid-candidate":"")} pointerEvents="none" />}
-              {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} onClick={event=>{if(mapMode==="move"){event.stopPropagation();selectTrackPath(activePathId);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
+              {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} onClick={event=>{if(mapMode==="move"&&!roadMapPicking){event.stopPropagation();selectTrackPath(activePathId);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}
               {enabled&&(activeTool==="tracks"||activeTool==="inactive")&&!referenceCopy.active&&!dragging&&!anchorPreview&&!endpointCandidate&&builtHover&&hoveredBuilt&&lineFocusMarker(hoveredBuilt.points,builtHover.point,"built-hover-point")}
               {junctionCandidate&&(()=>{const p=project(junctionCandidate.point.latitude,junctionCandidate.point.longitude,camera),r=9.5/viewport.scale;return <g className="junction-snap-preview" pointerEvents="none"><title>ここから分岐</title><circle className="junction-snap-ring" cx={p.x} cy={p.y} r={r} fill="#b83945" stroke="white" strokeWidth="2" vectorEffect="non-scaling-stroke"/><path d={`M${p.x-r*.45},${p.y+r*.45} L${p.x},${p.y} L${p.x+r*.45},${p.y-r*.45} M${p.x},${p.y} L${p.x+r*.45},${p.y+r*.45}`} stroke="white" strokeWidth="2" fill="none" vectorEffect="non-scaling-stroke"/></g>;})()}
               {destinationCandidate&&focusMarker(destinationCandidate.point,"anchor","destination-snap-ring",!destinationError)}
@@ -1976,7 +2038,14 @@ export function App() {
                   <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations&&<circle className="station-hit-target" aria-hidden="true" visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r={Math.max(5,8/viewport.scale)} fill="transparent" stroke="none"/>}{!detailedStations ? <circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r={mapMetrics.stationRadius} className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" style={mergedStationIds.has(station.id)?{fill:"transparent",stroke:"none"}:undefined} /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}{stationNamesVisible&&(!stationDisplayGroup(station.id)||stationDisplayGroup(station.id)?.id===station.id)&&<text x={x + mapMetrics.stationLabelOffset} y={y + mapMetrics.stationLabelBaseline}>{station.name}</text>}
                 </g>;
               })}
-              {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&extensionServiceDirty))&&<RouteStationSelection stations={world?.stations??[]} ordered={routeSelectedStations} camera={camera} scale={viewport.scale}/>}
+              {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<RouteStationSelection stations={world?.stations??[]} ordered={routeSelectedStations} camera={camera} scale={viewport.scale} entityLabel={mainTab==="services"?"系統":"路線"} endpoint={routeMapPick==="start"||routeMapPick==="end"?routeMapPick:null}/>}
+              {roadMapPicking&&<g className="road-qa-map-selection" aria-label="検証用道路の点">
+                {qaRoadEdges.map(edge=><path key={edge.id} d={drawPath(edge.geometry)} fill="none" stroke="#185d75" strokeWidth="3" strokeDasharray="5 3" vectorEffect="non-scaling-stroke" pointerEvents="none"/>)}
+                {qaRoadNodes.map(({id,point})=>{const p=project(point.latitude,point.longitude,camera);return <circle key={id} role="button" aria-label={`地図上の道路点 ${id}`} aria-pressed={id===roadMapFrom} tabIndex={enabled?0:-1}
+                  cx={p.x} cy={p.y} r={9/viewport.scale} fill={id===roadMapFrom?"#c56b13":"#185d75"} stroke="white" strokeWidth="2" vectorEffect="non-scaling-stroke" style={{cursor:"pointer"}}
+                  onClick={event=>{event.stopPropagation();if(!suppressSelectionClick.current)pickRoadMapNode(id);}}
+                  onKeyDown={event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();event.stopPropagation();pickRoadMapNode(id);}}}/>;})}
+              </g>}
               {activeTool==="select"&&<g className="range-selection-layer" pointerEvents="none">{rangeSelection.flatMap(row=>{const line=alignments.find(line=>line.id===row.alignmentId);return line?deletionSections(line).filter(section=>row.sectionIndices.includes(section.index)).map(section=><path key={row.alignmentId+":"+section.index} data-selected-alignment={row.alignmentId} data-selected-section={section.index} className="selected-built-section" strokeWidth={8/viewport.scale} d={drawPath(section.points)}/>):[];})}{selectionBox&&(()=>{const b=selectionBounds(selectionBox);return <rect className="selection-box" x={b.left} y={b.top} width={b.right-b.left} height={b.bottom-b.top}/>;})()}</g>}
               {activeTool==="delete"&&enabled&&<g className="deletion-layer">
                 {alignments.flatMap(line=>deletionSections(line).map(section=>{const target:DeleteTarget={kind:"built-section",alignmentId:line.id,sectionIndex:section.index};return <path key={line.id+":"+section.index} data-delete-alignment={line.id} data-delete-section={section.index} d={drawPath(section.points)} {...deleteHitProps(target)}/>;}))}
@@ -1997,12 +2066,16 @@ export function App() {
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
           <div className="inspector-title"><span>RAILWAY WORKSPACE</span><button className="secondary" aria-label={panelCollapsed ? "操作パネルを開く" : "操作パネルを畳む"} onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? "+" : "−"}</button></div>
           <nav className="editor-tabs construction-tabs" role="tablist" aria-label="建設ツール" hidden={mainTab!=="construction"}>
-            {([["tracks","線路"],["stations","駅設置"],["delete","削除"],["select","選択"]] as const).map(([tool,label],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{if(seamMutationPending.current)return;setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const tools=["tracks","stations","delete","select"] as const;const next=tools[event.key==="Home"?0:event.key==="End"?3:(index+(event.key==="ArrowLeft"?3:1))%4];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
+            {constructionTools.map(([tool,label],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{if(seamMutationPending.current)return;setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const length=constructionTools.length;const next=constructionTools[event.key==="Home"?0:event.key==="End"?length-1:(index+(event.key==="ArrowLeft"?length-1:1))%length][0];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
           </nav>
+          {roadTransportAvailable&&world?.companies[0]&&<section id="panel-road-transport" role="tabpanel" aria-labelledby="tab-road-transport" hidden={mainTab!=="construction"||activeTool!=="road-transport"}>
+            <RoadTransportPanel key={worldEpoch} data={world.road_transport??{nodes:[],edges:[],bus_stops:[],bus_routes:[],tram_sections:[]}} companyId={world.companies[0].id} enabled={enabled&&!unapplied&&!roadMapPicking&&mainTab==="construction"&&activeTool==="road-transport"} tramEnabled={info?.road_tram_enabled===true} mapSelection={roadMapSelection} onPickOnMap={qaRoadNodes.length>=2?startRoadMapPick:undefined} run={runRoadTransport}/>
+            {info?.bus_operation_enabled===true&&activeTool==="road-transport"&&mainTab==="construction"&&<BusOperations key={worldEpoch} routes={world.road_transport?.bus_routes.filter(route=>route.owner===world.companies[0].id)??[]} enabled={enabled&&!unapplied&&!roadMapPicking}/> }
+          </section>}
           <section id="workspace-panel-finance" role="tabpanel" aria-labelledby="workspace-tab-finance" hidden={mainTab!=="finance"}><h3>財務</h3><p>未実装です。収支・運賃・経費の画面は今後追加します。</p></section>
-          <section id="workspace-panel-city" role="tabpanel" aria-labelledby="workspace-tab-city" hidden={mainTab!=="city"}><h3>都市</h3><p>未実装です。人口・需要・都市発展の画面は今後追加します。</p></section>
+          <section id="workspace-panel-city" role="tabpanel" aria-labelledby="workspace-tab-city" hidden={mainTab!=="city"}><h3>都市</h3>{info?.fixed_od_enabled===true&&world?<FixedOdPanel key={worldEpoch} stations={world.stations} services={world.services} busStops={info.bus_operation_enabled===true?world.road_transport?.bus_stops:undefined} busRoutes={info.bus_operation_enabled===true?world.road_transport?.bus_routes:undefined} enabled={enabled&&mainTab==="city"} worldVersion={demandVersion}/>:<p>人口・需要・都市発展の画面は今後追加します。</p>}</section>
           <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3>
-            <SaveSlots deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} onSave={save} saveDisabled={!enabled||saveBlocked} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy||status!=="ready"} canSave={!saveBlocked&&!companySetupRequired} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{setSlotName(companyName);setSlotDialog("save-as");}} onNew={()=>{setSlotName("");setSlotDialog("new");}}/>
+            <SaveSlots onRename={renameSavedWorld} deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} onSave={save} saveDisabled={!enabled||saveBlocked} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy||status!=="ready"} canSave={!saveBlocked&&!companySetupRequired} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{setSlotName(companyName);setSlotDialog("save-as");}} onNew={()=>{setSlotName("");setSlotDialog("new");}}/>
             {!activeSlotId&&<p>初回保存後に自動保存を開始します。</p>}
             <h4>オートセーブ</h4><p>2分ごとに自動保存します。手動保存とは別に、ワールドと建設計画を保存します。</p><p role="status">{!slotsReady?"保存先の確認が完了するまで自動保存は停止しています。":activeSlotId?autosave.message:"初回保存待ち"}</p>{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
@@ -2060,12 +2133,13 @@ export function App() {
             <h3>系統</h3>
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
             <ServiceDirectory key={`services-${worldEpoch}`} services={world?.services??[]} appearances={world?.service_appearances} selected={serviceId} enabled={enabled} onChoose={chooseService} onCreate={()=>{if(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty){chooseService(null);return;}chooseService(null);cancelRouteMapPick();setServiceCreating(true);setServiceSequenceKey(key=>key+1);}}/>
-            {serviceCreating&&serviceId===null&&<ServiceMapCreator key={`map-service-${pathDraftEpoch}`} world={world??previewWorld} stations={world?.stations??[]} enabled={enabled&&mainTab==="services"} defaultName={(()=>{let n=1;while(world?.services.some(row=>row.name===`系統${n}`))n++;return `系統${n}`;})()} onDirty={setPathServiceDirty} onSave={async draft=>{await createPathService(draft);setServiceCreating(false);cancelRouteMapPick();}} onCancel={()=>{setServiceCreating(false);setPathServiceDirty(false);cancelRouteMapPick();}} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="services")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} mapPickTarget={routeMapPick} startSequenceKey={serviceSequenceKey}/>}
+            {serviceCreating&&serviceId===null&&<ServiceMapCreator onCandidateChange={setRouteSelectedCandidate} onSelectionChange={setRouteSelectedStations} key={`map-service-${pathDraftEpoch}`} world={world??previewWorld} stations={world?.stations??[]} enabled={enabled&&mainTab==="services"} defaultName={(()=>{let n=1;while(world?.services.some(row=>row.name===`系統${n}`))n++;return `系統${n}`;})()} onDirty={setPathServiceDirty} onSave={async draft=>{await createPathService(draft);setServiceCreating(false);cancelRouteMapPick();}} onCancel={()=>{setServiceCreating(false);setPathServiceDirty(false);cancelRouteMapPick();}} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="services")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} mapPickTarget={routeMapPick} startSequenceKey={serviceSequenceKey}/>}
             {!serviceCreating&&serviceId===null&&<ServiceFromRoute key={`route-service-${worldEpoch}-${pathDraftEpoch}`} routes={world?.routes??[]} paths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled&&!serviceDirty&&(!pathServiceDirty||routeServiceDirty)} onDirty={dirty=>{setRouteServiceDirty(dirty);setPathServiceDirty(dirty);}} onSave={createPathService}/>}
             <details><summary>区間・直通を指定して作成</summary>
             <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null&&!serviceCreating&&!routeServiceDirty} onDirty={setPathServiceDirty} onSave={createPathService}/></details>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
+            {serviceId&&selectedServicePath&&<ServiceOperations key={`${worldEpoch}-${serviceId}`} serviceId={serviceId} enabled={enabled&&!unapplied}/>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
             {serviceId&&selectedServicePath&&world&&<ServiceDelete key={`delete-${serviceId}-${worldEpoch}`} name={world.services.find(s=>s.id===serviceId)?.name??""} enabled={enabled} hasEdits={serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty} onDelete={async()=>{
               if(!enabled||busyRef.current||serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty)throw Error("編集中の変更を適用または取り消してください。");
@@ -2091,10 +2165,11 @@ export function App() {
         {!panelCollapsed&&<PanelResizer value={panelWidth} onChange={setPanelWidth}/>}
       </div>
       {companySetupRequired&&<CompanySetup name={companyName} onName={setCompanyName} busy={busy} error={error} errorRevision={errorRevision} onDismissError={()=>setError("")} onStart={startCompany} onLoad={openSlotPicker} onRestore={autosave.available?()=>load("auto"):undefined}/>}
-      {slotPicker&&<div className="company-setup-backdrop"><section className="company-setup save-slot-dialog" role="dialog" aria-modal="true" aria-label="ワールドを選択"><h2>セーブデータ</h2><SaveSlots deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy} canSave={false} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{}} onNew={()=>{setSlotPicker(false);setSlotName("");setSlotDialog("new");}}/><button disabled={busy} onClick={()=>setSlotPicker(false)}>閉じる</button>{error&&<p role="alert">{error}</p>}</section></div>}
+      {slotPicker&&<div className="company-setup-backdrop"><section className="company-setup save-slot-dialog" role="dialog" aria-modal="true" aria-label="ワールドを選択"><h2>セーブデータ</h2><SaveSlots onRename={renameSavedWorld} deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy} canSave={false} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{}} onNew={()=>{setSlotPicker(false);setSlotName("");setSlotDialog("new");}}/><button disabled={busy} onClick={()=>setSlotPicker(false)}>閉じる</button>{error&&<p role="alert">{error}</p>}</section></div>}
       {slotDialog&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label={slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}><h2>{slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}</h2><form autoComplete="off" onSubmit={submitSlotName}><label>名前<input autoComplete="off" autoFocus maxLength={80} value={slotName} disabled={busy} onChange={event=>setSlotName(event.target.value)}/></label><button type="submit" disabled={busy||!slotName.trim()||confirmLoad}>{slotDialog==="new"?"作成":"保存"}</button><button type="button" disabled={busy} onClick={()=>{setSlotDialog(null);setSlotAction(null);setConfirmLoad(false);}}>キャンセル</button></form>{error&&<p role="alert">{error}</p>}</section></div>}
       {confirmLoad && <div className="banner load-confirm" style={{position:"fixed",zIndex:2000,left:"20%",right:"20%",top:"20%"}} role="alert"><p>{slotAction?.kind==="new"?"新しいワールドを作成すると、現在の未保存の変更と未適用の下書きは破棄されます。保存済みのワールドは変更しません。":"読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。"}</p><button className="secondary" disabled={busy} onClick={() => {setConfirmLoad(false);setSlotAction(null);}}>戻る</button><button disabled={busy} onClick={()=>slotAction?applySlotAction():load()}>{slotAction?.kind==="new"?"変更を破棄して作成":"読込を続ける"}</button></div>}
-      <footer className="app-footer"><p role="status" aria-live="polite">{busy ? (roadCheckPending ? "道路を確認中（最大25秒）。未取得の場合も通常建設を続行します。" : "ワールドを更新しています。") : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>列車種別・ダイヤ・列車運行・旅客流動は未実装</span></footer>
+      <footer className="app-footer"><p role="status" aria-live="polite">{busy ? (roadCheckPending ? "道路を確認中（最大25秒）。未取得の場合も通常建設を続行します。" : "ワールドを更新しています。") : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>{info?.fixed_od_enabled===true?"固定ODの需要試算は「都市」から":info?.operation_enabled===true?"旅客流動は未接続":"列車種別・ダイヤ・列車運行・旅客流動は未実装"}</span></footer>
     </main>
+    </OperationProvider>
   );
 }

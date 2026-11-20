@@ -1,10 +1,16 @@
-//! Desktop application operations. The core owns IDs and referential integrity.
+#[path = "session/road_transport.rs"]
+mod road_transport;
+pub use road_transport::RoadTramEdit;
+// Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
 #[path = "session/history.rs"]
 mod history;
+#[path = "session/operation.rs"]
+mod operation;
 pub use deletion::AlignmentSectionSelection;
 pub use history::WorldEditHistory;
+pub use operation::OperationView;
 #[path = "session/ofm.rs"]
 mod ofm;
 pub use ofm::{OfmBindingInput, OfmRawInput};
@@ -141,6 +147,7 @@ pub struct WorldEditor {
     autosave_replace_allowed: bool,
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
     edit_history: history::EditHistory,
+    operation_tick: Option<std::time::Instant>,
     #[cfg(test)]
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
@@ -540,6 +547,7 @@ impl WorldEditor {
             autosave_replace_allowed: false,
             deleted_alignment: None,
             edit_history: Default::default(),
+            operation_tick: None,
             #[cfg(test)]
             pending_manual_replacement: None,
         }
@@ -2107,6 +2115,7 @@ impl WorldEditor {
             draft.view_state = Some(view);
         }
         candidate.world = World::new(draft).map_err(|e| e.to_string())?;
+        candidate.world.retain_operation_from(&self.world);
         let (_, version) =
             rosenfu_storage::save_world_if_version(path, &candidate.world, &pending.version)
                 .map_err(|e| e.to_string())?;
@@ -2138,6 +2147,7 @@ impl WorldEditor {
         view: Option<rosenfu_core::world::ViewState>,
         automatic: bool,
     ) -> Result<(), String> {
+        self.advance_operation()?;
         let mut candidate = self.clone();
         let mut draft = candidate.snapshot();
         if let Some(plans) = plans {
@@ -2147,6 +2157,7 @@ impl WorldEditor {
             draft.view_state = Some(view);
         }
         candidate.world = World::new(draft).map_err(|e| e.to_string())?;
+        candidate.world.retain_operation_from(&self.world);
         if automatic {
             candidate.autosave(path)?;
         } else {
@@ -2156,6 +2167,7 @@ impl WorldEditor {
         Ok(())
     }
     pub fn save(&mut self, path: &Path) -> Result<(), String> {
+        self.advance_operation()?;
         let expected = if self.loaded_path.as_deref() == Some(path) {
             self.manual_version
                 .as_ref()
@@ -2231,6 +2243,7 @@ impl WorldEditor {
         Ok(())
     }
     pub fn autosave(&mut self, path: &Path) -> Result<(), String> {
+        self.advance_operation()?;
         let expected = match &self.autosave_version {
             Some((authorized_path, version)) if authorized_path == path => version.clone(),
             _ if !self.autosave_blocked => rosenfu_storage::FileVersion::Missing,
@@ -2335,6 +2348,7 @@ impl WorldEditor {
         self.deleted_alignment = None;
         self.clear_edit_history();
         self.world = candidate;
+        self.operation_tick = None;
         self.company = company;
         self.company_setup_required = false;
         #[cfg(test)]

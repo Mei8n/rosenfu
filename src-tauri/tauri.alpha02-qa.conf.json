@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Rosenfu Alpha 0.2 Test",
+  "version": "0.2.0-alpha.1",
+  "identifier": "io.github.mei8n.rosenfu.alpha02qa",
+  "app": {
+    "windows": [
+      {
+        "title": "Rosenfu α0.2 テスト",
+        "width": 960,
+        "height": 640,
+        "userAgent": "Rosenfu/0.2.0-alpha.1 (+https://github.com/mei8n/rosenfu)"
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Japanese", "English"]
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    }
+  }
+}

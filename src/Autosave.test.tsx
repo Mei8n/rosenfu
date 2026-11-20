@@ -86,3 +86,14 @@ test('autosave captures latest camera together with matching world and skips unc
  await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(invoke).toHaveBeenCalledWith('autosave_world',{slotId:'test-slot',viewState:second});
  await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(vi.mocked(invoke).mock.calls.filter(([c])=>c==='autosave_world')).toHaveLength(1);
 });
+
+test('running native clock autosaves repeatedly without frontend world edits',async()=>{
+ vi.useFakeTimers();vi.mocked(invoke).mockImplementation(async c=>c==='autosave_status'?{available:false}:{saved:true});
+ const props={slotId:'test-slot',ready:true,dirty:true,continuous:true,world:{id:1},epoch:0,busyRef:{current:false},setBusy:vi.fn()};
+ const h=renderHook(p=>useAutosave(p),{initialProps:props});
+ const writes=()=>vi.mocked(invoke).mock.calls.filter(([c])=>c==='autosave_world').length;
+ await act(async()=>{await vi.advanceTimersByTimeAsync(240000);});expect(writes()).toBe(2);
+ h.rerender({...props,continuous:false});await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(writes()).toBe(2);
+ // Explicit paused clock update creates a new save revision even when track data is unchanged.
+ h.rerender({...props,continuous:false,world:{id:1}});await act(async()=>{await vi.advanceTimersByTimeAsync(120000);});expect(writes()).toBe(3);
+});
