@@ -1,0 +1,92 @@
+name: 開発版の不具合報告
+description: Rosenfuの開発版で起きた不具合を、再現に必要な情報と一緒に報告する
+title: "[不具合] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        タイトルには「どこで・何をすると・どうなるか」を短く書いてください
+        1件につき不具合は1つ。似たIssueがすでにあれば、そのIssueに追加情報を書いてください
+        ここは公開リポジトリです。スクリーンショットやログのユーザー名、個人フォルダ、共有用ではないURLなどは伏せてください
+  - type: input
+    id: version
+    attributes:
+      label: Rosenfuのバージョン
+      description: 大まかなバージョンだけでOK。ビルド番号やコミットIDは必須ではありません
+      placeholder: "例: 0.2"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OSと起動方法
+      description: OS名・バージョンと、インストーラーから入れたか、ソースから起動したかなど
+      placeholder: "例: Windows 11 24H2、開発版インストーラーから導入"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 不具合が起きた機能
+      options:
+        - 起動・インストール・更新
+        - 地図・表示・操作
+        - 線路・道路・トラム・バスの建設
+        - 駅・停留所
+        - 路線・系統・列車運行
+        - 旅客需要
+        - 保存・読み込み
+        - その他・不明
+    validations:
+      required: true
+  - type: textarea
+    id: starting-state
+    attributes:
+      label: 再現する前の状態
+      description: 新規／既存ワールドの別、地図の場所、設定、選択中のモードなど、再現に関係する条件を書いてください
+      placeholder: "例: 新規ワールド、東京駅付近、線路敷設モードで複線を選択"
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      description: 他の人が同じ操作をできるよう順番に。チェックリストの番号があれば併記してください
+      placeholder: |
+        1. …を開く
+        2. …を選ぶ
+        3. …を押す
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際に起きたこと
+      description: エラー表示は原文で。固まる場合はおおよその時間、保存の問題ならデータが残っているかも書いてください
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した動作
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: 再現頻度
+      options:
+        - 毎回
+        - ときどき
+        - 1回だけ
+        - 未確認
+    validations:
+      required: true
+  - type: input
+    id: regression
+    attributes:
+      label: 最後に問題なく動いた版（分かれば）
+      placeholder: "例: 0.1では起きなかった"
+  - type: textarea
+    id: evidence
+    attributes:
+      label: スクリーンショット・ログ・補足（任意）
+      description: 動画、関連Issue、ソース起動時のブランチやコミット、分かっている回避策など。セーブファイルは直接添付せず、必要なら開発側に渡し方を確認してください
