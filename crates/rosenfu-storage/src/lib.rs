@@ -1,4 +1,6 @@
 //! Provisional alpha JSON storage. One authoritative writer per save path is required.
+mod evidence;
+use evidence::EvidenceEnvelope;
 use rosenfu_core::world::{World, WorldDraft, WorldError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -7,16 +9,8 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
-mod legacy_alignment;
-mod legacy_v1;
-mod legacy_v3;
-mod legacy_v4;
-mod legacy_v5;
-mod legacy_v6;
-mod legacy_v7;
-
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 9;
+pub const SCHEMA_VERSION: u64 = 25;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -26,6 +20,7 @@ pub enum StorageError {
     InvalidHeader,
     InvalidFormat,
     UnsupportedVersion(u64),
+    LegacyFormat,
     TooLarge,
     FileChanged,
     InvalidWorld(WorldError),
@@ -38,10 +33,9 @@ impl std::fmt::Display for StorageError {
             Self::Json(e) => write!(f, "invalid save JSON: {e}"),
             Self::InvalidHeader => write!(f, "missing or invalid save header"),
             Self::InvalidFormat => write!(f, "not a Rosenfu world file"),
-            Self::UnsupportedVersion(v) => write!(
-                f,
-                "unsupported world schema {v}; supported: 1..={SCHEMA_VERSION}"
-            ),
+            Self::UnsupportedVersion(_) | Self::LegacyFormat => {
+                write!(f, "このセーブ形式は非対応です")
+            }
             Self::FileChanged => write!(
                 f,
                 "save file changed since it was observed; reload before saving"
@@ -86,6 +80,7 @@ struct SaveDocument {
     format: String,
     schema_version: u64,
     world: WorldDraft,
+    road_evidence: EvidenceEnvelope,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -115,42 +110,68 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or(StorageError::InvalidHeader)?;
-    let current = match version {
-        1 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(
-            legacy_v3::migrate(legacy_v1::migrate(value)?)?,
-        )?)?)?,
-        2 | 3 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(
-            legacy_v3::migrate(value)?,
-        )?)?)?,
-        4 => legacy_v6::migrate(legacy_v5::migrate(legacy_v4::migrate(value)?)?)?,
-        5 => legacy_v6::migrate(legacy_v5::migrate(value)?)?,
-        6 => legacy_v6::migrate(value)?,
-        7 | 8 | SCHEMA_VERSION => {
-            if [
-                "route_paths",
-                "service_paths",
-                "source_records",
-                "alignment_provenance",
-            ]
-            .iter()
-            .any(|field| {
-                !value
-                    .get("world")
-                    .and_then(|w| w.get(*field))
-                    .is_some_and(|p| p.is_array())
-            }) {
-                return Err(StorageError::InvalidHeader);
-            }
-            value
+    if version != SCHEMA_VERSION {
+        return Err(StorageError::UnsupportedVersion(version));
+    }
+    let data = value.get("world").ok_or(StorageError::InvalidHeader)?;
+    if data.get("tracks").is_some()
+        || ["routes", "services"].iter().any(|field| {
+            data.get(*field)
+                .and_then(|v| v.as_array())
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item.get("tracks").is_some() || item.get("stops").is_some())
+                })
+        })
+        || data
+            .get("route_paths")
+            .and_then(|v| v.as_array())
+            .is_some_and(|paths| {
+                paths.iter().any(|p| {
+                    p.get("segments")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|segments| {
+                            segments
+                                .iter()
+                                .any(|s| s.get("kind").and_then(|k| k.as_str()) == Some("track"))
+                        })
+                })
+            })
+        || data
+            .get("service_paths")
+            .and_then(|v| v.as_array())
+            .is_some_and(|paths| {
+                paths.iter().any(|p| {
+                    p.get("legs")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|legs| {
+                            legs.iter().any(|l| {
+                                l.get("segment")
+                                    .and_then(|s| s.get("kind"))
+                                    .and_then(|k| k.as_str())
+                                    == Some("track")
+                            })
+                        })
+                })
+            })
+    {
+        return Err(StorageError::LegacyFormat);
+    }
+    for field in [
+        "route_paths",
+        "service_paths",
+        "service_route_bindings",
+        "source_records",
+        "alignment_provenance",
+    ] {
+        if !data.get(field).is_some_and(|v| v.is_array()) {
+            return Err(StorageError::InvalidHeader);
         }
-        _ => return Err(StorageError::UnsupportedVersion(version)),
-    };
-    let current = if version <= 7 {
-        legacy_v7::migrate(current)?
-    } else {
-        current
-    };
-    let document: SaveDocument = serde_json::from_value(current)?;
+    }
+    let mut document: SaveDocument = serde_json::from_value(value)?;
+    let store = document.road_evidence.restore()?;
+    document.world.restore_road_evidence(store)?;
     let world = World::new(document.world)?;
     ensure_world_saveable(&world)?;
     Ok(world)
@@ -161,6 +182,7 @@ struct BorrowedSaveDocument<'a> {
     format: &'static str,
     schema_version: u64,
     world: &'a WorldDraft,
+    road_evidence: EvidenceEnvelope,
 }
 
 struct BoundedCounter {
@@ -186,6 +208,7 @@ pub fn ensure_world_saveable(world: &World) -> Result<(), StorageError> {
         format: FORMAT,
         schema_version: SCHEMA_VERSION,
         world: world.snapshot(),
+        road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
     };
     let mut counter = BoundedCounter { count: 0 };
     serde_json::to_writer_pretty(&mut counter, &document).map_err(|e| {
@@ -207,6 +230,7 @@ pub fn encode(world: &World) -> Result<Vec<u8>, StorageError> {
         format: FORMAT,
         schema_version: SCHEMA_VERSION,
         world: world.snapshot(),
+        road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
     };
     let mut bytes = serde_json::to_vec_pretty(&document)?;
     bytes.push(b'\n');
@@ -255,7 +279,7 @@ pub fn load_world_with_version(
 fn lock_save(path: &Path) -> Result<File, StorageError> {
     let mut name = path.as_os_str().to_os_string();
     name.push(".lock");
-    let lock_path = PathBuf::from(name);
+    let lock_path = slots::slot_lock_path(path).unwrap_or_else(|| PathBuf::from(name));
     regular_file_exists(&lock_path)?;
     let file = OpenOptions::new()
         .read(true)
@@ -425,3 +449,9 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"other writer");
     }
 }
+
+mod slots;
+pub use slots::{
+    create_save_slot, list_deleted_save_slots, list_save_slots, move_save_slot, save_slot_path,
+    SaveSlot,
+};

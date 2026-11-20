@@ -37,7 +37,7 @@ fn segment(a: AlignmentId, from: StationId, to: StationId) -> RouteSegment {
 #[test]
 fn physical_path_and_membership_are_independent_and_atomic() {
     let (mut w, c, a, s) = sample();
-    let tracks = w.snapshot().tracks.clone();
+    let alignments = w.snapshot().alignments.clone();
     let route = w
         .add_planned_route(
             c,
@@ -52,7 +52,7 @@ fn physical_path_and_membership_are_independent_and_atomic() {
         w.snapshot().route_paths[0].member_stations,
         vec![s[0], s[2]]
     );
-    assert_eq!(w.snapshot().tracks, tracks);
+    assert_eq!(w.snapshot().alignments, alignments);
     assert!(w.snapshot().services.is_empty());
     let before = w.clone();
     for members in [
@@ -88,9 +88,8 @@ fn adding_interior_station_preserves_path_and_does_not_add_membership() {
     assert_eq!(preview.member_stations, s);
 }
 #[test]
-fn invalid_references_duplicate_sidecars_and_dual_sources_are_rejected() {
+fn invalid_references_duplicate_sidecars_and_missing_paths_are_rejected() {
     let (mut w, c, a, s) = sample();
-    let track = w.add_track(c, s[0], s[1]).unwrap();
     w.add_planned_route(c, "R".into(), s[0], vec![segment(a, s[0], s[2])], s.clone())
         .unwrap();
     let before = w.clone();
@@ -101,11 +100,11 @@ fn invalid_references_duplicate_sidecars_and_dual_sources_are_rejected() {
     bad.route_paths[0].route_id = RouteId(999);
     assert_eq!(w.replace(bad), Err(WorldError::InvalidRoutePath));
     let mut bad = w.snapshot().clone();
-    bad.routes[0].tracks = vec![track];
+    bad.route_paths[0].segments.clear();
     assert_eq!(w.replace(bad), Err(WorldError::InvalidRoutePath));
     let mut bad = w.snapshot().clone();
     bad.route_paths.clear();
-    assert_eq!(w.replace(bad), Err(WorldError::EmptyRoute));
+    assert_eq!(w.replace(bad), Err(WorldError::InvalidRoutePath));
     let mut bad = w.snapshot().clone();
     bad.station_placements.retain(|p| p.station_id != s[0]);
     assert_eq!(w.replace(bad), Err(WorldError::InvalidRoutePath));
@@ -115,11 +114,20 @@ fn invalid_references_duplicate_sidecars_and_dual_sources_are_rejected() {
     assert_eq!(w, before);
 }
 #[test]
-fn mixed_path_reverse_order_and_service_independence() {
+fn multi_leg_reverse_order_and_service_independence() {
     let (mut w, c, a, s) = sample();
-    let d = w.add_station(c, "D".into(), 35.0, 139.2).unwrap();
-    let t = w.add_track(c, s[2], d).unwrap();
-    w.add_service(c, "Independent".into(), s[2], vec![t], vec![0, 1])
+    let d = w
+        .place_station_on_alignment(c, "D".into(), a, 0.98, 20., 10.)
+        .unwrap();
+    let seg = vec![segment(a, s[2], d)];
+    let stops = w
+        .preview_service_path(s[2], seg.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .map(|o| o.reference)
+        .collect();
+    w.add_service_path(c, "Independent".into(), s[2], seg, stops)
         .unwrap();
     let services = w.snapshot().services.clone();
     let r = w
@@ -127,7 +135,7 @@ fn mixed_path_reverse_order_and_service_independence() {
             c,
             "R".into(),
             d,
-            vec![RouteSegment::Track { track_id: t }, segment(a, s[2], s[0])],
+            vec![segment(a, d, s[2]), segment(a, s[2], s[0])],
             vec![d, s[2], s[0]],
         )
         .unwrap();
@@ -146,9 +154,7 @@ fn malformed_or_repeated_paths_and_empty_path_do_not_allocate_ids() {
         vec![segment(AlignmentId(999), s[0], s[2])],
         vec![segment(a, s[1], s[2])],
         vec![segment(a, s[0], s[2]), segment(a, s[2], s[0])],
-        vec![RouteSegment::Track {
-            track_id: TrackId(999),
-        }],
+        vec![segment(a, s[0], StationId(999))],
     ] {
         assert!(w
             .add_planned_route(c, "R".into(), s[0], segments, vec![s[0], s[2]])

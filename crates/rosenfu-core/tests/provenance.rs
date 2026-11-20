@@ -25,6 +25,8 @@ fn sample() -> (
         conversion_format_version: 1,
     };
     let provenance = AlignmentProvenanceInput {
+        tile_fragment_id: None,
+        network_path: vec![],
         source_key: key,
         method: ProvenanceMethod::OsmWaySliceV1,
         osm_way_id: "123".into(),
@@ -449,4 +451,209 @@ fn multiple_reference_extensions_keep_separate_sources_and_orientation() {
         )
         .is_err());
     assert_eq!(w.snapshot(), &before);
+}
+
+#[test]
+fn imported_geometry_split_retains_source_claim_and_composes_explicit_lineage() {
+    let (mut w, c, source, input, points) = sample();
+    let id = w
+        .build_alignment_from_reference(
+            c,
+            "import".into(),
+            points.clone(),
+            source.clone(),
+            input.clone(),
+        )
+        .unwrap();
+    let suffix = w.split_alignment_at_position(c, id, 0, 0.4).unwrap();
+    assert_eq!(w.snapshot().source_records, vec![source]);
+    assert_eq!(w.snapshot().alignment_provenance.len(), 2);
+    for p in &w.snapshot().alignment_provenance {
+        assert_eq!(p.source, input); // No fabricated OSM segment correspondence.
+        assert_eq!(p.derived_slice.as_ref().unwrap().original_points, points);
+    }
+    let last = w.split_alignment_at_position(c, suffix, 0, 0.5).unwrap();
+    let intervals: Vec<_> = [id, suffix, last]
+        .into_iter()
+        .map(|id| {
+            let p = w
+                .snapshot()
+                .alignment_provenance
+                .iter()
+                .find(|p| p.alignment_id == id)
+                .unwrap();
+            let slice = p.derived_slice.as_ref().unwrap();
+            (slice.from_position, slice.to_position)
+        })
+        .collect();
+    assert!((intervals[0].1 - 0.4).abs() < 1e-6);
+    assert_eq!(intervals[0].1, intervals[1].0);
+    assert_eq!(intervals[1].1, intervals[2].0);
+    assert!((intervals[1].1 - 0.7).abs() < 1e-6);
+    assert_eq!(intervals[2].1, 1.0);
+    let saved = serde_json::to_string(w.snapshot()).unwrap();
+    let restored = World::new(serde_json::from_str(&saved).unwrap()).unwrap();
+    assert_eq!(restored, w);
+    let before = w.snapshot().clone();
+    let mut forged = before.clone();
+    forged.alignment_provenance[0]
+        .derived_slice
+        .as_mut()
+        .unwrap()
+        .to_position = 0.99;
+    assert!(World::new(forged.clone()).is_err());
+    let forged_json = serde_json::to_string(&forged).unwrap();
+    assert!(World::new(serde_json::from_str(&forged_json).unwrap()).is_err());
+    assert!(w.replace(forged).is_err());
+    assert_eq!(w.snapshot(), &before);
+}
+
+#[test]
+fn supplier_network_path_is_not_an_osm_way_and_survives_world_validation() {
+    let (mut world, owner, mut record, mut source, points) = sample();
+    record.conversion_format_version = 2;
+    source.method = ProvenanceMethod::RailGraphRouteV1;
+    source.osm_way_id.clear();
+    source.start_segment_index = 0;
+    source.end_segment_index = 0;
+    source.start_fraction = 0.0;
+    source.end_fraction = 0.0;
+    source.network_path = vec![
+        RailGraphSpan {
+            region: "jp".into(),
+            chain_id: 17,
+            from_fraction: 0.2,
+            to_fraction: 1.0,
+        },
+        RailGraphSpan {
+            region: "jp".into(),
+            chain_id: 28,
+            from_fraction: 1.0,
+            to_fraction: 0.4,
+        },
+    ];
+    world
+        .build_alignment_from_reference(
+            owner,
+            "rail network".into(),
+            points.clone(),
+            record.clone(),
+            source.clone(),
+        )
+        .unwrap();
+    assert_eq!(World::new(world.snapshot().clone()).unwrap(), world);
+    assert_eq!(
+        world.snapshot().alignment_provenance[0].source.network_path,
+        source.network_path
+    );
+    for bad in 0..5 {
+        let mut invalid = source.clone();
+        let mut invalid_record = record.clone();
+        match bad {
+            0 => invalid.osm_way_id = "123".into(),
+            1 => invalid.network_path.clear(),
+            2 => invalid.network_path[0].from_fraction = f64::NAN,
+            3 => invalid_record.conversion_format_version = 1,
+            _ => invalid.network_path[0].chain_id = 600_000,
+        }
+        let snapshot = world.clone();
+        assert!(world
+            .build_alignment_from_reference(
+                owner,
+                "bad".into(),
+                points.clone(),
+                invalid_record,
+                invalid
+            )
+            .is_err());
+        assert_eq!(world, snapshot);
+    }
+}
+
+fn ofm_sample() -> (
+    World,
+    CompanyId,
+    SourceRecord,
+    AlignmentProvenanceInput,
+    Vec<GeoPoint>,
+) {
+    let (w, c, mut record, mut provenance, points) = sample();
+    record.dataset_id = "ofm-tiles/20261101_080013_pt".into();
+    record.revision = "20261101_080013_pt".into();
+    record.conversion_format_version = 3;
+    provenance.method = ProvenanceMethod::OfmTileSliceV1;
+    provenance.mode = ReferenceMode::Road;
+    provenance.osm_way_id.clear();
+    provenance.tile_fragment_id = Some("ofm:20261101_080013_pt:14:14551:6465:12:0".into());
+    (w, c, record, provenance, points)
+}
+#[test]
+fn tile_provenance_roundtrip_retains_fragment_without_claiming_osm_identity() {
+    let (mut w, c, record, provenance, points) = ofm_sample();
+    w.build_alignment_from_reference(c, "Tile road".into(), points, record, provenance.clone())
+        .unwrap();
+    let loaded =
+        World::new(serde_json::from_str(&serde_json::to_string(w.snapshot()).unwrap()).unwrap())
+            .unwrap();
+    assert_eq!(loaded, w);
+    assert_eq!(w.snapshot().alignment_provenance[0].source, provenance);
+    assert!(provenance.osm_way_id.is_empty());
+}
+#[test]
+fn malformed_or_mislabelled_tile_provenance_is_atomic_and_rejected() {
+    let (world, c, record, provenance, points) = ofm_sample();
+    for fragment in [
+        "123",
+        "ofm:wrong:14:14551:6465:12:0",
+        "ofm:20261101_080013_pt:13:14551:6465:12:0",
+        "ofm:20261101_080013_pt:14:16384:6465:12:0",
+        "ofm:20261101_080013_pt:14:14551:6465:10000:0",
+        "ofm:20261101_080013_pt:14:14551:6465:12:0:1",
+        "ofm:20261101_080013_pt:14:14551:6465:12:-1",
+    ] {
+        let mut w = world.clone();
+        let mut p = provenance.clone();
+        p.tile_fragment_id = Some(fragment.into());
+        assert!(w
+            .build_alignment_from_reference(c, "Bad".into(), points.clone(), record.clone(), p)
+            .is_err());
+        assert_eq!(w, world);
+    }
+    for case in 0..9 {
+        let mut w = world.clone();
+        let mut r = record.clone();
+        let mut p = provenance.clone();
+        match case {
+            0 => p.osm_way_id = "123".into(),
+            1 => p.method = ProvenanceMethod::OsmWaySliceV1,
+            2 => p.mode = ReferenceMode::Rail,
+            3 => p.tile_fragment_id = None,
+            4 => r.conversion_format_version = 1,
+            5 => r.dataset_id = "ofm-tiles/other".into(),
+            6 => r.dataset_id = "ofm-tiles/20261101_080013_pt/14/0/0".into(),
+            7 => {
+                p.network_path = vec![RailGraphSpan {
+                    region: "jp".into(),
+                    chain_id: 0,
+                    from_fraction: 0.,
+                    to_fraction: 1.,
+                }]
+            }
+            _ => {
+                p.method = ProvenanceMethod::OsmWaySliceV1;
+                p.tile_fragment_id = None;
+                p.osm_way_id = "123".into();
+                r.conversion_format_version = 1;
+            }
+        }
+        assert!(w
+            .build_alignment_from_reference(c, "Bad".into(), points.clone(), r, p)
+            .is_err());
+        assert_eq!(w, world);
+    }
+    let (mut w, c, r, mut p, points) = sample();
+    p.osm_way_id = provenance.tile_fragment_id.unwrap();
+    assert!(w
+        .build_alignment_from_reference(c, "Not OSM".into(), points, r, p)
+        .is_err());
 }

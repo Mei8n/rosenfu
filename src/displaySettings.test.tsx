@@ -12,7 +12,7 @@ test("old and missing fields merge defaults while invalid values and unknown ver
 test("local preferences persist, restore and reset without touching other keys",()=>{
  localStorage.setItem("other-app","keep");const {result,unmount}=renderHook(useDisplaySettings);
  act(()=>{result.current.update({theme:"dark",lineWidth:7});result.current.update({contrast:120,panelWidth:360,textSize:15});});
- const expected={background:"osm",theme:"dark",lineWidth:7,contrast:120,panelWidth:360,textSize:15};expect(result.current.settings).toEqual(expected);unmount();const restored=renderHook(useDisplaySettings);expect(restored.result.current.settings).toEqual(expected);act(()=>restored.result.current.reset());expect(restored.result.current.settings).toEqual(DEFAULT_DISPLAY_SETTINGS);expect(localStorage.getItem(DISPLAY_SETTINGS_KEY)).toBeNull();expect(localStorage.getItem("other-app")).toBe("keep");localStorage.removeItem("other-app");
+ const expected={background:"osm",theme:"dark",lineWidth:7,contrast:120,panelWidth:360,textSize:15,stationNamesVisible:false};expect(result.current.settings).toEqual(expected);unmount();const restored=renderHook(useDisplaySettings);expect(restored.result.current.settings).toEqual(expected);act(()=>restored.result.current.reset());expect(restored.result.current.settings).toEqual(DEFAULT_DISPLAY_SETTINGS);expect(localStorage.getItem(DISPLAY_SETTINGS_KEY)).toBeNull();expect(localStorage.getItem("other-app")).toBe("keep");localStorage.removeItem("other-app");
 });
 test("corrupt restore uses defaults and does not overwrite stored data automatically",()=>{
  localStorage.setItem(DISPLAY_SETTINGS_KEY,"bad JSON");const {result}=renderHook(useDisplaySettings);expect(result.current.settings).toEqual(DEFAULT_DISPLAY_SETTINGS);expect(result.current.error).toBe(true);expect(localStorage.getItem(DISPLAY_SETTINGS_KEY)).toBe("bad JSON");
@@ -39,3 +39,5 @@ test("new default lines are slimmer without overwriting explicitly saved widths"
  expect(parseDisplaySettings('{"version":1,"settings":{"lineWidth":7}}').lineWidth).toBe(7);
  expect(parseDisplaySettings('{}').lineWidth).toBe(3);
 });
+
+test("station names default hidden, explicit preference restores, invalid values reject",()=>{expect(parseDisplaySettings('{}').stationNamesVisible).toBe(false);expect(parseDisplaySettings('{"stationNamesVisible":true}').stationNamesVisible).toBe(true);expect(()=>parseDisplaySettings('{"stationNamesVisible":"true"}')).toThrow();});

@@ -10,7 +10,7 @@ function save(background:string){localStorage.setItem(DISPLAY_SETTINGS_KEY,JSON.
 test("saved offline background creates no image even during initial render and persists online switches",()=>{
  save("sample");const href=vi.spyOn(Element.prototype,"setAttribute");const view=render(<App/>);
  expect(view.container.querySelectorAll("image")).toHaveLength(0);
- expect(href.mock.calls.some(([name,value])=>name==="href"&&/tile|gsi/.test(value))).toBe(false);
+ expect(href.mock.calls.some(([name,value],i)=>(href.mock.contexts[i] as Element).tagName.toLowerCase()==="image"&&name==="href"&&/tile|gsi/.test(value))).toBe(false);
  const choices=within(view.container.querySelector('.background-choices') as HTMLElement);
  fireEvent.click(choices.getByRole("button",{name:"地理院地図（オンライン）"}));
  expect(view.container.querySelectorAll("image").length).toBeGreaterThan(0);

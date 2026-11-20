@@ -1,6 +1,6 @@
 # 開発ドキュメントの入口
 
-更新日: 2026-11-14。現況の照合基準は main `48fde21`（PR #16）。
+更新日: 2026-11-15。現況の照合基準は[実装方針と現況](implementation-plan.md)に記録する。main、開発統合、実機確認を区別する。
 
 ## まず読むもの
 
@@ -11,6 +11,7 @@
 | ゲームとして実現すること | [要件](requirements.md) |
 | clone・ビルド・テスト・デバッグ | [開発手順](development.md)、[VS Code](vscode.md)、[参加手順](../CONTRIBUTING.md) |
 | 保存形式と互換性 | [保存仕様](storage.md)、[オートセーブ](autosave.md)、[互換方針](world-compatibility.md) |
+| 0.2のバス・トラム道路上設置 | [道路交通計画](road-transport-plan.md) |
 | 需要の具体的な設計案 | [需要・流動計画](demand-flow-plan.md) |
 
 ## 文書の役割と更新ルール

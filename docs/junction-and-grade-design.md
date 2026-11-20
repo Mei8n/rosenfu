@@ -1,6 +1,6 @@
 # 分岐・立体配線・進路競合の設計案
 
-状態: **設計のみ・未実装**。2026-11-13。実際の鉄道設備を設計する基準書ではなく、Rosenfu のゲームモデル案。
+状態: 2026-11-15のPR #120候補で線路数・7段階高さ・縦断・分岐モデルを実装中。全要件の完成ではなく、GUI未確認・未統合部分は[0.1受入](alpha-0.1.md)を参照。以下には2026-11-13の将来設計も含む。実際の鉄道設備を設計する基準書ではなく、Rosenfu のゲームモデル案。
 
 ## 要求と優先順位
 
@@ -8,15 +8,15 @@
 
 追加必須要望：始点が地上0、敷設先が高架1のように異なる階層をつなぐ際、段差で瞬間移動させない。実距離と許容勾配に基づくスロープを自動生成する。成立しなければ理由と必要延長等を表示する。
 
-**最新の制約：勾配は敷設可否の制限に使用するが、列車の速度シミュレーションには関与させない。** 勾配による速度低下・加減速補正を暗黙に追加しない。最大勾配の具体値は未決定のゲーム設定・検証対象とする。
+**最新の制約：勾配は敷設可否の制限に使用するが、列車の速度シミュレーションには関与させない。** 勾配による速度低下・加減速補正を暗黙に追加しない。本人指定のゲーム値は通常45‰、高速30‰、トラム45‰、階層間6m。実在設備の工事基準ではない。
 
 - 物理配線、路線、系統、列車の進路を分離する。
 - **平面上で交差すること、線路が接続すること、列車進路が競合することは別の関係**。
 - 立体分岐も合流後の同一線路・ポイント・閉塞の競合は残る。「立体なら全進路同時通行可能」としない。
 - 自動生成は提案。確認前の世界・駅・系統を変更しない。不可の場合に条件を緩めて黙って着工しない。
-- 未着工計画は再起動後保存不要という最新方針を維持する。本案はそれを再導入しない。
+- 未着工計画は2026-11-14の仕様変更により保存・復元する。[計画保存](construction-plan-persistence-design.md)を参照。
 
-## 現行コードの制限
+## 初期コードの制限（2026-11-13時点の履歴）
 
 確認対象：`crates/rosenfu-core/src/world/alignment.rs`、`world.rs`、`src/circularAlignment.ts`、[ServicePath設計](service-path-design.md)。
 
@@ -28,7 +28,7 @@
 
 したがって描画線を追加するだけでは実現できず、core の設備・接続モデルを先に追加する必要がある。
 
-## 推奨するデータの責務
+## 将来拡張を含むデータ責務案
 
 以下の型名は設計上の仮称。保存schema番号は予約しない。
 
@@ -65,7 +65,7 @@
 - 立体交差点の必要空間と構造厚を確保し、進入路全体でも他設備との干渉を調べる。別階層番号であっても斜面途中で支障があれば不成立。
 - 規格ごとの許容勾配・縦曲線・有効高さ・分岐器条件は調整可能なゲームパラメータ。勾配制限は工事成立判定のためであり列車速度計算へ適用しない。具体値を根拠なしに現実基準として固定しない。
 
-## 勾配上限の根拠とゲーム暫定案（未実装）
+## 勾配上限の検討履歴（旧提案、現在の設定ではない）
 
 通常鉄道には在来線、高速鉄道には新幹線の一般的な規格を参考とし、それぞれ少し緩めたゲーム用上限を適用する方針。**通常・高速・トラムの3種類を優先し、新交通は将来拡張とする。**
 
@@ -205,3 +205,63 @@
 検索で[作者の作品ページ](https://anita.garden/projects/trainsworld/)は確認できたが、分岐の内部アルゴリズム、鎖錠・閉塞の詳細は確認できない。ユーザーが実演で説明した平面/立体の区別と列車支障は要求の根拠であり、Rosenfuの内部実装案をTrainsWorldの方式と断定しない。
 
 現実概念の照合として [Rail Industry Association Rail Lexicon](https://riagb.org.uk/common/Uploaded%20files/OnePlace/Rail-Lexicon-Mk24.pdf) の flat/flying junction 定義を検索結果で確認した。平面は横断待ちが生じ、立体は橋梁によって対向方向との交差を避けるという概念に限り参照。数値や安全基準の根拠には使用しない。
+
+
+### Movement-specific turnout speed (game model)
+
+Each endpoint or internal lane-count movement has its own cubic geometry, length,
+minimum-radius estimate, track cap, optional equipment cap, and resulting cap.
+Curvature uses cubic derivatives and isolated polynomial extrema, not total length / net
+heading; parallel-ended S curves therefore receive a finite limit. The game uses
+`V = 3.6 * sqrt(0.65 * R)` km/h, capped by both tracks and a known equipment limit
+when available. **0.65 m/s² is a game calibration, not an owner-approved engineering
+standard.** This numerical extremum evaluation is not a certified safety or jerk
+analysis. Extending unrelated straight track does not increase a turnout limit.
+
+Real equipment examples are not generic conversion tables: JRTT documents a
+No.38 diverging route at 160 km/h
+(https://www.jrtt.go.jp/construction/technology/track.html); a JR West-authored
+paper documents a 50N No.12 turnout example at 45 km/h diverging and 120/130 km/h
+on its reference route
+(https://www.jstage.jst.go.jp/article/jsceim/5/1/5_290/_pdf/-char/en).
+No turnout number or equipment cap is inferred merely from our game curve length.
+Straight and diverging movements remain separate for future one-line-through
+layouts; train dispatch and occupancy locking remain unimplemented.
+
+Turnout construction requires at least one gameplay lane spacing (4m) of approach
+on each side, always within the adjoining anchor section and outside a platform.
+This is a geometry usability floor, not a railway-standard turnout length.
+The candidate world rejects insufficient space atomically with an actionable
+message rather than saving a world which cannot produce its track rendering.
+
+### Source-derived splits and partial height redevelopment
+
+A source-derived alignment can be split without inventing raw OSM node indices.
+`AlignmentProvenance.derived_slice` retains the original attributed point span
+and normalized subrange. Source key, raw segment claim, hashes, licence and
+attribution remain unchanged. Repeated geometric splits compose their ranges
+against the retained original span. This remains an untrusted lineage claim,
+not evidence that a source bundle was authenticated. Generic replacement still
+cannot rewrite provenance. The optional field is a save-format addition.
+
+Partial height redevelopment uses an explicit selected-run transaction rather than
+rewriting one cubic's endpoints and moving unselected track. The selected run is
+split into entry ramp, flat plateau and exit ramp; outside heights and boundary
+grades remain unchanged. Each ramp length is solved against the normal/tram 45‰
+or high-speed 30‰ limit, with at least 20m per physical alignment and 20m plateau.
+The transaction remaps station/route/service references using the same protected
+split operation and forms one undo entry. A platform intersecting the selection,
+non-contiguous selection, insufficient space, or invalid downstream references
+is rejected atomically with a reason. Moving a station vertically remains a
+separate unsupported operation; the implementation never lifts it silently.
+Existing source-derived geometry and attribution survive because only the
+vertical profiles change after explicit source-span splitting.
+
+## 現行候補と未達（2026-11-15）
+
+本人が線路数・地上/上下各3段階・分岐・道路踏切を0.1必須に指定した。現候補の区間属性は単線/複線/複々線を持ち、縦断は段差でなく連続高さと勾配を検証する。異高さの交差だけで物理接続しない。単複線の接続はY字ポイントとして扱い、将来の1線スルーを阻害しない構造が必要。
+
+現在の採用値は1段6m、通常45‰・高速30‰・トラム45‰。上の40‰/30‰等の提案は失効。勾配で列車速度を減らさない。費用比較・徴収は将来の要件であり、上の設計手順に登場する費用評価が実装済みという意味ではない。
+
+道路踏切、部分高さ変更の再設計、参照由来線形の縦断切出し後続はPR #120の本書基準HEADに未統合。地上線を水域へ敷設させない陸水判定も未完として検証する。自動配線、3D支障域、列車占有/鎖錠の全項目が完成したとは扱わない。区間変更/撤去では無関係な駅・路線・系統を保持し、整合性を維持できない操作は原子的に拒否する。
+

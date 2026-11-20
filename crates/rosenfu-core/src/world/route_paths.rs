@@ -24,19 +24,15 @@ pub(super) fn resolve_path(
     let mut current = start;
     for segment in segments {
         let next: Vec<StationId> = match *segment {
-            RouteSegment::Track { track_id } => {
-                let t = data
-                    .tracks
-                    .iter()
-                    .find(|t| t.id == track_id)
-                    .ok_or(RoutePlanningError::InvalidSegment)?;
-                vec![if t.from == current {
-                    t.to
-                } else if t.to == current {
-                    t.from
-                } else {
+            RouteSegment::ConnectedAlignments {
+                from,
+                to,
+                ref connections,
+            } => {
+                if current != from {
                     return Err(RoutePlanningError::InvalidSegment);
-                }]
+                }
+                alignment_connections::resolve_corridor(data, from, to, connections)?
             }
             RouteSegment::Alignment {
                 alignment_id,
@@ -101,10 +97,6 @@ impl WorldDraft {
                 .iter()
                 .find(|r| r.id == path.route_id)
                 .ok_or(WorldError::InvalidRoutePath)?;
-            // Exactly one physical-path source is authoritative.
-            if !route.tracks.is_empty() {
-                return Err(WorldError::InvalidRoutePath);
-            }
             let stations = resolve_path(self, route.start, &path.segments)
                 .map_err(|_| WorldError::InvalidRoutePath)?;
             let members = &path.member_stations;
@@ -144,7 +136,6 @@ impl World {
                 owner,
                 name,
                 start,
-                tracks: vec![],
             });
             data.route_paths.push(RoutePath {
                 route_id,
@@ -161,35 +152,13 @@ impl World {
             .iter()
             .find(|r| r.id == route_id)
             .ok_or(WorldError::MissingReference("route"))?;
-        if let Some(path) = self
+        let path = self
             .data
             .route_paths
             .iter()
             .find(|p| p.route_id == route_id)
-        {
-            resolve_path(&self.data, route.start, &path.segments)
-                .map_err(|_| WorldError::InvalidRoutePath)
-        } else {
-            // Legacy routes can revisit stations; preserve their occurrence order.
-            let mut current = route.start;
-            let mut stations = vec![current];
-            for id in &route.tracks {
-                let t = self
-                    .data
-                    .tracks
-                    .iter()
-                    .find(|t| t.id == *id)
-                    .ok_or(WorldError::DisconnectedRoute)?;
-                current = if t.from == current {
-                    t.to
-                } else if t.to == current {
-                    t.from
-                } else {
-                    return Err(WorldError::DisconnectedRoute);
-                };
-                stations.push(current);
-            }
-            Ok(stations)
-        }
+            .ok_or(WorldError::InvalidRoutePath)?;
+        resolve_path(&self.data, route.start, &path.segments)
+            .map_err(|_| WorldError::InvalidRoutePath)
     }
 }

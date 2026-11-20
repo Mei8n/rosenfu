@@ -1,27 +1,12 @@
-# ワールド保存基盤（アルファ版）
+# 保存仕様
 
-`rosenfu-storage` は `rosenfu-core` の検証済みワールドをファイルへ保存します。
-UI・Tauri から独立したクレートで、単体テストでは一時ディレクトリのみを使用します。
+## 現行形式：schema 25
 
-## 現段階の形式
+照合基準の開発統合 `a171619b` は `format: "rosenfu-world"` と `schema_version: 25` を読み書きする。旧1〜24と未来の形式は、ワールドの復元前に非対応として拒否する。18読込・19保存の旧方針は廃止。自動移行や旧版との往復互換はない。本人のアルファ期の互換破棄承認に基づき、新規ワールドを作成する。これは旧ファイルの削除許可ではなく、読込失敗・通常保存拒否では本体と既存バックアップを変更しない。
 
-JSON のエンベロープに `format: "rosenfu-world"` と `schema_version: 9`、
-`world` を格納します。推奨拡張子は `.rosenfu.json` です。
-この JSON 形式はアルファの小規模検証用であり、SQLite の正式採用・不採用を
-決定したものではありません。製品バージョンと保存スキーマ番号は別に管理します。
+設備は Alignment と端点接続。すべての路線・系統に RoutePath / ServicePath が必要で、旧 Track、Route.tracks、OperatingService.tracks/stops は非対応。旧データを現形式番号に書き換えただけの偽装も拒否する。
 
-読み込みは形式とスキーマ番号を確認した後、モデルを復元し、参照整合性を検証します。
-未対応の新旧スキーマはエラーにし、空のワールドへの置換や黙った初期化を行いません。
-将来スキーマのデータ部分が読み取れなくても、先に非対応バージョンとして報告します。
-スキーマ1〜8は厳密な旧形式を検証し、メモリ内でスキーマ9へ段階移行します。旧1には空の運行系統、旧1〜3には空の `route_paths`、旧1〜4には空の `service_paths` を追加します。旧4の `route_paths` と全既存データは保持します。読込だけで元ファイルは変更しません。旧版に新しいsidecarを混入したファイルは拒否し、黙って捨てません。スキーマ6では `route_paths`、`service_paths`、`source_records`、`alignment_provenance` が必須です。旧1〜5には空の出典sidecarを追加し、旧5の系統経路・停車参照を変更しません。
-
-スキーマ7では物理線形 `Alignment.track_type` が必須で、`normal`（通常）・`high_speed`（高速）・`tram`（トラム）のみを許可します。旧1〜6の線形には `normal` を補い、ID・形状・駅や経路の参照は変えません。旧ヘッダーに新しい `track_type` を混入したファイル、新形式で種別が欠けたファイルや未知値は拒否します。種別の保存は性能・勾配・費用・道路追従の実装を意味しません。このスキーマ7は線路種別用であり、採用を見送った未着工計画の永続化は含みません。
-
-スキーマ8では区間単位の参照由来範囲、スキーマ9では線路の `design_speed_kmh` を扱います。旧出典は元線形全体の範囲へ移行し、設計速度がない線路は種別の初期値として解釈します。詳細は[参照延伸](reference-extension-provenance.md)と[設計速度](track-design-speed.md)。
-
-`ServicePath` は安定したローカルleg keyと駅参照で停車を保存し、Alignment途中への駅追加で既存の停車先をずらしません。対応する `OperatingService.tracks` と `stops` は空にし、旧方式との二重指定を拒否します。新方式は現在、新規作成・参照・保存読込のみで、保存済み経路や停車設定の再編集は未対応です。旧式編集APIによる上書きも拒否します。路線の変更は系統を自動変更しません。初期版では運行経路上の駅は通過駅も含めて削除・移動を拒否し、使用する線形形状やTrack端点の一般変更も拒否します。ただし[専用端部延伸](built-alignment-extension.md)は既存駅座標・系統定義・停車参照を保ったまま許可します。経路変更時の停車設定・接続再確認の仕様が未確定なための保守的な制限です。ホーム寸法変更は駅位置が変わらない範囲に限ります。
-
-物理経路と路線所属駅の分離は[経路候補・保存仕様](route-candidate-preview.md)、系統は[ServicePath設計](service-path-design.md)を参照。スキーマ9未対応の旧アプリは新しい保存を開けません。出典の保存契約と未信頼・権利上の境界は[出典仕様](alignment-provenance.md)を参照してください。ベータの互換性保証には将来世代の移行・復旧テストも必要です。
+未着工計画、編集済み形状、駅・駅グループ、視点、速度設定、系統の経路・停車・明示的路線関連を現形式で保存する。路線所属駅と停車駅を区別し、系統経路編集では既存 ID と参照整合性を保護する。列車運行や乗換効果を保存モデルの存在だけで実装済みにしない。
 
 ID と採番状態はコアモデルの文字列表現をそのまま保存します。描画データや検索索引は
 保存せず、再生成対象とします。読み書きする JSON は暫定で 16 MiB に制限しています。
@@ -64,7 +49,7 @@ cargo test --locked -p rosenfu-storage
 
 テスト対象はグラフと採番状態の往復、形式・バージョン・参照不正、サイズ制限、
 新規保存、バックアップ更新、破損保存の保護、バックアップ作成失敗時の保護などです。
-保存・読込ボタンと[固定2分のオートセーブ](autosave.md)を実装しています。未着工計画は保存対象外です。
+保存・読込ボタンと[固定2分のオートセーブ](autosave.md)を実装しています。未着工計画も同一ファイルへ保存します。[計画保存](construction-plan-persistence-design.md)を参照。
 
 ## 復旧版で再実装した保存安全対策（2026-11-13）
 
@@ -72,6 +57,42 @@ cargo test --locked -p rosenfu-storage
 
 セッションは読込・保存時のSHA-256を保持し、保存先が外部変更・削除されていれば拒否する。協調するプロセス間は`.lock` sidecarのOS try-lockで排他し、ロック競合は待ち続けずエラーにする。失敗した保存を成功扱いにせず、再読込／明示確認が必要。ロックを無視する外部編集やネットワークFSの完全なトランザクション保証ではない。
 
-オートセーブの状態確認は既に承認済みの同一ファイル版を無効化しない。古い応答は画面の世代識別で無視し、復元直後に遅れて状態確認が実行されても同一版への承認を保持する。既存スロットは状態確認時の版に対する明示置換許可を要求し、確認後に変化した場合は拒否する。競合後は自動再試行せず、ユーザーの再確認を待つ。不存在の再確認後はMissing版との比較で新規作成できる。
+オートセーブの状態確認は既に承認済みの同一ファイル版を無効化しない。古い応答は画面の世代識別で無視し、復元直後に遅れて状態確認が実行されても同一版への承認を保持する。自動保存は対象スロットの状態・版を確認して自動開始する。確認後の外部変更は拒否する。競合後は自動再試行せず、ユーザーの再確認を待つ。不存在の再確認後はMissing版との比較で新規作成できる。
 
 オートセーブ復元後の通常保存では、正常な既存manualを従来どおり.bakへ保存する。破損／容量超過manualのみ明示的復元に基づく修復保存を許し、既存.bakを保持する。未知の将来スキーマや読み取り権限エラーは破損と見なして上書きしない。
+
+## 導入履歴：schema 10の未着工計画（現在の互換範囲ではない）
+
+`world.construction_plans` に型付きの計画を保存します。旧schema 1〜9にはこのフィールドがなく、空の計画として復元します。型不正は読込前に拒否し、途中の線形は着工時に検証します。計画も16 MiB上限・既存バックアップ・競合検出の対象です。
+
+## 導入履歴：schema 11の既設線上の計画駅（現在の互換範囲ではない）
+
+計画駅の対象を `pathId`（未着工経路）または `alignmentId`（既設線）で区別し、既設線対象は `planId` で所属計画を指定します。schema 10以前の省略されたplanIdは経路の所属から解決します。
+
+## Multiple save slots
+
+New worlds are saved into independent `saves/slot-<opaque-id>/` directories. Each
+slot has a display-label manifest and its own world, rolling backup and autosave;
+labels never become filesystem paths. Creating a slot is create-only, even if its
+label matches another slot. A failed creation does not publish a partial world.
+The session selects one active slot and uses its own observed file version for
+manual/autosave conflict protection. Selecting a slot must load successfully
+before replacing the active in-memory world.
+
+The previous fixed-path world remains available as a legacy list entry. Unsupported
+schemas are explained rather than migrated, erased or overwritten. A new current
+world can coexist with that file. Slot deletion is available after confirmation. It moves the slot into a recoverable archive; the deleted-save list can restore it. Deleting the active slot detaches the save target while preserving in-memory edits. A new company/world creates its own slot automatically; creation failure must not retain another world's save target. Legacy deletion moves only its manual save and leaves legacy autosave/backup untouched.
+Current-format storage tests cover independent labels/files/backups, incomplete
+creation visibility, invalid IDs and directory symlink rejection. Session and frontend regression tests cover these operations. Native GUI and real-device acceptance remain separate verification gates.
+
+### 現行形式の拡張メタデータ（schema 20で導入）
+
+`service_appearances` は系統ID、`#RRGGBB` 色、丸/四角/ひし形、任意記号を保持する。記号は名前の先頭文字から初期化し、本人編集後は名称変更で上書きしない。複製は新しい系統IDへ経路・停車・binding・色・形・記号をコピーし、その後は独立する。
+
+`service_route_bindings` の `routes` は複数の明示的関連路線を保持する。形状からの暗黙推測ではない。線形区間の線路数・7段階の高さ・縦断と分岐の追加もこの候補形式で扱う。モデルの保存対応、最終統合CI、GUI受入は別判定とする。
+
+### schema 25 の OFM 根拠データ
+
+OFM境界を跨ぐ道路参照経路は、軽量な経路記述と、元MVTバイト列・SHA・タイル座標/版/規則を含む必須の保存envelopeで保持する。読込時は全根拠を再decodeし経路を再生成して照合する。通常の `World` JSONだけは復元用バックアップにならない。内部runtime storeは直接serializeしない。原典の正確さや全国coverageまで証明するものではない。
+
+現上限はstore全体16bindings/8 MiB（再利用blobもbindingごとに計数）、計画と建設済みOFM経路の合計32件、保存envelope全体16 MiB。超過や欠落・改変は失敗として扱い、元ファイルを保持する。容量を全国規模の保証としない。

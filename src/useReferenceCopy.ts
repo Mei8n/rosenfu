@@ -1,3 +1,4 @@
+import type {TilePathPick} from './ofmDerivedTilePath';
 import {eligibleRoadGraph,validateRoadPicks} from './roadFollowing';
 import {useEffect,useMemo,useRef,useState} from 'react';
 import type {ReferenceGraphBundle} from './referenceGraphBundle';
@@ -6,8 +7,28 @@ import type {GraphPoint,GraphProjection,GraphMode} from './referenceGraph';
 import type {ReferenceGraphPick} from './referenceGraphPath';
 import {prepareReferenceCopy} from './referenceCopy';
 import type {ReferenceBuild} from './referenceCopy';
-export function useReferenceCopy({bundle,enabled,canStart,name,onBuild,roadFollow=false}:{roadFollow?:boolean;bundle:ReferenceGraphBundle|null;worldVersion:unknown;enabled:boolean;canStart:boolean;tool:string;name:string;onBuild:(build:ReferenceBuild)=>Promise<void>}){
+/** In-memory only. Object identity deliberately rejects a reloaded bundle with identical labels. */
+export type ReferenceSessionSnapshot={provider:'manual'|'automatic';bundleIdentity:object|null;opaqueState?:object;roadFollow:boolean;active:boolean;mode:GraphMode;picks:ReferenceGraphPick[];redo:ReferenceGraphPick[]};
+export function sameReferenceSession(a:ReferenceSessionSnapshot,b:ReferenceSessionSnapshot):boolean {
+ const equal=(x:ReferenceGraphPick[],y:ReferenceGraphPick[])=>x.length===y.length&&x.every((p,i)=>p.datasetId===y[i].datasetId&&p.revision===y[i].revision&&p.edgeId===y[i].edgeId&&p.fraction===y[i].fraction);
+ return a.provider===b.provider&&a.opaqueState===b.opaqueState&&a.bundleIdentity===b.bundleIdentity&&a.roadFollow===b.roadFollow&&a.active===b.active&&a.mode===b.mode&&equal(a.picks,b.picks)&&equal(a.redo,b.redo);
+}
+export function useReferenceCopy({bundle,enabled,canStart,name,onBuild,roadFollow=false,seamPreview,onBuildSeam}:{seamPreview?:(start:TilePathPick,end:TilePathPick)=>{points:{latitude:number;longitude:number}[]};onBuildSeam?:()=>Promise<void>;roadFollow?:boolean;bundle:ReferenceGraphBundle|null;worldVersion:unknown;enabled:boolean;canStart:boolean;tool:string;name:string;onBuild:(build:ReferenceBuild)=>Promise<void>}){
  const [active,setActive]=useState(false),[mode,setMode]=useState<GraphMode>('rail'),[picks,setPicks]=useState<ReferenceGraphPick[]>([]),[redo,setRedo]=useState<ReferenceGraphPick[]>([]),[candidates,setCandidates]=useState<GraphProjection[]>([]),[message,setMessage]=useState(''),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false);const generation=useRef(0),pending=useRef(false);
+ const sessionSnapshot=useMemo<ReferenceSessionSnapshot>(()=>({provider:'manual',bundleIdentity:bundle,roadFollow,active,mode,picks:picks.map(p=>({...p})),redo:redo.map(p=>({...p}))}),[bundle,roadFollow,active,mode,picks,redo]);
+ const currentSession=useRef(sessionSnapshot);currentSession.current=sessionSnapshot;
+ function restoreSession(target:ReferenceSessionSnapshot,expected:ReferenceSessionSnapshot):boolean {
+  if(target.provider!=='manual'||!enabled||pending.current||!sameReferenceSession(currentSession.current,expected)||target.bundleIdentity!==bundle||target.roadFollow!==roadFollow)return false;
+  if(!bundle||!['rail','road'].includes(target.mode)||(roadFollow&&target.mode!=='road')||target.picks.length+target.redo.length>2||(!target.active&&(target.picks.length>0||target.redo.length>0)))return false;
+  const complete=[...target.picks,...[...target.redo].reverse()];
+  const edges=complete.map(p=>bundle.graph.edges.find(e=>e.id===p.edgeId));
+  if(complete.some((p,i)=>p.datasetId!==bundle.graph.dataset.id||p.revision!==bundle.graph.dataset.revision||!Number.isFinite(p.fraction)||p.fraction<0||p.fraction>1||!edges[i]||edges[i]!.mode!==target.mode))return false;
+  if(edges.length===2&&(!seamPreview&&edges[0]!.osmWayId!==edges[1]!.osmWayId))return false;
+  if(roadFollow&&complete.length){try{for(const pick of complete)validateRoadPicks(bundle,[pick]);if(!seamPreview)validateRoadPicks(bundle,complete);}catch{return false;}}
+  const restored={...target,picks:target.picks.map(p=>({...p})),redo:target.redo.map(p=>({...p}))};
+  generation.current++;clearHover();currentSession.current=restored;
+  setActive(restored.active);setMode(restored.mode);setPicks(restored.picks);setRedo(restored.redo);setCandidates([]);setConfirmed(false);setBusy(false);setMessage('');return true;
+ }
  const roadGraph=useMemo(()=>bundle&&roadFollow?eligibleRoadGraph(bundle):null,[bundle,roadFollow]);
  const repository=useMemo(()=>bundle?createReferenceGraphRepository(roadGraph??bundle.graph):null,[bundle,roadGraph]);
  const [hoverCandidates,setHoverCandidates]=useState<GraphProjection[]>([]);const hoverGeneration=useRef(0),lastHover=useRef(-Infinity);
@@ -28,18 +49,19 @@ export function useReferenceCopy({bundle,enabled,canStart,name,onBuild,roadFollo
  function clear(){clearHover();generation.current++;pending.current=false;setActive(false);setPicks([]);setRedo([]);setCandidates([]);setConfirmed(false);setBusy(false);}
  // Tool tabs and ordinary world snapshots do not own this session-local plan.
  // App confirms bundle replacement/removal, and explicitly clears on successful world load.
- useEffect(()=>{clear();setMessage('');return()=>{generation.current++;cancelHover();};},[bundle,roadFollow]);
+ useEffect(()=>{clear();setMode(roadFollow?'road':'rail');setMessage('');return()=>{generation.current++;cancelHover();};},[bundle,roadFollow]);
  useEffect(()=>{if(!enabled)clearHover();},[enabled]);
- const plan=useMemo(()=>{if(!bundle||picks.length!==2)return {build:null,error:''};try{if(roadFollow)validateRoadPicks(bundle,picks);return {build:prepareReferenceCopy(bundle,picks[0],picks[1],name),error:''};}catch(e){return {build:null,error:String(e)};}},[bundle,picks,name,roadFollow]);
+ const seamPlan=useMemo(()=>{if(!seamPreview||!bundle||picks.length!==2)return null;const a=bundle.graph.edges.find(e=>e.id===picks[0].edgeId),b=bundle.graph.edges.find(e=>e.id===picks[1].edgeId);if(!a||!b||a.osmWayId===b.osmWayId)return null;try{return {points:seamPreview({fragmentId:a.osmWayId,segmentIndex:a.segmentIndex,fraction:picks[0].fraction},{fragmentId:b.osmWayId,segmentIndex:b.segmentIndex,fraction:picks[1].fraction}).points,error:''};}catch(e){return {points:null,error:String(e)};}},[bundle,picks,seamPreview]);
+ const plan=useMemo(()=>{if(seamPlan)return {build:null,error:seamPlan.error};if(!bundle||picks.length!==2)return {build:null,error:''};try{if(roadFollow)validateRoadPicks(bundle,picks);return {build:prepareReferenceCopy(bundle,picks[0],picks[1],name),error:''};}catch(e){return {build:null,error:String(e)};}},[bundle,picks,name,roadFollow,seamPlan]);
  function begin(){if(!enabled||!canStart||!repository)return;if(roadFollow&&!roadGraph?.edges.length){setMessage("利用できる道路がありません。検証済みローカル道路バンドルが必要です。");return;}clear();lastHover.current=-Infinity;setActive(true);if(roadFollow)setMode('road');setMessage('地図をクリックして起点候補を表示してください。');}
  async function click(point:GraphPoint){if(!enabled||!active||!repository||pending.current)return;clearHover();const token=++generation.current;pending.current=true;setBusy(true);setCandidates([]);setConfirmed(false);
  try{const result=await repository.nearest({point,mode:roadFollow?'road':mode,radiusM:20,limit:20});if(token!==generation.current)return;setCandidates(result.candidates);setMessage(result.status==='outside'?'バンドル範囲外です。':!result.candidates.length?'20m以内に候補がありません。実在しないことは意味しません。':`${result.total}候補。自動確定しません。${result.truncated?'表示は20候補まで。拡大して再選択してください。':''}${result.coverage==='boundary'?'範囲境界付近で網羅性はありません。':''}`);
  }catch(e){if(token===generation.current)setMessage(String(e));}finally{if(token===generation.current){pending.current=false;setBusy(false);}}}
- function choose(index:number){if(!enabled||pending.current||!active||!bundle)return;const candidate=candidates[index];if(!candidate)return;const first=picks[0]&&bundle.graph.edges.find(e=>e.id===picks[0].edgeId);if(first&&(first.osmWayId!==candidate.edge.osmWayId||first.mode!==candidate.edge.mode)){setMessage('終点は起点と同じway・種類から選んでください。');return;}
+ function choose(index:number){if(!enabled||pending.current||!active||!bundle)return;const candidate=candidates[index];if(!candidate)return;const first=picks[0]&&bundle.graph.edges.find(e=>e.id===picks[0].edgeId);if(first&&((!seamPreview&&first.osmWayId!==candidate.edge.osmWayId)||first.mode!==candidate.edge.mode)){setMessage('終点は起点と同じway・種類から選んでください。');return;}
  const pick={datasetId:bundle.graph.dataset.id,revision:bundle.graph.dataset.revision,edgeId:candidate.edge.id,fraction:candidate.fraction};setPicks(old=>old.length?[old[0],pick]:[pick]);setRedo([]);setCandidates([]);setConfirmed(false);setMessage(first?'区間を確認して選択中の計画に追加してください。':'起点を選択しました。次に終点候補を表示してください。');}
  function undo(){if(!enabled||pending.current||!active)return;generation.current++;setCandidates([]);setConfirmed(false);if(picks.length){setRedo(old=>[...old,picks[picks.length-1]]);setPicks(old=>old.slice(0,-1));}}
  function redoPick(){if(!enabled||pending.current||!active||!redo.length)return;setPicks(old=>[...old,redo[redo.length-1]]);setRedo(old=>old.slice(0,-1));setCandidates([]);setConfirmed(false);}
- async function build(){if(!enabled||pending.current||!active||!plan.build||!confirmed||!name.trim())return;const token=generation.current;pending.current=true;setBusy(true);try{await onBuild(plan.build);if(token===generation.current){clear();setMessage('実在形状に沿う経路を計画に追加しました。');}}catch(e){if(token===generation.current)setMessage(String(e));}finally{if(token===generation.current){pending.current=false;setBusy(false);}}}
- return {active,mode,picks,redo,candidates,roadFollow,roadAvailable:!!roadGraph?.edges.length,hoverCandidates,hover,clearHover,message,confirmed,setConfirmed,busy,plan,begin,clear,click,choose,undo,redoPick,build,setMode:(value:GraphMode)=>{if(!enabled||pending.current||roadFollow||picks.length||redo.length)return;generation.current++;setMode(value);setPicks([]);setRedo([]);setCandidates([]);setConfirmed(false);}};
+ async function build(){if(!enabled||pending.current||!active||(!plan.build&&!seamPlan?.points)||!confirmed||!name.trim())return;const token=generation.current;pending.current=true;setBusy(true);try{if(seamPlan?.points&&onBuildSeam)await onBuildSeam();else if(plan.build)await onBuild(plan.build);else throw Error('道路境界の計画追加は未接続です。');if(token===generation.current){clear();setMessage('実在形状に沿う経路を計画に追加しました。');}}catch(e){if(token===generation.current)setMessage(String(e));}finally{if(token===generation.current){pending.current=false;setBusy(false);}}}
+ return {sessionSnapshot,restoreSession,seamPlan,seamEnabled:!!seamPreview,active,mode,picks,redo,candidates,roadFollow,roadAvailable:!!roadGraph?.edges.length,hoverCandidates,hover,clearHover,message,confirmed,setConfirmed,busy,plan,begin,clear,click,choose,undo,redoPick,build,setMode:(value:GraphMode)=>{if(!enabled||pending.current||roadFollow||picks.length||redo.length)return;generation.current++;setMode(value);setPicks([]);setRedo([]);setCandidates([]);setConfirmed(false);}};
 }
-export type ReferenceCopyState=ReturnType<typeof useReferenceCopy>;
+export type ReferenceCopyState={canUndo?:boolean;canRedo?:boolean}&Omit<ReturnType<typeof useReferenceCopy>,'seamPlan'|'seamEnabled'>&Partial<Pick<ReturnType<typeof useReferenceCopy>,'seamPlan'|'seamEnabled'>>;

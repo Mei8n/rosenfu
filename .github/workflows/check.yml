@@ -21,7 +21,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
@@ -32,9 +32,15 @@ jobs:
         run: |
           node scripts/ensure-dependencies.mjs
           node scripts/ensure-dependencies.mjs
+      - name: Verify debug server lifecycle
+        run: node --test scripts/debug-dev-server.check.mjs
+      - name: Build native development debugger target
+        run: cargo build --locked -p rosenfu-desktop
       - run: npm test
       - run: npm run build
       - run: cargo fmt --all --check
+      - name: Clippy workspace and all targets
+        run: cargo clippy --locked --workspace --all-targets
       - run: cargo test --locked --workspace
       - name: Build desktop executable
         run: npm run tauri -- build --no-bundle

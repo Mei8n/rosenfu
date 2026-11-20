@@ -24,7 +24,6 @@ id_type!(
     PlayerId,
     CompanyId,
     StationId,
-    TrackId,
     RouteId,
     ServiceId,
     AlignmentId
@@ -52,15 +51,7 @@ pub struct Station {
     pub latitude: f64,
     pub longitude: f64,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Track {
-    pub id: TrackId,
-    pub owner: CompanyId,
-    pub from: StationId,
-    pub to: StationId,
-}
-/// Ordered track traversal. Track infrastructure is independent of this route.
+/// Named route backed by an explicit alignment RoutePath.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
@@ -68,7 +59,6 @@ pub struct Route {
     pub owner: CompanyId,
     pub name: String,
     pub start: StationId,
-    pub tracks: Vec<TrackId>,
 }
 /// An operating path independent of named routes, sharing track infrastructure.
 /// Stops are occurrence indices into the traversed stations: 0 is the start,
@@ -80,19 +70,65 @@ pub struct OperatingService {
     pub owner: CompanyId,
     pub name: String,
     pub start: StationId,
-    pub tracks: Vec<TrackId>,
-    pub stops: Vec<u32>,
+}
+/// Single-player local presentation metadata. This is not simulation state and
+/// must not be used as shared camera authority by future multiplayer protocols.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewState {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub zoom: f64,
+}
+impl ViewState {
+    pub fn validate(&self) -> Result<(), WorldError> {
+        if self.latitude.is_finite()
+            && self.longitude.is_finite()
+            && self.zoom.is_finite()
+            && (20.0..=46.0).contains(&self.latitude)
+            && (122.0..=154.0).contains(&self.longitude)
+            && (4.0..=20.0).contains(&self.zoom)
+        {
+            Ok(())
+        } else {
+            Err(WorldError::InvalidViewState)
+        }
+    }
 }
 /// An editable candidate. Validate before applying or loading it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
+    /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
+    #[serde(skip)]
+    pub runtime_road_evidence: crate::ofm_evidence::EvidenceStore,
+    /// Lightweight manifest; must exactly match the runtime table after restoration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub road_evidence_descriptors: Vec<crate::ofm_evidence::EvidenceDescriptor>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub road_snapshots: Vec<RoadSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub station_groups: Vec<StationGroup>,
+    /// Explicit infrastructure endpoint links, including supported three-port turnouts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alignment_connections: Vec<AlignmentConnection>,
+    /// Optional local presentation metadata, independent of physical world geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_state: Option<ViewState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub construction_plans: Option<ConstructionPlans>,
     #[serde(default)]
     pub source_records: Vec<SourceRecord>,
     #[serde(default)]
     pub alignment_provenance: Vec<AlignmentProvenance>,
     #[serde(default)]
     pub service_paths: Vec<ServicePath>,
+    #[serde(default)]
+    pub service_route_bindings: Vec<ServiceRouteBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_appearances: Vec<ServiceAppearance>,
     #[serde(default)]
     pub route_paths: Vec<RoutePath>,
     #[serde(default)]
@@ -104,7 +140,6 @@ pub struct WorldDraft {
     pub players: Vec<Player>,
     pub companies: Vec<Company>,
     pub stations: Vec<Station>,
-    pub tracks: Vec<Track>,
     pub routes: Vec<Route>,
     pub services: Vec<OperatingService>,
 }
@@ -126,8 +161,18 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            road_path_provenance: vec![],
+            runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
+            road_evidence_descriptors: vec![],
+            road_snapshots: vec![],
+            station_groups: vec![],
+            alignment_connections: vec![],
+            view_state: None,
+            construction_plans: None,
             route_paths: vec![],
             service_paths: vec![],
+            service_route_bindings: vec![],
+            service_appearances: vec![],
             source_records: vec![],
             alignment_provenance: vec![],
             next_id: 1,
@@ -136,7 +181,6 @@ impl Default for WorldDraft {
             players: vec![],
             companies: vec![],
             stations: vec![],
-            tracks: vec![],
             routes: vec![],
             services: vec![],
         }
@@ -148,14 +192,27 @@ pub enum WorldError {
     EmptyName(&'static str),
     MissingReference(&'static str),
     InvalidCoordinate,
+    InvalidConstructionPlans,
+    InvalidRoadSnapshot,
+    InvalidRoadEvidence,
+    InvalidViewState,
     InvalidAlignment,
+    InvalidAlignmentConnection,
+    InsufficientTurnoutSpace,
+    HeightRedevelopmentSpace,
+    HeightRedevelopmentStation,
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
+    InvalidServiceAppearance,
+    InvalidServiceRouteBinding,
     InvalidProvenance,
     ProvenanceEditUnsupported,
     ServicePathEditUnsupported,
     InvalidStationPlacement,
+    StationOnGradient,
+    StationFootprintOverlap,
+    InvalidStationGroup,
     SelfLoop,
     EmptyRoute,
     DisconnectedRoute,
@@ -168,6 +225,21 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::StationOnGradient) {
+            return write!(f,"ホーム全長が平坦な場所に駅を設置してください。勾配やその境界に重なるホームは設置できません。");
+        }
+        if matches!(self, Self::HeightRedevelopmentSpace) {
+            return write!(f,"選択区間内に入口・出口の勾配と平坦部を収められません。区間を長く選択してください。選択外の高さは変更していません。");
+        }
+        if matches!(self, Self::HeightRedevelopmentStation) {
+            return write!(f,"選択区間にホームがあります。駅の高さを勝手に変更しないため、この高さ変更はできません。");
+        }
+        if matches!(self, Self::InsufficientTurnoutSpace) {
+            return write!(f, "分岐・単複線の合流に必要な空間がありません。接続位置をホームから離すか、前後の区間を長くしてください。");
+        }
+        if matches!(self, Self::InvalidServiceRouteBinding) {
+            return write!(f, "既存系統の経路が割り当てた路線に含まれなくなるため変更できません。路線と系統は変更していません。");
+        }
         write!(f, "{self:?}")
     }
 }
@@ -182,6 +254,21 @@ impl World {
     pub fn new(data: WorldDraft) -> Result<Self, WorldError> {
         data.validate()?;
         Ok(Self { data })
+    }
+    /// UI JSON omits runtime evidence. Preserve the CURRENT table and reject
+    /// manifest changes; explicit evidence attachment uses a different validated API.
+    /// Returns a replacement without modifying the current world on any failure.
+    pub fn replace_retaining_road_evidence(
+        &self,
+        mut candidate: WorldDraft,
+    ) -> Result<Self, WorldError> {
+        if candidate.road_evidence_descriptors != self.data.road_evidence_descriptors {
+            return Err(WorldError::InvalidRoadEvidence);
+        }
+        candidate.runtime_road_evidence = self.data.runtime_road_evidence.clone();
+        let mut replacement = self.clone();
+        replacement.replace(candidate)?;
+        Ok(replacement)
     }
     fn insert(&mut self, insert: impl FnOnce(&mut WorldDraft, u64)) -> Result<u64, WorldError> {
         let id = self.data.next_id;
@@ -229,65 +316,16 @@ impl World {
         })
         .map(StationId)
     }
-    pub fn add_track(
-        &mut self,
-        owner: CompanyId,
-        from: StationId,
-        to: StationId,
-    ) -> Result<TrackId, WorldError> {
-        self.insert(|data, id| {
-            data.tracks.push(Track {
-                id: TrackId(id),
-                owner,
-                from,
-                to,
-            })
-        })
-        .map(TrackId)
-    }
-    pub fn add_route(
-        &mut self,
-        owner: CompanyId,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-    ) -> Result<RouteId, WorldError> {
-        self.insert(|data, id| {
-            data.routes.push(Route {
-                id: RouteId(id),
-                owner,
-                name,
-                start,
-                tracks,
-            })
-        })
-        .map(RouteId)
-    }
-    pub fn add_service(
-        &mut self,
-        owner: CompanyId,
-        name: String,
-        start: StationId,
-        tracks: Vec<TrackId>,
-        stops: Vec<u32>,
-    ) -> Result<ServiceId, WorldError> {
-        self.insert(|data, id| {
-            data.services.push(OperatingService {
-                id: ServiceId(id),
-                owner,
-                name,
-                start,
-                tracks,
-                stops,
-            })
-        })
-        .map(ServiceId)
-    }
     pub fn snapshot(&self) -> &WorldDraft {
         &self.data
     }
     /// Atomic candidate replacement: failures leave the live state unchanged.
-    pub fn replace(&mut self, candidate: WorldDraft) -> Result<(), WorldError> {
+    pub fn replace(&mut self, mut candidate: WorldDraft) -> Result<(), WorldError> {
+        // Explicit alignment removal drops only its derived range records; source
+        // evidence is retained for Undo and other references.
+        candidate
+            .road_path_provenance
+            .retain(|p| candidate.alignments.iter().any(|a| a.id == p.alignment_id));
         candidate.validate()?;
         candidate.preserve_service_paths(&self.data)?;
         candidate.preserve_provenance(&self.data)?;
@@ -308,7 +346,6 @@ impl World {
         existing_only!(players);
         existing_only!(companies);
         existing_only!(stations);
-        existing_only!(tracks);
         existing_only!(routes);
         existing_only!(services);
         existing_only!(alignments);
@@ -332,22 +369,55 @@ fn name(value: &str, entity: &'static str) -> Result<(), WorldError> {
     Ok(())
 }
 impl WorldDraft {
+    /// Explicitly attach a validated immutable table and its matching manifest.
+    /// No path-to-alignment provenance or construction authorization is added here.
+    pub fn with_road_evidence(
+        mut self,
+        store: crate::ofm_evidence::EvidenceStore,
+    ) -> Result<Self, WorldError> {
+        self.road_evidence_descriptors = store.descriptors();
+        self.runtime_road_evidence = store;
+        self.validate()?;
+        Ok(self)
+    }
+    /// Restore raw evidence without overwriting a claimed serialized manifest.
+    /// Failure leaves the original draft unchanged.
+    pub fn restore_road_evidence(
+        &mut self,
+        store: crate::ofm_evidence::EvidenceStore,
+    ) -> Result<(), WorldError> {
+        let mut candidate = self.clone();
+        candidate.runtime_road_evidence = store;
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), WorldError> {
+        if self.road_evidence_descriptors != self.runtime_road_evidence.descriptors() {
+            return Err(WorldError::InvalidRoadEvidence);
+        }
+        roads::validate_road_snapshots(&self.road_snapshots)?;
+        if let Some(view) = self.view_state {
+            view.validate()?;
+        }
+        if let Some(plans) = &self.construction_plans {
+            plans.validate()?;
+        }
         ids(self.players.iter().map(|x| x.id.0), "player")?;
         ids(self.companies.iter().map(|x| x.id.0), "company")?;
         ids(self.stations.iter().map(|x| x.id.0), "station")?;
-        ids(self.tracks.iter().map(|x| x.id.0), "track")?;
         ids(self.routes.iter().map(|x| x.id.0), "route")?;
         ids(self.services.iter().map(|x| x.id.0), "service")?;
         ids(self.alignments.iter().map(|x| x.id.0), "alignment")?;
         self.validate_alignments()?;
+        self.validate_station_groups()?;
+        self.validate_alignment_connections()?;
         let maximum_id = self
             .players
             .iter()
             .map(|x| x.id.0)
             .chain(self.companies.iter().map(|x| x.id.0))
             .chain(self.stations.iter().map(|x| x.id.0))
-            .chain(self.tracks.iter().map(|x| x.id.0))
             .chain(self.routes.iter().map(|x| x.id.0))
             .chain(self.services.iter().map(|x| x.id.0))
             .chain(self.alignments.iter().map(|x| x.id.0))
@@ -380,18 +450,8 @@ impl WorldDraft {
                 return Err(WorldError::InvalidCoordinate);
             }
         }
-        for t in &self.tracks {
-            if !owner_exists(t.owner) {
-                return Err(WorldError::MissingReference("track.owner"));
-            }
-            if !station_exists(t.from) || !station_exists(t.to) {
-                return Err(WorldError::MissingReference("track.station"));
-            }
-            if t.from == t.to {
-                return Err(WorldError::SelfLoop);
-            }
-        }
         self.validate_provenance()?;
+        self.validate_road_path_provenance()?;
         self.validate_route_paths()?;
         for r in &self.routes {
             name(&r.name, "route")?;
@@ -401,29 +461,17 @@ impl WorldDraft {
             if !station_exists(r.start) {
                 return Err(WorldError::MissingReference("route.start"));
             }
-            if self.route_paths.iter().any(|path| path.route_id == r.id) {
-                continue;
-            }
-            if r.tracks.is_empty() {
-                return Err(WorldError::EmptyRoute);
-            }
-            let mut current = r.start;
-            for id in &r.tracks {
-                let t = self
-                    .tracks
-                    .iter()
-                    .find(|t| t.id == *id)
-                    .ok_or(WorldError::MissingReference("route.track"))?;
-                current = if t.from == current {
-                    t.to
-                } else if t.to == current {
-                    t.from
-                } else {
-                    return Err(WorldError::DisconnectedRoute);
-                };
+            if !self.route_paths.iter().any(|path| path.route_id == r.id) {
+                return Err(WorldError::InvalidRoutePath);
             }
         }
+        // All references and platform footprints are valid by this point. Check
+        // derived turnout geometry before any candidate snapshot is committed.
+        let geometry_world = World { data: self.clone() };
+        geometry_world.validate_turnout_geometry()?;
         self.validate_service_paths()?;
+        self.validate_service_route_bindings()?;
+        self.validate_service_appearances()?;
         for service in &self.services {
             name(&service.name, "service")?;
             if !owner_exists(service.owner) {
@@ -432,102 +480,71 @@ impl WorldDraft {
             if !station_exists(service.start) {
                 return Err(WorldError::MissingReference("service.start"));
             }
-            if self
+            if !self
                 .service_paths
                 .iter()
-                .any(|p| p.service_id == service.id)
+                .any(|path| path.service_id == service.id)
             {
-                continue;
-            }
-            if service.tracks.is_empty() {
-                return Err(WorldError::EmptyService);
-            }
-            let mut current = service.start;
-            for id in &service.tracks {
-                let track = self
-                    .tracks
-                    .iter()
-                    .find(|track| track.id == *id)
-                    .ok_or(WorldError::MissingReference("service.track"))?;
-                current = if track.from == current {
-                    track.to
-                } else if track.to == current {
-                    track.from
-                } else {
-                    return Err(WorldError::DisconnectedService);
-                };
-            }
-            let final_index =
-                u32::try_from(service.tracks.len()).map_err(|_| WorldError::InvalidServiceStops)?;
-            if service.stops.first() != Some(&0)
-                || service.stops.last() != Some(&final_index)
-                || service.stops.iter().any(|index| *index > final_index)
-                || service.stops.windows(2).any(|pair| pair[0] >= pair[1])
-            {
-                return Err(WorldError::InvalidServiceStops);
+                return Err(WorldError::InvalidServicePath);
             }
         }
         Ok(())
     }
 }
 
+mod alignment_connections;
+pub use alignment_connections::{AlignmentConnection, AlignmentEndpointRef};
 mod alignment;
-pub use alignment::{Alignment, AlignmentEndpoint, GeoPoint, StationPlacement, TrackType};
+pub use alignment::{
+    Alignment, AlignmentEndpoint, GeoPoint, InfrastructureLevel, SectionInfrastructure,
+    StationPlacement, TrackType,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     fn sample() -> WorldDraft {
-        WorldDraft {
-            route_paths: vec![],
-            service_paths: vec![],
-            source_records: vec![],
-            alignment_provenance: vec![],
-            next_id: 4,
-            alignments: vec![],
-            station_placements: vec![],
-            services: vec![],
-            players: vec![Player {
-                id: PlayerId(1),
-                name: "Player".into(),
+        let mut w = World::default();
+        let p = w.add_player("Player".into()).unwrap();
+        let c = w.add_company(p, "Railway".into()).unwrap();
+        let a = w
+            .build_alignment(
+                c,
+                "Line".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: 139.,
+                    },
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: 139.1,
+                    },
+                ],
+            )
+            .unwrap();
+        let stations: Vec<_> = [0.1, 0.5, 0.9]
+            .into_iter()
+            .map(|position| {
+                w.place_station_on_alignment(c, "S".into(), a, position, 20., 10.)
+                    .unwrap()
+            })
+            .collect();
+        w.add_planned_route(
+            c,
+            "R".into(),
+            stations[0],
+            vec![RouteSegment::Alignment {
+                alignment_id: a,
+                from: stations[0],
+                to: stations[2],
             }],
-            companies: vec![Company {
-                id: CompanyId(1),
-                owner: PlayerId(1),
-                name: "Railway".into(),
-            }],
-            stations: (1..=3)
-                .map(|id| Station {
-                    id: StationId(id),
-                    owner: CompanyId(1),
-                    name: format!("Station {id}"),
-                    latitude: 35.0,
-                    longitude: 139.0,
-                })
-                .collect(),
-            tracks: vec![
-                Track {
-                    id: TrackId(1),
-                    owner: CompanyId(1),
-                    from: StationId(1),
-                    to: StationId(2),
-                },
-                Track {
-                    id: TrackId(2),
-                    owner: CompanyId(1),
-                    from: StationId(3),
-                    to: StationId(2),
-                },
-            ],
-            routes: vec![Route {
-                id: RouteId(1),
-                owner: CompanyId(1),
-                name: "Main".into(),
-                start: StationId(1),
-                tracks: vec![TrackId(1), TrackId(2)],
-            }],
-        }
+            stations,
+        )
+        .unwrap();
+        w.snapshot().clone()
     }
+
     #[test]
     fn empty_and_connected_worlds_are_valid() {
         assert!(World::new(WorldDraft::default()).is_ok());
@@ -555,7 +572,9 @@ mod tests {
     fn coordinated_deletion_is_valid() {
         let mut data = sample();
         data.routes.clear();
-        data.tracks.clear();
+        data.route_paths.clear();
+        data.station_placements.clear();
+        data.alignments.clear();
         data.stations.clear();
         assert!(data.validate().is_ok());
     }
@@ -572,32 +591,49 @@ mod tests {
     fn coordinates_must_be_finite_and_in_range() {
         for latitude in [f64::NAN, f64::INFINITY, 90.01, -90.01] {
             let mut data = sample();
+            data.station_placements.clear();
+            data.route_paths.clear();
+            data.routes.clear();
             data.stations[0].latitude = latitude;
             assert_eq!(data.validate(), Err(WorldError::InvalidCoordinate));
         }
     }
     #[test]
-    fn disconnected_and_missing_route_tracks_are_rejected() {
+    fn disconnected_and_missing_route_paths_are_rejected() {
         let mut data = sample();
-        data.routes[0].tracks.reverse();
-        assert_eq!(data.validate(), Err(WorldError::DisconnectedRoute));
-        data.routes[0].tracks = vec![TrackId(99)];
-        assert_eq!(
-            data.validate(),
-            Err(WorldError::MissingReference("route.track"))
-        );
+        let RouteSegment::Alignment { ref mut from, .. } = data.route_paths[0].segments[0] else {
+            unreachable!()
+        };
+        *from = data.stations[1].id;
+        assert_eq!(data.validate(), Err(WorldError::InvalidRoutePath));
+        let mut data = sample();
+        let RouteSegment::Alignment {
+            ref mut alignment_id,
+            ..
+        } = data.route_paths[0].segments[0]
+        else {
+            unreachable!()
+        };
+        *alignment_id = AlignmentId(999);
+        assert_eq!(data.validate(), Err(WorldError::InvalidRoutePath));
     }
     #[test]
-    fn empty_names_routes_and_self_loops_are_rejected() {
+    fn empty_names_paths_and_zero_length_segments_are_rejected() {
         let mut data = sample();
-        data.stations[0].name = "  ".into();
+        data.stations[0].name = " ".into();
         assert_eq!(data.validate(), Err(WorldError::EmptyName("station")));
-        data = sample();
-        data.routes[0].tracks.clear();
-        assert_eq!(data.validate(), Err(WorldError::EmptyRoute));
-        data = sample();
-        data.tracks[0].to = data.tracks[0].from;
-        assert_eq!(data.validate(), Err(WorldError::SelfLoop));
+        let mut data = sample();
+        data.route_paths[0].segments.clear();
+        assert_eq!(data.validate(), Err(WorldError::InvalidRoutePath));
+        let mut data = sample();
+        let RouteSegment::Alignment {
+            from, ref mut to, ..
+        } = data.route_paths[0].segments[0]
+        else {
+            unreachable!()
+        };
+        *to = from;
+        assert_eq!(data.validate(), Err(WorldError::InvalidRoutePath));
     }
 }
 
@@ -610,9 +646,6 @@ pub use route_planning::{
 mod route_paths;
 pub use route_paths::RoutePath;
 
-mod service_planning;
-pub use service_planning::{ServiceDraftStation, ServicePlanningError, ServiceRoutePreview};
-
 mod service_paths;
 pub use service_paths::{
     ServiceLeg, ServicePath, ServicePathOccurrence, ServicePathPreview, StationOccurrenceRef,
@@ -620,5 +653,51 @@ pub use service_paths::{
 
 mod provenance;
 pub use provenance::{
-    AlignmentProvenance, AlignmentProvenanceInput, ProvenanceMethod, ReferenceMode, SourceRecord,
+    AlignmentProvenance, AlignmentProvenanceInput, ProvenanceGeometrySlice, ProvenanceMethod,
+    RailGraphSpan, ReferenceMode, SourceRecord,
 };
+
+mod construction_plans;
+pub use construction_plans::{ConstructionJunctionSource, ConstructionPlans};
+
+mod station_groups;
+pub use station_groups::StationGroup;
+
+mod service_route_bindings;
+pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
+
+mod service_appearance;
+pub use service_appearance::{ServiceAppearance, ServiceSymbolShape};
+mod track_topology;
+pub use track_topology::{
+    InternalTrackMovement, InternalTrackPoint, TrackLanePort, TrackMovement, TrackPointResource,
+    TrackSectionPort,
+};
+
+mod vertical_profile;
+pub use vertical_profile::{VerticalProfile, LEVEL_SPACING_M};
+
+mod junctions;
+
+mod turnout_geometry;
+pub use turnout_geometry::{
+    InternalTrackMovementGeometry, TrackLaneGeometry, TrackMovementGeometry, TrackRenderGeometry,
+    TurnoutMovementProperties, TRACK_LANE_SPACING_M, TURNOUT_GAME_LATERAL_ACCELERATION_MPS2,
+};
+
+mod height_redevelopment;
+
+mod roads;
+pub use roads::{
+    assess_road_crossings, AutomaticCrossing, CoverageBounds, RoadAssessment, RoadClassification,
+    RoadSnapshot, RoadWay,
+};
+
+mod water_model;
+pub use water_model::WATER_MODEL_REVISION;
+mod road_path;
+pub use road_path::AlignmentRoadPathProvenance;
+
+mod water_fine;
+mod water_national;
+pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskRequest};

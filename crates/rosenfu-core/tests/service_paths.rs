@@ -57,8 +57,7 @@ fn inserting_station_does_not_retarget_or_add_stops() {
         .place_station_on_alignment(c, "New".into(), a, 0.3, 100.0, 10.0)
         .unwrap();
     assert_eq!(w.snapshot().service_paths[0].stops, stops);
-    assert!(w.snapshot().services[0].tracks.is_empty());
-    assert!(w.snapshot().services[0].stops.is_empty());
+    assert_eq!(w.snapshot().service_paths[0].service_id, id);
     assert_eq!(
         w.service_path_occurrences(id)
             .unwrap()
@@ -70,12 +69,17 @@ fn inserting_station_does_not_retarget_or_add_stops() {
     assert_eq!(World::new(w.snapshot().clone()).unwrap(), w);
 }
 #[test]
-fn reverse_mixed_paths_and_revisits_have_unambiguous_boundary_references() {
+fn reverse_multi_leg_paths_and_revisits_have_unambiguous_boundary_references() {
     let (mut w, c, a, s, _) = sample();
-    let x = w.add_station(c, "X".into(), 35.0, 139.2).unwrap();
-    let t = w.add_track(c, x, s[2]).unwrap();
+    let x = w
+        .place_station_on_alignment(c, "X".into(), a, 0.98, 20., 10.)
+        .unwrap();
     let segments = vec![
-        RouteSegment::Track { track_id: t },
+        RouteSegment::Alignment {
+            alignment_id: a,
+            from: x,
+            to: s[2],
+        },
         RouteSegment::Alignment {
             alignment_id: a,
             from: s[2],
@@ -199,20 +203,25 @@ fn saved_path_changes_movement_and_referenced_deletion_are_rejected_atomically()
     assert_eq!(w.snapshot().alignments[0].id, a);
 }
 #[test]
-fn dual_sources_and_geographic_crossing_are_not_connections() {
-    let (mut w, c, _, s, segments) = sample();
+fn legacy_sources_are_rejected_and_nearby_stations_are_not_connections() {
+    let (mut w, c, a, s, segments) = sample();
     let stops = all(&w, s[0], segments.clone());
     w.add_service_path(c, "S".into(), s[0], segments, stops)
         .unwrap();
-    let t = w.add_track(c, s[0], s[2]).unwrap();
     let before = w.clone();
-    let mut draft = w.snapshot().clone();
-    draft.services[0].tracks = vec![t];
-    draft.services[0].stops = vec![0, 1];
-    assert!(w.replace(draft).is_err());
+    let mut encoded = serde_json::to_value(w.snapshot()).unwrap();
+    encoded["services"][0]["tracks"] = serde_json::json!(["999"]);
+    assert!(serde_json::from_value::<WorldDraft>(encoded).is_err());
     let x = w.add_station(c, "Nearby".into(), 35.0, 139.0).unwrap();
     assert!(w
-        .preview_service_path(x, vec![RouteSegment::Track { track_id: t }])
+        .preview_service_path(
+            x,
+            vec![RouteSegment::Alignment {
+                alignment_id: a,
+                from: s[0],
+                to: s[2]
+            }]
+        )
         .is_err());
     assert_eq!(w.snapshot().service_paths, before.snapshot().service_paths);
 }
@@ -284,17 +293,22 @@ fn geometry_changes_and_stop_reordering_are_atomic_but_route_changes_are_indepen
     assert_eq!(w.snapshot().services, before.snapshot().services);
 }
 #[test]
-fn referenced_track_endpoint_edits_are_rejected_even_if_traversal_is_equivalent() {
-    let (mut w, c, _, s, _) = sample();
-    let t = w.add_track(c, s[0], s[2]).unwrap();
-    let segments = vec![RouteSegment::Track { track_id: t }];
+fn referenced_alignment_reversal_is_rejected_even_if_traversal_is_equivalent() {
+    let (mut w, c, a, s, _) = sample();
+    let segments = vec![RouteSegment::Alignment {
+        alignment_id: a,
+        from: s[0],
+        to: s[2],
+    }];
     let stops = all(&w, s[0], segments.clone());
     w.add_service_path(c, "S".into(), s[0], segments, stops)
         .unwrap();
     let before = w.clone();
     let mut draft = w.snapshot().clone();
-    draft.tracks[0].from = s[2];
-    draft.tracks[0].to = s[0];
+    draft.alignments[0].points.reverse();
+    for p in &mut draft.station_placements {
+        p.position = 1.0 - p.position;
+    }
     assert_eq!(
         w.replace(draft),
         Err(WorldError::ServicePathEditUnsupported)
@@ -352,4 +366,230 @@ fn extension_preserves_service_traversal_and_general_edit_protection() {
             .is_err());
         assert_eq!(w.snapshot(), &after);
     }
+}
+
+#[test]
+fn saved_service_stop_edit_is_atomic_and_keeps_all_stable_identity() {
+    let (mut world, company, alignment, stations, segments) = sample();
+    let all_stops = all(&world, stations[0], segments.clone());
+    let id = world
+        .add_service_path(
+            company,
+            "Local".into(),
+            stations[0],
+            segments,
+            all_stops.clone(),
+        )
+        .unwrap();
+    let before = world.snapshot().clone();
+    let express_stops = vec![all_stops[0].clone(), all_stops[2].clone()];
+    world
+        .update_service_path(company, id, " Express ".into(), express_stops.clone())
+        .unwrap();
+    let mut expected = before.clone();
+    expected.services[0].name = "Express".into();
+    expected.service_paths[0].stops = express_stops;
+    assert_eq!(world.snapshot(), &expected);
+    assert_eq!(World::new(world.snapshot().clone()).unwrap(), world);
+    // Undo using the same bounded API restores the exact prior snapshot.
+    world
+        .update_service_path(company, id, "Local".into(), all_stops.clone())
+        .unwrap();
+    assert_eq!(world.snapshot(), &before);
+    // A newly inserted station does not renumber the saved leg references.
+    world
+        .place_station_on_alignment(company, "Added".into(), alignment, 0.3, 100.0, 10.0)
+        .unwrap();
+    let stable = world.snapshot().clone();
+    world
+        .update_service_path(company, id, "Renamed".into(), all_stops.clone())
+        .unwrap();
+    assert_eq!(world.snapshot().service_paths, stable.service_paths);
+    let valid = world.snapshot().clone();
+    for stops in [
+        vec![],
+        vec![all_stops[0].clone()],
+        vec![
+            all_stops[0].clone(),
+            all_stops[1].clone(),
+            all_stops[1].clone(),
+            all_stops[2].clone(),
+        ],
+        vec![
+            all_stops[0].clone(),
+            StationOccurrenceRef::OnLeg {
+                leg_key: 100,
+                station_id: stations[2],
+            },
+        ],
+    ] {
+        assert!(world
+            .update_service_path(company, id, "Bad".into(), stops)
+            .is_err());
+        assert_eq!(world.snapshot(), &valid);
+    }
+    for name in [" ".to_string(), "x".repeat(81)] {
+        assert!(world
+            .update_service_path(company, id, name, all_stops.clone())
+            .is_err());
+        assert_eq!(world.snapshot(), &valid);
+    }
+    assert!(world
+        .update_service_path(
+            CompanyId::try_from("999".to_string()).unwrap(),
+            id,
+            "Bad".into(),
+            all_stops
+        )
+        .is_err());
+    assert_eq!(world.snapshot(), &valid);
+}
+
+#[test]
+fn saved_path_edit_rejects_missing_service_and_distinguishes_revisits() {
+    let (mut world, company, alignment, stations, mut segments) = sample();
+    segments.push(RouteSegment::Alignment {
+        alignment_id: alignment,
+        from: stations[2],
+        to: stations[0],
+    });
+    let all_stops = all(&world, stations[0], segments.clone());
+    let id = world
+        .add_service_path(
+            company,
+            "Loop".into(),
+            stations[0],
+            segments,
+            all_stops.clone(),
+        )
+        .unwrap();
+    world
+        .update_service_path(
+            company,
+            id,
+            "Express loop".into(),
+            vec![
+                all_stops[0].clone(),
+                all_stops[3].clone(),
+                all_stops[4].clone(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        world.service_path_occurrences(id).unwrap()[3].station_id,
+        stations[1]
+    );
+    assert_eq!(world.snapshot().service_paths[0].stops[1], all_stops[3]);
+    let old = ServiceId(999);
+    let before = world.snapshot().clone();
+    assert!(world
+        .update_service_path(company, old, "Bad".into(), all_stops)
+        .is_err());
+    assert_eq!(world.snapshot(), &before);
+}
+
+#[test]
+fn replacement_allocates_fresh_keys_and_rejects_stale_or_invalid_edits_atomically() {
+    let (mut w, c, a, s, segments) = sample();
+    let id = w
+        .add_service_path(
+            c,
+            "Local".into(),
+            s[0],
+            segments.clone(),
+            all(&w, s[0], segments),
+        )
+        .unwrap();
+    let before = w.snapshot().clone();
+    let old = before.service_paths[0].clone();
+    let replacement = vec![RouteSegment::Alignment {
+        alignment_id: a,
+        from: s[2],
+        to: s[0],
+    }];
+    let preview = w
+        .preview_service_path_replacement(c, id, s[2], replacement.clone())
+        .unwrap();
+    assert_eq!(preview.legs[0].key, old.next_leg_key);
+    assert!(preview.requires_stop_selection);
+    let stops = preview
+        .occurrences
+        .iter()
+        .map(|o| o.reference.clone())
+        .collect::<Vec<_>>();
+    // Old references must not silently retarget the newly generated path.
+    assert!(w
+        .replace_service_path(
+            c,
+            id,
+            old.clone(),
+            "Reverse".into(),
+            s[2],
+            replacement.clone(),
+            old.stops.clone()
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+    assert!(w
+        .replace_service_path(
+            c,
+            id,
+            old.clone(),
+            "Reverse".into(),
+            s[2],
+            replacement.clone(),
+            vec![]
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+    assert!(w
+        .replace_service_path(
+            CompanyId::try_from("999".to_string()).unwrap(),
+            id,
+            old.clone(),
+            "Reverse".into(),
+            s[2],
+            replacement.clone(),
+            stops.clone()
+        )
+        .is_err());
+    assert_eq!(w.snapshot(), &before);
+    w.replace_service_path(
+        c,
+        id,
+        old.clone(),
+        "Reverse".into(),
+        s[2],
+        replacement.clone(),
+        stops.clone(),
+    )
+    .unwrap();
+    let after = w.snapshot().clone();
+    let mut expected = before.clone();
+    expected.services[0].name = "Reverse".into();
+    expected.services[0].start = s[2];
+    expected.service_paths[0] = ServicePath {
+        service_id: id,
+        next_leg_key: old.next_leg_key + 1,
+        legs: preview.legs,
+        stops: stops.clone(),
+    };
+    assert_eq!(after, expected);
+    assert_eq!(World::new(after.clone()).unwrap(), w);
+    assert!(w
+        .replace_service_path(c, id, old, "Stale".into(), s[2], replacement.clone(), stops)
+        .is_err());
+    assert_eq!(w.snapshot(), &after);
+    // Exhausted counters must fail in preview and commit, without wraparound.
+    let mut exhausted = after.clone();
+    exhausted.service_paths[0].next_leg_key = u64::MAX;
+    let path = exhausted.service_paths[0].clone();
+    let mut w = World::new(exhausted.clone()).unwrap();
+    assert!(w
+        .preview_service_path_replacement(c, id, s[2], replacement.clone())
+        .is_err());
+    assert!(w
+        .replace_service_path(c, id, path, "Overflow".into(), s[2], replacement, vec![])
+        .is_err());
+    assert_eq!(w.snapshot(), &exhausted);
 }

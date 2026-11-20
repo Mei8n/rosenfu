@@ -24,6 +24,44 @@ impl TrackType {
         }
     }
 }
+/// Categorical construction level, not metres of elevation or a gradient profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InfrastructureLevel {
+    #[default]
+    Ground,
+    Elevated,
+    #[serde(rename = "elevated_2")]
+    Elevated2,
+    #[serde(rename = "elevated_3")]
+    Elevated3,
+    Underground,
+    #[serde(rename = "underground_2")]
+    Underground2,
+    #[serde(rename = "underground_3")]
+    Underground3,
+}
+/// Physical infrastructure attributes of one anchor-to-anchor section.
+/// Track count is not a simulated capacity, directional assignment, or lane topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SectionInfrastructure {
+    pub track_count: u8,
+    pub level: InfrastructureLevel,
+}
+impl Default for SectionInfrastructure {
+    fn default() -> Self {
+        Self {
+            track_count: 1,
+            level: InfrastructureLevel::Ground,
+        }
+    }
+}
+impl SectionInfrastructure {
+    pub fn is_valid(self) -> bool {
+        matches!(self.track_count, 1 | 2 | 4)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Alignment {
@@ -31,6 +69,17 @@ pub struct Alignment {
     pub owner: CompanyId,
     pub name: String,
     pub points: Vec<GeoPoint>,
+    /// Original construction anchor boundaries in the sampled line. Legacy: one section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_indices: Option<Vec<usize>>,
+    /// Empty is the compact encoding of single-track ground infrastructure throughout.
+    /// Otherwise exactly one item per anchor interval, in geometry order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub infrastructure: Vec<SectionInfrastructure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical_profile: Option<VerticalProfile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_profiles: Vec<VerticalProfile>,
     pub track_type: TrackType,
     /// None preserves legacy saves and resolves to the track-type default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,13 +95,30 @@ pub struct StationPlacement {
     pub width_m: f64,
 }
 
-fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
+pub(super) fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
     let x = (b.longitude - a.longitude).to_radians()
         * ((a.latitude + b.latitude) / 2.0).to_radians().cos();
     let y = (b.latitude - a.latitude).to_radians();
     6_371_000.0 * x.hypot(y)
 }
 impl Alignment {
+    pub fn section_count(&self) -> usize {
+        self.anchor_indices
+            .as_ref()
+            .map_or(1, |indices| indices.len().saturating_sub(1))
+    }
+    pub fn section_infrastructure(&self, index: usize) -> Option<SectionInfrastructure> {
+        (index < self.section_count())
+            .then(|| self.infrastructure.get(index).copied().unwrap_or_default())
+    }
+    pub fn effective_infrastructure(&self) -> Vec<SectionInfrastructure> {
+        if self.infrastructure.is_empty() {
+            vec![SectionInfrastructure::default(); self.section_count()]
+        } else {
+            self.infrastructure.clone()
+        }
+    }
+
     pub fn effective_design_speed_kmh(&self) -> f64 {
         self.design_speed_kmh
             .unwrap_or_else(|| self.track_type.default_design_speed_kmh())
@@ -80,6 +146,58 @@ impl WorldDraft {
     pub(super) fn validate_alignments(&self) -> Result<(), WorldError> {
         for a in &self.alignments {
             name(&a.name, "alignment")?;
+            if a.anchor_indices.as_ref().is_some_and(|indices| {
+                indices.len() < 2
+                    || indices.first() != Some(&0)
+                    || indices.last().copied() != a.points.len().checked_sub(1)
+                    || indices.windows(2).any(|pair| pair[0] >= pair[1])
+            }) {
+                return Err(WorldError::InvalidAlignment);
+            }
+            if (!a.infrastructure.is_empty() && a.infrastructure.len() != a.section_count())
+                || a.infrastructure.iter().any(|item| !item.is_valid())
+            {
+                return Err(WorldError::InvalidAlignment);
+            }
+            if a.vertical_profile.is_none()
+                && a.section_profiles.is_empty()
+                && a.infrastructure
+                    .windows(2)
+                    .any(|sections| sections[0].level != sections[1].level)
+            {
+                // A category change is not a vertical ramp: reject instantaneous steps.
+                return Err(WorldError::InvalidAlignment);
+            }
+            if a.vertical_profile
+                .is_some_and(|profile| !profile.is_valid(a.length_m(), a.track_type))
+            {
+                return Err(WorldError::InvalidAlignment);
+            }
+            if !a.section_profiles.is_empty() {
+                let lengths = a.section_lengths_m();
+                if a.vertical_profile.is_some()
+                    || a.section_profiles.len() != a.section_count()
+                    || a.section_profiles
+                        .iter()
+                        .zip(&lengths)
+                        .any(|(p, length)| !p.is_valid(*length, a.track_type))
+                {
+                    return Err(WorldError::InvalidAlignment);
+                }
+                for i in 1..a.section_profiles.len() {
+                    if (a.section_profiles[i - 1].end_height_m
+                        - a.section_profiles[i].start_height_m)
+                        .abs()
+                        > 1e-6
+                        || (a.section_profiles[i - 1].end_tangent_m / lengths[i - 1]
+                            - a.section_profiles[i].start_tangent_m / lengths[i])
+                            .abs()
+                            > 1e-8
+                    {
+                        return Err(WorldError::InvalidAlignment);
+                    }
+                }
+            }
             let speed = a.effective_design_speed_kmh();
             if !speed.is_finite() || !(1.0..=600.0).contains(&speed) {
                 return Err(WorldError::InvalidAlignmentDesignSpeed);
@@ -112,7 +230,21 @@ impl WorldDraft {
                 .iter()
                 .find(|s| s.id == p.station_id)
                 .ok_or(WorldError::MissingReference("placement.station"))?;
-            if !placed.insert(p.station_id)
+            let footprint_start = p.position - p.length_m / (2.0 * a.length_m());
+            let footprint_end = p.position + p.length_m / (2.0 * a.length_m());
+            if footprint_start.is_finite()
+                && footprint_end.is_finite()
+                && footprint_start >= -1e-9
+                && footprint_end <= 1. + 1e-9
+                && footprint_start <= footprint_end
+                && !a.is_flat_over_position(footprint_start, footprint_end)
+            {
+                return Err(WorldError::StationOnGradient);
+            }
+            if !a.is_flat_over_position(
+                p.position - p.length_m / (2.0 * a.length_m()),
+                p.position + p.length_m / (2.0 * a.length_m()),
+            ) || !placed.insert(p.station_id)
                 || a.owner != s.owner
                 || !p.position.is_finite()
                 || !(0.0..=1.0).contains(&p.position)
@@ -161,6 +293,18 @@ impl World {
         endpoint: AlignmentEndpoint,
         points: Vec<GeoPoint>,
     ) -> Result<(), WorldError> {
+        let end = AlignmentEndpointRef {
+            alignment_id,
+            endpoint,
+        };
+        if self
+            .data
+            .alignment_connections
+            .iter()
+            .any(|link| link.a == end || link.b == end)
+        {
+            return Err(WorldError::InvalidAlignmentConnection);
+        }
         let mut data = self.data.clone();
         let alignment = data
             .alignments
@@ -174,7 +318,11 @@ impl World {
                 .last()
                 .ok_or(WorldError::InvalidAlignment)?,
         };
-        if alignment.owner != owner || points.len() < 2 || points.first() != Some(&old_endpoint) {
+        if (alignment.vertical_profile.is_some() || !alignment.section_profiles.is_empty())
+            || alignment.owner != owner
+            || points.len() < 2
+            || points.first() != Some(&old_endpoint)
+        {
             return Err(WorldError::InvalidAlignment);
         }
         // Sampled tangent arcs have at most 2.5 degrees of chord deviation.
@@ -208,6 +356,25 @@ impl World {
         } else {
             0
         };
+        let old_boundaries = alignment
+            .anchor_indices
+            .clone()
+            .unwrap_or_else(|| vec![0, alignment.points.len() - 1]);
+        if !alignment.infrastructure.is_empty() {
+            let inherited = match endpoint {
+                AlignmentEndpoint::Start => alignment.infrastructure[0],
+                AlignmentEndpoint::End => *alignment
+                    .infrastructure
+                    .last()
+                    .ok_or(WorldError::InvalidAlignment)?,
+            };
+            match endpoint {
+                AlignmentEndpoint::Start => alignment.infrastructure.insert(0, inherited),
+                AlignmentEndpoint::End => alignment.infrastructure.push(inherited),
+            }
+        }
+        let old_point_count = alignment.points.len();
+        let added_point_count = points.len() - 1;
         match endpoint {
             AlignmentEndpoint::Start => {
                 let mut extended: Vec<_> = points.into_iter().skip(1).rev().collect();
@@ -216,6 +383,15 @@ impl World {
             }
             AlignmentEndpoint::End => alignment.points.extend(points.into_iter().skip(1)),
         }
+        alignment.anchor_indices = Some(match endpoint {
+            AlignmentEndpoint::Start => std::iter::once(0)
+                .chain(old_boundaries.into_iter().map(|i| i + added_point_count))
+                .collect(),
+            AlignmentEndpoint::End => old_boundaries
+                .into_iter()
+                .chain(std::iter::once(old_point_count + added_point_count - 1))
+                .collect(),
+        });
         let new_length = alignment.length_m();
         let offset = if endpoint == AlignmentEndpoint::Start {
             added_length
@@ -232,6 +408,20 @@ impl World {
         // Generic replace deliberately retains its stronger edit prohibition.
         for p in data
             .alignment_provenance
+            .iter_mut()
+            .filter(|p| p.alignment_id == alignment_id)
+        {
+            p.start_point_index = p
+                .start_point_index
+                .checked_add(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+            p.end_point_index = p
+                .end_point_index
+                .checked_add(prepend)
+                .ok_or(WorldError::InvalidProvenance)?;
+        }
+        for p in data
+            .road_path_provenance
             .iter_mut()
             .filter(|p| p.alignment_id == alignment_id)
         {
@@ -274,6 +464,10 @@ impl World {
                 owner,
                 name,
                 points,
+                anchor_indices: None,
+                infrastructure: Vec::new(),
+                vertical_profile: None,
+                section_profiles: Vec::new(),
                 track_type,
                 design_speed_kmh: None,
             })
@@ -325,6 +519,36 @@ impl World {
         let half = length_m / a.length_m() / 2.0;
         let position = position.clamp(half, 1.0 - half);
         let point = a.point_at(position);
+        // Guard only duplicate occupation along this alignment. A different
+        // alignment may intentionally carry another platform of a shared station.
+        // Keep legacy snapshot loading and existing station resizing unchanged.
+        let total = a.length_m();
+        if self.data.station_placements.iter().any(|placement| {
+            placement.alignment_id == alignment_id
+                && (placement.position - position).abs() * total
+                    < (placement.length_m + length_m) / 2.0 - 1e-7
+        }) {
+            return Err(WorldError::StationFootprintOverlap);
+        }
+        let footprint = super::station_groups::footprint(a, position, length_m, width_m);
+        let intersecting: Vec<_> = self
+            .data
+            .station_placements
+            .iter()
+            .filter(|p| p.alignment_id != alignment_id)
+            .filter_map(|p| {
+                let alignment = self
+                    .data
+                    .alignments
+                    .iter()
+                    .find(|a| a.id == p.alignment_id && a.owner == owner)?;
+                super::station_groups::overlaps(
+                    &footprint,
+                    &super::station_groups::footprint(alignment, p.position, p.length_m, p.width_m),
+                )
+                .then_some(p.station_id)
+            })
+            .collect();
         self.insert(|data, id| {
             data.stations.push(Station {
                 id: StationId(id),
@@ -340,6 +564,7 @@ impl World {
                 length_m,
                 width_m,
             });
+            data.join_station_group(StationId(id), &intersecting);
         })
         .map(StationId)
     }

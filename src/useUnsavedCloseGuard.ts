@@ -25,7 +25,7 @@ export function useUnsavedCloseGuard(unsaved: boolean) {
         });
         if (disposed) cleanup(); else unlisten = cleanup;
       } catch {
-        if (!disposed) setCloseError("終了確認を登録できませんでした。未着工の計画は終了時に失われます。着工・保存するまで閉じないでください。");
+        if (!disposed) setCloseError("終了確認を登録できませんでした。未保存の変更は終了時に失われます。計画も保存してから閉じてください。");
       }
     };
     if (isTauri() && "__TAURI_INTERNALS__" in window) void register();

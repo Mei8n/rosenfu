@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import {panMap} from "./mapTestNavigation";
 import React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -24,11 +25,12 @@ beforeEach(() => {
   saved = world;
   vi.mocked(isTauri).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async command => {
+    if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};
     if (command === "engine_info") return { name: "Rosenfu", version: "offline-test" };
     if (command === "world_snapshot") return world;
     if (command === "rename_company") return renamed;
     if (command === "save_world") { saved = renamed; return { saved: true }; }
-    if (command === "load_world") return saved;
+    if (command === "load_save_slot") return saved;
     throw new Error(`unexpected local command: ${command}`);
   });
 });
@@ -59,8 +61,8 @@ test("manual offline fallback removes remote tiles and stays local through pan a
   fireEvent.click(screen.getByRole("button", { name: "サンプル背景に戻す" }));
   expect(screen.getByRole("img", { name: "駅配置用サンプル地図" })).toBeTruthy();
   expect(document.querySelectorAll("image")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "東へ移動" }));
-  fireEvent.click(screen.getByRole("button", { name: "拡大" }));
+  panMap(300);
+  fireEvent.keyDown(window,{key:"+"});
   expect(document.querySelectorAll("image")).toHaveLength(0);
   expect(screen.queryByText(/枚の読み込みに失敗しました/)).toBeNull();
   expect(fetchAttempt).not.toHaveBeenCalled();
@@ -73,11 +75,11 @@ test("background failure does not block editing, saving and reloading local stat
   fireEvent.click(screen.getByRole("button", { name: "設定変更" }));
   await screen.findByText("会社名を変更しました。");
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
-  await screen.findByText("ワールドを保存しました。");
+  await screen.findByText("ワールドと未着工計画を保存しました。");
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   await screen.findByText("保存したワールドを読み込みました。");
   expect((screen.getByLabelText("会社名") as HTMLInputElement).value).toBe("オフライン鉄道");
-  expect(invoke).toHaveBeenCalledWith("save_world");
-  expect(invoke).toHaveBeenCalledWith("load_world");
+  expect(invoke).toHaveBeenCalledWith("save_world",expect.objectContaining({constructionPlans:expect.any(Object)}));
+  expect(invoke).toHaveBeenCalledWith("load_save_slot",{slotId:"test-slot"});
   expect(fetchAttempt).not.toHaveBeenCalled();
 });

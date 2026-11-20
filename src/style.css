@@ -113,11 +113,6 @@ select:disabled { opacity: .55; }
 .map-attribution p { margin-top: 4px; max-width: 540px; }
 .map-surface { background: #33483f; }
 .camera-controls { padding: 8px 15px; border-top: 1px solid #42584c; background: #17271f; }
-.camera-buttons { display: flex; flex-wrap: wrap; gap: 5px; }
-.camera-buttons button, .camera-coordinate-form button { font-size: 11px; padding: 5px 9px; }
-.camera-coordinate-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.camera-coordinate-form label { margin: 0; font-size: 10px; }
-.camera-coordinate-form input { width: 96px; font-size: 11px; padding: 5px; }
 .camera-controls > p { font-size: 10px; color: #a4b7a8; margin-top: 7px; }
 .camera-controls > p[role="alert"] { color: #efbda6; }
 .map-surface svg { touch-action: none; user-select: none; }
@@ -182,11 +177,6 @@ h1 span { font-size: 10px; color: #92a6b3; }
 .background-controls, .camera-controls { background: transparent; padding: 10px 12px; border-color: var(--border); }
 .background-controls select { flex: 1; min-width: 0; background: #26353d; }
 .background-controls > span { width: 100%; color: #9bb0bb; }
-.camera-buttons { gap: 4px; }
-.camera-buttons button { padding: 5px 8px; }
-.camera-coordinate-form { display: grid; grid-template-columns: 70px 1fr; }
-.camera-coordinate-form input { width: 100%; }
-.camera-coordinate-form button { grid-column: 1 / -1; }
 .camera-controls > p { line-height: 1.6; }
 .map-mode-controls { gap: 5px; }
 .map-mode-controls span { width: 100%; }
@@ -247,7 +237,7 @@ h1 span { font-size: 10px; color: #92a6b3; }
 .tool-helper kbd { border: 1px solid #526771; border-radius: 3px; padding: 0 4px; font-size: 9px; }
 .inspector-title { padding: 12px 16px; border-bottom: 1px solid #40515a; display: flex; justify-content: space-between; align-items: center; font-size: 10px; letter-spacing: .08em; color: #a9bdc9; }
 .inspector-title button { padding: 2px 8px; font-size: 14px; }
-.side-panel.collapsed > section { display: none; }
+.side-panel.collapsed > section, .side-panel.collapsed > .construction-content { display: none; }
 .side-panel.collapsed { bottom: auto; }
 button.danger { color: #f2b5a6; border-color: #89594f; }
 .track-list small { color: #d7aa96; }
@@ -357,7 +347,7 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .alignment-sleepers { stroke-width:calc(var(--rail-width) * 1px + 3px); }
 
 /* Workspace hierarchy: construction tools are nested; management has its own tabs. */
-.workbench .workspace-tabs { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); position:sticky; top:0; z-index:7; background:var(--surface); border-bottom:1px solid var(--edge); }
+.workbench .workspace-tabs { display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); position:sticky; top:0; z-index:7; background:var(--surface); border-bottom:1px solid var(--edge); }
 .workbench .workspace-tabs button { min-width:0; border-radius:0; padding:9px 3px; font-size:.9em; color:var(--ink); background:var(--surface); }
 .workbench .workspace-tabs button[aria-selected="true"] { background:var(--accent); }
 .workbench .construction-tabs { grid-template-columns:repeat(2,1fr); position:static; }
@@ -385,9 +375,212 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .drawing-tooltip { z-index:6; pointer-events:none; max-width:248px; }
 .workbench .draft-path.candidate-draft { stroke-width:4; }
 .workbench .draft-path.invalid-candidate { stroke:#c54444; }
-.curve-speed-label { position:absolute; z-index:3; pointer-events:none; white-space:nowrap; font-size:11px; color:var(--ink); background:var(--surface); border:1px solid var(--edge); padding:1px 4px; }
 
 .workbench .construction-tooltip { max-width:calc(100% - 16px); box-sizing:border-box; overflow-wrap:anywhere; }
 .construction-help { position:relative; font-size:11px; }
 .construction-help p { position:absolute; top:20px; right:0; width:220px; padding:8px; background:var(--surface); border:1px solid var(--edge); }
 .construction-toolbar select { background:var(--surface-alt); color:var(--ink); }
+
+.extension-status {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 5;
+  padding: 6px 10px;
+  border: 1px solid #14b8a6;
+  border-radius: 6px;
+  background: var(--panel-bg, #172b32);
+  color: var(--text-color, #fff);
+  pointer-events: none;
+}
+.workbench .draft-anchor,.workbench .parked-anchor { pointer-events:none; fill:#fff; stroke:#263849; stroke-width:1; }
+.workbench .draft-anchor.draft-endpoint,.workbench .parked-anchor.draft-endpoint { fill:#fff1f7; stroke:#d95187; stroke-width:1.8; }
+.plan-hover-tooltip { white-space:nowrap; pointer-events:none; }
+.station-toolbar { margin:0; min-width:0; }
+.station-length-control { display:flex; align-items:center; gap:6px; font-size:12px; }
+.station-length-control label { margin:0; font-size:12px; }
+.station-length-control input { width:54px; padding:3px; margin:0; text-align:center; font-size:12px; }
+.station-length-control button { padding:2px 8px; min-width:26px; font-size:14px; }
+.workbench .station-placement-error { width:max-content; max-width:min(230px,calc(100% - 16px)); font-size:11px; color:#a32626; }
+/* Optional instructions stay available without competing with editing controls. */
+.user-guide { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border, #c9c9c9); border-radius: 8px; }
+.user-guide summary, .reference-tools > summary, .reference-controls summary { cursor: pointer; }
+.user-guide > summary { font-weight: 600; }
+.user-guide details { margin-top: 10px; }
+.user-guide p { font-size: 0.85rem; line-height: 1.6; }
+.side-panel.collapsed > .user-guide { display: none; }
+.reference-tools { margin: 12px 0; }
+.reference-controls details { margin: 8px 0; }
+/* Nonmodal feedback belongs to the map, away from the construction controls. */
+.workbench .map-notices { position:absolute; bottom:48px; left:8px; z-index:20; display:flex; flex-direction:column; gap:6px; width:min(400px,calc(100% - 16px)); max-height:40%; overflow:auto; pointer-events:none; }
+.workbench .map-notices > * { position:static; inset:auto; width:auto; max-width:none; margin:0; pointer-events:auto; flex-shrink:0; }
+.workbench .map-notices .tile-status { background:var(--surface); color:var(--ink); border-color:var(--edge); }
+.map-credits { position:absolute; bottom:8px; right:8px; z-index:21; display:flex; align-items:flex-end; gap:4px; width:calc(100% - 16px); justify-content:flex-end; pointer-events:none; color:var(--ink); font-size:10px; }
+.map-credits-visible { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; padding:3px 5px; background:var(--surface); border-radius:3px; }
+.map-credits-visible:empty { display:none; }
+.map-credits a { color:var(--ink); text-decoration:underline; overflow-wrap:anywhere; }
+.map-credits summary { display:grid; place-items:center; list-style:none; cursor:pointer; width:24px; height:24px; border:1px solid var(--edge); border-radius:4px; background:var(--surface); font:bold 14px Georgia,serif; }
+.map-credits summary::-webkit-details-marker { display:none; }
+.map-credits summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.map-credits-content { position:absolute; bottom:32px; right:0; width:min(360px,calc(100vw - 32px)); max-width:100%; max-height:180px; overflow:auto; padding:10px; background:var(--surface); border:1px solid var(--edge); border-radius:4px; box-shadow:0 3px 12px #0003; }
+.map-credits-content p { margin:0 0 7px; }
+
+.map-credits > * { pointer-events:auto; }
+.workbench .draft-anchor,.workbench .parked-anchor { pointer-events:all; cursor:grab; }
+.workbench .anchor-drag-preview { stroke:#3dd6ce; stroke-width:4; }
+.workbench .anchor-drag-preview.invalid-candidate { stroke:#d9534f; }
+.track-focus-marker { fill:#b83945; stroke:#fff; stroke-width:2; pointer-events:none; }
+.track-focus-marker[data-kind="anchor"] { fill:#d9950b; }
+.track-focus-marker[data-allowed="false"] { fill:#9e2630; stroke-dasharray:2 2; }
+.track-focus-marker.anchor-snap-ring:not(.snapped):not([data-allowed="false"]) { fill:#68727b; }
+.focus-anchor-center { fill:none; stroke:#fff; stroke-width:1.5; pointer-events:none; }
+.workbench .draft-anchor,.workbench .parked-anchor { pointer-events:none; }
+.anchor-drag-hit { fill:transparent;stroke:none;pointer-events:all;cursor:grab; }
+
+/* Drawing metrics are a compact factual readout, not a tutorial card. */
+.workbench .drawing-metrics { width: max-content; max-width: 202px; padding: 4px 6px; font-size: 10px; line-height: 1.4; }
+.workbench .drawing-speed { padding: 0 3px; background: var(--surface-alt, #eee9cb); font-variant-numeric: tabular-nums; }
+
+.workbench .workspace-tabs button { position:relative; display:grid; place-items:center; padding:9px 0; }
+.workspace-tab-tip { display:none; position:absolute; top:100%; left:50%; transform:translateX(-50%); padding:3px 6px; background:#20252cdd; color:#fff; font-size:11px; white-space:nowrap; pointer-events:none; border-radius:3px; z-index:20; }
+.workspace-tabs button:first-child .workspace-tab-tip { left:0; transform:none; }
+.workspace-tabs button:last-child .workspace-tab-tip { left:auto; right:0; transform:none; }
+.workspace-tabs button:hover .workspace-tab-tip,.workspace-tabs button:focus-visible .workspace-tab-tip { display:block; }
+.workbench .shared-plan { padding:10px; }
+.plan-heading { display:flex; align-items:center; gap:6px; }
+.plan-heading input { min-width:0; width:100%; }
+.plan-heading button { flex:none; }
+.plan-totals { display:flex; flex-wrap:wrap; justify-content:space-between; gap:4px; font-size:11px; margin:8px 0; }
+.plan-switcher,.plan-actions { display:flex; gap:5px; flex-wrap:wrap; }
+.plan-switcher { margin-top:6px; }
+.plan-actions > button { flex:1; }
+.plan-breakdown { margin:6px 0; font-size:12px; }
+
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+
+.speed-input { display:flex; align-items:center; gap:3px; }
+.workbench .speed-input input { width:64px; min-width:0; appearance:textfield; }
+.speed-input input::-webkit-inner-spin-button { appearance:none; }
+.workbench .speed-input button { padding:3px 7px; }
+
+.workbench .construction-toolbar .target-speed-control { display:flex; align-items:center; gap:6px; font-size:11px; }
+.workbench .construction-toolbar { gap:6px; padding:5px 7px; border-radius:3px; }
+.drag-segment-speed rect { fill:var(--surface);stroke:var(--edge);stroke-width:1; }
+.drag-segment-speed text { fill:var(--ink);font-size:11px;font-weight:600; }
+.track-selection-controls{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;padding:.35rem .5rem}
+.track-selection-controls button{padding:.25rem .5rem}
+.track-explicit-selection{filter:drop-shadow(0 0 2px #fff);stroke:#e9aa25}
+.workbench[data-theme="dark"] .station-placement-error { color:#ffaaa5; }
+
+/* Construction keeps its drawing cursor over existing tracks. */
+.workbench .placement-enabled .alignment-hit,
+.workbench .placement-enabled .track-connection,
+.workbench .placement-enabled .draft-anchor,
+.workbench .placement-enabled .parked-anchor,
+.workbench .placement-enabled .anchor-drag-hit,
+.workbench .placement-enabled .station-marker { cursor: crosshair; }
+
+.workbench .construction-list[hidden] { display: none; }
+/* Separate plan selection from path hover: other plans remain visible, but neutral. */
+.workbench .inactive-plan .draft-path { stroke:#89939d; }
+.workbench .inactive-plan .draft-anchor,.workbench .inactive-plan .parked-anchor { stroke:#89939d;fill:#e3e7eb; }
+.workbench .planned-station.inactive-plan .station-platform { fill:#b1bac3;stroke:#78838e; }
+.workbench .planned-station.inactive-plan text { fill:#78838e; }
+
+/* The construction eraser targets an exact section; it never highlights a whole network. */
+.deletion-hit { cursor: crosshair; }
+.deletion-hover { stroke-linecap: round; stroke-linejoin: round; }
+.deletion-tooltip { pointer-events: none; }
+/* Toolbar hit areas stay on the controls, never on a wrapping label. */
+.workbench .construction-toolbar .track-type-options { flex-wrap:nowrap; }
+.workbench .construction-toolbar .track-type-options button { flex:0 0 auto; white-space:nowrap; padding:3px 8px; min-width:0; }
+/* Keep the selected kind visible above generic secondary-button styles, including hover. */
+.workbench .construction-toolbar .track-type-options button[aria-pressed="true"],
+.workbench .construction-toolbar .track-type-options button[aria-pressed="true"]:hover { background:var(--accent); color:#1e2b2e; border-color:var(--accent); font-weight:700; box-shadow:inset 0 -2px 0 currentColor; }
+.workbench .construction-toolbar .target-speed-control { margin:0; white-space:nowrap; }
+.workbench .construction-toolbar .target-speed-control label { margin:0; }
+.workbench .construction-toolbar .speed-input button { flex:none; width:25px; height:25px; padding:0; }
+.workbench .construction-toolbar .speed-input input { height:25px; padding:2px 4px; text-align:center; }
+.track-follow-options { display:flex; flex-wrap:nowrap; gap:3px; }
+.workbench .construction-toolbar .follow-icon { width:27px; height:25px; padding:0; }
+.track-follow-options button[aria-pressed="true"] { background:var(--accent); }
+.map-surface .follow-icon svg { width:20px; height:20px; margin:auto; }
+.follow-icon { position:relative; }
+.follow-tip { display:none; position:absolute; left:0; top:calc(100% + 7px); width:260px; padding:6px 8px; font-weight:400; font-size:11px; line-height:1.5; text-align:left; white-space:normal; color:var(--ink); background:var(--surface); border:1px solid var(--edge); opacity:.95; pointer-events:none; z-index:10; }
+.follow-icon:hover .follow-tip,.follow-icon:focus-visible .follow-tip { display:block; }
+
+.route-directory table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.route-directory th, .route-directory td { padding: .3rem .2rem; text-align: left; }
+.route-directory td { white-space: nowrap; }
+.route-directory tbody th { font-weight: normal; }
+
+/* Native disclosure keeps speed controls out of the closed toolbar and tab order. */
+.workbench .construction-toolbar .track-advanced-settings { min-width:0; max-width:100%; font-size:11px; }
+.workbench .construction-toolbar .track-advanced-settings > summary { cursor:pointer; }
+.workbench .construction-toolbar .track-advanced-settings .target-speed-control { flex-wrap:wrap; padding-top:4px; }
+
+/* Compact swatches and explicit HEX input share one colour draft. */
+.service-color-fields { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.service-color-fields label { display:flex; align-items:center; gap:4px; }
+.service-color-fields input[type="color"] { width:30px; height:28px; padding:0; cursor:pointer; }
+.service-color-fields .service-color-hex input { width:9ch; min-width:0; }
+.service-color-presets { display:flex; flex-wrap:wrap; gap:4px; width:260px; max-width:100%; margin:6px 0; }
+.service-color-presets .service-color-swatch { width:20px; height:20px; min-width:20px; padding:0; border:1px solid #bbb; border-radius:0; box-shadow:inset 0 0 0 2px #fff; }
+.service-color-presets .service-color-swatch[aria-pressed="true"] { outline:2px solid currentColor; outline-offset:1px; }
+.service-color-presets .service-color-swatch:focus-visible { outline:2px solid #111; outline-offset:2px; }
+.service-symbol-fields { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.service-symbol-fields label { display:flex; align-items:center; gap:4px; }
+.service-symbol-fields input { width:6em; }
+.service-symbol-fields button { padding:3px 6px; border-radius:0; }
+.service-symbol-fields button[aria-pressed="true"] { outline:1px solid #ef8e8e; }
+.service-badge { display:inline-flex; width:1.65em; height:1.65em; margin:.25em .5em .25em .25em; align-items:center; justify-content:center; color:white; font-weight:700; font-size:12px; flex-shrink:0; }
+.service-badge.circle { border-radius:50%; }
+.service-badge.diamond { transform:rotate(45deg); }
+.service-badge.diamond > span { transform:rotate(-45deg); }
+.service-badge > span { max-width:100%; overflow:hidden; white-space:nowrap; }
+
+/* Explicit rows: height, placing modes, then count and the details disclosure. */
+.workbench .construction-toolbar .construction-mode-row,
+.workbench .construction-toolbar .construction-options-row {
+  display:flex; align-items:flex-start; flex-wrap:wrap; gap:6px;
+  flex-basis:100%; min-width:0; max-width:100%;
+}
+.workbench .construction-toolbar .construction-mode-row { align-items:center; }
+.workbench .construction-toolbar .construction-options-row > label {
+  display:flex; align-items:center; gap:5px; margin:0; white-space:nowrap;
+}
+.workbench .construction-toolbar .construction-options-row .track-advanced-settings {
+  flex:1 1 9em; min-width:0;
+}
+.workbench .construction-toolbar .track-advanced-settings > summary {
+  width:fit-content; padding:3px 4px; line-height:1.4;
+}
+.workbench .construction-toolbar .track-advanced-settings > summary:focus-visible {
+  outline:2px solid currentColor; outline-offset:1px;
+}
+@media (max-width:480px) {
+  .workbench .construction-toolbar .construction-mode-row { gap:4px; }
+  .workbench .construction-toolbar .construction-options-row .track-advanced-settings { flex-basis:8em; }
+  .workbench .construction-toolbar .speed-input { max-width:100%; }
+}
+.workbench .route-station-select, .workbench .route-station-select * { cursor:crosshair; }
+
+/* Map legibility: neutral built infrastructure, blue plans, red refusals.
+   Screen-space widths remain readable without widening the hit targets. */
+.workbench .rail-casing { fill:none; stroke:#fffefa; stroke-width:calc(var(--rail-width) * .6px + 3.2px); stroke-linecap:butt; stroke-linejoin:round; vector-effect:non-scaling-stroke; pointer-events:none; }
+.workbench .alignment-path { stroke:#414a4d; stroke-width:calc(var(--rail-width) * .6px + 1px); vector-effect:non-scaling-stroke; }
+.workbench .route-base .alignment-path { stroke:#858b8d; }
+.workbench .alignment-path.alignment-selected { stroke:#c17c0b; }
+.workbench .draft-path { stroke:#187cb2; stroke-width:calc(var(--rail-width) * .6px + 1px); stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:7 3; vector-effect:non-scaling-stroke; }
+.workbench .draft-path.candidate-draft,.workbench .draft-path.road-drawing-preview,.workbench .draft-path.reference-copy-preview,.workbench .draft-path.anchor-drag-preview { stroke:#087ca0; stroke-width:calc(var(--rail-width) * .6px + 1px); stroke-dasharray:none; }
+.workbench .inactive-plan .draft-path { stroke:#7a858b; }
+.workbench .draft-path.track-explicit-selection { stroke:#c17c0b; }
+.workbench .draft-path.invalid-candidate { stroke:#c43d45; stroke-dasharray:4 3; }
+
+/* Keep the placing panel's inline size independent of the open disclosure.
+   max-content let the speed row resize/recenter the entire toolbar. */
+.workbench .track-construction-toolbar {
+  box-sizing:border-box; width:340px; min-width:0; max-width:calc(100% - 24px);
+}
+.workbench .track-construction-toolbar .height-controls { flex-wrap:wrap; }
+.workbench .track-construction-toolbar .speed-input { min-width:0; flex-wrap:wrap; }

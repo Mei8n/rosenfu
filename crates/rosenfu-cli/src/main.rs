@@ -27,7 +27,7 @@ fn run(args: Vec<OsString>) -> Result<(), Box<dyn Error>> {
                 "{}",
                 serde_json::json!({
                     "players": data.players.len(), "companies": data.companies.len(),
-                    "stations": data.stations.len(), "tracks": data.tracks.len(), "routes": data.routes.len(),
+                    "stations": data.stations.len(), "alignments": data.alignments.len(), "routes": data.routes.len(),
                     "services": data.services.len(), "next_id": data.next_id.to_string()
                 })
             );
