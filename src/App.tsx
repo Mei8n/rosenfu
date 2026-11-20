@@ -47,6 +47,7 @@ import {sameRouteBinding,ServiceRouteBindingEditor,type ServiceRouteBindingRecor
 import {RouteDirectory} from "./RouteDirectory";
 import {PARALLEL_RANGE_M,parallelProjection,offsetTrack,parallelSection} from "./parallelTrack";
 import {TrackFollowIcon} from "./TrackFollowIcon";
+import {firstByKey} from "./mapLookupIndex";
 import {stationGroupViews,footprintsIntersect,type StationGroup} from "./stationGroups";
 import {twoEndedJoin} from "./twoEndedJoin";
 import {DeletionDialog} from "./DeletionDialog";
@@ -430,15 +431,17 @@ export function App() {
   const platformWidth = "12";
   const [editLength, setEditLength] = useState("200");
   const [editWidth, setEditWidth] = useState("12");
-  const alignments = useMemo(()=>world?.alignments ?? [],[world]);
+  const alignments = useMemo(()=>world?.alignments ?? [],[world?.alignments]);
+  const alignmentsById=useMemo(()=>firstByKey(alignments,line=>line.id),[alignments]);
+  const stationPlacementById=useMemo(()=>firstByKey(world?.station_placements??[],placement=>placement.station_id),[world?.station_placements]);
   const trackRender=useTrackRenderGeometry(world,status==="ready"&&(!!world?.alignment_connections?.length||alignments.some(line=>line.infrastructure?.some((section,index)=>index>0&&section.track_count!==line.infrastructure![index-1].track_count))));
   const detailedStations = camera.zoom >= 13;
   const [stationResizePending,setStationResizePending]=useState(false);
   const [stationResizeFailure,setStationResizeFailure]=useState<string|null>(null);
   const stationPolygons=useMemo(()=>new Map((world?.station_placements??[]).map(placement=>{
-    const alignment=world?.alignments?.find(a=>a.id===placement.alignment_id);
+    const alignment=alignmentsById.get(placement.alignment_id);
     return [placement.station_id,alignment?stationPolygon(alignment.points,placement.position,placement.length_m,placement.width_m):null];
-  })),[world]);
+  })),[world?.station_placements,alignmentsById]);
   const selectedRouteSections = useMemo(()=>world&&routeSelectedCandidate?routeSegmentSections(world,routeSelectedCandidate.segments):new Map(),[world,routeSelectedCandidate]);
   function candidateLength(path:Candidate){
     if(!world)return Infinity;
@@ -654,7 +657,7 @@ export function App() {
   const selectedStation = world?.stations.find((station) => station.id === selected);
 
   const stationDirty = !!selectedStation && editStationName !== selectedStation.name;
-  const selectedPlacement = world?.station_placements?.find(p => p.station_id === selected);
+  const selectedPlacement = selected===null?undefined:stationPlacementById.get(selected);
   const platformDirty = !!selectedPlacement && (Number(editLength) !== selectedPlacement.length_m || Number(editWidth) !== selectedPlacement.width_m);
   const stationSettingsDirty = stationDirty || platformDirty;
   const copyCanStart=!(serviceAppearanceDirty||serviceDirty||pathServiceDirty||companyDirty||stationSettingsDirty);
@@ -746,15 +749,23 @@ export function App() {
     return {station,line,position,polygon,valid:!!line&&!line.invalid&&!!center&&distanceM(center,station.point)<1&&polygon.length>=4};
   }),[plannedStations,stationLines]);
   const stationGroupDisplay=useMemo(()=>stationGroupViews([
-    ...(world?.stations??[]).flatMap(station=>{const placement=world?.station_placements?.find(p=>p.station_id===station.id),polygon=stationPolygons.get(station.id);return placement&&polygon?[{id:station.id,name:station.name,owner:station.owner,lineId:placement.alignment_id,polygon,planned:false}]:[];}),
+    ...(world?.stations??[]).flatMap(station=>{const placement=stationPlacementById.get(station.id),polygon=stationPolygons.get(station.id);return placement&&polygon?[{id:station.id,name:station.name,owner:station.owner,lineId:placement.alignment_id,polygon,planned:false}]:[];}),
     ...plannedPlatforms.flatMap(p=>p.line?[{id:p.station.id,name:p.station.name,owner:world?.companies[0]?.id??"",lineId:p.line.id,polygon:p.polygon,planned:true}]:[])
-  ],world?.station_groups),[world,stationPolygons,plannedPlatforms]);
-  const stationDisplayGroup=(id:string)=>stationGroupDisplay.find(g=>g.members.some(m=>m.id===id));
-  const mergedStationIds=new Set(stationGroupDisplay.filter(g=>g.members.length>1).flatMap(g=>g.members.map(m=>m.id)));
+  ],world?.station_groups),[world,stationPlacementById,stationPolygons,plannedPlatforms]);
+  const {stationGroupByMember,mergedStationIds}=useMemo(()=>{
+    const stationGroupByMember=new Map<string,(typeof stationGroupDisplay)[number]>();
+    const mergedStationIds=new Set<string>();
+    for(const group of stationGroupDisplay)for(const member of group.members){
+      if(!stationGroupByMember.has(member.id))stationGroupByMember.set(member.id,group);
+      if(group.members.length>1)mergedStationIds.add(member.id);
+    }
+    return {stationGroupByMember,mergedStationIds};
+  },[stationGroupDisplay]);
+  const stationDisplayGroup=(id:string)=>stationGroupByMember.get(id);
   const occupiedStationPlatforms=[...(world?.station_placements??[]).map(p=>({lineId:p.alignment_id,position:p.position,lengthM:p.length_m})),...plannedPlatforms.flatMap(p=>p.line?[{lineId:p.line.id,position:p.position,lengthM:p.station.lengthM}]:[])];
   const hoveredPlannedStation=stationCursor?plannedPlatforms.find(p=>stationContainsPoint(p.polygon,stationCursor)):undefined;
   const hoveredBuiltStation=stationCursor?world?.stations.find(station=>stationContainsPoint(stationPolygons.get(station.id)??[],stationCursor)):undefined;
-  const hoveredStation=hoveredPlannedStation?{name:stationDisplayGroup(hoveredPlannedStation.station.id)?.name??hoveredPlannedStation.station.name,lengthM:hoveredPlannedStation.station.lengthM}:hoveredBuiltStation?{name:hoveredBuiltStation.name,lengthM:world?.station_placements?.find(p=>p.station_id===hoveredBuiltStation.id)?.length_m}:undefined;
+  const hoveredStation=hoveredPlannedStation?{name:stationDisplayGroup(hoveredPlannedStation.station.id)?.name??hoveredPlannedStation.station.name,lengthM:hoveredPlannedStation.station.lengthM}:hoveredBuiltStation?{name:hoveredBuiltStation.name,lengthM:stationPlacementById.get(hoveredBuiltStation.id)?.length_m}:undefined;
   const stationSelection=stationCursor?stationTarget(stationLines,stationCursor,Number(platformLength),camera,mapSize.width>0&&mapSize.height>0?mapViewport(mapSize.width,mapSize.height).scale:1,occupiedStationPlatforms):null;
   const stationJoinPreview=stationSelection?.target&&!stationSelection.error?stationGroupDisplay.find(g=>g.members.some(m=>m.owner===world?.companies[0]?.id&&m.lineId!==stationSelection.target!.line.id&&footprintsIntersect(m.polygon,stationSelection.target!.polygon))):undefined;
   const stationJoinOrigin=stationJoinPreview?(world?.stations.find(s=>s.id===stationJoinPreview.id)??plannedStations.find(s=>s.id===stationJoinPreview.id)?.point):undefined;
@@ -1000,7 +1011,7 @@ export function App() {
     if (id === selected) { setMainTab("stations"); setActiveTool("station-management"); setPanelCollapsed(false); return; }
     setMainTab("stations"); setActiveTool("station-management");
     setSelected(id); setEditStationName(stationsById.get(id)?.name ?? ""); setPendingStation(null); setPendingDelete(null);
-    const placement = world?.station_placements?.find((entry) => entry.station_id === id);
+    const placement = stationPlacementById.get(id);
     setEditLength(String(placement?.length_m ?? 200)); setEditWidth(String(placement?.width_m ?? 12)); setPanelCollapsed(false);
   }
   function beginStationNameEdit(){
@@ -1600,7 +1611,7 @@ export function App() {
     return ()=>clearTimeout(timer);
   },[enabled,platformDirty,resizeValid,resizeKey,pendingStation,confirmLoad,stationResizeFailure]);
   function stationHistoryBlock(){
-    const placement=world?.station_placements?.find(p=>p.station_id===selected);
+    const placement=selected===null?undefined:stationPlacementById.get(selected);
     if(pendingDelete || pendingStation || confirmLoad)return "表示中の確認を完了または取り消してください。";
     if(saveBlocked || (placement && (Number(editLength)!==placement.length_m || Number(editWidth)!==placement.width_m)))return "編集中の下書き・配置プレビューを適用または解除してください。";
     return "";
@@ -2034,7 +2045,7 @@ export function App() {
               {referenceVisible && referenceResult.stations.map(station=>{const p=project(station.latitude,station.longitude,camera);return <g key={station.osmType+"/"+station.osmId} className="reference-station" pointerEvents="none"><title>参考駅: {station.name} ({station.kind})</title><path d={`M${p.x},${p.y-5} l5,5 -5,5 -5,-5 Z`}/><text x={p.x+9} y={p.y-7}>参考: {station.name}</text></g>;})}
               {world?.stations.map((station) => {
                 const { x, y } = project(station.latitude, station.longitude, camera);
-                const placement = world?.station_placements?.find((p) => p.station_id === station.id);
+                const placement = stationPlacementById.get(station.id);
                 const polygon = stationPolygons.get(station.id);
                 return <g key={station.id} pointerEvents={activeTool==="stations"&&mapMode==="place"?"none":undefined} className={"station-marker" + (selected === station.id ? " selected" : "") + (routeVisual.stations.has(station.id) ? "" : " route-unassigned")} onClick={(event) => { event.stopPropagation(); if (!suppressSelectionClick.current) selectStation(station.id); }}>
                   <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations&&<circle className="station-hit-target" aria-hidden="true" visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r={Math.max(5,8/viewport.scale)} fill="transparent" stroke="none"/>}{!detailedStations ? <circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r={mapMetrics.stationRadius} className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" style={mergedStationIds.has(station.id)?{fill:"transparent",stroke:"none"}:undefined} /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}{stationNamesVisible&&(!stationDisplayGroup(station.id)||stationDisplayGroup(station.id)?.id===station.id)&&<text x={x + mapMetrics.stationLabelOffset} y={y + mapMetrics.stationLabelBaseline}>{station.name}</text>}
@@ -2129,7 +2140,7 @@ export function App() {
               <button className="secondary danger" disabled={!enabled || unapplied || !!stationReferences(selectedStation.id)} onClick={() => setPendingDelete({ kind: "station", id: selectedStation.id })}>{world?.station_groups?.some(g=>g.members.includes(selectedStation.id))?"選択ホームを撤去":"選択駅を削除"}</button>
               {stationReferences(selectedStation.id) && <p className="field-hint">削除不可: {stationReferences(selectedStation.id)}</p>}
             </div>}
-            {pendingStation && <div className="inline-confirm" role="alert"><p>{platformDirty ? "駅名・ホーム長の下書きを破棄して別駅を選びますか。" : "駅名の下書きを破棄して別駅を選びますか。"}</p><button className="secondary" disabled={busy} onClick={() => setPendingStation(null)}>駅名編集を続ける</button><button disabled={busy} onClick={() => { const placement = world?.station_placements?.find(p=>p.station_id===pendingStation.id); setEditLength(String(placement?.length_m ?? 200));setEditWidth(String(placement?.width_m ?? 12));setMainTab("stations"); setActiveTool("station-management");setSelected(pendingStation.id); setEditStationName(stationsById.get(pendingStation.id)?.name ?? ""); setPendingStation(null); setPendingDelete(null); }}>{platformDirty ? "駅設定下書きを破棄して切替" : "駅名下書きを破棄して切替"}</button></div>}
+            {pendingStation && <div className="inline-confirm" role="alert"><p>{platformDirty ? "駅名・ホーム長の下書きを破棄して別駅を選びますか。" : "駅名の下書きを破棄して別駅を選びますか。"}</p><button className="secondary" disabled={busy} onClick={() => setPendingStation(null)}>駅名編集を続ける</button><button disabled={busy} onClick={() => { const placement = stationPlacementById.get(pendingStation.id); setEditLength(String(placement?.length_m ?? 200));setEditWidth(String(placement?.width_m ?? 12));setMainTab("stations"); setActiveTool("station-management");setSelected(pendingStation.id); setEditStationName(stationsById.get(pendingStation.id)?.name ?? ""); setPendingStation(null); setPendingDelete(null); }}>{platformDirty ? "駅設定下書きを破棄して切替" : "駅名下書きを破棄して切替"}</button></div>}
           </section>
           <section className="route-editor" role="tabpanel" id="workspace-panel-routes" aria-labelledby="workspace-tab-routes" hidden={activeTool !== "routes"}>
             <h3>路線</h3>
