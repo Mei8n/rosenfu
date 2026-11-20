@@ -34,7 +34,7 @@ fn full_envelope_roundtrips_content_without_runtime_data_in_world_json() {
     let world = evidence_world();
     let bytes = encode(&world).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["schema_version"], 25);
+    assert_eq!(value["schema_version"], 26);
     assert!(value["world"].get("runtime_road_evidence").is_none());
     assert_eq!(
         value["road_evidence"]["raw_blobs"]
@@ -109,7 +109,7 @@ fn old24_is_rejected_without_touching_file_or_backup_and_oversize_save_is_atomic
     assert_eq!(std::fs::read(backup_path(&path)).unwrap(), backup);
     let old = String::from_utf8(before)
         .unwrap()
-        .replace("\"schema_version\": 25", "\"schema_version\": 24");
+        .replace("\"schema_version\": 26", "\"schema_version\": 24");
     std::fs::write(&path, &old).unwrap();
     assert!(matches!(
         load_world(&path),

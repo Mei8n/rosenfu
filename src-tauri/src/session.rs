@@ -145,7 +145,6 @@ pub struct WorldEditor {
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
     edit_history: history::EditHistory,
     operation_tick: Option<std::time::Instant>,
-    operation_target: Option<u64>,
     #[cfg(test)]
     pending_manual_replacement: Option<PendingManualReplacement>,
 }
@@ -546,7 +545,6 @@ impl WorldEditor {
             deleted_alignment: None,
             edit_history: Default::default(),
             operation_tick: None,
-            operation_target: None,
             #[cfg(test)]
             pending_manual_replacement: None,
         }
@@ -2146,6 +2144,7 @@ impl WorldEditor {
         view: Option<rosenfu_core::world::ViewState>,
         automatic: bool,
     ) -> Result<(), String> {
+        self.advance_operation()?;
         let mut candidate = self.clone();
         let mut draft = candidate.snapshot();
         if let Some(plans) = plans {
@@ -2165,6 +2164,7 @@ impl WorldEditor {
         Ok(())
     }
     pub fn save(&mut self, path: &Path) -> Result<(), String> {
+        self.advance_operation()?;
         let expected = if self.loaded_path.as_deref() == Some(path) {
             self.manual_version
                 .as_ref()
@@ -2240,6 +2240,7 @@ impl WorldEditor {
         Ok(())
     }
     pub fn autosave(&mut self, path: &Path) -> Result<(), String> {
+        self.advance_operation()?;
         let expected = match &self.autosave_version {
             Some((authorized_path, version)) if authorized_path == path => version.clone(),
             _ if !self.autosave_blocked => rosenfu_storage::FileVersion::Missing,
@@ -2345,7 +2346,6 @@ impl WorldEditor {
         self.clear_edit_history();
         self.world = candidate;
         self.operation_tick = None;
-        self.operation_target = None;
         self.company = company;
         self.company_setup_required = false;
         #[cfg(test)]

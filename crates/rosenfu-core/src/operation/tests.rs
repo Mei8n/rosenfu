@@ -124,3 +124,23 @@ fn intermediate_stop_affects_passenger_time() {
     assert_eq!(offers[0].ride_seconds, 20.);
     assert_eq!(offers[1].ride_seconds, 30.);
 }
+
+#[test]
+fn corrupted_waiting_and_duplicate_train_restore_is_rejected() {
+    let mut r = OperationRuntime::new(vec![service("1", "a")]).unwrap();
+    r.advance_to(1000, 100).unwrap();
+    let mut saved = r.save();
+    saved.trains[0].state = TrainState::Waiting { ready_ms: 0 };
+    assert!(OperationRuntime::restore(saved).is_err());
+    let mut saved = r.save();
+    saved.trains.push(saved.trains[0].clone());
+    assert!(OperationRuntime::restore(saved).is_err());
+    let mut saved = r.save();
+    if let TrainState::Moving {
+        ref mut arrival_ms, ..
+    } = saved.trains[0].state
+    {
+        *arrival_ms += 1;
+    }
+    assert!(OperationRuntime::restore(saved).is_err());
+}

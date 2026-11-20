@@ -257,12 +257,14 @@ pub struct WorldOperationSave {
     pub configs: Vec<OperationServiceConfig>,
     pub runtime: crate::operation::OperationSave,
     pub invalidated: bool,
+    pub pending_target: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldOperation {
     pub configs: Vec<OperationServiceConfig>,
     pub runtime: crate::operation::OperationRuntime,
     pub invalidated: bool,
+    pub pending_target: Option<u64>,
 }
 impl World {
     pub fn operation(&self) -> Option<&WorldOperation> {
@@ -285,6 +287,7 @@ impl World {
             configs,
             runtime,
             invalidated: false,
+            pending_target: None,
         });
         Ok(())
     }
@@ -293,6 +296,7 @@ impl World {
             configs: o.configs.clone(),
             runtime: o.runtime.save(),
             invalidated: o.invalidated,
+            pending_target: o.pending_target,
         })
     }
     pub fn restore_operation(
@@ -318,6 +322,12 @@ impl World {
                 return Err(OperationError::InvalidPath);
             }
         }
+        if saved
+            .pending_target
+            .is_some_and(|t| t < saved.runtime.now_ms)
+        {
+            return Err(OperationError::InvalidClock);
+        }
         let mut runtime = crate::operation::OperationRuntime::restore(saved.runtime)?;
         if saved.invalidated {
             runtime.set_paused(true);
@@ -326,6 +336,7 @@ impl World {
             configs: saved.configs,
             runtime,
             invalidated: saved.invalidated,
+            pending_target: saved.pending_target,
         });
         Ok(())
     }

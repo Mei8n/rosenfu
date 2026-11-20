@@ -13,12 +13,14 @@ struct EngineSessionInfo {
     engine: rosenfu_core::EngineInfo,
     company_setup_required: bool,
     operation_enabled: bool,
+    fixed_od_enabled: bool,
 }
 #[tauri::command]
 fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInfo, String> {
     Ok(EngineSessionInfo {
         engine: rosenfu_core::engine_info(),
         operation_enabled: true,
+        fixed_od_enabled: true,
         company_setup_required: editor
             .lock()
             .map_err(|_| "world state unavailable")?
@@ -870,6 +872,7 @@ fn main() {
         .manage(Mutex::new(editor))
         .invoke_handler(tauri::generate_handler![
             operation_commands::operation_snapshot,
+            operation_commands::preview_fixed_od,
             operation_commands::configure_operation_service,
             operation_commands::set_operation_clock,
             operation_commands::advance_operation,

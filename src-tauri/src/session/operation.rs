@@ -32,7 +32,7 @@ impl WorldEditor {
             paused: save.paused,
             speed: save.speed,
             invalidated: o.invalidated,
-            catching_up: self.operation_target.is_some(),
+            catching_up: o.pending_target.is_some(),
             services: o.configs.clone(),
             trains: o.runtime.trains().cloned().collect(),
             offers: if o.invalidated {
@@ -87,7 +87,6 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate).map_err(|e| e.to_string())?;
         self.world = candidate;
         self.operation_tick = None;
-        self.operation_target = None;
         Ok(self.operation_snapshot())
     }
     /// Explicit destructive operation-clock reset, never invoked by edit Undo.
@@ -96,7 +95,6 @@ impl WorldEditor {
             .configure_operation(vec![])
             .map_err(|e| format!("{e:?}"))?;
         self.operation_tick = None;
-        self.operation_target = None;
         Ok(self.operation_snapshot())
     }
     pub fn set_operation_clock(
@@ -104,6 +102,18 @@ impl WorldEditor {
         paused: bool,
         speed: u32,
     ) -> Result<OperationView, String> {
+        self.set_operation_clock_at(paused, speed, std::time::Instant::now())
+    }
+    fn set_operation_clock_at(
+        &mut self,
+        paused: bool,
+        speed: u32,
+        instant: std::time::Instant,
+    ) -> Result<OperationView, String> {
+        if ![1, 2, 4, 8, 16].contains(&speed) {
+            return Err("速度は1・2・4・8・16倍から選択してください。".into());
+        }
+        self.advance_operation_at(instant)?;
         let o = self
             .world
             .operation_mut()
@@ -118,13 +128,18 @@ impl WorldEditor {
             .set_speed(speed)
             .map_err(|_| "速度は1・2・4・8・16倍から選択してください。")?;
         o.runtime.set_paused(paused);
-        self.operation_tick = Some(std::time::Instant::now());
+        self.operation_tick = Some(instant);
         Ok(self.operation_snapshot())
     }
     /// Client only wakes the authority. Multiple viewers cannot multiply time.
     /// Bounded event processing retains a target rather than dropping departures.
     pub fn advance_operation(&mut self) -> Result<OperationView, String> {
-        let instant = std::time::Instant::now();
+        self.advance_operation_at(std::time::Instant::now())
+    }
+    fn advance_operation_at(
+        &mut self,
+        instant: std::time::Instant,
+    ) -> Result<OperationView, String> {
         let elapsed = self
             .operation_tick
             .map(|t| instant.saturating_duration_since(t).as_millis())
@@ -134,7 +149,6 @@ impl WorldEditor {
             return Ok(self.operation_snapshot());
         };
         if o.invalidated {
-            self.operation_target = None;
             return Ok(self.operation_snapshot());
         }
         if o.runtime.paused() {
@@ -144,8 +158,8 @@ impl WorldEditor {
             .map_err(|_| "時計の範囲を超えました。")?
             .checked_mul(o.runtime.speed() as u64)
             .ok_or("時計の範囲を超えました。")?;
-        let target = self
-            .operation_target
+        let target = o
+            .pending_target
             .unwrap_or(o.runtime.now_ms())
             .checked_add(delta)
             .ok_or("時計の範囲を超えました。")?;
@@ -153,8 +167,73 @@ impl WorldEditor {
             .runtime
             .advance_to(target, 2000)
             .map_err(|e| format!("運行の進行に失敗しました: {e:?}"))?;
-        self.operation_target = (!result.reached_target).then_some(target);
+        o.pending_target = (!result.reached_target).then_some(target);
         Ok(self.operation_snapshot())
+    }
+    pub fn preview_fixed_od(
+        &self,
+        origin_station_id: StationId,
+        destination_station_id: StationId,
+        trips: Option<f64>,
+        alternative_seconds: Option<f64>,
+    ) -> Result<rosenfu_core::demand::OdAssignment, String> {
+        use rosenfu_core::demand::*;
+        if origin_station_id == destination_station_id
+            || [origin_station_id, destination_station_id]
+                .iter()
+                .any(|id| !self.world.snapshot().stations.iter().any(|s| s.id == *id))
+        {
+            return Err("異なる実在の駅を選択してください。".into());
+        }
+        if trips.is_some_and(|n| !n.is_finite() || !(0.0..=1e9).contains(&n)) {
+            return Err("人数は0〜10億の範囲で入力してください。".into());
+        }
+        let operation = self
+            .world
+            .operation()
+            .ok_or("先に運行する系統を設定してください。")?;
+        if operation.invalidated {
+            return Err("運行経路の更新が必要です。".into());
+        }
+        let legs = operation
+            .runtime
+            .passenger_offers()
+            .into_iter()
+            .map(|l| PassengerLeg {
+                leg_id: l.leg_id,
+                sequence: l.sequence,
+                board_allowed: l.board_allowed,
+                alight_allowed: l.alight_allowed,
+                service_id: l.service_id,
+                from: l.from,
+                to: l.to,
+                ride_seconds: l.ride_seconds,
+                headway_seconds: l.headway_seconds,
+            })
+            .collect::<Vec<_>>();
+        let od = FixedOd {
+            id: "synthetic-station-od".into(),
+            origin_region: "synthetic".into(),
+            destination_region: "synthetic".into(),
+            origin_location: origin_station_id.0.to_string(),
+            destination_location: destination_station_id.0.to_string(),
+            owner_region: "synthetic".into(),
+            market: MarketKind::Metro,
+            trips,
+            access: vec![StationAccess {
+                station: origin_station_id.0.to_string(),
+                seconds: 0.,
+            }],
+            egress: vec![StationAccess {
+                station: destination_station_id.0.to_string(),
+                seconds: 0.,
+            }],
+            alternative_seconds,
+        };
+        assign_fixed_od(&[od], &legs, &[], &ChoiceWeights::default(), 10000)?
+            .into_iter()
+            .next()
+            .ok_or("需要結果がありません。".into())
     }
 }
 
@@ -221,6 +300,59 @@ mod tests {
         )
         .unwrap();
         e
+    }
+    #[test]
+    fn transitions_settle_old_speed_without_losing_interval() {
+        let mut e = editor();
+        let start = std::time::Instant::now();
+        e.set_operation_clock_at(false, 2, start).unwrap();
+        e.set_operation_clock_at(false, 4, start + std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(e.operation_snapshot().now_ms, 6000);
+        e.set_operation_clock_at(true, 4, start + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(e.operation_snapshot().now_ms, 14000);
+        e.advance_operation_at(start + std::time::Duration::from_secs(100))
+            .unwrap();
+        assert_eq!(e.operation_snapshot().now_ms, 14000);
+        let save = rosenfu_storage::encode(&e.world).unwrap();
+        assert_eq!(
+            rosenfu_storage::decode(&save)
+                .unwrap()
+                .operation()
+                .unwrap()
+                .runtime
+                .now_ms(),
+            14000
+        );
+    }
+    #[test]
+    fn manual_save_settles_clock_and_switch_clears_state() {
+        let mut e = editor();
+        let root = tempfile::tempdir().unwrap();
+        e.set_operation_clock(false, 1).unwrap();
+        e.operation_tick = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        let path = root.path().join("world.json");
+        e.save(&path).unwrap();
+        let saved = rosenfu_storage::load_world(&path).unwrap();
+        assert!(saved.operation().unwrap().runtime.now_ms() >= 1000);
+        e.create_new_world("new".into()).unwrap();
+        assert!(e.world.operation().is_none());
+        e.load(&path).unwrap();
+        assert_eq!(e.world.operation_save(), saved.operation_save());
+        assert!(e.operation_tick.is_none());
+    }
+    #[test]
+    fn synthetic_od_uses_real_service_and_does_not_mutate() {
+        let e = editor();
+        let stations = &e.world.snapshot().stations;
+        let before = e.world.clone();
+        let result = e
+            .preview_fixed_od(stations[0].id, stations[1].id, Some(100.), None)
+            .unwrap();
+        assert!(result.search_complete);
+        assert_eq!(result.rail.iter().map(|p| p.trips).sum::<f64>(), 100.);
+        assert_eq!(e.world, before);
     }
     #[test]
     fn paused_clock_does_not_spawn_and_backend_clock_advances() {

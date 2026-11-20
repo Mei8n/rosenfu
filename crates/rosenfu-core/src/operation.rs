@@ -507,8 +507,8 @@ impl OperationRuntime {
         }
         next
     }
-    /// Save is independent of render rate. Restore replays the deterministic
-    /// schedule up to the saved clock; runtime caches never enter construction data.
+    /// Persist active state directly, without replaying all elapsed service days.
+    /// Restore validates schedule times and exclusive occupancy before acceptance.
     pub fn save(&self) -> OperationSave {
         OperationSave {
             format: 2,
@@ -600,6 +600,22 @@ impl OperationRuntime {
             }
             if runtime.trains.insert(train.key.clone(), train).is_some() {
                 return Err(OperationError::InvalidPath);
+            }
+        }
+        for train in runtime.trains.values() {
+            if train.delay_ms > saved.now_ms.saturating_sub(train.key.scheduled_ms) {
+                return Err(OperationError::InvalidClock);
+            }
+            if let TrainState::Waiting { ready_ms } = train.state {
+                if ready_ms < train.key.scheduled_ms {
+                    return Err(OperationError::InvalidClock);
+                }
+                let resources = &runtime.services[&train.key.service_id].legs[train.leg].resources;
+                if ready_ms <= saved.now_ms
+                    && !resources.iter().any(|r| runtime.occupied.contains_key(r))
+                {
+                    return Err(OperationError::InvalidClock);
+                }
             }
         }
         runtime.paused = saved.paused;

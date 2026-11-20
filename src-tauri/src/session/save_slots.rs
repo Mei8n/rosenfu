@@ -115,6 +115,7 @@ impl WorldEditor {
         plans: Option<rosenfu_core::world::ConstructionPlans>,
         view: Option<rosenfu_core::world::ViewState>,
     ) -> Result<ManualSaveResult, String> {
+        self.advance_operation()?;
         let mut candidate = self.clone();
         let mut draft = candidate.snapshot();
         if let Some(plans) = plans {

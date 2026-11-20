@@ -50,3 +50,22 @@ pub fn reset_operation(editor: State<'_, Mutex<WorldEditor>>) -> Result<Operatio
         .map_err(|_| "world state unavailable")?
         .reset_operation()
 }
+
+#[tauri::command]
+pub fn preview_fixed_od(
+    editor: State<'_, Mutex<WorldEditor>>,
+    origin_station_id: rosenfu_core::world::StationId,
+    destination_station_id: rosenfu_core::world::StationId,
+    trips: Option<f64>,
+    alternative_seconds: Option<f64>,
+) -> Result<rosenfu_core::demand::OdAssignment, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_fixed_od(
+            origin_station_id,
+            destination_station_id,
+            trips,
+            alternative_seconds,
+        )
+}
