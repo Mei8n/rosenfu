@@ -10,6 +10,16 @@ pub struct OperationServiceConfig {
     pub vehicle: Vehicle,
     pub dwell_ms: u64,
 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BusOperationConfig {
+    pub route_id: String,
+    pub timetable: Timetable,
+    pub vehicle: Vehicle,
+    /// Explicit game assumption, not an observed legal road speed.
+    pub assumed_speed_kmh: f64,
+    pub dwell_ms: u64,
+}
 #[derive(Clone)]
 struct Span {
     id: AlignmentId,
@@ -255,6 +265,7 @@ fn append_sections(
 #[serde(deny_unknown_fields)]
 pub struct WorldOperationSave {
     pub configs: Vec<OperationServiceConfig>,
+    pub bus_configs: Vec<BusOperationConfig>,
     pub runtime: crate::operation::OperationSave,
     pub invalidated: bool,
     pub pending_target: Option<u64>,
@@ -262,6 +273,7 @@ pub struct WorldOperationSave {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldOperation {
     pub configs: Vec<OperationServiceConfig>,
+    pub bus_configs: Vec<BusOperationConfig>,
     pub runtime: crate::operation::OperationRuntime,
     pub invalidated: bool,
     pub pending_target: Option<u64>,
@@ -278,13 +290,29 @@ impl World {
         &mut self,
         configs: Vec<OperationServiceConfig>,
     ) -> Result<(), OperationError> {
-        let specs = configs
+        let bus_configs = self
+            .operation
+            .as_ref()
+            .map(|o| o.bus_configs.clone())
+            .unwrap_or_default();
+        self.configure_all_operation(configs, bus_configs)
+    }
+    pub fn configure_all_operation(
+        &mut self,
+        configs: Vec<OperationServiceConfig>,
+        bus_configs: Vec<BusOperationConfig>,
+    ) -> Result<(), OperationError> {
+        let mut specs = configs
             .iter()
             .map(|c| self.compile_operation(c))
             .collect::<Result<Vec<_>, _>>()?;
+        for config in &bus_configs {
+            specs.push(self.compile_bus_operation(config)?);
+        }
         let runtime = crate::operation::OperationRuntime::new(specs)?;
         self.operation = Some(WorldOperation {
             configs,
+            bus_configs,
             runtime,
             invalidated: false,
             pending_target: None,
@@ -294,6 +322,7 @@ impl World {
     pub fn operation_save(&self) -> Option<WorldOperationSave> {
         self.operation.as_ref().map(|o| WorldOperationSave {
             configs: o.configs.clone(),
+            bus_configs: o.bus_configs.clone(),
             runtime: o.runtime.save(),
             invalidated: o.invalidated,
             pending_target: o.pending_target,
@@ -308,11 +337,17 @@ impl World {
             return Ok(());
         };
         if !saved.invalidated {
-            let specs = saved
+            let mut specs = saved
                 .configs
                 .iter()
                 .map(|c| self.compile_operation(c))
                 .collect::<Result<Vec<_>, _>>()?;
+            for config in &saved.bus_configs {
+                specs.push(self.compile_bus_operation(config)?);
+            }
+            if specs.len() != saved.runtime.services.len() {
+                return Err(OperationError::InvalidPath);
+            }
             let map = |v: Vec<ServiceRunSpec>| {
                 v.into_iter()
                     .map(|s| (s.service_id.clone(), s))
@@ -334,6 +369,7 @@ impl World {
         }
         self.operation = Some(WorldOperation {
             configs: saved.configs,
+            bus_configs: saved.bus_configs,
             runtime,
             invalidated: saved.invalidated,
             pending_target: saved.pending_target,
@@ -355,12 +391,70 @@ impl World {
                             .find(|s| s.service_id == config.service_id.0.to_string())
                 })
         });
+        let invalid = invalid
+            || self.operation.as_ref().is_some_and(|o| {
+                !o.invalidated
+                    && o.bus_configs.iter().any(|config| {
+                        self.compile_bus_operation(config).ok().as_ref()
+                            != o.runtime
+                                .save()
+                                .services
+                                .iter()
+                                .find(|s| s.service_id == format!("bus:{}", config.route_id))
+                    })
+            });
         if invalid {
             if let Some(o) = &mut self.operation {
                 o.invalidated = true;
                 o.runtime.set_paused(true);
             }
         }
+    }
+}
+
+impl World {
+    pub fn compile_bus_operation(
+        &self,
+        config: &BusOperationConfig,
+    ) -> Result<ServiceRunSpec, OperationError> {
+        if !config.assumed_speed_kmh.is_finite()
+            || !(1.0..=120.0).contains(&config.assumed_speed_kmh)
+        {
+            return Err(OperationError::InvalidVehicle);
+        }
+        let roads = &self.data.road_transport;
+        let route = roads
+            .bus_routes
+            .iter()
+            .find(|r| r.id == config.route_id)
+            .ok_or(OperationError::InvalidPath)?;
+        let legs = roads
+            .bus_legs(&self.data, &config.route_id)
+            .map_err(|_| OperationError::InvalidPath)?;
+        let runs = legs
+            .into_iter()
+            .enumerate()
+            .map(|(i, leg)| RunLeg {
+                from: format!("bus:{}", leg.from_stop_id),
+                to: format!("bus:{}", leg.to_stop_id),
+                dwell_ms: config.dwell_ms,
+                sections: vec![Section {
+                    length_m: leg.length_m,
+                    speed_limit_kmh: config.assumed_speed_kmh,
+                    resources: route.edges
+                        [route.stops[i].edge_index..=route.stops[i + 1].edge_index]
+                        .iter()
+                        .map(|id| format!("road:edge:{id}"))
+                        .collect(),
+                }],
+            })
+            .collect();
+        Ok(ServiceRunSpec {
+            service_id: format!("bus:{}", config.route_id),
+            vehicle: config.vehicle.clone(),
+            timetable: config.timetable.clone(),
+            legs: runs,
+        })
     }
 }
 

@@ -556,6 +556,19 @@ impl OperationRuntime {
                     return Err(OperationError::InvalidTimetable);
                 }
             }
+            let expected = if !saved.started || saved.now_ms < table.first_departure_ms {
+                Some(table.first_departure_ms)
+            } else {
+                (saved.now_ms - table.first_departure_ms)
+                    .checked_div(table.headway_ms)
+                    .and_then(|n| n.checked_add(1))
+                    .and_then(|n| n.checked_mul(table.headway_ms))
+                    .and_then(|d| table.first_departure_ms.checked_add(d))
+                    .filter(|n| *n <= table.last_departure_ms)
+            };
+            if next != expected {
+                return Err(OperationError::InvalidTimetable);
+            }
             service.next_departure = next;
         }
         for train in saved.trains {

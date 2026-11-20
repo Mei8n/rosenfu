@@ -54,8 +54,8 @@ pub fn reset_operation(editor: State<'_, Mutex<WorldEditor>>) -> Result<Operatio
 #[tauri::command]
 pub fn preview_fixed_od(
     editor: State<'_, Mutex<WorldEditor>>,
-    origin_station_id: rosenfu_core::world::StationId,
-    destination_station_id: rosenfu_core::world::StationId,
+    origin_station_id: String,
+    destination_station_id: String,
     trips: Option<f64>,
     alternative_seconds: Option<f64>,
 ) -> Result<rosenfu_core::demand::OdAssignment, String> {
@@ -68,4 +68,19 @@ pub fn preview_fixed_od(
             trips,
             alternative_seconds,
         )
+}
+
+#[tauri::command]
+pub fn configure_bus_operation(
+    editor: State<'_, Mutex<WorldEditor>>,
+    route_id: String,
+    timetable: Timetable,
+    vehicle: Vehicle,
+    assumed_speed_kmh: f64,
+    dwell_ms: u64,
+) -> Result<OperationView, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .configure_bus_operation(route_id, timetable, vehicle, assumed_speed_kmh, dwell_ms)
 }

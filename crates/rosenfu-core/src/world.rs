@@ -99,6 +99,8 @@ impl ViewState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    #[serde(default)]
+    pub road_transport: crate::road_transport::RoadTransport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
     /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
@@ -161,6 +163,7 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            road_transport: crate::road_transport::RoadTransport::default(),
             road_path_provenance: vec![],
             runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
             road_evidence_descriptors: vec![],
@@ -194,6 +197,7 @@ pub enum WorldError {
     InvalidCoordinate,
     InvalidConstructionPlans,
     InvalidRoadSnapshot,
+    InvalidRoadTransport,
     InvalidRoadEvidence,
     InvalidViewState,
     InvalidAlignment,
@@ -236,6 +240,9 @@ impl std::fmt::Display for WorldError {
         }
         if matches!(self, Self::InsufficientTurnoutSpace) {
             return write!(f, "分岐・単複線の合流に必要な空間がありません。接続位置をホームから離すか、前後の区間を長くしてください。");
+        }
+        if matches!(self, Self::InvalidRoadTransport) {
+            return write!(f,"道路交通の参照が不整合です。併用軌道の関連付けを外してから線路を延伸・変更・撤去してください。");
         }
         if matches!(self, Self::InvalidServiceRouteBinding) {
             return write!(f, "既存系統の経路が割り当てた路線に含まれなくなるため変更できません。路線と系統は変更していません。");
@@ -414,6 +421,9 @@ impl WorldDraft {
         ids(self.services.iter().map(|x| x.id.0), "service")?;
         ids(self.alignments.iter().map(|x| x.id.0), "alignment")?;
         self.validate_alignments()?;
+        self.road_transport
+            .validate(self)
+            .map_err(|_| WorldError::InvalidRoadTransport)?;
         self.validate_station_groups()?;
         self.validate_alignment_connections()?;
         let maximum_id = self
@@ -710,4 +720,6 @@ mod water_national;
 pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskRequest};
 
 mod operation_adapter;
-pub use operation_adapter::{OperationServiceConfig, WorldOperation, WorldOperationSave};
+pub use operation_adapter::{
+    BusOperationConfig, OperationServiceConfig, WorldOperation, WorldOperationSave,
+};

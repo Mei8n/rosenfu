@@ -9,6 +9,7 @@ pub struct OperationView {
     pub invalidated: bool,
     pub catching_up: bool,
     pub services: Vec<OperationServiceConfig>,
+    pub bus_services: Vec<rosenfu_core::world::BusOperationConfig>,
     pub trains: Vec<Train>,
     pub offers: Vec<PassengerOffer>,
 }
@@ -22,6 +23,7 @@ impl WorldEditor {
                 invalidated: false,
                 catching_up: false,
                 services: vec![],
+                bus_services: vec![],
                 trains: vec![],
                 offers: vec![],
             };
@@ -34,6 +36,7 @@ impl WorldEditor {
             invalidated: o.invalidated,
             catching_up: o.pending_target.is_some(),
             services: o.configs.clone(),
+            bus_services: o.bus_configs.clone(),
             trains: o.runtime.trains().cloned().collect(),
             offers: if o.invalidated {
                 vec![]
@@ -89,10 +92,63 @@ impl WorldEditor {
         self.operation_tick = None;
         Ok(self.operation_snapshot())
     }
+    pub fn configure_bus_operation(
+        &mut self,
+        route_id: String,
+        timetable: Timetable,
+        vehicle: Vehicle,
+        assumed_speed_kmh: f64,
+        dwell_ms: u64,
+    ) -> Result<OperationView, String> {
+        if self.company_setup_required
+            || !self
+                .world
+                .snapshot()
+                .road_transport
+                .bus_routes
+                .iter()
+                .any(|r| r.id == route_id && r.owner == self.company)
+        {
+            return Err("自社のバス路線を選択してください。".into());
+        }
+        if self
+            .world
+            .operation()
+            .is_some_and(|o| o.runtime.now_ms() != 0 || o.runtime.trains().next().is_some())
+        {
+            return Err("運行をリセットしてからダイヤを変更してください。".into());
+        }
+        let configs = self
+            .world
+            .operation()
+            .map(|o| o.configs.clone())
+            .unwrap_or_default();
+        let mut bus = self
+            .world
+            .operation()
+            .map(|o| o.bus_configs.clone())
+            .unwrap_or_default();
+        bus.retain(|c| c.route_id != route_id);
+        bus.push(rosenfu_core::world::BusOperationConfig {
+            route_id,
+            timetable,
+            vehicle,
+            assumed_speed_kmh,
+            dwell_ms,
+        });
+        let mut candidate = self.world.clone();
+        candidate
+            .configure_all_operation(configs, bus)
+            .map_err(|e| format!("バス運行設定を適用できません: {e:?}"))?;
+        rosenfu_storage::ensure_world_saveable(&candidate).map_err(|e| e.to_string())?;
+        self.world = candidate;
+        self.operation_tick = None;
+        Ok(self.operation_snapshot())
+    }
     /// Explicit destructive operation-clock reset, never invoked by edit Undo.
     pub fn reset_operation(&mut self) -> Result<OperationView, String> {
         self.world
-            .configure_operation(vec![])
+            .configure_all_operation(vec![], vec![])
             .map_err(|e| format!("{e:?}"))?;
         self.operation_tick = None;
         Ok(self.operation_snapshot())
@@ -165,25 +221,40 @@ impl WorldEditor {
             .ok_or("時計の範囲を超えました。")?;
         let result = o
             .runtime
-            .advance_to(target, 2000)
+            .advance_to(target, 128)
             .map_err(|e| format!("運行の進行に失敗しました: {e:?}"))?;
         o.pending_target = (!result.reached_target).then_some(target);
         Ok(self.operation_snapshot())
     }
     pub fn preview_fixed_od(
         &self,
-        origin_station_id: StationId,
-        destination_station_id: StationId,
+        origin_station_id: String,
+        destination_station_id: String,
         trips: Option<f64>,
         alternative_seconds: Option<f64>,
     ) -> Result<rosenfu_core::demand::OdAssignment, String> {
         use rosenfu_core::demand::*;
+        let exists = |id: &str| {
+            if let Some(bus) = id.strip_prefix("bus:") {
+                self.world
+                    .snapshot()
+                    .road_transport
+                    .bus_stops
+                    .iter()
+                    .any(|s| s.id == bus)
+            } else {
+                self.world
+                    .snapshot()
+                    .stations
+                    .iter()
+                    .any(|s| s.id.0.to_string() == id)
+            }
+        };
         if origin_station_id == destination_station_id
-            || [origin_station_id, destination_station_id]
-                .iter()
-                .any(|id| !self.world.snapshot().stations.iter().any(|s| s.id == *id))
+            || !exists(&origin_station_id)
+            || !exists(&destination_station_id)
         {
-            return Err("異なる実在の駅を選択してください。".into());
+            return Err("異なる既存の駅・停留所を選択してください。".into());
         }
         if trips.is_some_and(|n| !n.is_finite() || !(0.0..=1e9).contains(&n)) {
             return Err("人数は0〜10億の範囲で入力してください。".into());
@@ -215,17 +286,17 @@ impl WorldEditor {
             id: "synthetic-station-od".into(),
             origin_region: "synthetic".into(),
             destination_region: "synthetic".into(),
-            origin_location: origin_station_id.0.to_string(),
-            destination_location: destination_station_id.0.to_string(),
+            origin_location: origin_station_id.clone(),
+            destination_location: destination_station_id.clone(),
             owner_region: "synthetic".into(),
             market: MarketKind::Metro,
             trips,
             access: vec![StationAccess {
-                station: origin_station_id.0.to_string(),
+                station: origin_station_id.clone(),
                 seconds: 0.,
             }],
             egress: vec![StationAccess {
-                station: destination_station_id.0.to_string(),
+                station: destination_station_id.clone(),
                 seconds: 0.,
             }],
             alternative_seconds,
@@ -302,6 +373,150 @@ mod tests {
         e
     }
     #[test]
+    fn bus_operation_uses_partial_edges_namespaced_stops_and_shared_od() {
+        use rosenfu_core::road_transport::*;
+        let mut e = editor();
+        let mut d = e.snapshot();
+        let a = GeoPoint {
+            latitude: 35.,
+            longitude: 139.,
+        };
+        let b = GeoPoint {
+            latitude: 35.,
+            longitude: 139.01,
+        };
+        d.road_transport = RoadTransport {
+            evidence: vec![],
+            nodes: vec![
+                RoadNode {
+                    id: "a".into(),
+                    point: a,
+                },
+                RoadNode {
+                    id: "b".into(),
+                    point: b,
+                },
+            ],
+            edges: vec![RoadEdge {
+                id: "ab".into(),
+                from: "a".into(),
+                to: "b".into(),
+                source: "synthetic-qa".into(),
+                revision: "1".into(),
+                geometry: vec![a, b],
+                bus_access: Access::Allowed,
+                tram_access: Access::Unknown,
+                level: None,
+            }],
+            bus_stops: vec![
+                BusStop {
+                    id: "A".into(),
+                    owner: e.company,
+                    name: "A".into(),
+                    edge_id: "ab".into(),
+                    position: 0.2,
+                },
+                BusStop {
+                    id: "B".into(),
+                    owner: e.company,
+                    name: "B".into(),
+                    edge_id: "ab".into(),
+                    position: 0.8,
+                },
+            ],
+            bus_routes: vec![BusRoute {
+                id: "R".into(),
+                owner: e.company,
+                name: "QA bus".into(),
+                edges: vec!["ab".into()],
+                stops: vec![
+                    BusStopOccurrence {
+                        stop_id: "A".into(),
+                        edge_index: 0,
+                    },
+                    BusStopOccurrence {
+                        stop_id: "B".into(),
+                        edge_index: 0,
+                    },
+                ],
+            }],
+            tram_sections: vec![],
+        };
+        let mut candidate = e.clone();
+        candidate.world.replace(d).unwrap();
+        e.commit_edit(candidate, false);
+        e.configure_bus_operation(
+            "R".into(),
+            Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 60000,
+                headway_ms: 60000,
+            },
+            Vehicle {
+                max_speed_kmh: 60.,
+                acceleration_mps2: 1.,
+                braking_mps2: 1.2,
+                length_m: 12.,
+            },
+            30.,
+            10000,
+        )
+        .unwrap();
+        let offers = e.operation_snapshot().offers;
+        let bus = offers.iter().find(|o| o.service_id == "bus:R").unwrap();
+        assert_eq!(bus.from, "bus:A");
+        assert_eq!(bus.to, "bus:B");
+        assert!(bus.ride_seconds > 60.);
+        let assigned = e
+            .preview_fixed_od("bus:A".into(), "bus:B".into(), Some(50.), None)
+            .unwrap();
+        assert_eq!(assigned.rail.iter().map(|p| p.trips).sum::<f64>(), 50.);
+        e.world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1000, 100)
+            .unwrap();
+        assert!(e
+            .operation_snapshot()
+            .trains
+            .iter()
+            .any(|t| t.key.service_id == "bus:R"));
+        let restored =
+            rosenfu_storage::decode(&rosenfu_storage::encode(&e.world).unwrap()).unwrap();
+        assert_eq!(e.world.operation_save(), restored.operation_save());
+    }
+    #[test]
+    fn budget_debt_survives_save_and_pause() {
+        let mut e = editor();
+        let config = e.world.operation().unwrap().configs[0].clone();
+        e.configure_operation_service(
+            config.service_id,
+            Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 10000,
+                headway_ms: 1,
+            },
+            config.vehicle,
+            config.dwell_ms,
+        )
+        .unwrap();
+        let start = std::time::Instant::now();
+        e.set_operation_clock_at(false, 1, start).unwrap();
+        e.advance_operation_at(start + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(e.world.operation().unwrap().pending_target, Some(5000));
+        let bytes = rosenfu_storage::encode(&e.world).unwrap();
+        let restored = rosenfu_storage::decode(&bytes).unwrap();
+        assert_eq!(restored.operation_save(), e.world.operation_save());
+        e.set_operation_clock_at(true, 1, start + std::time::Duration::from_secs(5))
+            .unwrap();
+        let frozen = e.operation_snapshot().now_ms;
+        e.advance_operation_at(start + std::time::Duration::from_secs(100))
+            .unwrap();
+        assert_eq!(e.operation_snapshot().now_ms, frozen);
+    }
+    #[test]
     fn transitions_settle_old_speed_without_losing_interval() {
         let mut e = editor();
         let start = std::time::Instant::now();
@@ -348,7 +563,12 @@ mod tests {
         let stations = &e.world.snapshot().stations;
         let before = e.world.clone();
         let result = e
-            .preview_fixed_od(stations[0].id, stations[1].id, Some(100.), None)
+            .preview_fixed_od(
+                stations[0].id.0.to_string(),
+                stations[1].id.0.to_string(),
+                Some(100.),
+                None,
+            )
             .unwrap();
         assert!(result.search_complete);
         assert_eq!(result.rail.iter().map(|p| p.trips).sum::<f64>(), 100.);
