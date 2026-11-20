@@ -208,7 +208,7 @@ impl World {
         let store = self
             .data
             .runtime_road_evidence
-            .with_additions(raw, bindings)
+            .with_pinned_additions(raw, bindings)
             .map_err(|_| WorldError::InvalidRoadEvidence)?;
         for p in &mut plans.parked_paths {
             if let Some(path) = &p.ofm_path {

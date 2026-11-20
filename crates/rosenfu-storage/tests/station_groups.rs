@@ -27,7 +27,7 @@ fn station_groups_roundtrip() {
             .unwrap();
     }
     assert_eq!(world.snapshot().station_groups.len(), 1);
-    assert_eq!(SCHEMA_VERSION, 26);
+    assert_eq!(SCHEMA_VERSION, 27);
     let encoded = encode(&world).unwrap();
     let restored = decode(&encoded).unwrap();
     assert_eq!(

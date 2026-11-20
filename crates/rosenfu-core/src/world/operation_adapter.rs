@@ -35,6 +35,14 @@ impl World {
         &self,
         config: &OperationServiceConfig,
     ) -> Result<ServiceRunSpec, OperationError> {
+        self.compile_operation_mode(config, true)
+    }
+
+    fn compile_operation_mode(
+        &self,
+        config: &OperationServiceConfig,
+        turnback: bool,
+    ) -> Result<ServiceRunSpec, OperationError> {
         let invalid = || OperationError::InvalidPath;
         let path = self
             .data
@@ -45,7 +53,43 @@ impl World {
         let occurrences = self
             .service_path_occurrences(config.service_id)
             .map_err(|_| invalid())?;
+        let mut runs = self.compile_rail_direction(
+            &path.legs,
+            &path.stops,
+            &occurrences,
+            config.dwell_ms,
+            false,
+        )?;
+        if let Some(return_legs) = turnback
+            .then(|| {
+                self.compile_return_direction(path, &occurrences, config.dwell_ms, &runs)
+                    .ok()
+            })
+            .flatten()
+        {
+            runs.extend(return_legs);
+        }
+        Ok(ServiceRunSpec {
+            service_id: config.service_id.0.to_string(),
+            vehicle: config.vehicle.clone(),
+            timetable: config.timetable.clone(),
+            legs: runs,
+        })
+    }
+
+    /// Convert authoritative geometry in this direction. Never reverse already
+    /// compiled sections: lane selection, caps and turnout incidence are directional.
+    fn compile_rail_direction(
+        &self,
+        legs: &[ServiceLeg],
+        stops: &[StationOccurrenceRef],
+        occurrences: &[ServicePathOccurrence],
+        dwell_ms: u64,
+        check_lane_incidence: bool,
+    ) -> Result<Vec<RunLeg>, OperationError> {
+        let invalid = || OperationError::InvalidPath;
         let movements = self.track_movement_geometries().map_err(|_| invalid())?;
+        let incidence = self.alignment_lane_movements();
         let internal = self
             .internal_track_movement_geometries()
             .map_err(|_| invalid())?;
@@ -66,7 +110,7 @@ impl World {
         let mut runs = Vec::new();
         let mut pending = Vec::new();
         let mut last_stop = occurrences.first().ok_or_else(invalid)?.station_id;
-        for leg in &path.legs {
+        for leg in legs {
             let (from, to, connections) = match &leg.segment {
                 RouteSegment::Alignment { from, to, .. } => (*from, *to, &[][..]),
                 RouteSegment::ConnectedAlignments {
@@ -95,11 +139,40 @@ impl World {
                 } else {
                     return Err(invalid());
                 };
+                let port_lane =
+                    |end: AlignmentEndpointRef, forward| -> Result<u8, OperationError> {
+                        let a = alignment(end.alignment_id)?;
+                        let section = if end.endpoint == AlignmentEndpoint::Start {
+                            0
+                        } else {
+                            a.section_count() - 1
+                        };
+                        let tracks = a
+                            .section_infrastructure(section)
+                            .ok_or_else(invalid)?
+                            .track_count;
+                        Ok(directional_lane(tracks, forward))
+                    };
+                let exit_lane = port_lane(exit, exit.endpoint == AlignmentEndpoint::End)?;
+                let entry_lane = port_lane(entry, entry.endpoint == AlignmentEndpoint::Start)?;
+                let connects =
+                    |m: &&TrackMovement| m.from.endpoint == exit && m.to.endpoint == entry;
+                let connected: Vec<_> = incidence.iter().filter(connects).collect();
+                if connected.is_empty()
+                    || (check_lane_incidence
+                        && !connected.iter().any(|m| {
+                            m.from.lane_index == exit_lane && m.to.lane_index == entry_lane
+                        }))
+                {
+                    return Err(invalid());
+                }
                 let matching: Vec<_> = movements
                     .iter()
                     .filter(|m| m.movement.from.endpoint == exit && m.movement.to.endpoint == entry)
                     .collect();
-                if matching.is_empty() {
+                // A straight, equal-count join has real lane incidence but no
+                // curved turnout geometry. Genuine turnouts still require it.
+                if matching.is_empty() && connected.iter().any(|m| m.point.is_some()) {
                     return Err(invalid());
                 }
                 let cap = matching
@@ -157,7 +230,7 @@ impl World {
                         &mut pending,
                     )?;
                     cursor = p.position;
-                    if path.stops.contains(&occurrence.reference) {
+                    if stops.contains(&occurrence.reference) {
                         if pending.is_empty() {
                             return Err(invalid());
                         }
@@ -165,7 +238,7 @@ impl World {
                             from: last_stop.0.to_string(),
                             to: p.station_id.0.to_string(),
                             sections: std::mem::take(&mut pending),
-                            dwell_ms: config.dwell_ms,
+                            dwell_ms,
                         });
                         last_stop = p.station_id;
                     }
@@ -190,14 +263,130 @@ impl World {
         if !pending.is_empty() || runs.is_empty() {
             return Err(invalid());
         }
-        Ok(ServiceRunSpec {
-            service_id: config.service_id.0.to_string(),
-            vehicle: config.vehicle.clone(),
-            timetable: config.timetable.clone(),
-            legs: runs,
-        })
+        Ok(runs)
+    }
+
+    fn compile_return_direction(
+        &self,
+        path: &ServicePath,
+        occurrences: &[ServicePathOccurrence],
+        dwell_ms: u64,
+        outbound: &[RunLeg],
+    ) -> Result<Vec<RunLeg>, OperationError> {
+        let invalid = || OperationError::InvalidPath;
+        let start = occurrences.first().ok_or_else(invalid)?.station_id;
+        let terminal = occurrences.last().ok_or_else(invalid)?.station_id;
+        // An explicit already-closed service has no inferred extra run.
+        if start == terminal {
+            return Err(invalid());
+        }
+        let segments = path
+            .legs
+            .iter()
+            .rev()
+            .map(|leg| match &leg.segment {
+                RouteSegment::Alignment {
+                    alignment_id,
+                    from,
+                    to,
+                } => RouteSegment::Alignment {
+                    alignment_id: *alignment_id,
+                    from: *to,
+                    to: *from,
+                },
+                RouteSegment::ConnectedAlignments {
+                    from,
+                    to,
+                    connections,
+                } => RouteSegment::ConnectedAlignments {
+                    from: *to,
+                    to: *from,
+                    connections: connections
+                        .iter()
+                        .rev()
+                        .map(|link| AlignmentConnection {
+                            a: link.b,
+                            b: link.a,
+                        })
+                        .collect(),
+                },
+            })
+            .collect();
+        let reverse = self
+            .preview_service_path(terminal, segments)
+            .map_err(|_| invalid())?;
+        if reverse.occurrences.len() != occurrences.len() {
+            return Err(invalid());
+        }
+
+        // Match the complete occurrence order; a repeated station ID by itself
+        // cannot tell us whether the train stopped at this particular visit.
+        let mut stops = Vec::new();
+        for (after, before) in reverse.occurrences.iter().zip(occurrences.iter().rev()) {
+            if after.station_id != before.station_id {
+                return Err(invalid());
+            }
+            if path.stops.contains(&before.reference) {
+                stops.push(after.reference.clone());
+            }
+        }
+        // The outbound compiler historically tolerated selecting lanes that do
+        // not meet at these joins. Don't infer a return for such a route.
+        self.compile_rail_direction(&path.legs, &path.stops, occurrences, dwell_ms, true)?;
+        let returns = self.compile_rail_direction(
+            &reverse.legs,
+            &stops,
+            &reverse.occurrences,
+            dwell_ms,
+            true,
+        )?;
+        let incoming = outbound
+            .last()
+            .and_then(|l| l.sections.last())
+            .ok_or_else(invalid)?;
+        let departing = returns
+            .first()
+            .and_then(|l| l.sections.first())
+            .ok_or_else(invalid)?;
+        // No cross-track switch may be inferred from a shared station marker.
+        // Our directional selectors coincide on a physical lane only for a
+        // single-track section; crossover routing is not modeled here.
+        if lane_resource(incoming).is_none() || lane_resource(incoming) != lane_resource(departing)
+        {
+            return Err(invalid());
+        }
+        Ok(returns)
+    }
+
+    fn operation_spec_matches(
+        &self,
+        config: &OperationServiceConfig,
+        saved: &ServiceRunSpec,
+    ) -> bool {
+        self.compile_operation(config)
+            .is_ok_and(|current| current == *saved)
+            || self
+                .compile_operation_mode(config, false)
+                .is_ok_and(|outbound| outbound == *saved)
     }
 }
+
+fn lane_resource(section: &Section) -> Option<&str> {
+    section
+        .resources
+        .iter()
+        .map(String::as_str)
+        .find(|id| id.starts_with("rail:") && id.contains(":section:") && id.contains(":lane:"))
+}
+
+fn directional_lane(tracks: u8, forward: bool) -> u8 {
+    if forward {
+        0
+    } else {
+        tracks - 1
+    }
+}
+
 fn append_sections(
     a: &Alignment,
     from: f64,
@@ -230,11 +419,7 @@ fn append_sections(
             .section_infrastructure(index)
             .ok_or(OperationError::InvalidPath)?
             .track_count;
-        let lane = if tracks == 1 || to > from {
-            0
-        } else {
-            tracks - 1
-        };
+        let lane = directional_lane(tracks, to > from);
         let mut resources = extra.to_vec();
         resources.push(format!("rail:{}:section:{index}:lane:{lane}", a.id.0));
         let mut speed = cap.min(a.effective_design_speed_kmh());
@@ -332,29 +517,60 @@ impl World {
         &mut self,
         saved: Option<WorldOperationSave>,
     ) -> Result<(), OperationError> {
+        self.restore_operation_checked(saved, false)
+    }
+
+    fn restore_operation_checked(
+        &mut self,
+        saved: Option<WorldOperationSave>,
+        allow_qualified_qa: bool,
+    ) -> Result<(), OperationError> {
         let Some(saved) = saved else {
             self.operation = None;
             return Ok(());
         };
+        let progressive = saved.runtime.format == 3;
+        if saved.runtime.format != 2
+            && !(progressive
+                && allow_qualified_qa
+                && !saved.invalidated
+                && saved.bus_configs.is_empty()
+                && self.is_straight_rail_occupancy_qa(&saved.configs))
+        {
+            return Err(OperationError::InvalidClock);
+        }
         if !saved.invalidated {
             let mut specs = saved
-                .configs
+                .runtime
+                .services
                 .iter()
-                .map(|c| self.compile_operation(c))
-                .collect::<Result<Vec<_>, _>>()?;
+                .map(|spec| (spec.service_id.as_str(), spec))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if specs.len() != saved.runtime.services.len()
+                || specs.len() != saved.configs.len() + saved.bus_configs.len()
+            {
+                return Err(OperationError::InvalidPath);
+            }
+            for config in &saved.configs {
+                let id = config.service_id.0.to_string();
+                let spec = specs
+                    .remove(id.as_str())
+                    .ok_or(OperationError::InvalidPath)?;
+                let matches = if progressive {
+                    self.compile_operation(config)
+                        .is_ok_and(|current| current == *spec)
+                } else {
+                    self.operation_spec_matches(config, spec)
+                };
+                if !matches {
+                    return Err(OperationError::InvalidPath);
+                }
+            }
             for config in &saved.bus_configs {
-                specs.push(self.compile_bus_operation(config)?);
-            }
-            if specs.len() != saved.runtime.services.len() {
-                return Err(OperationError::InvalidPath);
-            }
-            let map = |v: Vec<ServiceRunSpec>| {
-                v.into_iter()
-                    .map(|s| (s.service_id.clone(), s))
-                    .collect::<std::collections::BTreeMap<_, _>>()
-            };
-            if map(specs) != map(saved.runtime.services.clone()) {
-                return Err(OperationError::InvalidPath);
+                let compiled = self.compile_bus_operation(config)?;
+                if specs.remove(compiled.service_id.as_str()) != Some(&compiled) {
+                    return Err(OperationError::InvalidPath);
+                }
             }
         }
         if saved
@@ -376,6 +592,85 @@ impl World {
         });
         Ok(())
     }
+    /// Narrow synthetic acceptance gate, not a general level-crossing detector.
+    /// Every alignment in the world must be a local, monotone east-west flat
+    /// ground single-track corridor; an optional second corridor must be well
+    /// separated and neither corridor can be connected to anything else.
+    fn is_straight_rail_occupancy_qa(&self, configs: &[OperationServiceConfig]) -> bool {
+        let d = &self.data;
+        if !(1..=2).contains(&d.alignments.len())
+            || !(1..=4).contains(&configs.len())
+            || !d.alignment_connections.is_empty()
+            || !d.road_transport.bus_routes.is_empty()
+            || !d.road_transport.tram_sections.is_empty()
+        {
+            return false;
+        }
+        let mut latitudes = Vec::new();
+        for a in &d.alignments {
+            if a.track_type != TrackType::Normal
+                || !(3..=64).contains(&a.points.len())
+                || !(3..=8).contains(&a.section_count())
+                || a.vertical_profile.is_some()
+                || !a.section_profiles.is_empty()
+                || a.infrastructure
+                    .iter()
+                    .any(|s| *s != SectionInfrastructure::default())
+            {
+                return false;
+            }
+            let first = a.points[0];
+            let last = a.points[a.points.len() - 1];
+            if first.latitude.abs() > 60.0
+                || first.longitude.abs() > 179.0
+                || !(0.005..=0.05).contains(&(last.longitude - first.longitude))
+                || a.points.iter().any(|p| p.latitude != first.latitude)
+                || a.points
+                    .windows(2)
+                    .any(|p| p[0].longitude >= p[1].longitude)
+                || latitudes
+                    .iter()
+                    .any(|&latitude: &f64| (first.latitude - latitude).abs() < 0.002)
+            {
+                return false;
+            }
+            latitudes.push(first.latitude);
+        }
+        configs.iter().all(|c| {
+            c.vehicle.length_m <= 80.0
+                && d.service_paths
+                    .iter()
+                    .find(|p| p.service_id == c.service_id)
+                    .is_some_and(|p| {
+                        p.legs.len() == 1
+                            && matches!(p.legs[0].segment, RouteSegment::Alignment { .. })
+                    })
+        })
+    }
+
+    #[cfg(test)]
+    fn configure_straight_rail_occupancy_qa(
+        &mut self,
+        configs: Vec<OperationServiceConfig>,
+    ) -> Result<(), OperationError> {
+        if !self.is_straight_rail_occupancy_qa(&configs) {
+            return Err(OperationError::InvalidPath);
+        }
+        let specs = configs
+            .iter()
+            .map(|c| self.compile_operation(c))
+            .collect::<Result<Vec<_>, _>>()?;
+        let runtime = crate::operation::OperationRuntime::new_with_progressive_rail(specs)?;
+        self.operation = Some(WorldOperation {
+            configs,
+            bus_configs: Vec::new(),
+            runtime,
+            invalidated: false,
+            pending_target: None,
+        });
+        Ok(())
+    }
+
     /// Used only by edit transactions/Undo, never world loading or new world.
     /// Invalidated trains remain frozen and visibly require explicit restart.
     pub fn retain_operation_from(&mut self, previous: &World) {
@@ -383,8 +678,9 @@ impl World {
         let invalid = self.operation.as_ref().is_some_and(|o| {
             !o.invalidated
                 && o.configs.iter().any(|config| {
-                    self.compile_operation(config).ok().as_ref()
-                        != o.runtime.service_spec(&config.service_id.0.to_string())
+                    o.runtime
+                        .service_spec(&config.service_id.0.to_string())
+                        .is_none_or(|spec| !self.operation_spec_matches(config, spec))
                 })
         });
         let invalid = invalid
@@ -512,8 +808,11 @@ mod tests {
     fn adapter_uses_physical_distance_and_passes_nonstop_station() {
         let (w, c) = fixture();
         let s = w.compile_operation(&c).unwrap();
-        assert_eq!(s.legs.len(), 1);
+        assert_eq!(s.legs.len(), 2);
         assert_eq!(s.legs[0].sections.len(), 2);
+        assert_eq!(s.legs[1].sections.len(), 2);
+        assert_eq!(s.legs[0].from, s.legs[1].to);
+        assert_eq!(s.legs[0].to, s.legs[1].from);
         let d: f64 = s.legs[0].sections.iter().map(|s| s.length_m).sum();
         assert!((d - w.snapshot().alignments[0].length_m() * 0.8).abs() < 0.001);
         assert_eq!(
@@ -547,5 +846,502 @@ mod tests {
         let mut new = World::new(changed.snapshot().clone()).unwrap();
         new.restore_operation(changed.operation_save()).unwrap();
         assert!(new.operation().unwrap().invalidated);
+    }
+    #[test]
+    fn turnback_reuses_train_after_dwell_and_clearance_and_restores_in_flight() {
+        use crate::operation::TrainState;
+        for dwell in [0, 30_000] {
+            let (mut w, mut c) = fixture();
+            c.timetable.last_departure_ms = 0; // exactly one scheduled train
+            c.dwell_ms = dwell;
+            w.configure_operation(vec![c.clone()]).unwrap();
+            let runtime = &mut w.operation_mut().unwrap().runtime;
+            let spec = runtime
+                .service_spec(&c.service_id.0.to_string())
+                .unwrap()
+                .clone();
+            runtime.advance_to(0, 100).unwrap();
+            let train = runtime.trains().next().unwrap().clone();
+            let TrainState::Moving {
+                arrival_ms,
+                release_ms,
+                ..
+            } = train.state
+            else {
+                panic!("expected outbound movement");
+            };
+            let ready = (arrival_ms + dwell).max(release_ms);
+            let reached = runtime.advance_to(ready - 1, 100).unwrap();
+            assert_eq!(reached.arrivals.len(), 1, "no arrival at passed station");
+            assert_eq!(reached.arrivals[0].station_id, spec.legs[0].to);
+            assert_eq!(reached.arrivals[0].train, train.key);
+            let now = runtime.trains().next().unwrap();
+            if let TrainState::Moving { entered_ms, .. } = now.state {
+                assert_eq!(now.leg, 0);
+                assert_eq!(entered_ms, 0);
+            }
+            runtime.advance_to(ready, 100).unwrap();
+            let turning = runtime.trains().next().unwrap();
+            assert_eq!(turning.key, train.key);
+            assert_eq!(turning.leg, 1);
+            let TrainState::Moving {
+                entered_ms,
+                release_ms,
+                ..
+            } = turning.state
+            else {
+                panic!("expected return movement");
+            };
+            assert_eq!(entered_ms, ready);
+            let saved = w.operation_save();
+            let mut restored = World::new(w.snapshot().clone()).unwrap();
+            restored.restore_operation(saved).unwrap();
+            let finish = |w: &mut World| {
+                w.operation_mut()
+                    .unwrap()
+                    .runtime
+                    .advance_to(release_ms * 2, 100)
+                    .unwrap()
+            };
+            let a = finish(&mut w);
+            assert_eq!(finish(&mut restored), a);
+            assert_eq!(a.arrivals.len(), 1);
+            assert_eq!(a.arrivals[0].station_id, spec.legs[0].from);
+            assert_eq!(a.arrivals[0].train, train.key);
+            assert_eq!(restored.operation().unwrap().runtime.trains().count(), 0);
+        }
+    }
+
+    #[test]
+    fn dual_track_terminal_is_outbound_only_without_crossover() {
+        let (w, c) = fixture();
+        let mut draft = w.snapshot().clone();
+        draft.alignments[0].infrastructure = vec![SectionInfrastructure {
+            track_count: 2,
+            ..Default::default()
+        }];
+        let w = World::new(draft).unwrap();
+        assert_eq!(w.compile_operation(&c).unwrap().legs.len(), 1);
+        assert_eq!(
+            w.compile_operation(&c).unwrap(),
+            w.compile_operation_mode(&c, false).unwrap()
+        );
+    }
+
+    #[test]
+    fn exact_legacy_outbound_is_neither_rewritten_nor_invalidated_by_unrelated_edits() {
+        let (mut w, c) = fixture();
+        let legacy = w.compile_operation_mode(&c, false).unwrap();
+        let mut legacy_runtime =
+            crate::operation::OperationRuntime::new(vec![legacy.clone()]).unwrap();
+        legacy_runtime.advance_to(1_000, 100).unwrap();
+        let saved = WorldOperationSave {
+            configs: vec![c.clone()],
+            bus_configs: vec![],
+            runtime: legacy_runtime.save(),
+            invalidated: false,
+            pending_target: None,
+        };
+        w.restore_operation(Some(saved.clone())).unwrap();
+        assert_eq!(w.operation_save(), Some(saved.clone()));
+        let mut edit = World::new(w.snapshot().clone()).unwrap();
+        edit.retain_operation_from(&w);
+        assert_eq!(edit.operation_save(), Some(saved.clone()));
+        let mut tampered = saved.clone();
+        tampered.runtime.services[0].legs[0].dwell_ms += 1;
+        assert_eq!(
+            edit.restore_operation(Some(tampered)),
+            Err(OperationError::InvalidPath)
+        );
+        assert_eq!(edit.operation_save(), Some(saved));
+        let a = edit.data.alignments[0].id;
+        edit.set_alignment_design_speed(a, 50.).unwrap();
+        edit.retain_operation_from(&w);
+        assert!(edit.operation().unwrap().invalidated);
+    }
+
+    #[test]
+    fn already_closed_service_is_not_doubled() {
+        let (mut w, c) = fixture();
+        let id = c.service_id;
+        let path = w
+            .data
+            .service_paths
+            .iter_mut()
+            .find(|p| p.service_id == id)
+            .unwrap();
+        let RouteSegment::Alignment {
+            alignment_id,
+            from,
+            to,
+        } = path.legs[0].segment
+        else {
+            panic!()
+        };
+        path.legs.push(ServiceLeg {
+            key: 2,
+            segment: RouteSegment::Alignment {
+                alignment_id,
+                from: to,
+                to: from,
+            },
+        });
+        path.next_leg_key = 3;
+        path.stops.push(StationOccurrenceRef::OnLeg {
+            leg_key: 2,
+            station_id: from,
+        });
+        let w = World::new(w.snapshot().clone()).unwrap();
+        assert_eq!(w.compile_operation(&c).unwrap().legs.len(), 2);
+        assert_eq!(
+            w.compile_operation(&c).unwrap(),
+            w.compile_operation_mode(&c, false).unwrap()
+        );
+    }
+    #[test]
+    fn reversed_connected_corridor_preserves_join_incidence_and_stop_flags() {
+        let (mut w, mut config) = fixture();
+        let base = w.data.alignments[0].id;
+        let owner = w.data.alignments[0].owner;
+        let first = w.service_path_occurrences(config.service_id).unwrap()[0].station_id;
+        let build = |w: &mut World, a, b, name: &str| {
+            w.build_alignment(
+                owner,
+                name.into(),
+                vec![
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: a,
+                    },
+                    GeoPoint {
+                        latitude: 35.,
+                        longitude: b,
+                    },
+                ],
+            )
+            .unwrap()
+        };
+        let second = build(&mut w, 139.02, 139.04, "middle");
+        let third = build(&mut w, 139.04, 139.06, "end");
+        let platform = w
+            .place_station_on_alignment(owner, "D".into(), third, 0.4, 100., 10.)
+            .unwrap();
+        let boundary = |left, right| AlignmentConnection {
+            a: AlignmentEndpointRef {
+                alignment_id: left,
+                endpoint: AlignmentEndpoint::End,
+            },
+            b: AlignmentEndpointRef {
+                alignment_id: right,
+                endpoint: AlignmentEndpoint::Start,
+            },
+        };
+        let joins = vec![boundary(base, second), boundary(second, third)];
+        for j in &joins {
+            w.connect_alignment_endpoints(owner, j.a, j.b).unwrap();
+        }
+        let segments = vec![RouteSegment::ConnectedAlignments {
+            from: first,
+            to: platform,
+            connections: joins,
+        }];
+        let preview = w.preview_service_path(first, segments.clone()).unwrap();
+        let stop_ref = preview.occurrences.last().unwrap().reference.clone();
+        config.service_id = w
+            .add_service_path(
+                owner,
+                "connected".into(),
+                first,
+                segments,
+                vec![StationOccurrenceRef::Start, stop_ref],
+            )
+            .unwrap();
+        let spec = w.compile_operation(&config).unwrap();
+        assert_eq!(spec.legs.len(), 2);
+        let a = &spec.legs[0];
+        let b = &spec.legs[1];
+        assert_eq!(a.to, platform.0.to_string());
+        assert_eq!(b.to, first.0.to_string());
+        assert!(a
+            .sections
+            .iter()
+            .any(|s| s.resources.iter().any(|id| id.starts_with("rail:join:"))));
+        assert!(b
+            .sections
+            .iter()
+            .any(|s| s.resources.iter().any(|id| id.starts_with("rail:join:"))));
+        assert_eq!(
+            a.sections
+                .iter()
+                .filter_map(lane_resource)
+                .collect::<Vec<_>>(),
+            b.sections
+                .iter()
+                .rev()
+                .filter_map(lane_resource)
+                .collect::<Vec<_>>()
+        );
+
+        // A turnback can use different lanes away from the terminal. At this
+        // declared Y transition the out/return lane choices have real incidence.
+        let mut dual_lead = w.snapshot().clone();
+        dual_lead.alignments[0].infrastructure = vec![SectionInfrastructure {
+            track_count: 2,
+            ..Default::default()
+        }];
+        let dual_lead = World::new(dual_lead).unwrap();
+        let spec = dual_lead.compile_operation(&config).unwrap();
+        assert_eq!(spec.legs.len(), 2);
+        let out = &spec.legs[0].sections;
+        let back = &spec.legs[1].sections;
+        assert!(lane_resource(out.first().unwrap())
+            .unwrap()
+            .ends_with(":lane:0"));
+        assert!(lane_resource(back.last().unwrap())
+            .unwrap()
+            .ends_with(":lane:1"));
+        assert_eq!(
+            lane_resource(out.last().unwrap()),
+            lane_resource(back.first().unwrap())
+        );
+    }
+    fn straight_occupancy_fixture() -> (World, Vec<OperationServiceConfig>) {
+        let mut w = World::default();
+        let player = w.add_player("QA".into()).unwrap();
+        let company = w.add_company(player, "QA railway".into()).unwrap();
+        let make_points = |latitude| {
+            (0..4)
+                .map(|i| GeoPoint {
+                    latitude,
+                    longitude: 139.0 + 0.0044 * i as f64,
+                })
+                .collect::<Vec<_>>()
+        };
+        let main = w
+            .build_alignment(company, "main corridor".into(), make_points(35.0))
+            .unwrap();
+        let parallel = w
+            .build_alignment(company, "separate corridor".into(), make_points(35.003))
+            .unwrap();
+        let mut d = w.snapshot().clone();
+        for a in &mut d.alignments {
+            a.anchor_indices = Some(vec![0, 1, 2, 3]);
+        }
+        w.replace(d).unwrap();
+
+        let mut station = |name: &str, line, position| {
+            w.place_station_on_alignment(company, name.into(), line, position, 60., 10.)
+                .unwrap()
+        };
+        let a = station("A", main, 0.10);
+        let b = station("B", main, 0.23);
+        let _c = station("C", main, 0.50);
+        let d = station("D", main, 0.90);
+        let e = station("E", parallel, 0.10);
+        let f = station("F", parallel, 0.90);
+        let mut add_service = |name: &str, line, from, to| {
+            let segments = vec![RouteSegment::Alignment {
+                alignment_id: line,
+                from,
+                to,
+            }];
+            let p = w.preview_service_path(from, segments.clone()).unwrap();
+            let stops = vec![
+                p.occurrences[0].reference.clone(),
+                p.occurrences.last().unwrap().reference.clone(),
+            ];
+            let service_id = w
+                .add_service_path(company, name.into(), from, segments, stops)
+                .unwrap();
+            OperationServiceConfig {
+                service_id,
+                timetable: Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60000,
+                },
+                vehicle: Vehicle {
+                    max_speed_kmh: 72.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.,
+                    length_m: 40.,
+                },
+                dwell_ms: 10000,
+            }
+        };
+        let configs = vec![
+            add_service("leader", main, a, d),
+            add_service("short opposing", main, b, a),
+            add_service("separate control", parallel, f, e),
+        ];
+        (w, configs)
+    }
+
+    #[test]
+    fn straight_rail_world_conflict_reopens_waiting_and_replays_identically() {
+        use crate::operation::TrainState;
+
+        let (mut world, configs) = straight_occupancy_fixture();
+        let mut format2 = world.clone();
+        format2.configure_operation(configs.clone()).unwrap();
+        world
+            .configure_straight_rail_occupancy_qa(configs.clone())
+            .unwrap();
+        let ids = configs
+            .iter()
+            .map(|c| c.service_id.0.to_string())
+            .collect::<Vec<_>>();
+        let world_at = |w: &mut World, at| {
+            w.operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(at, 100)
+                .unwrap()
+        };
+        let state = |w: &World, id: &str| {
+            w.operation()
+                .unwrap()
+                .runtime
+                .trains()
+                .find(|t| t.key.service_id == id)
+                .unwrap()
+                .state
+                .clone()
+        };
+        world_at(&mut world, 1000);
+        world_at(&mut format2, 1000);
+        assert!(matches!(
+            state(&world, &ids[0]),
+            TrainState::Moving { entered_ms: 0, .. }
+        ));
+        assert!(matches!(
+            state(&world, &ids[1]),
+            TrainState::Waiting { ready_ms: 0 }
+        ));
+        assert!(matches!(
+            state(&world, &ids[2]),
+            TrainState::Moving { entered_ms: 0, .. }
+        ));
+
+        // Reopen the two serialized parts of a World operation snapshot using
+        // the same validator, with internal QA permission. The public World
+        // restore entry (and hence ordinary file loading) does not grant it.
+        let bytes = serde_json::to_vec(&(world.snapshot(), world.operation_save())).unwrap();
+        let (draft, saved): (WorldDraft, Option<WorldOperationSave>) =
+            serde_json::from_slice(&bytes).unwrap();
+        let mut reopened = World::new(draft).unwrap();
+        assert_eq!(
+            reopened.restore_operation(saved.clone()),
+            Err(OperationError::InvalidClock)
+        );
+        assert!(reopened.operation().is_none());
+        reopened.restore_operation_checked(saved, true).unwrap();
+        assert_eq!(reopened.operation_save(), world.operation_save());
+
+        let mut scan = world.clone();
+        let mut departed = None;
+        for target in (2000..100000).step_by(1000) {
+            world_at(&mut scan, target);
+            if let TrainState::Moving { entered_ms, .. } = state(&scan, &ids[1]) {
+                departed = Some(entered_ms);
+                break;
+            }
+        }
+        let entry = departed.expect("short opposing train never left");
+        let runtime = &world.operation().unwrap().runtime;
+        let leader = runtime.service_spec(&ids[0]).unwrap();
+        let sections = &leader.legs[0].sections;
+        // The adapter splits a physical resource at intervening pass-through
+        // station samples. Use the last occurrence of the same lane, then
+        // the first trustworthy sampled boundary beyond tail clearance.
+        let first_lane = lane_resource(&sections[0]).unwrap();
+        let mut cumulative_m = 0.0;
+        let mut boundaries = Vec::new();
+        let mut last_first_lane_m = 0.0;
+        for section in sections {
+            cumulative_m += section.length_m;
+            boundaries.push(cumulative_m);
+            if lane_resource(section) == Some(first_lane) {
+                last_first_lane_m = cumulative_m;
+            }
+        }
+        let boundary_m = boundaries
+            .into_iter()
+            .find(|meters| *meters > last_first_lane_m + leader.vehicle.length_m)
+            .unwrap();
+        let maximum_mps = leader.vehicle.max_speed_kmh / 3.6;
+        assert!(entry as f64 >= 1_000.0 * boundary_m / maximum_mps);
+        world_at(&mut world, entry - 1);
+        assert!(matches!(state(&world, &ids[1]), TrainState::Waiting { .. }));
+        world_at(&mut world, entry);
+        world_at(&mut format2, entry);
+        assert!(
+            matches!(state(&world, &ids[0]), TrainState::Moving { arrival_ms, .. } if arrival_ms > entry)
+        );
+        assert!(
+            matches!(state(&world, &ids[1]), TrainState::Moving { entered_ms, .. } if entered_ms == entry)
+        );
+        assert!(matches!(
+            state(&format2, &ids[1]),
+            TrainState::Waiting { .. }
+        ));
+        let expected = world_at(&mut reopened, entry).arrivals;
+        assert!(expected.is_empty());
+        assert_eq!(reopened.operation_save(), world.operation_save());
+        assert_eq!(
+            world_at(&mut reopened, 500_000),
+            world_at(&mut world, 500_000)
+        );
+        assert_eq!(reopened.operation_save(), world.operation_save());
+
+        // At legacy mode's saved time the second service still waits. Reopen
+        // using the production validator and ensure there is no upgrade.
+        let mut old = World::new(format2.snapshot().clone()).unwrap();
+        old.restore_operation(format2.operation_save()).unwrap();
+        assert_eq!(old.operation_save(), format2.operation_save());
+        assert_eq!(old.operation_save().unwrap().runtime.format, 2);
+    }
+
+    #[test]
+    fn straight_rail_qa_rejects_topology_changes_and_stale_specs() {
+        let (mut world, configs) = straight_occupancy_fixture();
+        world
+            .configure_straight_rail_occupancy_qa(configs.clone())
+            .unwrap();
+        let mut saved = world.operation_save().unwrap();
+        let mut stale = World::new(world.snapshot().clone()).unwrap();
+        saved.runtime.services[0].legs.pop(); // legacy outbound-only cannot be a format3 grandfather
+        assert_eq!(
+            stale.restore_operation_checked(Some(saved), true),
+            Err(OperationError::InvalidPath)
+        );
+        let mut d = world.snapshot().clone();
+        // Reposition the parallel corridor and its stations together. Its
+        // separation is below this pilot's proof margin, even with no join.
+        d.alignments[1]
+            .points
+            .iter_mut()
+            .for_each(|p| p.latitude = 35.0005);
+        let separate = d.alignments[1].id;
+        let stations: Vec<_> = d
+            .station_placements
+            .iter()
+            .filter(|p| p.alignment_id == separate)
+            .map(|p| p.station_id)
+            .collect();
+        d.stations
+            .iter_mut()
+            .filter(|s| stations.contains(&s.id))
+            .for_each(|s| s.latitude = 35.0005);
+        let mut changed = World::new(d).unwrap();
+        assert_eq!(
+            changed.configure_straight_rail_occupancy_qa(configs),
+            Err(OperationError::InvalidPath)
+        );
+        assert_eq!(
+            changed.restore_operation_checked(world.operation_save(), true),
+            Err(OperationError::InvalidClock)
+        );
+        assert!(changed.operation().is_none());
     }
 }

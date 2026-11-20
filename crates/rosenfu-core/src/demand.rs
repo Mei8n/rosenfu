@@ -14,6 +14,9 @@ pub struct PassengerLeg {
     pub to: String,
     /// Scheduled running time, including applicable intermediate dwell, in seconds.
     pub ride_seconds: f64,
+    /// Scheduled stationary time counted only if already on this same run.
+    #[serde(default)]
+    pub through_seconds: f64,
     /// Expected wait is half the headway; this is not exact departure-time routing.
     pub headway_seconds: f64,
 }
@@ -83,6 +86,15 @@ pub enum PassengerStep {
     Walk { from: String, to: String },
 }
 
+/// Physical estimates, separate from weighted choice cost and transfer penalty.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct PathTimeBreakdown {
+    pub walk_seconds: f64,
+    pub wait_seconds: f64,
+    pub ride_seconds: f64,
+    pub transfers: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PathAllocation {
     pub stations: Vec<String>,
@@ -91,6 +103,7 @@ pub struct PathAllocation {
     /// Boarding sequence, not one entry per edge. Transfers increase boardings, not OD trips.
     pub services: Vec<String>,
     pub generalized_seconds: f64,
+    pub time: PathTimeBreakdown,
     pub trips: f64,
 }
 
@@ -146,6 +159,7 @@ struct Edge {
     service: Option<String>,
     seconds: f64,
     headway: f64,
+    through: f64,
 }
 #[derive(Clone)]
 struct State {
@@ -158,6 +172,7 @@ struct State {
     leg_ids: Vec<String>,
     steps: Vec<PassengerStep>,
     cost: f64,
+    time: PathTimeBreakdown,
 }
 
 /// Reference full recalculation. Regions label OD ownership, never constrain route search.
@@ -229,6 +244,7 @@ fn assign_fixed_od_budgeted(
             || !identifier(&leg.service_id)
             || leg.from == leg.to
             || !nonnegative(leg.ride_seconds)
+            || !nonnegative(leg.through_seconds)
             || !leg.headway_seconds.is_finite()
             || leg.headway_seconds <= 0.0
         {
@@ -249,7 +265,7 @@ fn assign_fixed_od_budgeted(
         {
             return Err("duplicate service sequence".into());
         }
-        checked_cost(leg.ride_seconds * weights.ride)?;
+        checked_cost((leg.ride_seconds + leg.through_seconds) * weights.ride)?;
         checked_cost(leg.headway_seconds * 0.5 * weights.wait)?;
         graph.entry(leg.from.clone()).or_default().push(Edge {
             leg_id: Some(leg.leg_id.clone()),
@@ -260,6 +276,7 @@ fn assign_fixed_od_budgeted(
             service: Some(leg.service_id.clone()),
             seconds: leg.ride_seconds,
             headway: leg.headway_seconds,
+            through: leg.through_seconds,
         });
     }
     for pattern in patterns.values() {
@@ -291,6 +308,7 @@ fn assign_fixed_od_budgeted(
             service: None,
             seconds: link.seconds,
             headway: 0.0,
+            through: 0.0,
         });
     }
     for edges in graph.values_mut() {
@@ -361,6 +379,10 @@ fn assign_fixed_od_budgeted(
                 leg_ids: vec![],
                 steps: vec![],
                 cost: seconds * weights.walk,
+                time: PathTimeBreakdown {
+                    walk_seconds: seconds,
+                    ..Default::default()
+                },
             })
             .collect();
         if access.len() > max_states_per_od {
@@ -377,7 +399,9 @@ fn assign_fixed_od_budgeted(
             if let Some(seconds) = egress.get(&state.station) {
                 if !state.services.is_empty() && state.can_alight {
                     let cost = state.cost + seconds * weights.walk;
-                    if !cost.is_finite() {
+                    let mut time = state.time;
+                    time.walk_seconds += seconds;
+                    if !cost.is_finite() || !time.walk_seconds.is_finite() {
                         return Err("demand cost overflow".into());
                     }
                     // Include vectors, typed step IDs (up to two each), and record.
@@ -396,6 +420,7 @@ fn assign_fixed_od_budgeted(
                         steps: state.steps.clone(),
                         services: state.services.clone(),
                         generalized_seconds: cost,
+                        time,
                         trips: 0.0,
                     });
                 }
@@ -444,16 +469,21 @@ fn assign_fixed_od_budgeted(
                     next.station = edge.to.clone();
                     next.visited.push(edge.to.clone());
                     if let Some(service) = &edge.service {
-                        next.cost += edge.seconds * weights.ride;
+                        let ride = edge.seconds + if continuation { edge.through } else { 0.0 };
+                        next.cost += ride * weights.ride;
+                        next.time.ride_seconds += ride;
                         if !continuation {
                             next.cost += edge.headway * 0.5 * weights.wait;
+                            next.time.wait_seconds += edge.headway * 0.5;
                             if !state.services.is_empty() {
                                 next.cost += weights.transfer_penalty_seconds;
+                                next.time.transfers += 1;
                             }
                             next.services.push(service.clone());
                         }
                     } else {
                         next.cost += edge.seconds * weights.walk;
+                        next.time.walk_seconds += edge.seconds;
                     }
                     next.current_service = edge.service.clone();
                     next.next_sequence = edge.sequence + 1;
@@ -468,7 +498,11 @@ fn assign_fixed_od_budgeted(
                             to: edge.to.clone(),
                         });
                     }
-                    if !next.cost.is_finite() {
+                    if !next.cost.is_finite()
+                        || !next.time.ride_seconds.is_finite()
+                        || !next.time.wait_seconds.is_finite()
+                        || !next.time.walk_seconds.is_finite()
+                    {
                         return Err("demand cost overflow".into());
                     }
                     stack.push(next);
@@ -571,6 +605,7 @@ mod tests {
             to: to.to_string(),
             service_id: service.to_string(),
             ride_seconds: seconds,
+            through_seconds: 0.0,
             headway_seconds: 600.0,
         }
     }
@@ -619,6 +654,15 @@ mod tests {
         let legs = [leg(1, 2, 1, 300.0), leg(2, 3, 1, 300.0)];
         let result = evaluate(&[od()], &legs);
         assert_eq!(result[0].rail[0].generalized_seconds, 900.0);
+        assert_eq!(
+            result[0].rail[0].time,
+            PathTimeBreakdown {
+                walk_seconds: 0.0,
+                wait_seconds: 300.0,
+                ride_seconds: 600.0,
+                transfers: 0
+            }
+        );
         conserved(&result[0]);
         let mut reverse = od();
         reverse.access = vec![access(3)];
@@ -626,8 +670,45 @@ mod tests {
         assert!(evaluate(&[reverse], &legs)[0].rail.is_empty());
     }
     #[test]
+    fn departure_wait_does_not_count_prior_dwell_for_new_boarders() {
+        let legs = [
+            leg(1, 2, 1, 100.0),
+            PassengerLeg {
+                through_seconds: 25.0,
+                ..leg(2, 3, 1, 80.0)
+            },
+        ];
+        let through = evaluate(&[od()], &legs);
+        let mut boarding_input = od();
+        boarding_input.access = vec![access(2)];
+        let boarded = evaluate(&[boarding_input], &legs);
+        let through = &through[0].rail[0];
+        let boarded = &boarded[0].rail[0];
+        assert_eq!(
+            (through.time.ride_seconds, through.time.wait_seconds),
+            (205.0, 300.0)
+        );
+        assert_eq!(
+            (boarded.time.ride_seconds, boarded.time.wait_seconds),
+            (80.0, 300.0)
+        );
+        assert_eq!(
+            (through.generalized_seconds, boarded.generalized_seconds),
+            (505.0, 380.0)
+        );
+    }
+
+    #[test]
     fn transfer_and_explicit_walk_do_not_invent_physical_connections() {
-        let legs = [leg(1, 2, 1, 300.0), leg(4, 3, 2, 300.0)];
+        let legs = [
+            leg(1, 2, 1, 300.0),
+            leg(5, 4, 2, 100.0),
+            PassengerLeg {
+                sequence: 1,
+                through_seconds: 45.0,
+                ..leg(4, 3, 2, 300.0)
+            },
+        ];
         assert!(evaluate(&[od()], &legs)[0].rail.is_empty());
         let r = assign_fixed_od(
             &[od()],
@@ -643,6 +724,15 @@ mod tests {
         .unwrap();
         assert_eq!(r[0].rail[0].services.len(), 2);
         assert_eq!(r[0].rail[0].generalized_seconds, 1620.0);
+        assert_eq!(
+            r[0].rail[0].time,
+            PathTimeBreakdown {
+                walk_seconds: 120.0,
+                wait_seconds: 600.0,
+                ride_seconds: 600.0,
+                transfers: 1
+            }
+        );
         conserved(&r[0]);
     }
     #[test]

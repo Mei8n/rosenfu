@@ -38,6 +38,7 @@ impl WorldEditor {
         let before = editable(self.snapshot());
         let after = editable(candidate.snapshot());
         candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
         candidate.edit_history = self.edit_history.clone();
         if before != after {
             if final_edit {
@@ -97,6 +98,7 @@ impl WorldEditor {
         draft.view_state = expected.view_state;
         let mut restored = World::new(draft).map_err(|e| e.to_string())?;
         restored.retain_operation_from(&self.world);
+        restored.retain_fixed_od_scenario_from(&self.world);
         rosenfu_storage::ensure_world_saveable(&restored).map_err(|e| e.to_string())?;
         self.world = restored;
         self.deleted_alignment = None;

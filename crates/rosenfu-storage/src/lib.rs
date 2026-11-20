@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 26;
+pub const SCHEMA_VERSION: u64 = 27;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -82,6 +82,8 @@ struct SaveDocument {
     world: WorldDraft,
     road_evidence: EvidenceEnvelope,
     operation: Option<rosenfu_core::world::WorldOperationSave>,
+    #[serde(default)]
+    fixed_od_scenario: Option<rosenfu_core::world::FixedOdScenario>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -111,8 +113,11 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or(StorageError::InvalidHeader)?;
-    if version != SCHEMA_VERSION {
+    if version != 26 && version != SCHEMA_VERSION {
         return Err(StorageError::UnsupportedVersion(version));
+    }
+    if version == 26 && value.get("fixed_od_scenario").is_some() {
+        return Err(StorageError::InvalidHeader);
     }
     let data = value.get("world").ok_or(StorageError::InvalidHeader)?;
     if data.get("tracks").is_some()
@@ -171,11 +176,14 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         }
     }
     let mut document: SaveDocument = serde_json::from_value(value)?;
-    let store = document.road_evidence.restore()?;
+    let store = document.road_evidence.restore(version == 26)?;
     document.world.restore_road_evidence(store)?;
     let mut world = World::new(document.world)?;
     world
         .restore_operation(document.operation)
+        .map_err(|_| StorageError::InvalidHeader)?;
+    world
+        .restore_fixed_od_scenario(document.fixed_od_scenario)
         .map_err(|_| StorageError::InvalidHeader)?;
     ensure_world_saveable(&world)?;
     Ok(world)
@@ -188,6 +196,8 @@ struct BorrowedSaveDocument<'a> {
     world: &'a WorldDraft,
     road_evidence: EvidenceEnvelope,
     operation: Option<rosenfu_core::world::WorldOperationSave>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fixed_od_scenario: Option<&'a rosenfu_core::world::FixedOdScenario>,
 }
 
 struct BoundedCounter {
@@ -215,6 +225,7 @@ pub fn ensure_world_saveable(world: &World) -> Result<(), StorageError> {
         world: world.snapshot(),
         road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
         operation: world.operation_save(),
+        fixed_od_scenario: world.fixed_od_scenario(),
     };
     let mut counter = BoundedCounter { count: 0 };
     serde_json::to_writer_pretty(&mut counter, &document).map_err(|e| {
@@ -238,6 +249,7 @@ pub fn encode(world: &World) -> Result<Vec<u8>, StorageError> {
         world: world.snapshot(),
         road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
         operation: world.operation_save(),
+        fixed_od_scenario: world.fixed_od_scenario(),
     };
     let mut bytes = serde_json::to_vec_pretty(&document)?;
     bytes.push(b'\n');
