@@ -22,3 +22,6 @@ pub mod water_observations;
 
 /// Independent offline reader; not wired to a provider or construction session.
 pub mod water_zone;
+
+/// Fixed synthetic OD reference demand and initial passenger choice.
+pub mod demand;
