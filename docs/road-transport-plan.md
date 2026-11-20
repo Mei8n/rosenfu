@@ -33,3 +33,28 @@
 近隣1km以内の駅を手動選択する連絡通路・駅舎・統合は将来要件として維持するが、今回の0.2指定だけで全UIの完成時期を決めない。統合時は同一駅・同名、未統合時は別駅名を保ちつつ乗換/相乗効果を持たせ、利便性・待ち時間・満足度評価へ接続する。
 
 交差ホームの同一駅group、物理線路の接続、旅客の歩行連絡は別の関係。同一駅だから別高さの軌道が接続する扱いにはしない。バス停・トラム停留所の鉄道駅アクセスも旅客側で扱い、現在の駅groupを壊さない。[需要・流動計画](demand-flow-plan.md)と同じ計算境界を使用する。
+
+### Regional routing input: current release gate
+
+The checked-in Tokyo-centre publication preserves exact OSM node IDs and node
+order, but its v1 cell schema and publication pipeline omit the direction tags
+and restriction relation membership needed to authorize road itineraries. Shared
+IDs can establish geometric incidence only. The existing pack and display-only
+OpenFreeMap sources must not be promoted to allowed road edges.
+
+A regional pilot needs a distinct, pinned raw input (source URL, snapshot
+timestamp/hash, certified polygon, extraction flags and ODbL attribution). Preserve
+original IDs, way direction and access hierarchy, intersection layers, and all
+applicable turn-restriction members (including via-way/conditional cases).
+Reject paths through unresolved permissions, omitted restriction members, unknown
+direction, or clipped boundaries; do not fill gaps by joining coordinates. OSM
+source values document the snapshot, not a warranty of current legal access.
+An unsupported restriction can block a pilot junction without disabling unrelated
+world editing. The checked-in input currently has no routable real region.
+
+The opt-in QA fixture is synthetic and visibly labeled. It exercises directed
+path validation and the real rail construction transaction. Managed trams can
+attach or detach the approved matching path; detaching does not move the rail.
+Rail dependencies still block removal, and each supported tram edit is saved and
+undoable atomically. This does not yet implement mixed traffic, actual on-road
+tram operations or crossing classification.

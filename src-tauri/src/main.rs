@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod operation_commands;
+mod road_transport_commands;
 mod session;
 mod water_zone_delivery;
 use rosenfu_core::world::{AlignmentId, GeoPoint, RouteId, ServiceId, StationId, WorldDraft};
@@ -11,11 +13,21 @@ struct EngineSessionInfo {
     #[serde(flatten)]
     engine: rosenfu_core::EngineInfo,
     company_setup_required: bool,
+    operation_enabled: bool,
+    fixed_od_enabled: bool,
+    road_transport_enabled: bool,
+    road_tram_enabled: bool,
+    bus_operation_enabled: bool,
 }
 #[tauri::command]
 fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInfo, String> {
     Ok(EngineSessionInfo {
         engine: rosenfu_core::engine_info(),
+        operation_enabled: true,
+        fixed_od_enabled: true,
+        road_transport_enabled: true,
+        road_tram_enabled: true,
+        bus_operation_enabled: true,
         company_setup_required: editor
             .lock()
             .map_err(|_| "world state unavailable")?
@@ -749,6 +761,19 @@ fn list_save_slots(
         .list_save_slots(&save_root(&app)?)
 }
 #[tauri::command]
+fn rename_save_slot(
+    app: tauri::AppHandle,
+    editor: State<'_, Mutex<WorldEditor>>,
+    slot_id: String,
+    expected_name: String,
+    name: String,
+) -> Result<(), String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .rename_save_slot(&save_root(&app)?, &slot_id, &expected_name, &name)
+}
+#[tauri::command]
 fn move_save_slot(
     app: tauri::AppHandle,
     slot_id: String,
@@ -866,6 +891,17 @@ fn main() {
         .manage(std::sync::Arc::new(delivery))
         .manage(Mutex::new(editor))
         .invoke_handler(tauri::generate_handler![
+            operation_commands::operation_snapshot,
+            operation_commands::preview_fixed_od,
+            operation_commands::configure_bus_operation,
+            operation_commands::configure_operation_service,
+            operation_commands::set_operation_clock,
+            operation_commands::advance_operation,
+            operation_commands::reset_operation,
+            road_transport_commands::replace_road_transport,
+            road_transport_commands::enable_road_qa_fixture,
+            road_transport_commands::find_road_path,
+            road_transport_commands::edit_road_tram,
             engine_info,
             preview_service_path,
             create_service_path,
@@ -915,6 +951,7 @@ fn main() {
             set_service_route_binding,
             list_save_slots,
             move_save_slot,
+            rename_save_slot,
             create_new_world,
             load_save_slot,
             save_world_as,

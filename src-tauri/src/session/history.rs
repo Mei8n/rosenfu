@@ -37,6 +37,7 @@ impl WorldEditor {
     pub(super) fn commit_edit(&mut self, mut candidate: Self, final_edit: bool) {
         let before = editable(self.snapshot());
         let after = editable(candidate.snapshot());
+        candidate.world.retain_operation_from(&self.world);
         candidate.edit_history = self.edit_history.clone();
         if before != after {
             if final_edit {
@@ -94,7 +95,8 @@ impl WorldEditor {
         // never overwrite them with an older saved or historical snapshot.
         draft.construction_plans = expected.construction_plans;
         draft.view_state = expected.view_state;
-        let restored = World::new(draft).map_err(|e| e.to_string())?;
+        let mut restored = World::new(draft).map_err(|e| e.to_string())?;
+        restored.retain_operation_from(&self.world);
         rosenfu_storage::ensure_world_saveable(&restored).map_err(|e| e.to_string())?;
         self.world = restored;
         self.deleted_alignment = None;

@@ -1,4 +1,4 @@
-import {editStationOrder} from './mapStationEdit';
+import {editStationOrder,replaceStationEndpoint} from './mapStationEdit';
 import {ServiceStopDiagram} from './ServiceStopDiagram';
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -80,24 +80,50 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
   }catch(cause){if(token===generation.current)setError(String(cause));}
   finally{if(token===generation.current)setLoading(false);}
  }
+ const lookup=(ids:string[])=>invoke<Candidates>('preview_route_candidates',{start:ids[0],end:ids.at(-1),...(ids.length>2?{viaStationIds:ids.slice(1,-1)}:{})});
+ function applyMapEdit(id:string,side?:'start'|'end'){
+  const session=generation.current;
+  editQueue.current=editQueue.current.then(async()=>{
+   if(session!==generation.current||pendingSave.current||blocked.current)return;
+   setLoading(true);setError("");
+   try{
+    let choice:{ids:string[];result:Candidates;index:number|null};
+    if(side){
+     const ids=replaceStationEndpoint(orderedRef.current,side,id);
+     if(ids.every((station,i)=>station===orderedRef.current[i])&&ids.length===orderedRef.current.length)return;
+     const result=await lookup(ids);
+     if(result.truncated||result.status==='incomplete')throw Error('経路を確認しきれませんでした。元の編集内容を保持しています');
+     if(result.status==='no_path'||!result.candidates.length)throw Error('この駅には接続できません。元の編集内容を保持しています');
+     const shortest=result.shortest_candidate_index;
+     const index=Number.isInteger(shortest)&&shortest!>=0&&shortest!<result.candidates.length?shortest!:result.candidates.length===1?0:null;
+     choice={ids,result,index};
+    }else{
+     const length=editingInputs.current.candidateLength;
+     if(!length)throw Error('経路の比較に必要な地図情報がありません');
+     choice=await editStationOrder(orderedRef.current,id,lookup,length);
+    }
+    if(session!==generation.current)return;
+    const next=choice.index===null?null:await membershipFor(choice.result.candidates[choice.index]);
+    if(session!==generation.current)return;
+    orderedRef.current=choice.ids;setOrdered(choice.ids);setResult(choice.result);setChosen(choice.index);setMembership(next);setStale(false);setShowChoices(choice.result.candidates.length>1);
+   }catch(cause){if(session===generation.current)setError(String(cause));}
+   finally{if(session===generation.current)setLoading(false);}
+  });
+ }
+ function beginEndpoint(side:'start'|'end'){
+  onMapPick?.(side,id=>{
+   if(pendingSave.current||blocked.current||!editingInputs.current.names.has(id))return;
+   beginSequence();applyMapEdit(id,side);
+  });
+ }
  function beginSequence(){
   onMapPick?.("sequence",id=>{
    if(pendingSave.current||blocked.current||!editingInputs.current.names.has(id))return;
-   if(editingMap&&stationClick.current?.(id))return;
-   if(editingMap){const session=generation.current;editQueue.current=editQueue.current.then(async()=>{
-    if(session!==generation.current||pendingSave.current||blocked.current)return;
-    setLoading(true);setError("");
-    try{
-     const length=editingInputs.current.candidateLength;
-     if(!length)throw Error('経路の比較に必要な地図情報がありません');
-     const choice=await editStationOrder(orderedRef.current,id,ids=>invoke<Candidates>('preview_route_candidates',{start:ids[0],end:ids.at(-1),...(ids.length>2?{viaStationIds:ids.slice(1,-1)}:{})}),length);
-     if(session!==generation.current)return;
-     const next=await membershipFor(choice.result.candidates[choice.index]);
-     if(session!==generation.current)return;
-     orderedRef.current=choice.ids;setOrdered(choice.ids);setResult(choice.result);setChosen(choice.index);setMembership(next);setStale(false);setShowChoices(choice.result.candidates.length>1);
-    }catch(cause){if(session===generation.current)setError(String(cause));}
-    finally{if(session===generation.current)setLoading(false);}
-   });return;}
+   if(editingMap){
+    if(id===orderedRef.current[0]||id===orderedRef.current.at(-1)){beginEndpoint(id===orderedRef.current[0]?'start':'end');return;}
+    if(!stationClick.current?.(id))applyMapEdit(id);
+    return;
+   }
    if(orderedRef.current.includes(id)){setError("同じ駅は重複して指定できません。");return;}
    const next=[...orderedRef.current,id];orderedRef.current=next;setOrdered(next);void search(next);
   });
@@ -124,9 +150,14 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  return <section className="route-candidate-preview" aria-label={editRoute?`${entityLabel}を編集`:`${entityLabel}を作成`}>
   <h4>{name||initialName}</h4>
   <label>{entityLabel}名<input autoComplete="off" value={name} maxLength={80} disabled={!enabled||saving} onChange={e=>setName(e.target.value)}/></label>
-  {editingMap&&<p>{entityLabel==='系統'?'地図の中間駅をクリックすると停車・通過を切り替えます。起点・終点をクリックすると短縮し、新しい駅をクリックすると経路へ追加します。':'地図の駅をクリックすると経由指定を追加、選択済みの駅をクリックすると指定を外します。起点・終点も変更できます。既存の所属設定を保ち、新しく通る駅は路線に追加します。起終点になる駅は所属駅になります。'}選択駅の順序を保って経路を再探索します。元の経路から変わる場合もあるため、地図で確認して編集終了で確定してください。</p>}
-  <ol aria-label="選択した駅">{ordered.map((id,i)=><li key={id}>{stationName(id)}{i===0?"（始点）":i===ordered.length-1?"（終点）":"（経由）"}</li>)}</ol>
-  {mapPickTarget!=="sequence"&&<button disabled={!enabled||saving} onClick={beginSequence}>駅の選択を再開</button>}
+  {editingMap&&<p>{entityLabel==='系統'?'中間駅をクリックすると停車・通過を切り替えます。':'中間駅をクリックすると経由指定を追加・解除できます。'}始点・終点を変更するには、地図の端の駅をクリックしてから新しい駅を選んでください。</p>}
+  {editingMap&&(mapPickTarget==="start"||mapPickTarget==="end")&&<p role="status">地図で新しい{mapPickTarget==="start"?"始点":"終点"}を選択してください。</p>}
+  <ol aria-label="選択した駅">{ordered.map((id,i)=>{
+   const side=i===0?'start':i===ordered.length-1?'end':null;
+   const role=side==='start'?'始点':side==='end'?'終点':'経由';
+   return <li key={id}>{editingMap&&side?<button type="button" className="secondary" disabled={!enabled||saving||loading||stale} aria-pressed={mapPickTarget===side} onClick={()=>mapPickTarget===side?beginSequence():beginEndpoint(side)}>{role}を変更: {stationName(id)}</button>:<>{stationName(id)}（{role}）</>}</li>;
+  })}</ol>
+  {mapPickTarget!=="sequence"&&<button disabled={!enabled||saving} onClick={beginSequence}>{mapPickTarget?"端点の選択をやめる":"駅の選択を再開"}</button>}
   {stale&&<button disabled={!enabled||loading||saving} onClick={()=>void search([...orderedRef.current])}>経路を再確認</button>}
   {loading&&<p role="status">経路を確認中…</p>}
   {error&&<p role="alert">{error}</p>}

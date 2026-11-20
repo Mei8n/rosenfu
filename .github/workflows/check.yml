@@ -1,7 +1,7 @@
 name: Check
 on:
   push:
-    branches: [main]
+    branches: [main, dev/alpha-0.2-integration]
   pull_request:
 permissions:
   contents: read
@@ -44,3 +44,63 @@ jobs:
       - run: cargo test --locked --workspace
       - name: Build desktop executable
         run: npm run tauri -- build --no-bundle
+
+  windows-alpha02-package:
+    name: Windows x64 α0.2 test package
+    needs: check
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/dev/alpha-0.2-integration') ||
+      (github.event_name == 'pull_request' &&
+       github.base_ref == 'dev/alpha-0.2-integration' &&
+       (github.head_ref == 'ci/alpha02-windows-test-package-20261120' ||
+        github.head_ref == 'integrate/alpha02-test-play-20261120') &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: npm ci
+      - name: Bundle Windows installer
+        run: npm run tauri -- build --target x86_64-pc-windows-msvc --config src-tauri/tauri.alpha02-qa.conf.json --ci
+      - name: Stage test package and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundles = @(Get-ChildItem -LiteralPath target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*-setup.exe' -File)
+          if ($bundles.Count -ne 1 -or $bundles[0].Length -lt 65536) {
+            throw 'Expected one nonempty Windows NSIS installer'
+          }
+          $short = $env:GITHUB_SHA.Substring(0, 12)
+          $kind = if ($env:GITHUB_EVENT_NAME -eq 'push') { 'integration' } else { 'preview' }
+          $stage = New-Item -ItemType Directory -Path qa-artifact
+          $name = "Rosenfu-alpha02-$kind-$short-windows-x64-setup.exe"
+          $file = Join-Path $stage.FullName $name
+          Copy-Item -LiteralPath $bundles[0].FullName -Destination $file
+          Copy-Item -LiteralPath docs/windows-alpha02-test-play.txt -Destination $stage.FullName
+          $notices = New-Item -ItemType Directory -Path (Join-Path $stage.FullName 'data-and-notices')
+          Copy-Item -LiteralPath public/road-data -Recurse -Destination $notices.FullName
+          Copy-Item -LiteralPath data/water-japan-coarse-20261114 -Recurse -Destination $notices.FullName
+          Copy-Item -LiteralPath docs/water-mask-model.md -Destination $notices.FullName
+          Copy-Item -LiteralPath src/assets/fonts/line-seed-jp/OFL.txt -Destination (Join-Path $notices.FullName 'LINE-Seed-JP-OFL.txt')
+          $digest = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath (Join-Path $stage.FullName 'SHA256SUMS.txt') -Encoding ascii -Value "$digest  $name"
+          Set-Content -LiteralPath (Join-Path $stage.FullName 'BUILD.txt') -Encoding ascii -Value @(
+            "commit=$env:GITHUB_SHA", "ref=$env:GITHUB_REF", "kind=$kind", "run=$env:GITHUB_RUN_ID", "attempt=$env:GITHUB_RUN_ATTEMPT"
+          )
+          if ($kind -eq 'preview') {
+            Add-Content -LiteralPath (Join-Path $stage.FullName 'BUILD.txt') -Encoding ascii -Value 'Packaging verification only; not a test-play release.'
+          }
+        # Download from the workflow: this does not create a GitHub Release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rosenfu-alpha02-windows-x64-${{ github.sha }}
+          path: qa-artifact/
+          if-no-files-found: error
+          retention-days: 14

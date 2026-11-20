@@ -2822,7 +2822,7 @@ dependencies = [
 
 [[package]]
 name = "rosenfu-cli"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "rosenfu-core",
  "rosenfu-storage",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "rosenfu-core"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2841,7 +2841,7 @@ dependencies = [
 
 [[package]]
 name = "rosenfu-desktop"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "base64 0.23.1",
  "reqwest",
@@ -2856,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "rosenfu-storage"
-version = "0.1.0-alpha.1"
+version = "0.2.0-alpha.1"
 dependencies = [
  "base64 0.23.1",
  "rosenfu-core",

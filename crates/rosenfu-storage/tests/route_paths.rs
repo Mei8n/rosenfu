@@ -49,7 +49,7 @@ fn current_schema_roundtrip_preserves_alignment_membership_and_future_insertions
         .unwrap();
     let bytes = encode(&w).unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["schema_version"], 25);
+    assert_eq!(value["schema_version"], 26);
     assert_eq!(
         value["world"]["route_paths"][0]["member_stations"],
         json!([s[0], s[2]])

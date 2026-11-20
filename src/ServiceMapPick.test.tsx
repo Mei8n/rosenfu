@@ -28,9 +28,20 @@ test('new service captures map station clicks directly without editing the stati
  fireEvent.click(stations[0]);fireEvent.click(stations[1]);
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'3',end:'4'}));
  expect(screen.getByRole('tab',{name:'系統'}).getAttribute('aria-selected')).toBe('true');
+ expect(screen.getByLabelText('1 始点 起点駅')).toBeTruthy();
+ expect(screen.getByLabelText('2 終点 終点駅')).toBeTruthy();
  expect(vi.mocked(invoke).mock.calls.some(([name])=>/^(save_planned_route|rename_station|create_service_path)$/.test(name))).toBe(false);
  fireEvent.keyDown(window,{key:'Escape'});expect(map.classList.contains('route-station-select')).toBe(false);
  fireEvent.click(within(screen.getByRole('region',{name:'系統を作成'})).getByRole('button',{name:'駅の選択を再開'}));expect(map.classList.contains('route-station-select')).toBe(true);
  fireEvent.click(within(screen.getByRole('region',{name:'系統を作成'})).getByRole('button',{name:'キャンセル'}));expect(map.classList.contains('route-station-select')).toBe(false);
+ expect(screen.queryByLabelText('系統の選択駅')).toBeNull();
  fireEvent.click(stations[0]);expect(screen.getByRole('tab',{name:'駅'}).getAttribute('aria-selected')).toBe('true');
+});
+
+test('service draft labels are not shown after switching to another workspace tab',async()=>{
+ const {stations,map}=await setup();begin();fireEvent.click(stations[0]);
+ expect(screen.getByLabelText('1 始点 起点駅')).toBeTruthy();
+ fireEvent.click(screen.getByRole('tab',{name:'駅'}));
+ expect(screen.queryByLabelText('系統の選択駅')).toBeNull();
+ expect(map.classList.contains('route-station-select')).toBe(false);
 });

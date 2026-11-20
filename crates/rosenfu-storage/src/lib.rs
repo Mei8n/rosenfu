@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 25;
+pub const SCHEMA_VERSION: u64 = 26;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -81,6 +81,7 @@ struct SaveDocument {
     schema_version: u64,
     world: WorldDraft,
     road_evidence: EvidenceEnvelope,
+    operation: Option<rosenfu_core::world::WorldOperationSave>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -172,7 +173,10 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
     let mut document: SaveDocument = serde_json::from_value(value)?;
     let store = document.road_evidence.restore()?;
     document.world.restore_road_evidence(store)?;
-    let world = World::new(document.world)?;
+    let mut world = World::new(document.world)?;
+    world
+        .restore_operation(document.operation)
+        .map_err(|_| StorageError::InvalidHeader)?;
     ensure_world_saveable(&world)?;
     Ok(world)
 }
@@ -183,6 +187,7 @@ struct BorrowedSaveDocument<'a> {
     schema_version: u64,
     world: &'a WorldDraft,
     road_evidence: EvidenceEnvelope,
+    operation: Option<rosenfu_core::world::WorldOperationSave>,
 }
 
 struct BoundedCounter {
@@ -209,6 +214,7 @@ pub fn ensure_world_saveable(world: &World) -> Result<(), StorageError> {
         schema_version: SCHEMA_VERSION,
         world: world.snapshot(),
         road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
+        operation: world.operation_save(),
     };
     let mut counter = BoundedCounter { count: 0 };
     serde_json::to_writer_pretty(&mut counter, &document).map_err(|e| {
@@ -231,6 +237,7 @@ pub fn encode(world: &World) -> Result<Vec<u8>, StorageError> {
         schema_version: SCHEMA_VERSION,
         world: world.snapshot(),
         road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
+        operation: world.operation_save(),
     };
     let mut bytes = serde_json::to_vec_pretty(&document)?;
     bytes.push(b'\n');
@@ -452,6 +459,6 @@ mod tests {
 
 mod slots;
 pub use slots::{
-    create_save_slot, list_deleted_save_slots, list_save_slots, move_save_slot, save_slot_path,
-    SaveSlot,
+    create_save_slot, list_deleted_save_slots, list_save_slots, move_save_slot, rename_save_slot,
+    save_slot_path, SaveSlot,
 };

@@ -28,6 +28,7 @@ test('saved map endpoint edit round-trips through global Undo/Redo with original
  fireEvent.click(screen.getByRole('button',{name:'地図で路線を編集'}));
  expect(screen.getByRole('list',{name:'所属駅'}).textContent).toBe('東西');
  await act(async()=>fireEvent.click(view.container.querySelectorAll('.station-marker')[0]));
+ await act(async()=>fireEvent.click(view.container.querySelectorAll('.station-marker')[1]));
  await waitFor(()=>expect(screen.getByText('所属駅: 中間 → 西')).toBeTruthy());
  fireEvent.change(screen.getByLabelText('路線名'),{target:{value:'短縮路線'}});
  await act(async()=>fireEvent.click(screen.getByRole('button',{name:'編集終了'})));
