@@ -6,18 +6,18 @@ type Timetable={first_departure_ms:number;last_departure_ms:number;headway_ms:nu
 type Vehicle={max_speed_kmh:number;acceleration_mps2:number;braking_mps2:number;length_m:number};
 type ServiceConfig={service_id:string;timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
-export type OperationView={now_ms:number;paused:boolean;speed:number;services:ServiceConfig[];trains:Train[]};
-type Commands={set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number}};
+export type OperationView={now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;services:ServiceConfig[];trains:Train[]};
+type Commands={reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number}};
 type OperationContext={view:OperationView|null;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
 const Context=createContext<OperationContext|null>(null);
 const speeds=[1,2,4,8,16] as const;
 const minute=60_000,day=24*60*minute;
 
-export function OperationProvider({available,blocked,epoch,onChange,children}:{available:boolean;blocked:boolean;epoch:number;onChange:()=>void;children:ReactNode}){
- const [snapshot,setSnapshot]=useState<{epoch:number;view:OperationView}|null>(null);
+export function OperationProvider({available,blocked,epoch,worldVersion,onChange,onRunningChange,acquireMutation,children}:{available:boolean;blocked:boolean;epoch:number;worldVersion?:unknown;onChange:()=>void;onRunningChange?:(running:boolean)=>void;acquireMutation?:()=>null|(()=>void);children:ReactNode}){
+ const [snapshot,setSnapshot]=useState<{epoch:number;view:OperationView;worldVersion:unknown}|null>(null);
  const [busy,setBusy]=useState(false),[error,setError]=useState('');
  const generation=useRef(0),flight=useRef<{done:Promise<void>}|null>(null),intent=useRef<object|null>(null);
- const gate=useRef({available,blocked,epoch,onChange});gate.current={available,blocked,epoch,onChange};
+ const gate=useRef({available,blocked,epoch,worldVersion,onChange,acquireMutation});gate.current={available,blocked,epoch,worldVersion,onChange,acquireMutation};
  const view=snapshot?.epoch===epoch?snapshot.view:null;
  async function request(command:string,args?:Commands[keyof Commands],tick=false){
   const before=gate.current,token=generation.current;
@@ -26,21 +26,22 @@ export function OperationProvider({available,blocked,epoch,onChange,children}:{a
   const userIntent={};
   if(!tick){intent.current=userIntent;setBusy(true);setError('');}
   let lock:{done:Promise<void>}|undefined;
-  let release:()=>void=()=>{};
+  let release:()=>void=()=>{},releaseMutation:(()=>void)|null|undefined;
   try{
    // An explicit operation waits for a pending timer tick instead of being lost.
    if(flight.current)await flight.current.done;
    if(!current()||gate.current.blocked)return;
+   if(!tick&&command!=='operation_snapshot'){releaseMutation=gate.current.acquireMutation?.();if(releaseMutation===null)return;}
    lock={done:new Promise<void>(resolve=>{release=resolve;})};flight.current=lock;
    const next=await invoke<OperationView>(command,args);
    if(!current())return;
    if(!Number.isSafeInteger(next?.now_ms)||next.now_ms<0||typeof next.paused!=='boolean'||!speeds.some(speed=>speed===next.speed)||!Array.isArray(next.services)||!Array.isArray(next.trains))throw Error('運行エンジンの応答を確認できませんでした。');
-   setSnapshot({epoch:before.epoch,view:next});
+   setSnapshot({epoch:before.epoch,worldVersion:before.worldVersion,view:next});
    if(!tick&&command!=='operation_snapshot')gate.current.onChange();
   }catch(cause){
    if(current())setError(String(cause));
   }finally{
-   if(flight.current===lock)flight.current=null;release();
+   if(flight.current===lock)flight.current=null;release();releaseMutation?.();
    if(intent.current===userIntent){intent.current=null;setBusy(false);}
   }
  }
@@ -49,8 +50,10 @@ export function OperationProvider({available,blocked,epoch,onChange,children}:{a
   generation.current++;flight.current=null;intent.current=null;setBusy(false);setError('');
   return()=>{generation.current++;flight.current=null;intent.current=null;};
  },[available,epoch]);
- useEffect(()=>{if(available&&!blocked&&!view&&!error)void request('operation_snapshot');},[available,blocked,epoch,view,error]);
- const timerEnabled=available&&!blocked&&!!view&&!view.paused&&!error;
+ useEffect(()=>{if(available&&!blocked&&!busy&&(!view||snapshot?.worldVersion!==worldVersion)&&!error)void request('operation_snapshot');},[available,blocked,busy,epoch,view,error,worldVersion]);
+ const running=available&&!!view&&!view.paused&&!view.invalidated;
+ useEffect(()=>{onRunningChange?.(running);},[running,onRunningChange]);
+ const timerEnabled=running&&!blocked&&!error;
  const tick=useRef(()=>request('advance_operation',undefined,true));
  tick.current=()=>request('advance_operation',undefined,true);
  useEffect(()=>{
@@ -69,14 +72,19 @@ function scheduleTime(ms:number){
 }
 
 export function OperationClock(){
- const state=useContext(Context);if(!state)return null;
+ const state=useContext(Context);const [confirmReset,setConfirmReset]=useState(false);if(!state)return null;
  const {view,busy,blocked,error,refresh,send}=state;
  const disabled=busy||blocked;
+ const clockDisabled=disabled||!!view?.invalidated||view?.services.length===0;
  return <div className="operation-clock" role="group" aria-label="ゲーム内時刻">
   {view?<>
    <output aria-live="off">{scheduleTime(view.now_ms)}</output>
-   <button type="button" className="secondary" disabled={disabled} onClick={()=>void send('set_operation_clock',{paused:!view.paused,speed:view.speed})}>{view.paused?'再開':'一時停止'}</button>
-   <label>速度<select value={view.speed} disabled={disabled} onChange={e=>void send('set_operation_clock',{paused:view.paused,speed:Number(e.target.value)})}>{speeds.map(speed=><option key={speed} value={speed}>{speed}倍</option>)}</select></label>
+   <button type="button" className="secondary" disabled={clockDisabled} onClick={()=>void send('set_operation_clock',{paused:!view.paused,speed:view.speed})}>{view.paused?'再開':'一時停止'}</button>
+   <label>速度<select value={view.speed} disabled={clockDisabled} onChange={e=>void send('set_operation_clock',{paused:view.paused,speed:Number(e.target.value)})}>{speeds.map(speed=><option key={speed} value={speed}>{speed}倍</option>)}</select></label>
+   {(view.invalidated||view.now_ms>0||view.services.length>0)&&<button type="button" className="secondary" disabled={disabled} onClick={()=>setConfirmReset(true)}>運行をリセット</button>}
+   {view.invalidated&&<span role="status">路線または系統が変更されました。再開するには運行をリセットしてください。</span>}
+   {view.catching_up&&<span role="status">運行時刻に追いつく処理中</span>}
+   {confirmReset&&<div className="operation-reset" role="group" aria-label="運行リセットの確認"><p>時刻とすべての系統のダイヤを消去します。線路・駅・路線・系統は残ります。</p><button type="button" className="danger" disabled={disabled} onClick={()=>{setConfirmReset(false);void send('reset_operation',undefined);}}>時刻とダイヤを消去</button><button type="button" className="secondary" onClick={()=>setConfirmReset(false)}>リセットを取り消す</button></div>}
   </>:<span>{error?'時刻を取得できません':'時刻を確認中…'}</span>}
   {error&&<><span role="alert">{error}</span><button type="button" className="secondary" disabled={disabled} onClick={()=>void refresh()}>運行状態を再取得</button></>}
  </div>;
@@ -128,10 +136,12 @@ export function ServiceOperations({serviceId,enabled}:{serviceId:string;enabled:
  const state=useContext(Context);if(!state||!state.view)return null;
  const {view,busy,blocked,send,error}=state;
  const config=view.services.find(row=>row.service_id===serviceId);
+ const clockLocked=view.invalidated||view.now_ms>0||!view.paused;
  const trains=view.trains.filter(train=>train.key.service_id===serviceId);
  return <section className="service-operations" aria-label="系統の運行">
   <h4>運行</h4>
-  <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={!enabled||busy||blocked} send={send}/>
+  <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={!enabled||busy||blocked||clockLocked} send={send}/>
+  {clockLocked&&<p>運行開始後にダイヤを変更するには、時刻欄から運行をリセットしてください。</p>}
   <div className="operation-trains">
    {trains.length?<ul aria-label="運行中・待機中の列車">{trains.map(train=><li key={train.key.scheduled_ms}><span>{scheduleTime(train.key.scheduled_ms)} 発</span><strong>{train.state.state==='waiting'?'待機中':'走行中'}</strong>{train.delay_ms>0&&<span>遅れ {Math.ceil(train.delay_ms/1000)}秒</span>}</li>)}</ul>:<p>{config?'現在、運行中・待機中の列車はありません。':'この系統のダイヤは未設定です。'}</p>}
   </div>

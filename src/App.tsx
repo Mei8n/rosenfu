@@ -291,6 +291,8 @@ export function App() {
   const [slotPicker,setSlotPicker]=useState(false);
   const [loadSource,setLoadSource]=useState<"manual"|"auto">("manual");
   const [worldEpoch,setWorldEpoch]=useState(0);
+  const [operationRunning,setOperationRunning]=useState(false);
+  const [operationRevision,setOperationRevision]=useState(0);
   const [railLoadEpoch,setRailLoadEpoch]=useState(0);
   const [restoredAutosaveEpoch,setRestoredAutosaveEpoch]=useState(-1);
   const [mainTab,setMainTab]=useState<WorkspaceTab>("construction");
@@ -807,8 +809,8 @@ export function App() {
   const plansDirty=planFingerprint!==savedPlanFingerprint;
   const unapplied = saveBlocked || referenceCopy.active;
   const viewDirty=JSON.stringify(camera)!==savedViewFingerprint;
-  const autosaveSnapshot=useMemo(()=>({world,constructionPlans,camera}),[world,constructionPlans,camera]);
-  const autosave=useAutosave({slotId:activeSlotId,ready:status==="ready"&&slotsReady&&activeSlotId!==null,dirty:(dirty||plansDirty||viewDirty)&&!companySetupRequired,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
+  const autosaveSnapshot=useMemo(()=>({world,constructionPlans,camera,operationRevision}),[world,constructionPlans,camera,operationRevision]);
+  const autosave=useAutosave({slotId:activeSlotId,ready:status==="ready"&&slotsReady&&activeSlotId!==null,dirty:(dirty||plansDirty||viewDirty||operationRunning)&&!companySetupRequired,continuous:operationRunning,world:autosaveSnapshot,constructionPlans:persistedPlans,viewState:camera,epoch:worldEpoch,restoredEpoch:restoredAutosaveEpoch,busyRef,setBusy});
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined,compact=false){
     parkedAnchorHistory.current.clear();
@@ -1803,14 +1805,14 @@ export function App() {
   const showPlanHover=!!planHover&&!!hoveredPlan&&!referenceCopy.active&&!dragging&&(activeTool==="tracks"||activeTool==="inactive");
   const mapMetrics=mapRenderMetrics(camera.zoom,lineWidth,viewport.scale);
   return (
-    <OperationProvider available={status==="ready"&&!companySetupRequired&&info?.operation_enabled===true} blocked={busy} epoch={worldEpoch} onChange={()=>setDirty(true)}>
+    <OperationProvider available={status==="ready"&&!companySetupRequired&&info?.operation_enabled===true} blocked={busy} epoch={worldEpoch} worldVersion={world} onChange={()=>{setDirty(true);setOperationRevision(n=>n+1);}} onRunningChange={setOperationRunning} acquireMutation={()=>{if(busyRef.current)return null;busyRef.current=true;setBusy(true);return ()=>{busyRef.current=false;setBusy(false);};}}>
     <main className="workbench" data-theme={theme} style={{"--rail-width":lineWidth,"--map-track-width":mapMetrics.track+"px","--map-track-casing":mapMetrics.trackCasing+"px","--station-label-size":mapMetrics.stationLabelSize+"px","--map-contrast":contrast/100,"--panel-width":panelWidth+"px","--ui-font":textSize+"px"} as CSSProperties}>
       <header className="app-header">
         <div className="session-status"><span className={`connection-dot ${status}`} aria-hidden="true" />{status === "ready" ? `${info?.version} / エンジン接続済み` : status === "preview" ? "ブラウザプレビュー" : status === "loading" ? "接続中" : "接続エラー"}</div>
       </header>
       <div className="toolbar">
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
-        <OperationClock/>
+        <OperationClock key={worldEpoch}/>
         <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={()=>activeSlotId?requestSlotAction({kind:"load",id:activeSlotId}):openSlotPicker()}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
       </div>
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
