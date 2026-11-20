@@ -237,6 +237,16 @@ impl RoadTransport {
                 return Err(InvalidData);
             }
         }
+        if self.edges.iter().any(|edge| {
+            let length: f64 = edge
+                .geometry
+                .windows(2)
+                .map(|pair| distance_m(pair[0], pair[1]))
+                .sum();
+            !length.is_finite() || length <= 0.0
+        }) {
+            return Err(InvalidData);
+        }
         let path = |ids: &[String], tram: bool| -> Result<(), RoadTransportError> {
             if ids.is_empty() || ids.len() > 4096 {
                 return Err(InvalidData);
@@ -248,6 +258,9 @@ impl RoadTransport {
                     Access::Unknown => return Err(AccessUnknown),
                     Access::Forbidden => return Err(AccessForbidden),
                     Access::Allowed => {}
+                }
+                if tram && e.level != Some(crate::world::InfrastructureLevel::Ground) {
+                    return Err(InvalidTramSection);
                 }
                 if previous.is_some_and(|p| p.to != e.from) {
                     return Err(DisconnectedPath);
@@ -397,7 +410,11 @@ impl RoadTransport {
         let mut outgoing: BTreeMap<&str, Vec<&RoadEdge>> = BTreeMap::new();
         for edge in &self.edges {
             if (if tram {
-                edge.tram_access
+                if edge.level == Some(crate::world::InfrastructureLevel::Ground) {
+                    edge.tram_access
+                } else {
+                    Access::Unknown
+                }
             } else {
                 edge.bus_access
             }) == Access::Allowed

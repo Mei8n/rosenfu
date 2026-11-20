@@ -43,3 +43,15 @@ pub fn find_road_path(
         .shortest_path(&world, &from, &to, tram)
         .map_err(|e| format!("道路経路を確定できません: {e:?}"))
 }
+#[tauri::command]
+pub fn edit_road_tram(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    edit: crate::session::RoadTramEdit,
+) -> Result<WorldDraft, String> {
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    if editor.ofm_world_token()? != expected_world_token {
+        return Err("ワールドが変更されています。".into());
+    }
+    editor.edit_road_tram(edit)
+}

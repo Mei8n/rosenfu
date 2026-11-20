@@ -29,3 +29,50 @@ fn normal_ipc_cannot_forge_access_or_graph() {
         .is_err());
     assert_eq!(editor.snapshot(), world);
 }
+#[test]
+fn road_tram_native_lifecycle_is_atomic_and_undoable() {
+    let mut editor = session::WorldEditor::new();
+    let initial = editor.enable_road_qa_fixture(true).unwrap();
+    let invalid = editor.edit_road_tram(session::RoadTramEdit::Build {
+        from: "qa:0".into(),
+        to: "missing".into(),
+        name: "QA".into(),
+        shared: true,
+    });
+    assert!(invalid.is_err());
+    assert_eq!(editor.snapshot(), initial);
+    let built = editor
+        .edit_road_tram(session::RoadTramEdit::Build {
+            from: "qa:0".into(),
+            to: "qa:1".into(),
+            name: "QA軌道".into(),
+            shared: true,
+        })
+        .unwrap();
+    let alignment_id = built.road_transport.tram_sections[0].alignment_id;
+    assert_eq!(built.alignments.len(), 1);
+    let dedicated = editor
+        .edit_road_tram(session::RoadTramEdit::ChangePlacement {
+            alignment_id,
+            from: String::new(),
+            to: String::new(),
+            shared: false,
+        })
+        .unwrap();
+    assert!(matches!(
+        dedicated.road_transport.tram_sections[0].placement,
+        rosenfu_core::road_transport::TramPlacement::Dedicated
+    ));
+    let world = rosenfu_core::world::World::new(dedicated.clone()).unwrap();
+    assert_eq!(
+        rosenfu_storage::decode(&rosenfu_storage::encode(&world).unwrap())
+            .unwrap()
+            .snapshot(),
+        &dedicated
+    );
+    let removed = editor
+        .edit_road_tram(session::RoadTramEdit::Remove { alignment_id })
+        .unwrap();
+    assert!(removed.alignments.is_empty() && removed.road_transport.tram_sections.is_empty());
+    assert_eq!(editor.undo_world_edit(removed).unwrap(), dedicated);
+}
