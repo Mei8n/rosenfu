@@ -116,20 +116,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path qa-upload | Out-Null
+          New-Item -ItemType Directory -Path qa-verified | Out-Null
           $short = $env:GITHUB_SHA.Substring(0, 12)
           $kind = if ($env:GITHUB_EVENT_NAME -eq 'push') { 'integration' } else { 'preview' }
-          $zip = "qa-upload/Rosenfu-alpha02-$kind-$short-windows-x64.zip"
+          $zip = "qa-verified/Rosenfu-alpha02-$kind-$short-windows-x64.zip"
           $checksum = python scripts/windows-qa-archive.py qa-artifact $zip
           if ($LASTEXITCODE -ne 0 -or $checksum -cnotmatch '^[a-f0-9]{64}  Rosenfu-alpha02-') {
             throw 'QA ZIP creation or readback verification failed'
           }
-          Set-Content -LiteralPath qa-upload/ZIP-SHA256.txt -Encoding ascii -Value $checksum
-        # Internal workflow artifact, not a public release or distribution approval.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rosenfu-alpha02-windows-x64-${{ github.sha }}
-          path: qa-upload/
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 14
+          $digest = (($checksum -join [Environment]::NewLine).Trim() -split '  ', 2)[0]
+          if ($digest -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid verified ZIP digest' }
+          # Public repo: emit only the minimal result, never store binary/ZIP artifacts.
+          Write-Output "Windows QA verified: kind=$kind source=$env:GITHUB_SHA run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT zip_sha256=$digest"
