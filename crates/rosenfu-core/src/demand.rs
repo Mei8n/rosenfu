@@ -103,9 +103,33 @@ pub struct OdAssignment {
     pub partial_candidates: Vec<PathAllocation>,
     pub alternative_trips: f64,
     pub unserved_trips: f64,
-    /// No available candidate yet and exploration was cut off; not proven unserved.
+    /// Whole OD quarantined after incomplete exploration; not proven unserved.
     pub unresolved_trips: f64,
     pub search_complete: bool,
+}
+
+// Small reference solver, not a nationwide production search. Bound the bytes
+// represented by each charged entry as well as the number of cloned entries.
+const MAX_IDENTIFIER_BYTES: usize = 128;
+const MAX_PATH_STATIONS: usize = 128;
+const MAX_OD_ROWS: usize = 10_000;
+const MAX_GRAPH_EDGES: usize = 100_000;
+const MAX_ACCESS_ROWS: usize = 100_000;
+const MAX_BATCH_WORK: usize = 1_000_000;
+const MAX_BATCH_OUTPUT_ENTRIES: usize = 50_000;
+
+fn identifier(value: &str) -> bool {
+    value.len() <= MAX_IDENTIFIER_BYTES && !value.trim().is_empty()
+}
+
+fn spend(left: &mut usize, units: usize) -> bool {
+    if let Some(remaining) = left.checked_sub(units) {
+        *left = remaining;
+        true
+    } else {
+        *left = 0;
+        false
+    }
 }
 
 fn nonnegative(value: f64) -> bool {
@@ -147,6 +171,36 @@ pub fn assign_fixed_od(
     weights: &ChoiceWeights,
     max_states_per_od: usize,
 ) -> Result<Vec<OdAssignment>, String> {
+    assign_fixed_od_budgeted(
+        ods,
+        legs,
+        walks,
+        weights,
+        max_states_per_od,
+        MAX_BATCH_WORK,
+        MAX_BATCH_OUTPUT_ENTRIES,
+    )
+}
+
+fn assign_fixed_od_budgeted(
+    ods: &[FixedOd],
+    legs: &[PassengerLeg],
+    walks: &[WalkLink],
+    weights: &ChoiceWeights,
+    max_states_per_od: usize,
+    mut batch_work: usize,
+    mut batch_output: usize,
+) -> Result<Vec<OdAssignment>, String> {
+    if ods.len() > MAX_OD_ROWS
+        || legs.len().saturating_add(walks.len()) > MAX_GRAPH_EDGES
+        || ods.iter().fold(0usize, |total, od| {
+            total
+                .saturating_add(od.access.len())
+                .saturating_add(od.egress.len())
+        }) > MAX_ACCESS_ROWS
+    {
+        return Err("demand input exceeds reference solver limits".into());
+    }
     if ![
         weights.walk,
         weights.wait,
@@ -167,12 +221,12 @@ pub fn assign_fixed_od(
     let mut leg_ids = BTreeSet::new();
     let mut patterns: BTreeMap<&str, BTreeMap<usize, &PassengerLeg>> = BTreeMap::new();
     for leg in legs {
-        if leg.leg_id.is_empty()
+        if !identifier(&leg.leg_id)
             || !leg_ids.insert(&leg.leg_id)
             || leg.sequence == usize::MAX
-            || leg.from.is_empty()
-            || leg.to.is_empty()
-            || leg.service_id.is_empty()
+            || !identifier(&leg.from)
+            || !identifier(&leg.to)
+            || !identifier(&leg.service_id)
             || leg.from == leg.to
             || !nonnegative(leg.ride_seconds)
             || !leg.headway_seconds.is_finite()
@@ -217,8 +271,8 @@ pub fn assign_fixed_od(
         }
     }
     for link in walks {
-        if link.from.is_empty()
-            || link.to.is_empty()
+        if !identifier(&link.from)
+            || !identifier(&link.to)
             || link.from == link.to
             || !nonnegative(link.seconds)
         {
@@ -246,12 +300,12 @@ pub fn assign_fixed_od(
     let mut markets = BTreeSet::new();
     let mut results = Vec::new();
     for od in ods {
-        if od.id.trim().is_empty()
+        if !identifier(&od.id)
             || !ids.insert(&od.id)
-            || od.origin_region.trim().is_empty()
-            || od.destination_region.trim().is_empty()
-            || od.origin_location.is_empty()
-            || od.destination_location.is_empty()
+            || !identifier(&od.origin_region)
+            || !identifier(&od.destination_region)
+            || !identifier(&od.origin_location)
+            || !identifier(&od.destination_location)
             || od.owner_region != od.origin_region
             || !markets.insert((&od.origin_location, &od.destination_location))
             || ((od.market == MarketKind::Metro) != (od.origin_region == od.destination_region))
@@ -280,6 +334,19 @@ pub fn assign_fixed_od(
             results.push(result);
             continue;
         };
+        let initial_states = access.len().min(max_states_per_od);
+        if initial_states > 0 && !spend(&mut batch_work, 2 * initial_states) {
+            result.search_complete = false;
+            result.unresolved_trips = trips;
+            results.push(result);
+            continue;
+        }
+        if batch_work == 0 {
+            result.search_complete = false;
+            result.unresolved_trips = trips;
+            results.push(result);
+            continue;
+        }
         let mut stack: Vec<_> = access
             .iter()
             .rev()
@@ -297,13 +364,12 @@ pub fn assign_fixed_od(
             })
             .collect();
         if access.len() > max_states_per_od {
-            stack.truncate(max_states_per_od);
             result.search_complete = false;
         }
         let mut states = 0;
         let mut edges_examined = 0;
         'search: while let Some(state) = stack.pop() {
-            if states >= max_states_per_od {
+            if states >= max_states_per_od || !spend(&mut batch_work, 1) {
                 result.search_complete = false;
                 break;
             }
@@ -313,6 +379,16 @@ pub fn assign_fixed_od(
                     let cost = state.cost + seconds * weights.walk;
                     if !cost.is_finite() {
                         return Err("demand cost overflow".into());
+                    }
+                    // Include vectors, typed step IDs (up to two each), and record.
+                    let units = 1
+                        + state.visited.len()
+                        + state.leg_ids.len()
+                        + 3 * state.steps.len()
+                        + state.services.len();
+                    if !spend(&mut batch_work, units) || !spend(&mut batch_output, units) {
+                        result.search_complete = false;
+                        break 'search;
                     }
                     result.rail.push(PathAllocation {
                         stations: state.visited.clone(),
@@ -326,7 +402,9 @@ pub fn assign_fixed_od(
             }
             if let Some(edges) = graph.get(&state.station) {
                 for edge in edges.iter().rev() {
-                    if edges_examined >= max_states_per_od {
+                    if edges_examined >= max_states_per_od
+                        || !spend(&mut batch_work, state.visited.len() + 1)
+                    {
                         result.search_complete = false;
                         break 'search;
                     }
@@ -352,6 +430,15 @@ pub fn assign_fixed_od(
                     }
                     if state.visited.contains(&edge.to) {
                         continue;
+                    }
+                    // Check before allocating any clone. An eligible unseen
+                    // successor beyond the depth limit makes the OD incomplete.
+                    if state.visited.len() >= MAX_PATH_STATIONS
+                        || stack.len() >= max_states_per_od
+                        || !spend(&mut batch_work, 8 * (state.visited.len() + 1))
+                    {
+                        result.search_complete = false;
+                        break 'search;
                     }
                     let mut next = state.clone();
                     next.station = edge.to.clone();
@@ -384,21 +471,14 @@ pub fn assign_fixed_od(
                     if !next.cost.is_finite() {
                         return Err("demand cost overflow".into());
                     }
-                    if stack.len() >= max_states_per_od {
-                        result.search_complete = false;
-                        break 'search;
-                    }
                     stack.push(next);
                 }
             }
         }
         // Stable ordering makes the calculation independent of incoming graph ordering.
-        result.rail.sort_by(|a, b| {
-            a.generalized_seconds
-                .total_cmp(&b.generalized_seconds)
-                .then_with(|| a.stations.cmp(&b.stations))
-                .then_with(|| a.services.cmp(&b.services))
-        });
+        result
+            .rail
+            .sort_by(|a, b| a.generalized_seconds.total_cmp(&b.generalized_seconds));
         if !result.search_complete {
             result.partial_candidates = std::mem::take(&mut result.rail);
             result.unresolved_trips = trips;
@@ -445,7 +525,7 @@ fn checked_cost(value: f64) -> Result<(), String> {
 fn validate_access(items: &[StationAccess]) -> Result<BTreeMap<String, f64>, String> {
     let mut result = BTreeMap::new();
     for access in items {
-        if access.station.is_empty()
+        if !identifier(&access.station)
             || !nonnegative(access.seconds)
             || result
                 .insert(access.station.clone(), access.seconds)
@@ -811,5 +891,57 @@ mod tests {
         assert_eq!(r[0].rail[0].services, vec!["1", "1"]);
         assert_eq!(r[0].rail[0].generalized_seconds, 920.0);
         conserved(&r[0]);
+    }
+    #[test]
+    fn long_chain_with_many_egresses_quarantines_even_valid_prefixes() {
+        let edges: Vec<_> = (1..=MAX_PATH_STATIONS + 1)
+            .map(|station| PassengerLeg {
+                sequence: station - 1,
+                ..leg(station as u64, station as u64 + 1, 1, 1.0)
+            })
+            .collect();
+        let mut input = od();
+        input.egress = (2..=MAX_PATH_STATIONS + 2)
+            .map(|station| access(station as u64))
+            .collect();
+        let result = evaluate(&[input], &edges);
+        assert!(!result[0].search_complete);
+        assert!(result[0].rail.is_empty());
+        assert_eq!(result[0].partial_candidates.len(), MAX_PATH_STATIONS - 1);
+        assert!(result[0]
+            .partial_candidates
+            .iter()
+            .all(|p| p.stations.len() <= MAX_PATH_STATIONS && p.trips == 0.0));
+        assert_eq!(result[0].unresolved_trips, 100.0);
+        conserved(&result[0]);
+    }
+
+    #[test]
+    fn batch_budget_covers_output_and_work_across_od_rows() {
+        let mut second = od();
+        second.id = "second-market".into();
+        second.destination_location = "second-destination".into();
+        let ods = [od(), second];
+        let legs = [leg(1, 3, 1, 1.0)];
+        let weights = ChoiceWeights::default();
+        for (work, output) in [(1_000, 8), (32, 1_000)] {
+            let results =
+                assign_fixed_od_budgeted(&ods, &legs, &[], &weights, 1_000, work, output).unwrap();
+            assert!(results[0].search_complete);
+            assert!(!results[1].search_complete);
+            assert_eq!(results[1].unresolved_trips, 100.0);
+            assert!(results[1].rail.is_empty());
+            assert!(results[1].partial_candidates.is_empty());
+            for result in results {
+                conserved(&result);
+            }
+        }
+    }
+
+    #[test]
+    fn identifier_byte_cap_applies_before_path_clones() {
+        let mut oversized = od();
+        oversized.access[0].station = "界".repeat(MAX_IDENTIFIER_BYTES / 3 + 1);
+        assert!(assign_fixed_od(&[oversized], &[], &[], &ChoiceWeights::default(), 10).is_err());
     }
 }
