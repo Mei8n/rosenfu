@@ -58,3 +58,45 @@ attach or detach the approved matching path; detaching does not move the rail.
 Rail dependencies still block removal, and each supported tram edit is saved and
 undoable atomically. This does not yet implement mixed traffic, actual on-road
 tram operations or crossing classification.
+
+### 王子駅前〜飛鳥山: データ確認と未接続の検証基盤
+
+初回候補は国道122号・明治通りの王子駅前〜飛鳥山の途中にある
+地上の併用区間。交差点、駅前の分岐・渡り線、JR高架周辺は初回対象外。
+[東京都交通局の支出資料](https://www.kotsu.metro.tokyo.jp/about/koukai/koukin/pdf/koukin_r0604_01.pdf)
+は両停留場間に併用軌道部があることを確認できる一次資料。
+[東京都議会の記録](https://www.gikai.metro.tokyo.lg.jp/record/police-fire-fighting/2001-04.html)
+も明治通りと飛鳥山交差点を区別できる。これらは区間の存在を示すが、
+道路の各方向・車線・バス停位置・進入条件を網羅する台帳ではない。
+
+2026-11-20に [OSM map API の限定範囲](https://api.openstreetmap.org/api/0.6/map?bbox=139.7325,35.7479,139.7405,35.7550)
+を開発時に一度取得した。実データでは車道と軌道は別の方向別 way。
+周辺には時刻条件付きアクセス（way 27867901）、via-way のUターン規制
+（relation 12714546/12714547等）がある。地図の一致やタグの不在を通行可とはしない。
+照合した応答の SHA-256 は
+`7b18c0cc76de0b75015d25defb1e274a56e5d65d7d32ffca9fa7a363c8c32bda`。
+当該 XML は個人名等を含むため同梱しない。データ配布時は個人メタデータを除いた
+必要範囲だけを抽出し、出典、版、抽出範囲、ハッシュを固定した独立アセットにする。
+[OSMのデータ条件](https://www.openstreetmap.org/copyright)に従い、OSMへの帰属表示と
+ODbLを保持する。公開 API はアプリの実行時には呼ばない。
+
+[JARTICの規制情報](https://www.jartic.or.jp/service/opendata/)の公開と
+[再利用条件](https://www.jartic.or.jp/d/opendata/riyou_kiyaku.pdf)は確認済み。
+出典・利用日・加工表示および第三者権利の確認が必要。
+[2026-11-01公表の作成基準日一覧](https://www.jartic.or.jp/d/opendata/202611010000/typeD_kisei_103_UpdateList.pdf)に
+よると、警視庁のデータは2026年9月末時点で、標準フォーマットをK_2.1に形式変換したもの。
+今回は対象車線・方向に対応付けられる規制レコードや現況を確定できていない。
+[データ仕様書](https://www.jartic.or.jp/d/opendata/typeD_kisei_73_k_2.0.pdf)
+にも収録漏れや更新差の注意があり、欠落は許可の根拠にしない。
+配布可能な正式アセット、再現可能な対応表、現行の標識・管理資料による確認は次段階。
+実在区間の通行フラグは設定していない。
+
+`PilotRoad` は後続インポート向けの独立検証基盤。まず固定された出典・版に
+属する道路グラフ、地上の有向辺、交通モード別に明記した前後辺の組を検証する。
+探索は進入辺を状態に持ち、バスとトラムで同じ許可表を使わない。
+探索と候補・既存経路検証は同じ許可表を使い、未記載の接続、Uターン、地上不明、
+版違いは通さない。二辺の許可表だけではvia-way／条件規制を表現しないので、
+将来の取り込み側で、それらの影響を解決できない辺を通行可にしない。
+出典文字列の照合はアセットの認証ではない。実接続には、信頼できるネイティブの
+同梱マニフェスト・バイトハッシュの検証と、編集、ロード、経路探索の全入口へ
+同検証を適用する必要がある。セーブ構造・IPC・既存の架空QA・UIは未変更。

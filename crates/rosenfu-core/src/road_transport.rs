@@ -4,6 +4,8 @@
 use crate::world::{AlignmentId, CompanyId, GeoPoint, TrackType, WorldDraft};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+mod pilot;
+pub use pilot::{PilotRoad, PilotRoadMode, PilotTransition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
