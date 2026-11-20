@@ -1,0 +1,39 @@
+name: 機能追加・改善の要望
+description: Rosenfuに追加してほしい機能や、改善してほしい操作を提案する
+title: "[機能要望] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        1件のIssueにつき、要望は1つ。似た要望がすでにあれば、そちらに補足してください
+        今ある機能が期待どおりに動かない場合は「バグ報告（開発版）」を選んでください
+  - type: textarea
+    id: problem
+    attributes:
+      label: 今困っていること・実現したいこと
+      description: どの場面で、何をできるようにしたいか書いてください
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 欲しい機能・操作
+      description: どう操作して、どう動いてほしいか。分かれば画面名や使い方の例も書いてください
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 現在の回避策や代替案（任意）
+      description: 今やっている方法、ほかに考えた案など
+  - type: input
+    id: version
+    attributes:
+      label: 確認した開発版（分かれば）
+      placeholder: "例: 0.2"
+  - type: textarea
+    id: extra
+    attributes:
+      label: 参考画像・関連Issue・補足（任意）
+      description: 公開してよい資料だけ添付してください

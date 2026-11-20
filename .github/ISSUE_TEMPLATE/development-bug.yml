@@ -1,6 +1,7 @@
-name: 開発版の不具合報告
+name: バグ報告（開発版）
 description: Rosenfuの開発版で起きた不具合を、再現に必要な情報と一緒に報告する
 title: "[不具合] "
+labels: [bug]
 body:
   - type: markdown
     attributes:
