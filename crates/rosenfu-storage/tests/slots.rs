@@ -135,3 +135,49 @@ fn deletion_refuses_active_save_lock_without_moving_data() {
     assert!(save_world(&file, &World::default()).is_err());
     assert!(file.is_file());
 }
+
+#[test]
+fn rename_label_preserves_identity_bytes_versions_and_recovery() {
+    let root = tempfile::tempdir().unwrap();
+    let (slot, version) = create_save_slot(root.path(), "Before", &World::default()).unwrap();
+    let path = save_slot_path(root.path(), &slot.id).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let auto = path.with_file_name("world.autosave.rosenfu.json");
+    std::fs::write(&auto, b"autosave unchanged").unwrap();
+    std::fs::write(backup_path(&path), b"backup unchanged").unwrap();
+    rename_save_slot(root.path(), &slot.id, "Before", "  東京 🚆  ").unwrap();
+    assert_eq!(list_save_slots(root.path()).unwrap()[0].name, "東京 🚆");
+    assert_eq!(file_version(&path).unwrap(), version);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(std::fs::read(&auto).unwrap(), b"autosave unchanged");
+    assert_eq!(
+        std::fs::read(backup_path(&path)).unwrap(),
+        b"backup unchanged"
+    );
+    assert!(rename_save_slot(root.path(), &slot.id, "Before", "Stale").is_err());
+    for name in ["", " ", "bad\nname"] {
+        assert!(rename_save_slot(root.path(), &slot.id, "東京 🚆", name).is_err());
+    }
+    assert!(rename_save_slot(root.path(), &slot.id, "東京 🚆", &"a".repeat(101)).is_err());
+    move_save_slot(root.path(), &slot.id, false).unwrap();
+    assert!(rename_save_slot(root.path(), &slot.id, "東京 🚆", "Archived").is_err());
+    move_save_slot(root.path(), &slot.id, true).unwrap();
+    assert_eq!(list_save_slots(root.path()).unwrap()[0].name, "東京 🚆");
+    assert!(rename_save_slot(root.path(), "legacy", "以前のワールド", "new").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn rename_rejects_manifest_symlink_without_touching_target() {
+    let root = tempfile::tempdir().unwrap();
+    let (slot, _) = create_save_slot(root.path(), "Before", &World::default()).unwrap();
+    let manifest = save_slot_path(root.path(), &slot.id)
+        .unwrap()
+        .with_file_name("manifest.json");
+    let outside = root.path().join("outside.json");
+    std::fs::write(&outside, br#"{"name":"Before"}"#).unwrap();
+    std::fs::remove_file(&manifest).unwrap();
+    std::os::unix::fs::symlink(&outside, &manifest).unwrap();
+    assert!(rename_save_slot(root.path(), &slot.id, "Before", "After").is_err());
+    assert_eq!(std::fs::read(&outside).unwrap(), br#"{"name":"Before"}"#);
+}

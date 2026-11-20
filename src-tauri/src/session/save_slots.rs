@@ -7,6 +7,16 @@ pub struct SaveSlotList {
     pub deleted_slots: Vec<rosenfu_storage::SaveSlot>,
 }
 impl WorldEditor {
+    pub fn rename_save_slot(
+        &self,
+        root: &Path,
+        id: &str,
+        expected_name: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        rosenfu_storage::rename_save_slot(root, id, expected_name, name).map_err(|e| e.to_string())
+    }
+
     pub fn list_save_slots(&self, root: &Path) -> Result<SaveSlotList, String> {
         Ok(SaveSlotList {
             active_slot_id: self.active_slot_id.clone(),
@@ -177,6 +187,33 @@ mod tests {
     fn bytes(path: &Path) -> Vec<u8> {
         std::fs::read(path).unwrap()
     }
+    #[test]
+    fn renaming_active_slot_keeps_unsaved_world_and_save_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let mut editor = WorldEditor::new();
+        editor
+            .save_world_as_slot(root.path(), "Before".into(), None, None)
+            .unwrap();
+        let id = editor.active_slot_id.clone().unwrap();
+        let path = editor.active_save_path(root.path()).unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+        editor.rename_company("unsaved company".into()).unwrap();
+        let before = editor.snapshot();
+        editor
+            .rename_save_slot(root.path(), &id, "Before", "After")
+            .unwrap();
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.active_save_path(root.path()).unwrap(), path);
+        assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+        editor.save_active_slot(root.path(), None, None).unwrap();
+        assert_eq!(
+            editor.list_save_slots(root.path()).unwrap().slots[0].name,
+            "After"
+        );
+        let mut restored = WorldEditor::new();
+        assert_eq!(restored.load_save_slot(root.path(), id).unwrap(), before);
+    }
+
     #[test]
     fn plan_only_autosave_survives_restart_without_touching_manual_save() {
         let root = tempfile::tempdir().unwrap();

@@ -1727,6 +1727,15 @@ export function App() {
     finally{if(generation===slotGeneration.current)setSlotsLoading(false);}
   }
   useEffect(()=>{if(status==="ready")void refreshSaveSlots();return()=>{slotGeneration.current++;};},[status]);
+  async function renameSavedWorld(id:string,expectedName:string,name:string){
+    if(busyRef.current||status!=="ready")throw Error("ほかの処理が完了してから操作してください。");
+    busyRef.current=true;setBusy(true);
+    try{
+      await invoke("rename_save_slot",{slotId:id,expectedName,name});
+      await refreshSaveSlots();
+      setNotice("セーブデータの名前を変更しました。");
+    }finally{busyRef.current=false;setBusy(false);}
+  }
   async function moveSavedWorld(id:string,restore:boolean){
     if(busyRef.current||status!=="ready")throw Error("ほかの処理が完了してから操作してください。");
     busyRef.current=true;setBusy(true);
@@ -2002,7 +2011,7 @@ export function App() {
           <section id="workspace-panel-finance" role="tabpanel" aria-labelledby="workspace-tab-finance" hidden={mainTab!=="finance"}><h3>財務</h3><p>未実装です。収支・運賃・経費の画面は今後追加します。</p></section>
           <section id="workspace-panel-city" role="tabpanel" aria-labelledby="workspace-tab-city" hidden={mainTab!=="city"}><h3>都市</h3><p>未実装です。人口・需要・都市発展の画面は今後追加します。</p></section>
           <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3>
-            <SaveSlots deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} onSave={save} saveDisabled={!enabled||saveBlocked} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy||status!=="ready"} canSave={!saveBlocked&&!companySetupRequired} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{setSlotName(companyName);setSlotDialog("save-as");}} onNew={()=>{setSlotName("");setSlotDialog("new");}}/>
+            <SaveSlots onRename={renameSavedWorld} deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} onSave={save} saveDisabled={!enabled||saveBlocked} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy||status!=="ready"} canSave={!saveBlocked&&!companySetupRequired} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{setSlotName(companyName);setSlotDialog("save-as");}} onNew={()=>{setSlotName("");setSlotDialog("new");}}/>
             {!activeSlotId&&<p>初回保存後に自動保存を開始します。</p>}
             <h4>オートセーブ</h4><p>2分ごとに自動保存します。手動保存とは別に、ワールドと建設計画を保存します。</p><p role="status">{!slotsReady?"保存先の確認が完了するまで自動保存は停止しています。":activeSlotId?autosave.message:"初回保存待ち"}</p>{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
@@ -2091,7 +2100,7 @@ export function App() {
         {!panelCollapsed&&<PanelResizer value={panelWidth} onChange={setPanelWidth}/>}
       </div>
       {companySetupRequired&&<CompanySetup name={companyName} onName={setCompanyName} busy={busy} error={error} errorRevision={errorRevision} onDismissError={()=>setError("")} onStart={startCompany} onLoad={openSlotPicker} onRestore={autosave.available?()=>load("auto"):undefined}/>}
-      {slotPicker&&<div className="company-setup-backdrop"><section className="company-setup save-slot-dialog" role="dialog" aria-modal="true" aria-label="ワールドを選択"><h2>セーブデータ</h2><SaveSlots deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy} canSave={false} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{}} onNew={()=>{setSlotPicker(false);setSlotName("");setSlotDialog("new");}}/><button disabled={busy} onClick={()=>setSlotPicker(false)}>閉じる</button>{error&&<p role="alert">{error}</p>}</section></div>}
+      {slotPicker&&<div className="company-setup-backdrop"><section className="company-setup save-slot-dialog" role="dialog" aria-modal="true" aria-label="ワールドを選択"><h2>セーブデータ</h2><SaveSlots onRename={renameSavedWorld} deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy} canSave={false} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{}} onNew={()=>{setSlotPicker(false);setSlotName("");setSlotDialog("new");}}/><button disabled={busy} onClick={()=>setSlotPicker(false)}>閉じる</button>{error&&<p role="alert">{error}</p>}</section></div>}
       {slotDialog&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label={slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}><h2>{slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}</h2><form autoComplete="off" onSubmit={submitSlotName}><label>名前<input autoComplete="off" autoFocus maxLength={80} value={slotName} disabled={busy} onChange={event=>setSlotName(event.target.value)}/></label><button type="submit" disabled={busy||!slotName.trim()||confirmLoad}>{slotDialog==="new"?"作成":"保存"}</button><button type="button" disabled={busy} onClick={()=>{setSlotDialog(null);setSlotAction(null);setConfirmLoad(false);}}>キャンセル</button></form>{error&&<p role="alert">{error}</p>}</section></div>}
       {confirmLoad && <div className="banner load-confirm" style={{position:"fixed",zIndex:2000,left:"20%",right:"20%",top:"20%"}} role="alert"><p>{slotAction?.kind==="new"?"新しいワールドを作成すると、現在の未保存の変更と未適用の下書きは破棄されます。保存済みのワールドは変更しません。":"読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。"}</p><button className="secondary" disabled={busy} onClick={() => {setConfirmLoad(false);setSlotAction(null);}}>戻る</button><button disabled={busy} onClick={()=>slotAction?applySlotAction():load()}>{slotAction?.kind==="new"?"変更を破棄して作成":"読込を続ける"}</button></div>}
       <footer className="app-footer"><p role="status" aria-live="polite">{busy ? (roadCheckPending ? "道路を確認中（最大25秒）。未取得の場合も通常建設を続行します。" : "ワールドを更新しています。") : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>列車種別・ダイヤ・列車運行・旅客流動は未実装</span></footer>

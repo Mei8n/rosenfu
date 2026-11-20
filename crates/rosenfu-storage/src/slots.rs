@@ -151,6 +151,44 @@ pub fn create_save_slot(
     Ok((result, bytes_version(&bytes)))
 }
 
+/// Rename only the display label; world identity, save versions and backups stay intact.
+pub fn rename_save_slot(
+    root: &Path,
+    id: &str,
+    expected_name: &str,
+    name: &str,
+) -> Result<(), StorageError> {
+    let name = name.trim();
+    if id == "legacy"
+        || name.is_empty()
+        || name.chars().count() > 100
+        || name.chars().any(char::is_control)
+    {
+        return Err(StorageError::InvalidHeader);
+    }
+    let path = save_slot_path(root, id)?;
+    let _lock = lock_save(&path)?;
+    if !regular_file_exists(&path)? {
+        return Err(StorageError::InvalidHeader);
+    }
+    let manifest = path.with_file_name("manifest.json");
+    if !regular_file_exists(&manifest)? {
+        return Err(StorageError::InvalidHeader);
+    }
+    let previous: Manifest = serde_json::from_slice(&read_bounded(&manifest)?)?;
+    if previous.name != expected_name {
+        return Err(StorageError::FileChanged);
+    }
+    persist(
+        prepare_file(
+            &manifest,
+            &serde_json::to_vec(&Manifest { name: name.into() })?,
+        )?,
+        &manifest,
+        true,
+    )
+}
+
 /// Recoverable removal. Move the whole slot (including autosave/backups) atomically;
 /// never recursively delete user files or replace an existing recovery entry.
 pub fn move_save_slot(root: &Path, id: &str, restore: bool) -> Result<(), StorageError> {
