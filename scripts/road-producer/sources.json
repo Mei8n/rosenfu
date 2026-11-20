@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "revision": "2026-11-14T21:20:41Z",
+  "coverage_verified": false,
+  "polygon_snapshot_match": "unverified",
+  "regions": [
+    {
+      "name": "hokkaido",
+      "pbf_url": "https://download.geofabrik.de/asia/japan/hokkaido-261114.osm.pbf",
+      "pbf_sha256": "cee4edb4bcc87b61e899491daa4649583e27396c8284b68f30f2016e651c6ef7",
+      "pbf_bytes": 190123678,
+      "poly_url": "https://download.geofabrik.de/asia/japan/hokkaido.poly",
+      "poly_sha256": "146721cdb19d39acc8b13b85222937631a2ba83facc25ac97bd143551d35141f",
+      "poly_bytes": 1038
+    },
+    {
+      "name": "tohoku",
+      "pbf_url": "https://download.geofabrik.de/asia/japan/tohoku-261114.osm.pbf",
+      "pbf_sha256": "097b5907ea7fb4a9300bdde00be4e9d981c8b7130af2040052a05d72c50c383a",
+      "pbf_bytes": 312488379,
+      "poly_url": "https://download.geofabrik.de/asia/japan/tohoku.poly",
+      "poly_sha256": "282c1c158f7671066f1379c6ef82c8e16d2bbeed9ba9e73709a930cd6c0bfa66",
+      "poly_bytes": 15980
+    },
+    {
+      "name": "kanto",
+      "pbf_url": "https://download.geofabrik.de/asia/japan/kanto-261114.osm.pbf",
+      "pbf_sha256": "29967275fa5925a5dc224708e41869800471745d53db004b25104c6eddca52dc",
+      "pbf_bytes": 524583593,
+      "poly_url": "https://download.geofabrik.de/asia/japan/kanto.poly",
+      "poly_sha256": "0516acd585928ab2d3cd1d85246fbf3e4c1c0d86d23cb3fb1d5b5cbca9da4410",
+      "poly_bytes": 7870
+    },
+    {
+      "name": "chubu",
+      "pbf_url": "https://download.geofabrik.de/asia/japan/chubu-261114.osm.pbf",
+      "pbf_sha256": "8ab25f03850016c462d049770480b405ad41959acb312c9732dc80522ac26a14",
+      "pbf_bytes": 519727641,
+      "poly_url": "https://download.geofabrik.de/asia/japan/chubu.poly",
+      "poly_sha256": "83ab45e5e7dac6283e06a9a4bb6d1ded456e9e161305b6dca437cf97e1bddf81",
+      "poly_bytes": 6401
+    },
+    {
+      "name": "kansai",
+      "pbf_url": "https://download.geofabrik.de/asia/japan/kansai-261114.osm.pbf",
+      "pbf_sha256": "5bdbd08bd8019d1487028569869c1fd3e3ed493edb24c4bb1534161d32694e68",
+      "pbf_bytes": 355928301,
+      "poly_url": "https://download.geofabrik.de/asia/japan/kansai.poly",
+      "poly_sha256": "ecc63cd536557496d02eeaaaffab409fce3fc0b8587284c112510e040039816c",
+      "poly_bytes": 15329
+    },
+    {
+      "name": "chugoku",
+      "pbf_url": "https://download.geofabrik.de/asia/japan/chugoku-261114.osm.pbf",
+      "pbf_sha256": "1825c8a328be74eed20c616bd8cb6b45b987004d18e404597147f9bb51207de7",
+      "pbf_bytes": 239432770,
+      "poly_url": "https://download.geofabrik.de/asia/japan/chugoku.poly",
+      "poly_sha256": "0efdc9e430179d449f8c9e8d506d02907f8e167810688a929be05b1685e78477",
+      "poly_bytes": 3611
+    },
+    {
+      "name": "shikoku",
+      "pbf_url": "https://download.geofabrik.de/asia/japan/shikoku-261114.osm.pbf",
+      "pbf_sha256": "ecf914fd451f911b976ef8c37d672c43f8c0234cd2016e8305c8c107551f7c6d",
+      "pbf_bytes": 92206331,
+      "poly_url": "https://download.geofabrik.de/asia/japan/shikoku.poly",
+      "poly_sha256": "1e5fc12ef681c93559df255c766688fa1226c6147128025749c1fcf7f8814b6b",
+      "poly_bytes": 2743
+    },
+    {
+      "name": "kyushu",
+      "pbf_url": "https://download.geofabrik.de/asia/japan/kyushu-261114.osm.pbf",
+      "pbf_sha256": "0585daafc4cc3079f5f281beb3fb4abdf9865f91e0661b59ed7a434d13caa6f6",
+      "pbf_bytes": 317730219,
+      "poly_url": "https://download.geofabrik.de/asia/japan/kyushu.poly",
+      "poly_sha256": "db273b5b6df88db54571646ce010baa1d6b6a38bc5b406ea335090148857c5ad",
+      "poly_bytes": 1100
+    }
+  ]
+}
