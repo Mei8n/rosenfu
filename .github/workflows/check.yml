@@ -83,6 +83,11 @@ jobs:
           $file = Join-Path $stage.FullName $name
           Copy-Item -LiteralPath $bundles[0].FullName -Destination $file
           Copy-Item -LiteralPath docs/windows-alpha02-test-play.txt -Destination $stage.FullName
+          $notices = New-Item -ItemType Directory -Path (Join-Path $stage.FullName 'data-and-notices')
+          Copy-Item -LiteralPath public/road-data -Recurse -Destination $notices.FullName
+          Copy-Item -LiteralPath data/water-japan-coarse-20261114 -Recurse -Destination $notices.FullName
+          Copy-Item -LiteralPath docs/water-mask-model.md -Destination $notices.FullName
+          Copy-Item -LiteralPath src/assets/fonts/line-seed-jp/OFL.txt -Destination (Join-Path $notices.FullName 'LINE-Seed-JP-OFL.txt')
           $digest = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -LiteralPath (Join-Path $stage.FullName 'SHA256SUMS.txt') -Encoding ascii -Value "$digest  $name"
           Set-Content -LiteralPath (Join-Path $stage.FullName 'BUILD.txt') -Encoding ascii -Value @(

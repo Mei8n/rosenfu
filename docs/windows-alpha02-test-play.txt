@@ -30,3 +30,13 @@ PowerShellで Get-FileHash -Algorithm SHA256 をインストーラーに実行�
 SHA256SUMS.txtと照合する。不一致なら起動せず、再取得する
 
 BUILD.txt の kind=preview はパッケージ工程の確認用。テストプレイには転送しない
+
+5. 同梱データ
+data-and-notices に、東京中心部道路データと日本周辺の概略水域モデルを
+機械で読める元の形式・出典・利用条件付きで同梱する
+道路と水域のOpenStreetMap由来データはアプリ本体とは別にODbL 1.0
+（© OpenStreetMap contributors、https://www.openstreetmap.org/copyright）
+https://opendatacommons.org/licenses/odbl/1-0/
+水域モデルの湖沼データ: Made with Natural Earth
+LINE Seed JPの条件はLINE-Seed-JP-OFL.txtを参照
+オンライン配信元のデータや個人のワールドデータはこのフォルダには含まれない
