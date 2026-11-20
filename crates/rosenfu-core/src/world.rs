@@ -249,11 +249,15 @@ impl std::error::Error for WorldError {}
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct World {
     data: WorldDraft,
+    operation: Option<WorldOperation>,
 }
 impl World {
     pub fn new(data: WorldDraft) -> Result<Self, WorldError> {
         data.validate()?;
-        Ok(Self { data })
+        Ok(Self {
+            data,
+            operation: None,
+        })
     }
     /// UI JSON omits runtime evidence. Preserve the CURRENT table and reject
     /// manifest changes; explicit evidence attachment uses a different validated API.
@@ -467,7 +471,10 @@ impl WorldDraft {
         }
         // All references and platform footprints are valid by this point. Check
         // derived turnout geometry before any candidate snapshot is committed.
-        let geometry_world = World { data: self.clone() };
+        let geometry_world = World {
+            data: self.clone(),
+            operation: None,
+        };
         geometry_world.validate_turnout_geometry()?;
         self.validate_service_paths()?;
         self.validate_service_route_bindings()?;
@@ -701,3 +708,6 @@ pub use road_path::AlignmentRoadPathProvenance;
 mod water_fine;
 mod water_national;
 pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskRequest};
+
+mod operation_adapter;
+pub use operation_adapter::{OperationServiceConfig, WorldOperation, WorldOperationSave};

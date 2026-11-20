@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod operation_commands;
 mod session;
 mod water_zone_delivery;
 use rosenfu_core::world::{AlignmentId, GeoPoint, RouteId, ServiceId, StationId, WorldDraft};
@@ -11,11 +12,13 @@ struct EngineSessionInfo {
     #[serde(flatten)]
     engine: rosenfu_core::EngineInfo,
     company_setup_required: bool,
+    operation_enabled: bool,
 }
 #[tauri::command]
 fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInfo, String> {
     Ok(EngineSessionInfo {
         engine: rosenfu_core::engine_info(),
+        operation_enabled: true,
         company_setup_required: editor
             .lock()
             .map_err(|_| "world state unavailable")?
@@ -866,6 +869,11 @@ fn main() {
         .manage(std::sync::Arc::new(delivery))
         .manage(Mutex::new(editor))
         .invoke_handler(tauri::generate_handler![
+            operation_commands::operation_snapshot,
+            operation_commands::configure_operation_service,
+            operation_commands::set_operation_clock,
+            operation_commands::advance_operation,
+            operation_commands::reset_operation,
             engine_info,
             preview_service_path,
             create_service_path,

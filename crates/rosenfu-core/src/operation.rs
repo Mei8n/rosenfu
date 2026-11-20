@@ -53,6 +53,10 @@ pub struct ServiceRunSpec {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PassengerOffer {
+    pub leg_id: String,
+    pub sequence: usize,
+    pub board_allowed: bool,
+    pub alight_allowed: bool,
     pub service_id: String,
     pub from: String,
     pub to: String,
@@ -90,19 +94,19 @@ pub struct Arrival {
     pub at_ms: u64,
     pub delay_ms: u64,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct CompiledLeg {
     duration_ms: u64,
     clearance_ms: u64,
     resources: BTreeSet<String>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct CompiledService {
     spec: ServiceRunSpec,
     legs: Vec<CompiledLeg>,
     next_departure: Option<u64>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OperationRuntime {
     now_ms: u64,
     paused: bool,
@@ -121,6 +125,8 @@ pub struct OperationSave {
     pub paused: bool,
     pub speed: u32,
     pub services: Vec<ServiceRunSpec>,
+    pub trains: Vec<Train>,
+    pub next_departures: Vec<(String, Option<u64>)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvanceResult {
@@ -260,6 +266,12 @@ impl OperationRuntime {
             occupied: BTreeMap::new(),
         })
     }
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+    pub fn speed(&self) -> u32 {
+        self.speed
+    }
     pub fn now_ms(&self) -> u64 {
         self.now_ms
     }
@@ -287,6 +299,10 @@ impl OperationRuntime {
                     .enumerate()
                     .map(move |(i, (l, c))| PassengerOffer {
                         service_id: s.spec.service_id.clone(),
+                        leg_id: format!("{}:{i}", s.spec.service_id),
+                        sequence: i,
+                        board_allowed: true,
+                        alight_allowed: true,
                         from: l.from.clone(),
                         to: l.to.clone(),
                         ride_seconds: (c.duration_ms
@@ -495,7 +511,13 @@ impl OperationRuntime {
     /// schedule up to the saved clock; runtime caches never enter construction data.
     pub fn save(&self) -> OperationSave {
         OperationSave {
-            format: 1,
+            format: 2,
+            trains: self.trains.values().cloned().collect(),
+            next_departures: self
+                .services
+                .iter()
+                .map(|(id, s)| (id.clone(), s.next_departure))
+                .collect(),
             started: self.started,
             now_ms: self.now_ms,
             paused: self.paused,
@@ -504,15 +526,81 @@ impl OperationRuntime {
         }
     }
     pub fn restore(saved: OperationSave) -> Result<Self, OperationError> {
-        if saved.format != 1 {
+        if saved.format != 2 || (!saved.started && (saved.now_ms != 0 || !saved.trains.is_empty()))
+        {
             return Err(OperationError::InvalidClock);
         }
         let mut runtime = Self::new(saved.services)?;
         runtime.set_speed(saved.speed)?;
-        if saved.started {
-            runtime.advance_to(saved.now_ms, usize::MAX)?;
-        } else if saved.now_ms != 0 {
-            return Err(OperationError::InvalidClock);
+        runtime.now_ms = saved.now_ms;
+        runtime.started = saved.started;
+        if saved.next_departures.len() != runtime.services.len() {
+            return Err(OperationError::InvalidTimetable);
+        }
+        let mut seen = BTreeSet::new();
+        for (id, next) in saved.next_departures {
+            if !seen.insert(id.clone()) {
+                return Err(OperationError::InvalidTimetable);
+            }
+            let service = runtime
+                .services
+                .get_mut(&id)
+                .ok_or(OperationError::InvalidTimetable)?;
+            let table = &service.spec.timetable;
+            if let Some(t) = next {
+                if t < table.first_departure_ms
+                    || t > table.last_departure_ms
+                    || (t - table.first_departure_ms) % table.headway_ms != 0
+                    || (saved.started && t <= saved.now_ms)
+                {
+                    return Err(OperationError::InvalidTimetable);
+                }
+            }
+            service.next_departure = next;
+        }
+        for train in saved.trains {
+            let service = runtime
+                .services
+                .get(&train.key.service_id)
+                .ok_or(OperationError::InvalidPath)?;
+            let leg = service
+                .legs
+                .get(train.leg)
+                .ok_or(OperationError::InvalidPath)?;
+            let table = &service.spec.timetable;
+            if train.key.scheduled_ms > saved.now_ms
+                || train.key.scheduled_ms < table.first_departure_ms
+                || train.key.scheduled_ms > table.last_departure_ms
+                || (train.key.scheduled_ms - table.first_departure_ms) % table.headway_ms != 0
+            {
+                return Err(OperationError::InvalidTimetable);
+            }
+            if let TrainState::Moving {
+                entered_ms,
+                arrival_ms,
+                release_ms,
+            } = train.state
+            {
+                if entered_ms > saved.now_ms
+                    || release_ms <= saved.now_ms
+                    || entered_ms.checked_add(leg.duration_ms) != Some(arrival_ms)
+                    || arrival_ms.checked_add(leg.clearance_ms) != Some(release_ms)
+                {
+                    return Err(OperationError::InvalidClock);
+                }
+                for resource in &leg.resources {
+                    if runtime
+                        .occupied
+                        .insert(resource.clone(), train.key.clone())
+                        .is_some()
+                    {
+                        return Err(OperationError::InvalidPath);
+                    }
+                }
+            }
+            if runtime.trains.insert(train.key.clone(), train).is_some() {
+                return Err(OperationError::InvalidPath);
+            }
         }
         runtime.paused = saved.paused;
         Ok(runtime)

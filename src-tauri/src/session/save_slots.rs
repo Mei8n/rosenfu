@@ -124,6 +124,7 @@ impl WorldEditor {
             draft.view_state = Some(view);
         }
         candidate.world = World::new(draft).map_err(|e| e.to_string())?;
+        candidate.world.retain_operation_from(&self.world);
         let (slot, version) = rosenfu_storage::create_save_slot(root, &name, &candidate.world)
             .map_err(|e| e.to_string())?;
         // Creation returned a validated, unique directory; derive without another fallible IO
