@@ -1,7 +1,7 @@
 Rosenfu α0.2 / Windows x64 内部テスト
 
 1. 起動
-ZIPを展開して、中の -setup.exe を起動する
+配布担当から受け取ったQA ZIPを展開して、中の -setup.exe を起動する
 Git・GitHubアカウント・Visual Studio Codeは不要
 WebView2が未導入の場合、セットアップ中にネット接続が必要
 この版は署名なし。配布元が確認できない・Windowsの管理ポリシーで
@@ -37,7 +37,10 @@ BUILD.txtのcommit、Windowsのバージョン、発生時刻、テスト項目�
 スクリーンショットや動画は個人情報を除いて添える
 例: 3回中3回 / ワールド作成 → 建設 → 2地点をクリック → 保存で停止
 
-4. パッケージ照合（必要な場合）
+4. パッケージ照合
+GitHub Actionsから直接取得する配布担当は、ActionsのZIPを展開したあと、
+中の Rosenfu-alpha02-...-windows-x64.zip のSHA256をZIP-SHA256.txtと照合する
+中のZIPは展開するとPACKAGE-SHA256SUMS.txtで各ファイルを照合できる
 PowerShellで Get-FileHash -Algorithm SHA256 をインストーラーに実行し、
 SHA256SUMS.txtと照合する。不一致なら起動せず、再取得する
 
@@ -51,4 +54,22 @@ data-and-notices に、東京中心部道路データと日本周辺の概略水
 https://opendatacommons.org/licenses/odbl/1-0/
 水域モデルの湖沼データ: Made with Natural Earth
 LINE Seed JPの条件はLINE-Seed-JP-OFL.txtを参照
+アプリの第三者ソフト通知・MPL対象ソース案内はdata-and-notices/softwareを参照
 オンライン配信元のデータや個人のワールドデータはこのフォルダには含まれない
+
+
+6. CIと配布の区別（配布担当向け）
+Windows CIはステージ済みインストーラーのハッシュを照合し、実際の導入・起動・
+合成ワールドの保存と再起動後の再読込・通常版プロファイル非干渉・
+通常アンインストールでのセーブ保持を確認する
+開発環境なしのクリーンWindows、WebView2が未導入の初回インストール、
+通常版が既にある場合の共存、オンラインデータの実取得は別途確認が必要
+ソフト通知の自動生成はアプリ依存が対象。NSISスタブ/プラグイン・
+WebView2ネイティブ部材の条件とオンラインデータ提供条件は別途確認する
+BUILD.txtでnative-installer-notices-review=pendingの場合はCI成果物を外部に転送しない
+
+dev/alpha-0.2-integration の push が起点
+Checkの3OS成功後、Windowsパッケージ工程まで成功した同一SHAの成果物だけを使う
+Actions runの存在しない過去SHAは、別のSHAの成果物で代用しない
+過去SHAを再現する場合、隔離したWindows実行環境で対象コミットを完全SHAで固定し、
+検証スクリプトの版とビルド元コミットを別々に記録する。通常の統合成果物とは区別する

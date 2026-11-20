@@ -56,7 +56,7 @@ jobs:
         github.head_ref == 'integrate/alpha02-test-play-20261120') &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -66,18 +66,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: npm ci
+      - name: Test the archive verifier
+        run: python scripts/windows-qa-archive.test.py
       - name: Bundle Windows installer
         run: npm run tauri -- build --target x86_64-pc-windows-msvc --config src-tauri/tauri.alpha02-qa.conf.json --ci
       - name: Stage test package and checksum
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $source = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $source -cne $env:GITHUB_SHA -or $source -cnotmatch '^[a-f0-9]{40}$') {
+            throw 'Checked-out source does not match the workflow SHA'
+          }
           $bundles = @(Get-ChildItem -LiteralPath target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*-setup.exe' -File)
           if ($bundles.Count -ne 1 -or $bundles[0].Length -lt 65536) {
             throw 'Expected one nonempty Windows NSIS installer'
           }
-          $short = $env:GITHUB_SHA.Substring(0, 12)
+          $short = $source.Substring(0, 12)
           $kind = if ($env:GITHUB_EVENT_NAME -eq 'push') { 'integration' } else { 'preview' }
           $stage = New-Item -ItemType Directory -Path qa-artifact
           $name = "Rosenfu-alpha02-$kind-$short-windows-x64-setup.exe"
@@ -92,15 +101,35 @@ jobs:
           $digest = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -LiteralPath (Join-Path $stage.FullName 'SHA256SUMS.txt') -Encoding ascii -Value "$digest  $name"
           Set-Content -LiteralPath (Join-Path $stage.FullName 'BUILD.txt') -Encoding ascii -Value @(
-            "commit=$env:GITHUB_SHA", "ref=$env:GITHUB_REF", "kind=$kind", "run=$env:GITHUB_RUN_ID", "attempt=$env:GITHUB_RUN_ATTEMPT"
+            "commit=$source", "ref=$env:GITHUB_REF", "kind=$kind", "run=$env:GITHUB_RUN_ID", "attempt=$env:GITHUB_RUN_ATTEMPT",
+            'audience=internal-QA-only', 'native-installer-notices-review=pending'
           )
           if ($kind -eq 'preview') {
             Add-Content -LiteralPath (Join-Path $stage.FullName 'BUILD.txt') -Encoding ascii -Value 'Packaging verification only; not a test-play release.'
           }
-        # Download from the workflow: this does not create a GitHub Release.
+      - name: Stage Windows application software notices
+        run: node scripts/windows-qa-notices.mjs qa-artifact/data-and-notices/software
+      - name: Smoke the staged Windows installer
+        shell: pwsh
+        run: ./scripts/Smoke-WindowsAlpha02.ps1 -ArtifactDirectory qa-artifact -TimeoutSeconds 60
+      - name: Build and reverify the Windows QA ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path qa-upload | Out-Null
+          $short = $env:GITHUB_SHA.Substring(0, 12)
+          $kind = if ($env:GITHUB_EVENT_NAME -eq 'push') { 'integration' } else { 'preview' }
+          $zip = "qa-upload/Rosenfu-alpha02-$kind-$short-windows-x64.zip"
+          $checksum = python scripts/windows-qa-archive.py qa-artifact $zip
+          if ($LASTEXITCODE -ne 0 -or $checksum -cnotmatch '^[a-f0-9]{64}  Rosenfu-alpha02-') {
+            throw 'QA ZIP creation or readback verification failed'
+          }
+          Set-Content -LiteralPath qa-upload/ZIP-SHA256.txt -Encoding ascii -Value $checksum
+        # Internal workflow artifact, not a public release or distribution approval.
       - uses: actions/upload-artifact@v4
         with:
           name: rosenfu-alpha02-windows-x64-${{ github.sha }}
-          path: qa-artifact/
+          path: qa-upload/
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
