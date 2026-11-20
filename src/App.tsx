@@ -1,3 +1,4 @@
+import {OperationClock,OperationProvider,ServiceOperations} from "./OperationsPanel";
 import {mapRenderMetrics} from './mapRenderMetrics';
 import {ServiceDirectory} from "./ServiceDirectory";
 import { EditingMapFrame } from "./EditingMapFrame";
@@ -113,7 +114,7 @@ type GeoPoint = { latitude: number; longitude: number };
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { name: string; version: string; company_setup_required?: boolean };
+type EngineInfo = { name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
@@ -1802,12 +1803,14 @@ export function App() {
   const showPlanHover=!!planHover&&!!hoveredPlan&&!referenceCopy.active&&!dragging&&(activeTool==="tracks"||activeTool==="inactive");
   const mapMetrics=mapRenderMetrics(camera.zoom,lineWidth,viewport.scale);
   return (
+    <OperationProvider available={status==="ready"&&!companySetupRequired&&info?.operation_enabled===true} blocked={busy} epoch={worldEpoch} onChange={()=>setDirty(true)}>
     <main className="workbench" data-theme={theme} style={{"--rail-width":lineWidth,"--map-track-width":mapMetrics.track+"px","--map-track-casing":mapMetrics.trackCasing+"px","--station-label-size":mapMetrics.stationLabelSize+"px","--map-contrast":contrast/100,"--panel-width":panelWidth+"px","--ui-font":textSize+"px"} as CSSProperties}>
       <header className="app-header">
         <div className="session-status"><span className={`connection-dot ${status}`} aria-hidden="true" />{status === "ready" ? `${info?.version} / エンジン接続済み` : status === "preview" ? "ブラウザプレビュー" : status === "loading" ? "接続中" : "接続エラー"}</div>
       </header>
       <div className="toolbar">
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
+        <OperationClock/>
         <div className="save-controls"><span className="save-state">{unapplied ? "未適用の下書きあり" : dirty||plansDirty ? "未保存の変更あり" : "ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={()=>activeSlotId?requestSlotAction({kind:"load",id:activeSlotId}):openSlotPicker()}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
       </div>
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
@@ -2066,6 +2069,7 @@ export function App() {
             <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null&&!serviceCreating&&!routeServiceDirty} onDirty={setPathServiceDirty} onSave={createPathService}/></details>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
+            {serviceId&&selectedServicePath&&<ServiceOperations key={`${worldEpoch}-${serviceId}`} serviceId={serviceId} enabled={enabled&&!unapplied}/>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
             {serviceId&&selectedServicePath&&world&&<ServiceDelete key={`delete-${serviceId}-${worldEpoch}`} name={world.services.find(s=>s.id===serviceId)?.name??""} enabled={enabled} hasEdits={serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty} onDelete={async()=>{
               if(!enabled||busyRef.current||serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty)throw Error("編集中の変更を適用または取り消してください。");
@@ -2094,7 +2098,8 @@ export function App() {
       {slotPicker&&<div className="company-setup-backdrop"><section className="company-setup save-slot-dialog" role="dialog" aria-modal="true" aria-label="ワールドを選択"><h2>セーブデータ</h2><SaveSlots deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy} canSave={false} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{}} onNew={()=>{setSlotPicker(false);setSlotName("");setSlotDialog("new");}}/><button disabled={busy} onClick={()=>setSlotPicker(false)}>閉じる</button>{error&&<p role="alert">{error}</p>}</section></div>}
       {slotDialog&&<div className="company-setup-backdrop"><section className="company-setup" role="dialog" aria-modal="true" aria-label={slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}><h2>{slotDialog==="new"?"新しいワールド":"別のセーブとして保存"}</h2><form autoComplete="off" onSubmit={submitSlotName}><label>名前<input autoComplete="off" autoFocus maxLength={80} value={slotName} disabled={busy} onChange={event=>setSlotName(event.target.value)}/></label><button type="submit" disabled={busy||!slotName.trim()||confirmLoad}>{slotDialog==="new"?"作成":"保存"}</button><button type="button" disabled={busy} onClick={()=>{setSlotDialog(null);setSlotAction(null);setConfirmLoad(false);}}>キャンセル</button></form>{error&&<p role="alert">{error}</p>}</section></div>}
       {confirmLoad && <div className="banner load-confirm" style={{position:"fixed",zIndex:2000,left:"20%",right:"20%",top:"20%"}} role="alert"><p>{slotAction?.kind==="new"?"新しいワールドを作成すると、現在の未保存の変更と未適用の下書きは破棄されます。保存済みのワールドは変更しません。":"読込すると、現在の未保存の変更と未適用の下書きが破棄され、未着工計画を含め保存時点の状態に置き換わります。"}</p><button className="secondary" disabled={busy} onClick={() => {setConfirmLoad(false);setSlotAction(null);}}>戻る</button><button disabled={busy} onClick={()=>slotAction?applySlotAction():load()}>{slotAction?.kind==="new"?"変更を破棄して作成":"読込を続ける"}</button></div>}
-      <footer className="app-footer"><p role="status" aria-live="polite">{busy ? (roadCheckPending ? "道路を確認中（最大25秒）。未取得の場合も通常建設を続行します。" : "ワールドを更新しています。") : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>列車種別・ダイヤ・列車運行・旅客流動は未実装</span></footer>
+      <footer className="app-footer"><p role="status" aria-live="polite">{busy ? (roadCheckPending ? "道路を確認中（最大25秒）。未取得の場合も通常建設を続行します。" : "ワールドを更新しています。") : notice || "線路 → 駅 → 運行経路の順に建設"}</p><span>{info?.operation_enabled===true?"旅客流動は未接続":"列車種別・ダイヤ・列車運行・旅客流動は未実装"}</span></footer>
     </main>
+    </OperationProvider>
   );
 }
