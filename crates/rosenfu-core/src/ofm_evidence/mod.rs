@@ -154,6 +154,12 @@ pub fn decode_tile(binding: &TileBinding, raw: &[u8]) -> Result<DecodedTile> {
     if raw_sha256(raw) != binding.raw_sha256 {
         return Err(Error::Hash);
     }
+    decode_tile_with_verified_sha(binding, raw)
+}
+
+// The caller must already have checked the raw hash against the validated
+// binding. Archive callers obtain bytes only by SHA from the immutable store.
+fn decode_tile_with_verified_sha(binding: &TileBinding, raw: &[u8]) -> Result<DecodedTile> {
     let mut reader = Reader::new(raw);
     let mut transportation = None;
     let mut layers = 0;

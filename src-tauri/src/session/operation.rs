@@ -98,7 +98,13 @@ impl WorldEditor {
         let mut candidate = self.world.clone();
         candidate
             .configure_operation(configs)
-            .map_err(|e| format!("運行設定を適用できません: {e:?}"))?;
+            .map_err(|e| match e {
+                rosenfu_core::operation::OperationError::CrossingBudget =>
+                    "平面交差の確認上限を超えました。運行設定は変更していません。以前のダイヤを維持します。".to_owned(),
+                rosenfu_core::operation::OperationError::CrossingPlatform =>
+                    "停車するホームが平面交差に近すぎます。この組み合わせの運行設定は変更していません。".to_owned(),
+                _ => format!("運行設定を適用できません: {e:?}"),
+            })?;
         rosenfu_storage::ensure_world_saveable(&candidate).map_err(|e| e.to_string())?;
         self.world = candidate;
         self.operation_tick = None;
@@ -151,7 +157,13 @@ impl WorldEditor {
         let mut candidate = self.world.clone();
         candidate
             .configure_all_operation(configs, bus)
-            .map_err(|e| format!("バス運行設定を適用できません: {e:?}"))?;
+            .map_err(|e| match e {
+                rosenfu_core::operation::OperationError::CrossingBudget =>
+                    "平面交差の確認上限を超えました。運行設定は変更していません。以前のダイヤを維持します。".to_owned(),
+                rosenfu_core::operation::OperationError::CrossingPlatform =>
+                    "停車するホームが平面交差に近すぎます。この組み合わせの運行設定は変更していません。".to_owned(),
+                _ => format!("バス運行設定を適用できません: {e:?}"),
+            })?;
         rosenfu_storage::ensure_world_saveable(&candidate).map_err(|e| e.to_string())?;
         self.world = candidate;
         self.operation_tick = None;

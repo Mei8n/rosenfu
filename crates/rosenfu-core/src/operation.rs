@@ -9,6 +9,8 @@ pub enum OperationError {
     InvalidPath,
     InvalidVehicle,
     InvalidClock,
+    CrossingBudget,
+    CrossingPlatform,
     Overflow,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

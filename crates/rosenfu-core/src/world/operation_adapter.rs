@@ -1,6 +1,102 @@
 //! Authoritative physical service path adapter. Never uses screen coordinates.
 use super::*;
 use crate::operation::{OperationError, RunLeg, Section, ServiceRunSpec, Timetable, Vehicle};
+use std::collections::{BTreeMap, BTreeSet};
+
+type RailCrossings = BTreeMap<AlignmentId, Vec<(f64, String)>>;
+const MAX_CROSSING_PAIR_CHECKS: usize = 32_768;
+const MAX_CROSSING_REFERENCES: usize = 16_384;
+
+fn crossing(a: &Alignment, b: &Alignment) -> Option<(f64, f64)> {
+    let [p, q] = [a.points[0], a.points[1]];
+    let [r, s] = [b.points[0], b.points[1]];
+    let u = (q.longitude - p.longitude, q.latitude - p.latitude);
+    let v = (s.longitude - r.longitude, s.latitude - r.latitude);
+    let cross = |(x, y): (f64, f64), (a, b): (f64, f64)| x * b - y * a;
+    let denominator = cross(u, v);
+    if denominator.abs() <= 1e-4 * u.0.hypot(u.1) * v.0.hypot(v.1) {
+        return None;
+    }
+    let delta = (r.longitude - p.longitude, r.latitude - p.latitude);
+    let (ta, tb) = (cross(delta, v) / denominator, cross(delta, u) / denominator);
+    if !(1e-8..1.0 - 1e-8).contains(&ta) || !(1e-8..1.0 - 1e-8).contains(&tb) {
+        return None;
+    }
+    let aa = a.height_at_position_m(ta)?;
+    let bb = b.height_at_position_m(tb)?;
+    ((aa - bb).abs() <= 0.01).then_some((ta, tb))
+}
+type CrossingBounds<'a> = (f64, f64, f64, f64, &'a Alignment);
+fn bounded_flat_crossings(
+    mut lines: Vec<CrossingBounds<'_>>,
+    limit: usize,
+) -> Result<(RailCrossings, usize), OperationError> {
+    // Choose the sparser bounding-box axis in O(n log n). A large
+    // parallel yard does not consume a quadratic pair budget.
+    fn overlap_cost(lines: &[CrossingBounds<'_>], y: bool) -> usize {
+        let mut ranges: Vec<_> = lines
+            .iter()
+            .map(|a| if y { (a.2, a.3) } else { (a.0, a.1) })
+            .collect();
+        ranges.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let mut ends: Vec<_> = ranges.iter().map(|p| p.1).collect();
+        ends.sort_unstable_by(f64::total_cmp);
+        let (mut finished, mut count) = (0, 0usize);
+        for (i, (start, _)) in ranges.into_iter().enumerate() {
+            while finished < ends.len() && ends[finished] < start {
+                finished += 1;
+            }
+            count = count.saturating_add(i - finished);
+        }
+        count
+    }
+    if overlap_cost(&lines, true) < overlap_cost(&lines, false) {
+        for b in &mut lines {
+            *b = (b.2, b.3, b.0, b.1, b.4);
+        }
+    }
+    lines.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.4.id.cmp(&b.4.id)));
+    let mut result = RailCrossings::new();
+    let mut checks = 0;
+    for (i, &(_, x_max, y_min, y_max, a)) in lines.iter().enumerate() {
+        for &(x_min, _, other_min, other_max, b) in &lines[i + 1..] {
+            if x_min > x_max {
+                break;
+            }
+            checks += 1;
+            if checks > limit {
+                return Err(OperationError::CrossingBudget);
+            }
+            if other_min > y_max || other_max < y_min {
+                continue;
+            }
+            let (lo, hi) = if a.id < b.id { (a, b) } else { (b, a) };
+            if let Some((ta, tb)) = crossing(lo, hi) {
+                let key = format!("rail:crossing:{}:{}", lo.id.0, hi.id.0);
+                result.entry(lo.id).or_default().push((ta, key.clone()));
+                result.entry(hi.id).or_default().push((tb, key));
+            }
+        }
+    }
+    // A different sweep axis or unconnected candidate must not change
+    // resource order in an otherwise identical operation plan.
+    for row in result.values_mut() {
+        row.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+    }
+    Ok((result, checks))
+}
+fn crossing_lock_count(spec: &ServiceRunSpec) -> usize {
+    spec.legs
+        .iter()
+        .flat_map(|l| &l.sections)
+        .flat_map(|s| &s.resources)
+        .filter(|r| r.starts_with("rail:crossing:"))
+        .count()
+}
+
+fn has_crossing_locks(spec: &ServiceRunSpec) -> bool {
+    crossing_lock_count(spec) != 0
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,19 +125,142 @@ struct Span {
     extra: Vec<String>,
 }
 impl World {
+    /// Narrow first slice: independent, local, two-point flat single-track
+    /// alignments used by directly configured rail services. No route join is
+    /// inferred. Non-eligible geometry is deliberately not claimed protected.
+    fn active_flat_crossings(
+        &self,
+        configs: &[OperationServiceConfig],
+        limit: usize,
+    ) -> Result<RailCrossings, OperationError> {
+        if configs.is_empty() {
+            return Ok(RailCrossings::new());
+        }
+        let services: BTreeSet<_> = configs.iter().map(|c| c.service_id).collect();
+        let active: BTreeSet<_> = self
+            .data
+            .service_paths
+            .iter()
+            .filter(|p| services.contains(&p.service_id))
+            .flat_map(|p| &p.legs)
+            .filter_map(|l| match &l.segment {
+                RouteSegment::Alignment { alignment_id, .. } => Some(*alignment_id),
+                _ => None,
+            })
+            .collect();
+        if active.len() < 2 {
+            return Ok(RailCrossings::new());
+        }
+        let connected: BTreeSet<_> = self
+            .data
+            .alignment_connections
+            .iter()
+            .flat_map(|c| [c.a.alignment_id, c.b.alignment_id])
+            .collect();
+        let lines: Vec<_> = self
+            .data
+            .alignments
+            .iter()
+            .filter(|a| {
+                active.contains(&a.id)
+                    && !connected.contains(&a.id)
+                    && a.track_type == TrackType::Normal
+                    && a.points.len() == 2
+                    && a.section_count() == 1
+                    && a.vertical_profile.is_none()
+                    && a.section_profiles.is_empty()
+                    && a.section_infrastructure(0)
+                        .is_some_and(|i| i.track_count == 1)
+                    && (a.points[0].longitude - a.points[1].longitude).abs() <= 0.25
+                    && (a.points[0].latitude - a.points[1].latitude).abs() <= 0.25
+            })
+            .map(|a| {
+                let (p, q) = (a.points[0], a.points[1]);
+                (
+                    p.longitude.min(q.longitude),
+                    p.longitude.max(q.longitude),
+                    p.latitude.min(q.latitude),
+                    p.latitude.max(q.latitude),
+                    a,
+                )
+            })
+            .collect();
+        let (crossings, _) = bounded_flat_crossings(lines, limit)?;
+        if crossings.is_empty() {
+            return Ok(crossings);
+        }
+        // Whole-leg rear clearance assumes a vehicle can clear the crossing
+        // before stopping. Refuse a new configuration at a served platform
+        // too close to a crossing; do not silently offer false protection.
+        let served_starts: BTreeSet<_> = self
+            .data
+            .services
+            .iter()
+            .filter(|s| services.contains(&s.id))
+            .map(|s| s.start)
+            .collect();
+        let served_in_legs: BTreeSet<_> = self
+            .data
+            .service_paths
+            .iter()
+            .filter(|s| services.contains(&s.service_id))
+            .flat_map(|s| s.stops.iter())
+            .filter_map(|r| match *r {
+                StationOccurrenceRef::OnLeg { station_id, .. } => Some(station_id),
+                StationOccurrenceRef::Start => None,
+            })
+            .collect();
+        let vehicle_margin = configs
+            .iter()
+            .map(|c| c.vehicle.length_m)
+            .filter(|length| length.is_finite())
+            .fold(0.0, f64::max)
+            + 2.0;
+        let locations: BTreeMap<_, _> = self
+            .data
+            .alignments
+            .iter()
+            .filter_map(|a| {
+                let mut positions: Vec<_> = crossings.get(&a.id)?.iter().map(|x| x.0).collect();
+                positions.sort_unstable_by(f64::total_cmp);
+                Some((a.id, (a.length_m(), positions)))
+            })
+            .collect();
+        for platform in &self.data.station_placements {
+            if !served_starts.contains(&platform.station_id)
+                && !served_in_legs.contains(&platform.station_id)
+            {
+                continue;
+            }
+            let Some((length, positions)) = locations.get(&platform.alignment_id) else {
+                continue;
+            };
+            let margin = (platform.length_m / 2.0 + vehicle_margin) / length;
+            let first = positions.partition_point(|&p| p < platform.position - margin);
+            if positions
+                .get(first)
+                .is_some_and(|&p| p <= platform.position + margin)
+            {
+                return Err(OperationError::CrossingPlatform);
+            }
+        }
+        Ok(crossings)
+    }
+
     /// Centre-line distances with conservative turnout caps. One directional
     /// block per anchor section (quad track currently uses one lane/direction).
     pub fn compile_operation(
         &self,
         config: &OperationServiceConfig,
     ) -> Result<ServiceRunSpec, OperationError> {
-        self.compile_operation_mode(config, true)
+        self.compile_operation_mode(config, true, &RailCrossings::new())
     }
 
     fn compile_operation_mode(
         &self,
         config: &OperationServiceConfig,
         turnback: bool,
+        crossings: &RailCrossings,
     ) -> Result<ServiceRunSpec, OperationError> {
         let invalid = || OperationError::InvalidPath;
         let path = self
@@ -59,10 +278,11 @@ impl World {
             &occurrences,
             config.dwell_ms,
             false,
+            crossings,
         )?;
         if let Some(return_legs) = turnback
             .then(|| {
-                self.compile_return_direction(path, &occurrences, config.dwell_ms, &runs)
+                self.compile_return_direction(path, &occurrences, config.dwell_ms, &runs, crossings)
                     .ok()
             })
             .flatten()
@@ -86,6 +306,7 @@ impl World {
         occurrences: &[ServicePathOccurrence],
         dwell_ms: u64,
         check_lane_incidence: bool,
+        crossings: &RailCrossings,
     ) -> Result<Vec<RunLeg>, OperationError> {
         let invalid = || OperationError::InvalidPath;
         let movements = self.track_movement_geometries().map_err(|_| invalid())?;
@@ -227,6 +448,7 @@ impl World {
                         span.cap,
                         &span.extra,
                         &internal,
+                        crossings.get(&a.id).map(Vec::as_slice).unwrap_or_default(),
                         &mut pending,
                     )?;
                     cursor = p.position;
@@ -252,6 +474,7 @@ impl World {
                         span.cap,
                         &span.extra,
                         &internal,
+                        crossings.get(&a.id).map(Vec::as_slice).unwrap_or_default(),
                         &mut pending,
                     )?;
                 }
@@ -272,6 +495,7 @@ impl World {
         occurrences: &[ServicePathOccurrence],
         dwell_ms: u64,
         outbound: &[RunLeg],
+        crossings: &RailCrossings,
     ) -> Result<Vec<RunLeg>, OperationError> {
         let invalid = || OperationError::InvalidPath;
         let start = occurrences.first().ok_or_else(invalid)?.station_id;
@@ -332,13 +556,21 @@ impl World {
         }
         // The outbound compiler historically tolerated selecting lanes that do
         // not meet at these joins. Don't infer a return for such a route.
-        self.compile_rail_direction(&path.legs, &path.stops, occurrences, dwell_ms, true)?;
+        self.compile_rail_direction(
+            &path.legs,
+            &path.stops,
+            occurrences,
+            dwell_ms,
+            true,
+            crossings,
+        )?;
         let returns = self.compile_rail_direction(
             &reverse.legs,
             &stops,
             &reverse.occurrences,
             dwell_ms,
             true,
+            crossings,
         )?;
         let incoming = outbound
             .last()
@@ -366,7 +598,7 @@ impl World {
         self.compile_operation(config)
             .is_ok_and(|current| current == *saved)
             || self
-                .compile_operation_mode(config, false)
+                .compile_operation_mode(config, false, &RailCrossings::new())
                 .is_ok_and(|outbound| outbound == *saved)
     }
 }
@@ -387,6 +619,7 @@ fn directional_lane(tracks: u8, forward: bool) -> u8 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_sections(
     a: &Alignment,
     from: f64,
@@ -394,6 +627,7 @@ fn append_sections(
     cap: f64,
     extra: &[String],
     internal: &[InternalTrackMovementGeometry],
+    crossings: &[(f64, String)],
     out: &mut Vec<Section>,
 ) -> Result<(), OperationError> {
     if (from - to).abs() < 1e-12 {
@@ -421,6 +655,12 @@ fn append_sections(
             .track_count;
         let lane = directional_lane(tracks, to > from);
         let mut resources = extra.to_vec();
+        resources.extend(
+            crossings
+                .iter()
+                .filter(|(position, _)| low <= *position && *position <= high)
+                .map(|(_, key)| key.clone()),
+        );
         resources.push(format!("rail:{}:section:{index}:lane:{lane}", a.id.0));
         let mut speed = cap.min(a.effective_design_speed_kmh());
         for movement in internal.iter().filter(|m| {
@@ -446,9 +686,15 @@ fn append_sections(
     Ok(())
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldOperationSave {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub crossing_reservations: bool,
     pub configs: Vec<OperationServiceConfig>,
     pub bus_configs: Vec<BusOperationConfig>,
     pub runtime: crate::operation::OperationSave,
@@ -487,10 +733,17 @@ impl World {
         configs: Vec<OperationServiceConfig>,
         bus_configs: Vec<BusOperationConfig>,
     ) -> Result<(), OperationError> {
-        let mut specs = configs
-            .iter()
-            .map(|c| self.compile_operation(c))
-            .collect::<Result<Vec<_>, _>>()?;
+        let crossings = self.active_flat_crossings(&configs, MAX_CROSSING_PAIR_CHECKS)?;
+        let mut specs = Vec::with_capacity(configs.len() + bus_configs.len());
+        let mut crossing_refs = 0usize;
+        for config in &configs {
+            let spec = self.compile_operation_mode(config, true, &crossings)?;
+            crossing_refs = crossing_refs.saturating_add(crossing_lock_count(&spec));
+            if crossing_refs > MAX_CROSSING_REFERENCES {
+                return Err(OperationError::CrossingBudget);
+            }
+            specs.push(spec);
+        }
         for config in &bus_configs {
             specs.push(self.compile_bus_operation(config)?);
         }
@@ -512,6 +765,11 @@ impl World {
         self.operation.as_ref().map(|o| WorldOperationSave {
             configs: o.configs.clone(),
             bus_configs: o.bus_configs.clone(),
+            crossing_reservations: o.configs.iter().any(|c| {
+                o.runtime
+                    .service_spec(&c.service_id.0.to_string())
+                    .is_some_and(has_crossing_locks)
+            }),
             runtime: o.runtime.save(),
             invalidated: o.invalidated,
             pending_target: o.pending_target,
@@ -533,6 +791,9 @@ impl World {
             self.operation = None;
             return Ok(());
         };
+        if saved.crossing_reservations != saved.runtime.services.iter().any(has_crossing_locks) {
+            return Err(OperationError::InvalidPath);
+        }
         let progressive = saved.runtime.format == 3;
         let holding = saved.runtime.format == 4;
         if saved.runtime.format != 2
@@ -570,6 +831,23 @@ impl World {
             return Err(OperationError::InvalidPath);
         }
         if !saved.invalidated {
+            if saved
+                .runtime
+                .services
+                .iter()
+                .map(crossing_lock_count)
+                .sum::<usize>()
+                > MAX_CROSSING_REFERENCES
+            {
+                return Err(OperationError::CrossingBudget);
+            }
+            // Legacy serialized rail specs have no crossing resource IDs;
+            // restore them unchanged, not by rewriting active reservations.
+            let crossings = if saved.runtime.services.iter().any(has_crossing_locks) {
+                self.active_flat_crossings(&saved.configs, MAX_CROSSING_PAIR_CHECKS)?
+            } else {
+                RailCrossings::new()
+            };
             let mut specs = saved
                 .runtime
                 .services
@@ -586,7 +864,10 @@ impl World {
                 let spec = specs
                     .remove(id.as_str())
                     .ok_or(OperationError::InvalidPath)?;
-                let matches = if progressive || holding {
+                let matches = if !crossings.is_empty() || has_crossing_locks(spec) {
+                    self.compile_operation_mode(config, true, &crossings)
+                        .is_ok_and(|current| current == *spec)
+                } else if progressive || holding {
                     self.compile_operation(config)
                         .is_ok_and(|current| current == *spec)
                 } else {
@@ -787,10 +1068,42 @@ impl World {
     /// Used only by edit transactions/Undo, never world loading or new world.
     /// Invalidated trains remain frozen and visibly require explicit restart.
     pub fn retain_operation_from(&mut self, previous: &World) {
+        self.retain_operation_with_crossing_limit(previous, MAX_CROSSING_PAIR_CHECKS);
+    }
+    fn retain_operation_with_crossing_limit(&mut self, previous: &World, limit: usize) {
         self.operation = previous.operation.clone();
         let invalid = self.operation.as_ref().is_some_and(|o| {
             if o.invalidated {
                 return false;
+            }
+            let old_crossings = o.configs.iter().any(|c| {
+                o.runtime
+                    .service_spec(&c.service_id.0.to_string())
+                    .is_some_and(has_crossing_locks)
+            });
+            let crossings = match self.active_flat_crossings(&o.configs, limit) {
+                Ok(crossings) => crossings,
+                // Existing legacy runs have no crossing-lock contract. A budget
+                // overrun alone must not reset a still-valid legacy schedule.
+                Err(OperationError::CrossingBudget | OperationError::CrossingPlatform)
+                    if !old_crossings =>
+                {
+                    RailCrossings::new()
+                }
+                Err(_) => return true,
+            };
+            let new_crossing_relation = !old_crossings
+                && !crossings.is_empty()
+                && previous
+                    .active_flat_crossings(&o.configs, limit)
+                    .is_ok_and(|before| before != crossings);
+            if old_crossings || new_crossing_relation {
+                return o.configs.iter().any(|c| {
+                    self.compile_operation_mode(c, true, &crossings)
+                        .ok()
+                        .as_ref()
+                        != o.runtime.service_spec(&c.service_id.0.to_string())
+                });
             }
             if o.runtime.terminal_hold() {
                 let current = o
@@ -936,6 +1249,177 @@ mod tests {
         (w, config)
     }
     #[test]
+    fn crossing_sweep_counts_sparse_and_dense_inputs_and_stops_at_budget() {
+        let (w, _) = fixture();
+        let base = &w.snapshot().alignments[0];
+        let spread: Vec<_> = (0..1000)
+            .map(|k| (k as f64, k as f64 + 0.25, 0.0, 1.0, base))
+            .collect();
+        let (found, checks) = bounded_flat_crossings(spread, MAX_CROSSING_PAIR_CHECKS).unwrap();
+        assert!(found.is_empty());
+        assert_eq!(checks, 0);
+        let dense = |n| vec![(0.0, 1.0, 0.0, 1.0, base); n];
+        let (found, checks) = bounded_flat_crossings(dense(256), MAX_CROSSING_PAIR_CHECKS).unwrap();
+        assert!(found.is_empty());
+        assert_eq!(checks, 32_640);
+        assert_eq!(
+            bounded_flat_crossings(dense(257), MAX_CROSSING_PAIR_CHECKS),
+            Err(OperationError::CrossingBudget)
+        );
+        let parallel: Vec<_> = (0..1000)
+            .map(|k| (0.0, 1.0, k as f64, k as f64, base))
+            .collect();
+        assert_eq!(
+            bounded_flat_crossings(parallel, MAX_CROSSING_PAIR_CHECKS)
+                .unwrap()
+                .1,
+            0
+        );
+        let mut grid = Vec::new();
+        for region in 0..5 {
+            for k in 0..20 {
+                let (x, y) = (131.0 + region as f64 * 2.0, 35.0 + region as f64);
+                let offset = (k + 1) as f64 * 0.001;
+                for (u, v) in [
+                    (
+                        GeoPoint {
+                            latitude: y + offset,
+                            longitude: x,
+                        },
+                        GeoPoint {
+                            latitude: y + offset,
+                            longitude: x + 0.021,
+                        },
+                    ),
+                    (
+                        GeoPoint {
+                            latitude: y,
+                            longitude: x + offset,
+                        },
+                        GeoPoint {
+                            latitude: y + 0.021,
+                            longitude: x + offset,
+                        },
+                    ),
+                ] {
+                    let mut a = base.clone();
+                    a.id = AlignmentId(grid.len() as u64 + 1000);
+                    a.points = vec![u, v];
+                    grid.push(a);
+                }
+            }
+        }
+        let bounds = grid
+            .iter()
+            .map(|a| {
+                (
+                    a.points[0].longitude,
+                    a.points[1].longitude,
+                    a.points[0].latitude,
+                    a.points[1].latitude,
+                    a,
+                )
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let (found, checks) = bounded_flat_crossings(bounds, MAX_CROSSING_PAIR_CHECKS).unwrap();
+        assert_eq!(checks, 2950);
+        assert_eq!(found.values().map(Vec::len).sum::<usize>(), 4000);
+        println!(
+            "crossing_grid regions=5 corridors=200 checks={checks} locks=2000 elapsed_ms={:.3}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+        println!(
+            "crossing_pair_checks sparse_1000=0 dense_256=32640 dense_257=budget_exceeded_at_32769"
+        );
+    }
+    #[test]
+    fn crossing_scan_budget_does_not_invalidate_a_live_legacy_run() {
+        let (mut world, a) = fixture();
+        let owner = world.data.alignments[0].owner;
+        let cross = world
+            .build_alignment(
+                owner,
+                "cross".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 34.99,
+                        longitude: 139.01,
+                    },
+                    GeoPoint {
+                        latitude: 35.01,
+                        longitude: 139.01,
+                    },
+                ],
+            )
+            .unwrap();
+        let first = world
+            .place_station_on_alignment(owner, "D".into(), cross, 0.1, 80., 10.)
+            .unwrap();
+        let last = world
+            .place_station_on_alignment(owner, "E".into(), cross, 0.9, 80., 10.)
+            .unwrap();
+        let segments = vec![RouteSegment::Alignment {
+            alignment_id: cross,
+            from: first,
+            to: last,
+        }];
+        let preview = world.preview_service_path(first, segments.clone()).unwrap();
+        let service_id = world
+            .add_service_path(
+                owner,
+                "crossing service".into(),
+                first,
+                segments,
+                preview
+                    .occurrences
+                    .iter()
+                    .map(|o| o.reference.clone())
+                    .collect(),
+            )
+            .unwrap();
+        let b = OperationServiceConfig {
+            service_id,
+            ..a.clone()
+        };
+        let configs = vec![a, b];
+        assert_eq!(
+            world.active_flat_crossings(&configs, 0),
+            Err(OperationError::CrossingBudget)
+        );
+        let legacy_specs = configs
+            .iter()
+            .map(|c| world.compile_operation(c).unwrap())
+            .collect();
+        world.configure_operation(configs.clone()).unwrap();
+        let mut legacy = world.clone();
+        legacy.operation_mut().unwrap().runtime =
+            crate::operation::OperationRuntime::new(legacy_specs).unwrap();
+        legacy
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(0, 100)
+            .unwrap();
+        let mut edited = legacy.clone();
+        edited.data.companies[0].name = "renamed".into();
+        edited.retain_operation_with_crossing_limit(&legacy, 0);
+        assert_eq!(edited.operation_save(), legacy.operation_save());
+        assert!(!edited.operation().unwrap().invalidated);
+        edited.retain_operation_from(&legacy);
+        assert_eq!(edited.operation_save(), legacy.operation_save());
+
+        // A keyed run cannot carry forward unknown/incomplete crossing locks.
+        // Fault injection: a real previously successful unchanged case cannot
+        // exceed the same fixed budget without a relevant geometry change.
+        let mut locked = world.clone();
+        locked.data.companies[0].name = "renamed".into();
+        locked.retain_operation_with_crossing_limit(&world, 0);
+        assert!(locked.operation().unwrap().invalidated);
+        assert!(locked.operation().unwrap().runtime.paused());
+    }
+
+    #[test]
     fn adapter_uses_physical_distance_and_passes_nonstop_station() {
         let (w, c) = fixture();
         let s = w.compile_operation(&c).unwrap();
@@ -1055,18 +1539,22 @@ mod tests {
         assert_eq!(w.compile_operation(&c).unwrap().legs.len(), 1);
         assert_eq!(
             w.compile_operation(&c).unwrap(),
-            w.compile_operation_mode(&c, false).unwrap()
+            w.compile_operation_mode(&c, false, &RailCrossings::new())
+                .unwrap()
         );
     }
 
     #[test]
     fn exact_legacy_outbound_is_neither_rewritten_nor_invalidated_by_unrelated_edits() {
         let (mut w, c) = fixture();
-        let legacy = w.compile_operation_mode(&c, false).unwrap();
+        let legacy = w
+            .compile_operation_mode(&c, false, &RailCrossings::new())
+            .unwrap();
         let mut legacy_runtime =
             crate::operation::OperationRuntime::new(vec![legacy.clone()]).unwrap();
         legacy_runtime.advance_to(1_000, 100).unwrap();
         let saved = WorldOperationSave {
+            crossing_reservations: false,
             configs: vec![c.clone()],
             bus_configs: vec![],
             runtime: legacy_runtime.save(),
@@ -1126,7 +1614,8 @@ mod tests {
         assert_eq!(w.compile_operation(&c).unwrap().legs.len(), 2);
         assert_eq!(
             w.compile_operation(&c).unwrap(),
-            w.compile_operation_mode(&c, false).unwrap()
+            w.compile_operation_mode(&c, false, &RailCrossings::new())
+                .unwrap()
         );
     }
     #[test]
