@@ -10,6 +10,8 @@ const quantity=(n:number)=>new Intl.NumberFormat('ja-JP',{maximumFractionDigits:
 
 export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled,worldVersion,saveScenario}:{stations:Named[];services:Named[];busStops?:Named[];busRoutes?:Named[];enabled:boolean;worldVersion:unknown;saveScenario?:(expectedToken:string,scenario:FixedOdScenario|null)=>Promise<FixedOdScenarioView>}){
  const [origin,setOrigin]=useState(''),[destination,setDestination]=useState('');
+ const [useTransfer,setUseTransfer]=useState(false);
+ const [transferStation,setTransferStation]=useState(''),[transferStop,setTransferStop]=useState(''),[walkMinutes,setWalkMinutes]=useState('');
  const [trips,setTrips]=useState('100'),[alternative,setAlternative]=useState('');
  const [settled,setSettled]=useState<{world:unknown;result:Result}|null>(null);
  const [failure,setFailure]=useState<{world:unknown;message:string}|null>(null);
@@ -72,9 +74,16 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
   if(!enabled||flight.current||scenarioFlight.current||!endpointsSelected)return;
   const scenario=input();
   if(!scenario){setFailure({world:worldVersion,message:'人数は0〜10億の整数、代替手段の所要時間は正の値かつ1年以下を入力してください。'});return;}
+  const minutes=Number(walkMinutes);
+  const transfer=useTransfer?{stationId:transferStation,busStopId:transferStop,walkSeconds:minutes*60}:null;
+  if(transfer&&(!stations.some(s=>s.id===transferStation)||!stops.some(s=>s.id===transferStop)||!Number.isSafeInteger(minutes)||minutes<1||minutes>60)){
+   setSettled(null);
+   setFailure({world:worldVersion,message:'徒歩乗り換えには駅・バス停と1〜60分の所要時間を指定してください。'});
+   return;
+  }
   const captured=worldVersion,lock={};flight.current=lock;setPending(true);dirty();
   try{
-   const response=await invoke<Result>('preview_fixed_od',{originStationId:origin,destinationStationId:destination,trips:scenario.trips,alternativeSeconds:scenario.alternative_seconds});
+   const response=await invoke<Result>('preview_fixed_od',{originStationId:origin,destinationStationId:destination,trips:scenario.trips,alternativeSeconds:scenario.alternative_seconds,...(transfer?{transfer}:{})});
    if(latest.current.worldVersion!==captured||!latest.current.enabled)return;
    if(typeof response?.search_complete!=='boolean'||!Array.isArray(response.rail))throw Error('需要計算の応答を確認できませんでした。');
    setSettled({world:captured,result:response});
@@ -85,13 +94,27 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
  return <section className="fixed-od-panel" aria-label="固定ODの需要試算">
   <h4>固定ODの需要試算</h4>
   <p>指定した{stops.length?"2地点":"2駅"}間の仮の移動需要を、現在のダイヤで試算します。実人口・実際の利用者数ではありません。</p>
-  {stops.length>0&&<p>鉄道とバスの乗り継ぎはまだ計算しません。</p>}
+  {stops.length>0&&<p>駅とバス停の徒歩乗り換えは、試算で指定した場合だけ計算します。</p>}
   {persistence&&savedOrphan&&<p role="status">保存済みの出発地または到着地がなくなりました。条件を選び直してください。</p>}
   {stationNames.size<2?<p>出発地と到着地を作成してください。</p>:<form onSubmit={event=>void calculate(event)}>
    <fieldset disabled={!enabled||pending||savePending||persistence&&saved===undefined&&!saveError}>
     {stationSelector(stops.length?'出発地点':'出発駅',origin,setOrigin)}{stationSelector(stops.length?'到着地点':'到着駅',destination,setDestination)}
     <label>移動需要（人）<input type="number" min="0" max="1000000000" placeholder="未入力は不明" step="1" value={trips} onChange={event=>{setTrips(event.target.value);dirty();}}/></label>
-    <label>鉄道以外の所要時間（分・任意）<input type="number" min="0.1" step="any" value={alternative} onChange={event=>{setAlternative(event.target.value);dirty();}}/></label>
+    <label>{stops.length?"公共交通以外":"鉄道以外"}の所要時間（分・任意）<input type="number" min="0.1" step="any" value={alternative} onChange={event=>{setAlternative(event.target.value);dirty();}}/></label>
+    {stops.length>0&&stations.length>0&&<fieldset>
+     <legend>試算用の徒歩乗り換え</legend>
+     <label className="fixed-od-transfer-toggle"><input type="checkbox" checked={useTransfer} onChange={event=>{setUseTransfer(event.target.checked);dirty();}}/>駅とバス停の乗り換えを試す</label>
+     {useTransfer&&<>
+      <label>乗り換え駅<select value={transferStation} onChange={event=>{setTransferStation(event.target.value);dirty();}}>
+       <option value="">駅を選択</option>{stations.map(station=><option key={station.id} value={station.id}>{station.name}</option>)}
+      </select></label>
+      <label>乗り換えバス停<select value={transferStop} onChange={event=>{setTransferStop(event.target.value);dirty();}}>
+       <option value="">バス停を選択</option>{stops.map(stop=><option key={stop.id} value={stop.id}>{stop.name}</option>)}
+      </select></label>
+      <label>徒歩の所要時間（分）<input type="number" min="1" max="60" step="1" value={walkMinutes} onChange={event=>{setWalkMinutes(event.target.value);dirty();}}/></label>
+      <p>徒歩は両方向に同じ時間で試算します。実際の徒歩経路や設備ではなく、この条件は保存しません。</p>
+     </>}
+    </fieldset>}
     <button type="submit" disabled={!endpointsSelected}>需要を試算</button>
     {persistence&&<button type="button" disabled={!endpointsSelected||saved===undefined} onClick={()=>void storeScenario(false)}>この試算条件をワールドに記録</button>}
    </fieldset>
