@@ -279,6 +279,49 @@ impl WorldEditor {
         Ok(self.fixed_od_scenario())
     }
 
+    pub fn preview_rail_journey_replay(
+        &self,
+        origin: &str,
+        destination: &str,
+    ) -> Result<rosenfu_core::operation::ReplayItinerary, String> {
+        use rosenfu_core::operation::PassengerReplayError;
+        if origin == destination
+            || [origin, destination].iter().any(|id| {
+                !self
+                    .world
+                    .snapshot()
+                    .stations
+                    .iter()
+                    .any(|station| station.id.0.to_string() == *id)
+            })
+        {
+            return Err("異なる既存の鉄道駅を選択してください。".into());
+        }
+        let operation = self
+            .world
+            .operation()
+            .ok_or("先に運行する系統を設定してください。")?;
+        if operation.invalidated {
+            return Err("運行経路の更新が必要です。".into());
+        }
+        let runtime = &operation.runtime;
+        let until = runtime
+            .now_ms()
+            .checked_add(30 * 60_000)
+            .ok_or("時計の範囲を超えました。")?;
+        let replay = runtime
+            .preview_passenger_replay(until, 256)
+            .map_err(|err| -> String {
+                match err {
+                    PassengerReplayError::OutsideBudget => {
+                        "この規模の運行は試算上限を超えています。".into()
+                    }
+                    PassengerReplayError::Runtime(_) => "運行の再現に失敗しました。".into(),
+                }
+            })?;
+        Ok(replay.earliest_rail_itinerary(origin, destination))
+    }
+
     pub fn preview_fixed_od(
         &self,
         origin_station_id: String,
