@@ -220,6 +220,36 @@ fn edits_removal_and_undo_rederive_without_stale_records() {
     assert_eq!(w.road_assessment(id).unwrap().crossings.len(), 1);
 }
 #[test]
+fn new_reference_snapshot_changes_only_fresh_assessments() {
+    let (mut current, id) = world();
+    let mut distant = snapshot();
+    distant.roads[0].points = vec![point(0.04, -0.01), point(0.04, 0.01)];
+    current.add_road_snapshot(distant).unwrap();
+    let before = current.clone();
+    let old = before.road_assessment(id).unwrap();
+    assert!(old.roads_ready);
+    assert!(old.crossings.is_empty());
+
+    let mut added = snapshot();
+    added.source.push_str("-second");
+    added.source_url.push_str("/second");
+    added.source_sha256 = "b".repeat(64);
+    added.roads[0].id = "way/2".into();
+    current.add_road_snapshot(added).unwrap();
+
+    let snapshot = current.snapshot();
+    let fresh = current.road_assessment(id).unwrap();
+    assert!(fresh.roads_ready);
+    assert_eq!(fresh.crossings.len(), 1);
+    assert_eq!(fresh.crossings[0].road_id, "way/2");
+    assert_eq!(
+        fresh,
+        assess_road_crossings(&snapshot.alignments[0], &snapshot.road_snapshots)
+    );
+    assert_eq!(before.road_assessment(id).unwrap(), old);
+}
+
+#[test]
 fn malformed_or_conflicting_snapshots_are_rejected_atomically() {
     let (mut w, _) = world();
     w.add_road_snapshot(snapshot()).unwrap();

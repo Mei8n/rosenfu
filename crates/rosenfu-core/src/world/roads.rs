@@ -288,7 +288,7 @@ fn crosses_road_at(
     t: f64,
     a: GeoPoint,
     b: GeoPoint,
-    roads: &[(&RoadWay, &[CoverageBounds])],
+    roads: &[RoadGeometry<'_>],
 ) -> bool {
     if crosses_at(&road.points, index, t, a, b) {
         return true;
@@ -296,11 +296,12 @@ fn crosses_road_at(
     let point = mix(road.points[index], road.points[index + 1], t);
     let mut positive = false;
     let mut negative = false;
-    for &(other, scope) in roads {
-        if !in_scope(point, Some(scope))
+    for other_geometry in roads {
+        let other = other_geometry.road;
+        if !in_scope(point, Some(other_geometry.scope))
             || !in_scope(point, other.coverage.as_deref())
             || !((road_height(road) == RoadHeight::Surface
-                && road_height(other) == RoadHeight::Surface)
+                && other_geometry.height == RoadHeight::Surface)
                 || (other.layer == road.layer
                     && other.level == road.level
                     && other.bridge == road.bridge
@@ -347,36 +348,67 @@ fn overlaps(a: CoverageBounds, b: CoverageBounds) -> bool {
         && b.south <= a.north + PAD
 }
 
+struct RoadGeometry<'a> {
+    road: &'a RoadWay,
+    scope: &'a [CoverageBounds],
+    height: RoadHeight,
+    bounds: CoverageBounds,
+}
+
+/// Derived only from the snapshots borrowed for one assessment pass. Do not
+/// persist across construction, Undo or source changes, and do not use the
+/// broad phase as source coverage or as a routing/permission decision.
+struct RoadAssessmentInputs<'a> {
+    has_snapshots: bool,
+    coverage: Vec<CoverageBounds>,
+    roads: Vec<RoadGeometry<'a>>,
+    boundary_pairs: Vec<boundary::Pair>,
+}
+impl<'a> RoadAssessmentInputs<'a> {
+    fn new(snapshots: &'a [RoadSnapshot]) -> Self {
+        Self {
+            has_snapshots: !snapshots.is_empty(),
+            coverage: snapshots
+                .iter()
+                .filter(|snapshot| snapshot.coverage_verified)
+                .flat_map(|snapshot| snapshot.road_coverage.iter().copied())
+                .collect(),
+            roads: snapshots
+                .iter()
+                .flat_map(|snapshot| {
+                    snapshot.roads.iter().map(|road| RoadGeometry {
+                        road,
+                        scope: &snapshot.road_coverage,
+                        height: road_height(road),
+                        bounds: geometry_bounds(&road.points),
+                    })
+                })
+                .collect(),
+            boundary_pairs: boundary::pairs(snapshots),
+        }
+    }
+}
+
 /// Derive crossings from current physical height at each intersection. Never cache
 /// these records in a save: alignment edits, removals and Undo change them immediately.
 pub fn assess_road_crossings(alignment: &Alignment, snapshots: &[RoadSnapshot]) -> RoadAssessment {
-    assess_connected_road_crossings(alignment, snapshots, &[], &[], &boundary::pairs(snapshots))
+    assess_connected_road_crossings(alignment, &RoadAssessmentInputs::new(snapshots), &[], &[])
 }
 
 fn assess_connected_road_crossings(
     alignment: &Alignment,
-    snapshots: &[RoadSnapshot],
+    inputs: &RoadAssessmentInputs<'_>,
     start_neighbors: &[GeoPoint],
     end_neighbors: &[GeoPoint],
-    boundary_pairs: &[boundary::Pair],
 ) -> RoadAssessment {
     let mut result = RoadAssessment {
         crossings: vec![],
         roads_ready: false,
         unknown_road_height: false,
     };
-    if snapshots.is_empty() {
+    if !inputs.has_snapshots {
         return result;
     }
-    let bounds: Vec<_> = snapshots
-        .iter()
-        .filter(|snapshot| snapshot.coverage_verified)
-        .flat_map(|s| s.road_coverage.iter().copied())
-        .collect();
-    let roads: Vec<_> = snapshots
-        .iter()
-        .flat_map(|s| s.roads.iter().map(|r| (r, s.road_coverage.as_slice())))
-        .collect();
     let total = alignment.length_m();
     if alignment.points.len() < 2 || !total.is_finite() || total <= 0. {
         return result;
@@ -384,13 +416,11 @@ fn assess_connected_road_crossings(
     let alignment_bounds = geometry_bounds(&alignment.points);
     // Keep the full roads list for source-way endpoint continuation. Only the
     // expensive rail/road intersection scan uses these local candidates.
-    let candidates: Vec<_> = roads
+    let candidates: Vec<_> = inputs
+        .roads
         .iter()
-        .filter_map(|&(road, scope)| {
-            let height = road_height(road);
-            let bounds = geometry_bounds(&road.points);
-            (height != RoadHeight::Separated && overlaps(alignment_bounds, bounds))
-                .then_some((road, scope, height, bounds))
+        .filter(|road| {
+            road.height != RoadHeight::Separated && overlaps(alignment_bounds, road.bounds)
         })
         .collect();
     result.roads_ready = true;
@@ -398,10 +428,11 @@ fn assess_connected_road_crossings(
     for (i, pair) in alignment.points.windows(2).enumerate() {
         let (a, b) = (pair[0], pair[1]);
         let length = super::alignment::distance(a, b);
-        result.roads_ready &= coverage(a, b, &bounds);
+        result.roads_ready &= coverage(a, b, &inputs.coverage);
         let segment_bounds = geometry_bounds(pair);
-        for &(road, scope, height, road_bounds) in &candidates {
-            if !overlaps(segment_bounds, road_bounds) {
+        for &geometry in &candidates {
+            let road = geometry.road;
+            if !overlaps(segment_bounds, geometry.bounds) {
                 continue;
             }
             for (j, edge) in road.points.windows(2).enumerate() {
@@ -412,7 +443,7 @@ fn assess_connected_road_crossings(
                     continue;
                 };
                 let point = mix(a, b, t);
-                if !in_scope(point, Some(scope))
+                if !in_scope(point, Some(geometry.scope))
                     || !in_scope(point, road.coverage.as_deref())
                     || !(crosses_at(&alignment.points, i, t, edge[0], edge[1])
                         || connected_endpoint_crosses(
@@ -424,7 +455,7 @@ fn assess_connected_road_crossings(
                             start_neighbors,
                             end_neighbors,
                         ))
-                    || !crosses_road_at(road, j, u, a, b, &roads)
+                    || !crosses_road_at(road, j, u, a, b, &inputs.roads)
                 {
                     continue;
                 }
@@ -436,7 +467,7 @@ fn assess_connected_road_crossings(
                 if rail_height.abs() > 1e-6 {
                     continue;
                 }
-                if height == RoadHeight::Unknown {
+                if geometry.height == RoadHeight::Unknown {
                     result.unknown_road_height = true;
                     continue;
                 }
@@ -457,7 +488,7 @@ fn assess_connected_road_crossings(
         }
         cursor += length;
     }
-    boundary::consolidate(alignment, &mut result.crossings, boundary_pairs);
+    boundary::consolidate(alignment, &mut result.crossings, &inputs.boundary_pairs);
     result.crossings.sort_by(|a, b| {
         a.position
             .total_cmp(&b.position)
@@ -482,7 +513,10 @@ impl World {
     /// belongs to the lowest alignment ID, so splitting a line never duplicates it.
     pub fn road_assessments(&self) -> std::collections::BTreeMap<AlignmentId, RoadAssessment> {
         let mut result = std::collections::BTreeMap::new();
-        let boundary_pairs = boundary::pairs(&self.data.road_snapshots);
+        if self.data.alignments.is_empty() {
+            return result;
+        }
+        let inputs = RoadAssessmentInputs::new(&self.data.road_snapshots);
         for alignment in &self.data.alignments {
             let mut starts = vec![];
             let mut ends = vec![];
@@ -518,13 +552,7 @@ impl World {
             }
             result.insert(
                 alignment.id,
-                assess_connected_road_crossings(
-                    alignment,
-                    &self.data.road_snapshots,
-                    &starts,
-                    &ends,
-                    &boundary_pairs,
-                ),
+                assess_connected_road_crossings(alignment, &inputs, &starts, &ends),
             );
         }
         let mut shared_endpoints: Vec<GeoPoint> = vec![];

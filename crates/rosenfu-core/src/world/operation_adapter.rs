@@ -888,6 +888,8 @@ impl World {
         }
         let runtime = if bus_configs.is_empty() && self.terminal_hold_eligible(&configs, &specs) {
             crate::operation::OperationRuntime::new_with_terminal_hold(specs)?
+        } else if bus_configs.is_empty() && self.inline_terminal_dwell_eligible(&configs, &specs) {
+            crate::operation::OperationRuntime::new_with_inline_terminal_dwell(specs)?
         } else if bus_configs.is_empty() && self.following_eligible(&configs, &specs) {
             crate::operation::OperationRuntime::new_with_progressive_rail(specs)?
         } else {
@@ -945,6 +947,17 @@ impl World {
         }
         let progressive = saved.runtime.format == 3;
         let holding = saved.runtime.format == 4;
+        let platform = saved.runtime.format == 5;
+        let platform_qualified = platform
+            && saved.bus_configs.is_empty()
+            && !saved.parallel_join_lanes
+            && !saved.crossing_reservations
+            && if saved.invalidated {
+                saved.runtime.paused
+                    && Self::following_specs(&saved.configs, &saved.runtime.services)
+            } else {
+                self.inline_terminal_dwell_eligible(&saved.configs, &saved.runtime.services)
+            };
         let progressive_qualified = progressive
             && saved.bus_configs.is_empty()
             && !saved.parallel_join_lanes
@@ -956,7 +969,7 @@ impl World {
                 self.following_eligible(&saved.configs, &saved.runtime.services)
                     || (allow_qualified_qa && self.is_straight_rail_occupancy_qa(&saved.configs))
             };
-        if saved.runtime.format != 2 && !holding && !progressive_qualified {
+        if saved.runtime.format != 2 && !holding && !progressive_qualified && !platform_qualified {
             return Err(OperationError::InvalidClock);
         }
         if holding
@@ -1030,7 +1043,7 @@ impl World {
                         },
                     )
                     .is_ok_and(|current| current == *spec)
-                } else if progressive || holding {
+                } else if progressive || holding || platform {
                     self.compile_operation(config)
                         .is_ok_and(|current| current == *spec)
                 } else {
@@ -1055,6 +1068,8 @@ impl World {
         }
         let mut runtime = if holding {
             crate::operation::OperationRuntime::restore_with_terminal_hold(saved.runtime)?
+        } else if platform_qualified {
+            crate::operation::OperationRuntime::restore_with_inline_terminal_dwell(saved.runtime)?
         } else if progressive_qualified {
             crate::operation::OperationRuntime::restore_with_progressive_rail(saved.runtime)?
         } else {
@@ -1138,6 +1153,34 @@ impl World {
                             fits
                         })
                 })
+            })
+    }
+
+    // A station group/name is not an occupancy resource. For the existing
+    // qualified one-way corridor, the terminal's actual rail placement and
+    // the service's last directional lane establish inline block occupancy.
+    // No admission across a turnout or across a second platform track is inferred.
+    fn inline_terminal_dwell_eligible(
+        &self,
+        configs: &[OperationServiceConfig],
+        specs: &[ServiceRunSpec],
+    ) -> bool {
+        self.following_eligible(configs, specs)
+            && specs.iter().all(|spec| {
+                let Ok(id) = spec.legs[0].to.parse::<u64>() else {
+                    return false;
+                };
+                let Some(terminal) = self
+                    .data
+                    .station_placements
+                    .iter()
+                    .find(|placement| placement.station_id == StationId(id))
+                else {
+                    return false;
+                };
+                // following_eligible already checks the full train and platform
+                // do not protrude into a different physical anchor block.
+                terminal.length_m >= spec.vehicle.length_m + 4. && terminal.width_m >= 4.1
             })
     }
 
@@ -1334,10 +1377,13 @@ impl World {
                     .collect::<Result<Vec<_>, _>>();
                 return match active {
                     Ok(specs) => {
-                        !self.following_eligible(&o.configs, &specs)
-                            || specs
-                                .iter()
-                                .any(|spec| o.runtime.service_spec(&spec.service_id) != Some(spec))
+                        !(if o.runtime.inline_terminal_dwell() {
+                            self.inline_terminal_dwell_eligible(&o.configs, &specs)
+                        } else {
+                            self.following_eligible(&o.configs, &specs)
+                        }) || specs
+                            .iter()
+                            .any(|spec| o.runtime.service_spec(&spec.service_id) != Some(spec))
                     }
                     Err(_) => true,
                 };
@@ -2074,6 +2120,201 @@ mod tests {
             add_service("separate control", parallel, f, e),
         ];
         (w, configs)
+    }
+
+    fn inline_platform_fixture(
+        dwell_ms: u64,
+        shared_terminal: bool,
+    ) -> (World, Vec<OperationServiceConfig>) {
+        let (world, mut configs) = straight_occupancy_fixture();
+        let mut draft = world.snapshot().clone();
+        draft.alignments[0].infrastructure = vec![
+            SectionInfrastructure {
+                track_count: 2,
+                ..Default::default()
+            };
+            3
+        ];
+        draft.alignments[1].infrastructure = draft.alignments[0].infrastructure.clone();
+        let company = draft.alignments[0].owner;
+        let mut world = World::new(draft).unwrap();
+        configs.truncate(1);
+        let base = configs[0].clone();
+        configs[0].dwell_ms = dwell_ms;
+        let original = world
+            .data
+            .service_paths
+            .iter()
+            .find(|path| path.service_id == base.service_id)
+            .unwrap();
+        let RouteSegment::Alignment {
+            alignment_id,
+            from,
+            to,
+        } = original.legs[0].segment
+        else {
+            panic!("fixture route")
+        };
+        let approach = world
+            .data
+            .station_placements
+            .iter()
+            .find(|p| p.alignment_id == alignment_id && p.position == 0.50)
+            .unwrap()
+            .station_id;
+        let mut add = |name: &str, from, to, timetabled_at| {
+            let segments = vec![RouteSegment::Alignment {
+                alignment_id,
+                from,
+                to,
+            }];
+            let preview = world.preview_service_path(from, segments.clone()).unwrap();
+            let stops = vec![
+                preview.occurrences[0].reference.clone(),
+                preview.occurrences.last().unwrap().reference.clone(),
+            ];
+            let service_id = world
+                .add_service_path(company, name.into(), from, segments, stops)
+                .unwrap();
+            OperationServiceConfig {
+                service_id,
+                timetable: Timetable {
+                    first_departure_ms: timetabled_at,
+                    last_departure_ms: timetabled_at,
+                    ..base.timetable.clone()
+                },
+                dwell_ms: 0,
+                vehicle: base.vehicle.clone(),
+            }
+        };
+        configs.push(add(
+            "same direction follower",
+            from,
+            if shared_terminal { to } else { approach },
+            1000,
+        ));
+        configs.push(add(
+            "opposite physical lane from shared station",
+            to,
+            from,
+            1000,
+        ));
+        (world, configs)
+    }
+
+    #[test]
+    fn inline_platform_dwell_blocks_only_the_occupied_physical_lane() {
+        use crate::operation::TrainState;
+
+        let dwell = 30_000;
+        let (mut world, configs) = inline_platform_fixture(dwell, true);
+        world.configure_operation(configs.clone()).unwrap();
+        let specs = configs
+            .iter()
+            .map(|config| world.compile_operation(config))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let mut legacy = world.clone();
+        legacy.operation_mut().unwrap().runtime =
+            crate::operation::OperationRuntime::new_with_progressive_rail(specs).unwrap();
+        let legacy_saved = legacy.operation_save().unwrap();
+        let mut legacy_loaded = World::new(legacy.snapshot().clone()).unwrap();
+        legacy_loaded
+            .restore_operation(Some(legacy_saved.clone()))
+            .unwrap();
+        assert_eq!(legacy_loaded.operation_save(), Some(legacy_saved));
+        assert_eq!(legacy_loaded.operation_save().unwrap().runtime.format, 3);
+        let ids: Vec<_> = configs.iter().map(|c| c.service_id.0.to_string()).collect();
+        let advance = |world: &mut World, at| {
+            world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(at, 100)
+                .unwrap()
+        };
+        let state = |world: &World, id: &str| {
+            world
+                .operation()
+                .unwrap()
+                .runtime
+                .trains()
+                .find(|train| train.key.service_id == id)
+                .unwrap()
+                .state
+                .clone()
+        };
+        advance(&mut world, 1000);
+        let TrainState::Moving {
+            arrival_ms,
+            release_ms,
+            ..
+        } = state(&world, &ids[0])
+        else {
+            panic!("leader must depart")
+        };
+        assert_eq!((arrival_ms, release_ms), (68_094, 98_094));
+        advance(&mut legacy_loaded, arrival_ms + dwell - 1);
+        assert!(matches!(
+            state(&legacy_loaded, &ids[1]),
+            TrainState::Moving {
+                entered_ms: 70_094,
+                ..
+            }
+        ));
+        let replay = |w: &World| {
+            w.operation()
+                .unwrap()
+                .runtime
+                .preview_passenger_replay(300_000, 100)
+                .unwrap()
+        };
+        let old_replay = replay(&legacy);
+        let new_replay = replay(&world);
+        let leg = |r: &crate::operation::PassengerReplay, service: &str| {
+            r.completed_legs
+                .iter()
+                .find(|l| l.train.service_id == service)
+                .map(|l| (l.entered_ms, l.arrived_ms, l.cumulative_reservation_wait_ms))
+                .unwrap()
+        };
+        assert_eq!(leg(&new_replay, &ids[1]), (98_094, 166_188, 97_094));
+        assert_eq!(leg(&old_replay, &ids[1]), (70_094, 138_188, 69_094));
+        assert_eq!(leg(&old_replay, &ids[2]), leg(&new_replay, &ids[2]));
+        assert_eq!(leg(&new_replay, &ids[0]), (0, 68_094, 0));
+        assert_eq!(world.operation().unwrap().runtime.now_ms(), 1_000);
+        assert!(matches!(
+            state(&world, &ids[2]),
+            TrainState::Moving {
+                entered_ms: 1000,
+                ..
+            }
+        ));
+        advance(&mut world, arrival_ms + dwell - 1);
+        assert!(matches!(state(&world, &ids[1]), TrainState::Waiting { .. }));
+        advance(&mut world, arrival_ms + dwell);
+        assert!(matches!(
+            state(&world, &ids[1]),
+            TrainState::Moving { entered_ms, .. } if entered_ms == arrival_ms+dwell
+        ));
+    }
+
+    #[test]
+    fn inline_terminal_dwell_releases_a_proven_clear_approach_at_arrival() {
+        let (mut world, configs) = inline_platform_fixture(30_000, false);
+        let follower_id = configs[1].service_id.0.to_string();
+        world.configure_operation(configs).unwrap();
+        let r = &world.operation().unwrap().runtime;
+        let replay = r.preview_passenger_replay(300_000, 100).unwrap();
+        let follower = replay
+            .completed_legs
+            .iter()
+            .find(|leg| leg.train.service_id == follower_id)
+            .unwrap();
+        // Follower leaves on the same event the leader reaches its terminal
+        // while terminal dwell still keeps the *last* physical block occupied.
+        assert_eq!(follower.entered_ms, 68_094);
+        assert_eq!(follower.cumulative_reservation_wait_ms, 67_094);
     }
 
     #[test]

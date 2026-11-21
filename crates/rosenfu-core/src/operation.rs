@@ -115,6 +115,21 @@ struct CompiledService {
     legs: Vec<CompiledLeg>,
     next_departure: Option<u64>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum RailAdmissionModel {
+    Fixed = 2,
+    Progressive = 3,
+    TurnbackHold = 4,
+    InlineTerminalDwell = 5,
+}
+
+impl RailAdmissionModel {
+    fn progressive(self) -> bool {
+        matches!(self, Self::Progressive | Self::InlineTerminalDwell)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct OperationRuntime {
     now_ms: u64,
@@ -124,8 +139,7 @@ pub struct OperationRuntime {
     services: BTreeMap<String, CompiledService>,
     trains: BTreeMap<TrainKey, Train>,
     occupied: BTreeMap<String, TrainKey>,
-    progressive_rail: bool,
-    terminal_hold: bool,
+    rail_admission: RailAdmissionModel,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -268,6 +282,7 @@ fn progressive_release_offsets(
     sections: &[Section],
     times: &[u64],
     train_length: f64,
+    release_at_arrival: bool,
 ) -> BTreeMap<String, u64> {
     let mut last = BTreeMap::new();
     let mut distance = Vec::with_capacity(sections.len() + 1);
@@ -280,21 +295,25 @@ fn progressive_release_offsets(
     }
     // The head must reach a later section boundary strictly beyond the tail-
     // clearing position, so use the cumulative true motion profile there, not
-    // a nominal section speed. Margin covers accumulation/cancellation on
-    // finite values. If no such boundary exists, keep the original rear-clear.
+    // a nominal section speed. The one-way terminal model also uses arrival
+    // as evidence for a proven-clear approach (never for the last block).
+    // The margin covers accumulation/cancellation on finite values.
     let margin = f64::EPSILON * (sections.len() as f64 + 2.0) * distance[sections.len()] * 4.0;
     last.into_iter()
         .filter_map(|(resource, i)| {
             let threshold = distance[i + 1] + train_length + margin;
             let boundary = distance.partition_point(|p| *p <= threshold);
-            (boundary > 0 && boundary < sections.len()).then(|| (resource, times[boundary - 1]))
+            (boundary > 0
+                && (boundary < sections.len()
+                    || (release_at_arrival && boundary == sections.len())))
+            .then(|| (resource, times[boundary - 1]))
         })
         .collect()
 }
 
 impl OperationRuntime {
     pub fn new(specs: Vec<ServiceRunSpec>) -> Result<Self, OperationError> {
-        Self::compile(specs, false, false)
+        Self::compile(specs, RailAdmissionModel::Fixed)
     }
 
     /// Qualified mode for trusted, directional rail-section resource IDs.
@@ -304,20 +323,27 @@ impl OperationRuntime {
     pub(crate) fn new_with_progressive_rail(
         specs: Vec<ServiceRunSpec>,
     ) -> Result<Self, OperationError> {
-        Self::compile(specs, true, false)
+        Self::compile(specs, RailAdmissionModel::Progressive)
     }
 
     /// Only the world adapter may activate the qualified straight-corridor model.
     pub(crate) fn new_with_terminal_hold(
         specs: Vec<ServiceRunSpec>,
     ) -> Result<Self, OperationError> {
-        Self::compile(specs, false, true)
+        Self::compile(specs, RailAdmissionModel::TurnbackHold)
+    }
+
+    /// Qualified one-way inline terminal. The final physical lane block
+    /// remains occupied while passengers detrain, then the train retires.
+    pub(crate) fn new_with_inline_terminal_dwell(
+        specs: Vec<ServiceRunSpec>,
+    ) -> Result<Self, OperationError> {
+        Self::compile(specs, RailAdmissionModel::InlineTerminalDwell)
     }
 
     fn compile(
         specs: Vec<ServiceRunSpec>,
-        progressive_rail: bool,
-        terminal_hold: bool,
+        rail_admission: RailAdmissionModel,
     ) -> Result<Self, OperationError> {
         let mut services = BTreeMap::new();
         for spec in specs {
@@ -340,8 +366,20 @@ impl OperationRuntime {
             }
             let mut legs = Vec::new();
             let mut journey = 0u64;
-            for l in &spec.legs {
-                let progressive = progressive_rail && spec.service_id.parse::<u64>().is_ok();
+            let platform = rail_admission == RailAdmissionModel::InlineTerminalDwell;
+            if platform
+                && (spec.legs.len() != 1
+                    || spec.service_id.parse::<u64>().is_err()
+                    || spec.legs[0]
+                        .sections
+                        .iter()
+                        .any(|s| s.resources.len() != 1 || !rail_lane(&s.resources[0])))
+            {
+                return Err(OperationError::InvalidPath);
+            }
+            for (index, l) in spec.legs.iter().enumerate() {
+                let progressive =
+                    rail_admission.progressive() && spec.service_id.parse::<u64>().is_ok();
                 let mut boundaries = Vec::new();
                 let duration_ms = running_time_profile(
                     &l.sections,
@@ -349,7 +387,12 @@ impl OperationRuntime {
                     progressive.then_some(&mut boundaries),
                 )?;
                 let early_releases = if progressive {
-                    progressive_release_offsets(&l.sections, &boundaries, spec.vehicle.length_m)
+                    progressive_release_offsets(
+                        &l.sections,
+                        &boundaries,
+                        spec.vehicle.length_m,
+                        platform,
+                    )
                 } else {
                     BTreeMap::new()
                 };
@@ -360,10 +403,17 @@ impl OperationRuntime {
                     .map(|s| s.speed_limit_kmh.min(spec.vehicle.max_speed_kmh))
                     .fold(f64::INFINITY, f64::min)
                     / 3.6;
-                let clearance_ms = millis(spec.vehicle.length_m / lowest)?;
+                let physical_clearance_ms = millis(spec.vehicle.length_m / lowest)?;
+                let clearance_ms = if platform
+                    || (rail_admission == RailAdmissionModel::TurnbackHold && index == 0)
+                {
+                    physical_clearance_ms.max(l.dwell_ms)
+                } else {
+                    physical_clearance_ms
+                };
                 journey = journey
                     .checked_add(duration_ms)
-                    .and_then(|n| n.checked_add(clearance_ms))
+                    .and_then(|n| n.checked_add(physical_clearance_ms))
                     .and_then(|n| n.checked_add(l.dwell_ms))
                     .ok_or(OperationError::Overflow)?;
                 legs.push(CompiledLeg {
@@ -378,7 +428,7 @@ impl OperationRuntime {
                     release_events,
                 });
             }
-            if terminal_hold
+            if rail_admission == RailAdmissionModel::TurnbackHold
                 && (legs.len() != 2
                     || spec.legs[0].from != spec.legs[1].to
                     || spec.legs[0].from == spec.legs[0].to
@@ -412,16 +462,19 @@ impl OperationRuntime {
             services,
             trains: BTreeMap::new(),
             occupied: BTreeMap::new(),
-            progressive_rail,
-            terminal_hold,
+            rail_admission,
         })
     }
     pub(crate) fn progressive_rail(&self) -> bool {
-        self.progressive_rail
+        self.rail_admission.progressive()
     }
 
     pub(crate) fn terminal_hold(&self) -> bool {
-        self.terminal_hold
+        self.rail_admission == RailAdmissionModel::TurnbackHold
+    }
+
+    pub(crate) fn inline_terminal_dwell(&self) -> bool {
+        self.rail_admission == RailAdmissionModel::InlineTerminalDwell
     }
 
     pub fn paused(&self) -> bool {
@@ -651,7 +704,7 @@ impl OperationRuntime {
                             delay_ms: train.delay_ms,
                         });
                     }
-                    if self.progressive_rail {
+                    if self.progressive_rail() {
                         let leg = &self.services[&key.service_id].legs[train.leg];
                         if leg.release_events.contains(&(at - entered_ms)) {
                             for (resource, &offset) in &leg.early_releases {
@@ -669,7 +722,7 @@ impl OperationRuntime {
                         for resource in &service.legs[train.leg].resources {
                             // This train may have cleared the lane earlier and
                             // another train may now own it.
-                            if !(self.terminal_hold && train.leg == 0)
+                            if !(self.terminal_hold() && train.leg == 0)
                                 && self.occupied.get(resource) == Some(&key)
                             {
                                 self.occupied.remove(resource);
@@ -724,21 +777,15 @@ impl OperationRuntime {
                 if c.resources.iter().any(|r| {
                     self.occupied
                         .get(r)
-                        .is_some_and(|owner| !self.terminal_hold || *owner != key)
+                        .is_some_and(|owner| !self.terminal_hold() || *owner != key)
                 }) {
                     continue;
                 }
                 let arrival_ms = at
                     .checked_add(c.duration_ms)
                     .ok_or(OperationError::Overflow)?;
-                let clearance_ms = if self.terminal_hold && t.leg == 0 {
-                    c.clearance_ms
-                        .max(self.services[&key.service_id].spec.legs[0].dwell_ms)
-                } else {
-                    c.clearance_ms
-                };
                 let release_ms = arrival_ms
-                    .checked_add(clearance_ms)
+                    .checked_add(c.clearance_ms)
                     .ok_or(OperationError::Overflow)?;
                 for r in &c.resources {
                     self.occupied.insert(r.clone(), key.clone());
@@ -802,13 +849,7 @@ impl OperationRuntime {
     /// Restore validates schedule times and exclusive occupancy before acceptance.
     pub fn save(&self) -> OperationSave {
         OperationSave {
-            format: if self.terminal_hold {
-                4
-            } else if self.progressive_rail {
-                3
-            } else {
-                2
-            },
+            format: self.rail_admission as u32,
             trains: self.trains.values().cloned().collect(),
             next_departures: self
                 .services
@@ -823,31 +864,46 @@ impl OperationRuntime {
         }
     }
     pub fn restore(saved: OperationSave) -> Result<Self, OperationError> {
-        Self::restore_checked(saved, false, false)
+        Self::restore_checked(saved, None)
     }
 
     pub(crate) fn restore_with_terminal_hold(saved: OperationSave) -> Result<Self, OperationError> {
-        Self::restore_checked(saved, true, false)
+        Self::restore_checked(saved, Some(RailAdmissionModel::TurnbackHold))
     }
 
     pub(crate) fn restore_with_progressive_rail(
         saved: OperationSave,
     ) -> Result<Self, OperationError> {
-        Self::restore_checked(saved, false, true)
+        Self::restore_checked(saved, Some(RailAdmissionModel::Progressive))
+    }
+
+    pub(crate) fn restore_with_inline_terminal_dwell(
+        saved: OperationSave,
+    ) -> Result<Self, OperationError> {
+        Self::restore_checked(saved, Some(RailAdmissionModel::InlineTerminalDwell))
     }
 
     fn restore_checked(
         saved: OperationSave,
-        allow_terminal_hold: bool,
-        allow_progressive_rail: bool,
+        admitted: Option<RailAdmissionModel>,
     ) -> Result<Self, OperationError> {
-        let supported = saved.format == 2
-            || ((cfg!(test) || allow_progressive_rail) && saved.format == 3)
-            || (allow_terminal_hold && saved.format == 4);
-        if !supported || (!saved.started && (saved.now_ms != 0 || !saved.trains.is_empty())) {
+        let rail_admission = match saved.format {
+            2 => RailAdmissionModel::Fixed,
+            3 if cfg!(test) || admitted == Some(RailAdmissionModel::Progressive) => {
+                RailAdmissionModel::Progressive
+            }
+            4 if admitted == Some(RailAdmissionModel::TurnbackHold) => {
+                RailAdmissionModel::TurnbackHold
+            }
+            5 if admitted == Some(RailAdmissionModel::InlineTerminalDwell) => {
+                RailAdmissionModel::InlineTerminalDwell
+            }
+            _ => return Err(OperationError::InvalidClock),
+        };
+        if !saved.started && (saved.now_ms != 0 || !saved.trains.is_empty()) {
             return Err(OperationError::InvalidClock);
         }
-        let mut runtime = Self::compile(saved.services, saved.format == 3, saved.format == 4)?;
+        let mut runtime = Self::compile(saved.services, rail_admission)?;
         runtime.set_speed(saved.speed)?;
         runtime.now_ms = saved.now_ms;
         runtime.started = saved.started;
@@ -905,21 +961,34 @@ impl OperationRuntime {
             {
                 return Err(OperationError::InvalidTimetable);
             }
+            // Inline-terminal services have only their first leg. Their initial
+            // wait is anchored to the timetable and incurs delay only when
+            // admitted. A self-consistent profile at the wrong epoch would
+            // otherwise restore a shortened lease and an invented replay ride.
+            if runtime.inline_terminal_dwell() {
+                let scheduled_ms = train.key.scheduled_ms;
+                let valid = match train.state {
+                    TrainState::Waiting { ready_ms } => {
+                        ready_ms == scheduled_ms && train.delay_ms == 0
+                    }
+                    TrainState::Moving { entered_ms, .. } => {
+                        entered_ms.checked_sub(scheduled_ms) == Some(train.delay_ms)
+                    }
+                };
+                if !valid {
+                    return Err(OperationError::InvalidClock);
+                }
+            }
             if let TrainState::Moving {
                 entered_ms,
                 arrival_ms,
                 release_ms,
             } = train.state
             {
-                let clearance_ms = if runtime.terminal_hold && train.leg == 0 {
-                    leg.clearance_ms.max(service.spec.legs[0].dwell_ms)
-                } else {
-                    leg.clearance_ms
-                };
                 if entered_ms > saved.now_ms
                     || release_ms <= saved.now_ms
                     || entered_ms.checked_add(leg.duration_ms) != Some(arrival_ms)
-                    || arrival_ms.checked_add(clearance_ms) != Some(release_ms)
+                    || arrival_ms.checked_add(leg.clearance_ms) != Some(release_ms)
                 {
                     return Err(OperationError::InvalidClock);
                 }
@@ -949,7 +1018,8 @@ impl OperationRuntime {
                 return Err(OperationError::InvalidClock);
             }
             if let TrainState::Waiting { ready_ms } = train.state {
-                if ready_ms < train.key.scheduled_ms || (runtime.terminal_hold && train.leg != 0) {
+                if ready_ms < train.key.scheduled_ms || (runtime.terminal_hold() && train.leg != 0)
+                {
                     return Err(OperationError::InvalidClock);
                 }
                 let resources = &runtime.services[&train.key.service_id].legs[train.leg].resources;
