@@ -1,6 +1,7 @@
 """Offline packaging checks; the fixture EXE is just bytes and is never run."""
 import contextlib
 import hashlib
+import json
 from io import StringIO
 from pathlib import Path
 import runpy
@@ -11,7 +12,18 @@ import zipfile
 build = runpy.run_path(str(Path(__file__).with_name("windows-qa-archive.py")))["build"]
 COMMIT = "a" * 40
 EXPECTED = {"commit": COMMIT, "kind": "integration", "ref": "refs/heads/dev/alpha-0.2-integration", "run": "123", "attempt": "1"}
-BUILD = "".join(f"{key}={value}\n" for key, value in EXPECTED.items()) + "audience=internal-QA-only\n"
+EXPECTED.update(workflow_commit=COMMIT,
+                workflow_ref="Mei8n/rosenfu/.github/workflows/check.yml@" + EXPECTED["ref"], checks="success")
+FIXTURE_HASH = hashlib.sha256(b"fixture").hexdigest()
+
+
+def build_text(expected):
+    return ("".join(f"{key}={value}\n" for key, value in expected.items())
+            + "audience=internal-QA-only\nwindows_smoke=pass\n"
+            + f"windows_smoke_installer_sha256={FIXTURE_HASH}\n")
+
+
+BUILD = build_text(EXPECTED)
 INSTALLER = f"Rosenfu-alpha02-integration-{COMMIT[:12]}-windows-x64-setup.exe"
 
 
@@ -27,6 +39,8 @@ class QaArchive(unittest.TestCase):
             "data-and-notices/water-japan-coarse-20261114/manifest.json",
             "data-and-notices/LINE-Seed-JP-OFL.txt",
             "data-and-notices/software/DEPENDENCIES.json", "data-and-notices/software/README.txt",
+            "data-and-notices/native/NATIVE-PROVENANCE.json",
+            "data-and-notices/native/Microsoft-WebView2-SDK-1.0.3800.47-LICENSE.txt",
         ):
             path = self.stage / name
             path.parent.mkdir(exist_ok=True, parents=True)
@@ -35,6 +49,9 @@ class QaArchive(unittest.TestCase):
         sha = hashlib.sha256(b"fixture").hexdigest()
         (self.stage / "SHA256SUMS.txt").write_text(f"{sha}  {INSTALLER}\n")
         (self.stage / "BUILD.txt").write_text(BUILD)
+        (self.stage / "data-and-notices/native/NATIVE-PROVENANCE.json").write_text(
+            json.dumps({"installer_sha256": FIXTURE_HASH})
+        )
 
     def test_roundtrip(self):
         with contextlib.redirect_stdout(StringIO()) as report:
@@ -81,9 +98,8 @@ class QaArchive(unittest.TestCase):
         preview = INSTALLER.replace("integration", "preview")
         (self.stage / INSTALLER).rename(self.stage / preview)
         expected = dict(EXPECTED, kind="preview", ref="refs/pull/257/merge")
-        (self.stage / "BUILD.txt").write_text(
-            "".join(f"{key}={value}\n" for key, value in expected.items()) + "audience=internal-QA-only\n"
-        )
+        expected["workflow_ref"] = "Mei8n/rosenfu/.github/workflows/check.yml@" + expected["ref"]
+        (self.stage / "BUILD.txt").write_text(build_text(expected))
         checksum = self.stage / "SHA256SUMS.txt"
         checksum.write_text(checksum.read_text().replace(INSTALLER, preview))
         with contextlib.redirect_stdout(StringIO()):
@@ -94,6 +110,24 @@ class QaArchive(unittest.TestCase):
         (self.stage / INSTALLER).rename(self.stage / preview)
         (self.stage / "BUILD.txt").write_text(BUILD.replace("kind=integration", "kind=preview"))
         with self.assertRaisesRegex(ValueError, "PR merge ref"):
+            build(self.stage, self.zip, EXPECTED)
+
+    def test_rejects_mismatched_workflow_and_installer_evidence(self):
+        path = self.stage / "BUILD.txt"
+        different = "b" * 40
+        with self.assertRaisesRegex(ValueError, "source commits differ"):
+            expected = dict(EXPECTED, workflow_commit=different)
+            path.write_text(build_text(expected))
+            build(self.stage, self.zip, expected)
+        with self.assertRaisesRegex(ValueError, "smoke receipt"):
+            path.write_text(BUILD.replace(f"windows_smoke_installer_sha256={FIXTURE_HASH}",
+                                          "windows_smoke_installer_sha256=" + "0" * 64))
+            build(self.stage, self.zip, EXPECTED)
+        with self.assertRaisesRegex(ValueError, "Native provenance"):
+            path.write_text(BUILD)
+            (self.stage / "data-and-notices/native/NATIVE-PROVENANCE.json").write_text(
+                json.dumps({"installer_sha256": "0" * 64})
+            )
             build(self.stage, self.zip, EXPECTED)
 
     def test_rejects_wrong_sha(self):

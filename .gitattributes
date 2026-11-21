@@ -31,3 +31,5 @@
 
 # Preserve bundled upstream license bytes.
 src/assets/fonts/line-seed-jp/OFL.txt -text whitespace=-trailing-space,cr-at-eol
+
+scripts/windows-qa-native/*.txt -text whitespace=-trailing-space,cr-at-eol
