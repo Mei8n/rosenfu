@@ -74,6 +74,18 @@ pub fn set_fixed_od_scenario(
 }
 
 #[tauri::command]
+pub fn preview_rail_journey_replay(
+    editor: State<'_, Mutex<WorldEditor>>,
+    origin: String,
+    destination: String,
+) -> Result<rosenfu_core::operation::ReplayItinerary, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_rail_journey_replay(&origin, &destination)
+}
+
+#[tauri::command]
 pub fn preview_fixed_od(
     editor: State<'_, Mutex<WorldEditor>>,
     origin_station_id: String,
