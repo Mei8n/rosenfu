@@ -4,8 +4,13 @@
 use crate::world::{AlignmentId, CompanyId, GeoPoint, TrackType, WorldDraft};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+mod native;
 mod pilot;
-pub use pilot::{PilotRoad, PilotRoadMode, PilotTransition};
+pub use native::{
+    import_native_pilot, native_road_regions, NativeRoadRegion, PilotBusEdit, StopPosition,
+};
+pub use pilot::PilotRoadMode;
+use pilot::{PilotRoad, PilotTransition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -371,10 +376,10 @@ impl RoadTransport {
         }
         Ok(())
     }
-    /// Shortest verified directed road path by geographic polyline length.
+    /// Synthetic QA path by geographic polyline length. Real roads must use the native pilot gate.
     /// Unknown/forbidden edges are excluded, never treated as usable roads.
     /// A bounded search returns an explicit error rather than a partial path.
-    pub fn shortest_path(
+    fn shortest_path(
         &self,
         world: &WorldDraft,
         from: &str,
@@ -644,7 +649,14 @@ mod tests {
         });
         assert_eq!(d.validate(&w), Ok(()));
         let mut snapshot = w.clone();
-        snapshot.road_transport = d.clone();
+        snapshot.road_transport = RoadTransport::synthetic_qa_graph();
+        snapshot.alignments[0].points = snapshot.road_transport.edges[0].geometry.clone();
+        let mut section = d.tram_sections[0].clone();
+        section.alignment_geometry = snapshot.alignments[0].points.clone();
+        section.placement = TramPlacement::SharedRoad {
+            edges: vec![snapshot.road_transport.edges[0].id.clone()],
+        };
+        snapshot.road_transport.tram_sections.push(section);
         snapshot.players.push(crate::world::Player {
             id: PlayerId(2),
             name: "Player".into(),

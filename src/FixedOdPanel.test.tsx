@@ -39,7 +39,7 @@ test('bus stop OD uses native namespaced stop IDs and displays the bus route nam
  fireEvent.change(screen.getByLabelText('到着地点'),{target:{value:'bus:test:b'}});
  fireEvent.click(screen.getByText('需要を試算'));
  expect(await screen.findByText('検証バス')).toBeTruthy();
- expect(screen.getByText(/鉄道とバスの乗り継ぎはまだ計算しません/)).toBeTruthy();
+ expect(screen.getByText(/駅とバス停の徒歩乗り換えは、試算で指定した場合だけ計算します/)).toBeTruthy();
  expect(invoke).toHaveBeenCalledWith('preview_fixed_od',{originStationId:'bus:test:a',destinationStationId:'bus:test:b',trips:100,alternativeSeconds:null});
 });
 
@@ -59,4 +59,34 @@ test('restores recorded conditions, renders unweighted time, and saves only expl
  fireEvent.change(screen.getByLabelText('移動需要（人）'),{target:{value:'0'}});
  fireEvent.click(screen.getByText('この試算条件をワールドに記録'));
  expect(store).toHaveBeenCalledWith('old-world',{...saved,trips:0});
+});
+
+test('only applies a user-entered rail to bus walk to preview and never saves it', async()=>{
+ const busStops=[{id:'test:a',name:'東バス停'},{id:'test:b',name:'西バス停'}];
+ const busRoutes=[{id:'test:route',name:'検証バス'}];
+ vi.mocked(invoke).mockImplementation(async(command)=>command==='fixed_od_scenario'?{token:'old-world',scenario:null}:{
+  ...result,rail:[{...result.rail[0],stations:['1','2','bus:test:a','bus:test:b'],services:['3','bus:test:route'],time:{wait_seconds:60,ride_seconds:180,walk_seconds:180,transfers:1}}]
+ });
+ const store=vi.fn(async(_old,next)=>({token:'updated',scenario:next}));
+ render(<FixedOdPanel stations={stations} services={services} busStops={busStops} busRoutes={busRoutes} enabled worldVersion={1} saveScenario={store}/>);
+ await screen.findByRole('button',{name:'この試算条件をワールドに記録'});
+ fireEvent.change(screen.getByLabelText('出発地点'),{target:{value:'1'}});
+ fireEvent.change(screen.getByLabelText('到着地点'),{target:{value:'bus:test:b'}});
+ fireEvent.click(screen.getByLabelText('駅とバス停の乗り換えを試す'));
+ fireEvent.click(screen.getByText('需要を試算'));
+ expect((await screen.findByRole('alert')).textContent).toContain('1〜60分');
+ expect(invoke).not.toHaveBeenCalledWith('preview_fixed_od',expect.anything());
+ fireEvent.change(screen.getByLabelText('乗り換え駅'),{target:{value:'2'}});
+ fireEvent.change(screen.getByLabelText('乗り換えバス停'),{target:{value:'bus:test:a'}});
+ fireEvent.change(screen.getByLabelText('徒歩の所要時間（分）'),{target:{value:'3'}});
+ fireEvent.click(screen.getByText('需要を試算'));
+ expect(await screen.findByText(/徒歩 3分 \/ 乗換 1回/)).toBeTruthy();
+ const scenario={originStationId:'1',destinationStationId:'bus:test:b',trips:100,alternativeSeconds:null};
+ expect(invoke).toHaveBeenCalledWith('preview_fixed_od',{...scenario,transfer:{stationId:'2',busStopId:'bus:test:a',walkSeconds:180}});
+ fireEvent.click(screen.getByText('この試算条件をワールドに記録'));
+ expect(store).toHaveBeenCalledWith('old-world',{origin_station_id:'1',destination_station_id:'bus:test:b',trips:100,alternative_seconds:null});
+ await screen.findByText('記録済みの条件は次のセーブに含まれます。');
+ fireEvent.click(screen.getByLabelText('駅とバス停の乗り換えを試す'));
+ fireEvent.click(screen.getByText('需要を試算'));
+ expect(invoke).toHaveBeenCalledWith('preview_fixed_od',scenario);
 });

@@ -394,9 +394,9 @@ fn explicit_replacement_requires_baseline_and_preserves_backup() {
 }
 
 #[test]
-fn compact_world_that_exceeds_pretty_limit_is_rejected_before_load() {
+fn compact_world_that_exceeds_pretty_limit_loads_and_can_repair_exact_baseline() {
     use rosenfu_core::world::{Alignment, AlignmentId, GeoPoint, TrackType};
-    use rosenfu_storage::ensure_world_saveable;
+    use rosenfu_storage::{ensure_world_saveable, file_version, replace_world_if_version};
     let mut world = World::default();
     let player = world.add_player("p".into()).unwrap();
     let owner = world.add_company(player, "c".into()).unwrap();
@@ -423,17 +423,36 @@ fn compact_world_that_exceeds_pretty_limit_is_rejected_before_load() {
     }
     draft.next_id = 43;
     let large = World::new(draft).unwrap();
-    assert!(matches!(
-        ensure_world_saveable(&large),
-        Err(StorageError::TooLarge)
-    ));
+    ensure_world_saveable(&large).unwrap();
     let compact = serde_json::to_vec(&serde_json::json!({
         "format": "rosenfu-world", "schema_version": rosenfu_storage::SCHEMA_VERSION, "world": large.snapshot(),
         "road_evidence": {"raw_blobs": [], "bindings": []}
     }))
     .unwrap();
     assert!(compact.len() < MAX_SAVE_BYTES);
-    assert!(matches!(decode(&compact), Err(StorageError::TooLarge)));
+    assert_eq!(decode(&compact).unwrap(), large);
+    let bytes = encode(&large).unwrap();
+    assert!(bytes.starts_with(b"{\"format\":"));
+    assert!(bytes.len() < MAX_SAVE_BYTES);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("broken.json");
+    fs::write(&path, b"broken").unwrap();
+    fs::write(backup_path(&path), b"retained recovery copy").unwrap();
+    let baseline = file_version(&path).unwrap();
+    let (outcome, updated) = replace_world_if_version(&path, &large, &baseline).unwrap();
+    assert_eq!(outcome, SaveOutcome::Replaced);
+    assert_eq!(file_version(&path).unwrap(), updated);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(load_world(&path).unwrap(), large);
+    assert_eq!(
+        fs::read(backup_path(&path)).unwrap(),
+        b"retained recovery copy"
+    );
+    assert!(matches!(
+        replace_world_if_version(&path, &large, &baseline),
+        Err(StorageError::FileChanged)
+    ));
 }
 
 #[test]

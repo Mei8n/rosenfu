@@ -35,10 +35,15 @@ impl WorldEditor {
     }
     /// One outer transaction supersedes any intermediate candidate transactions.
     pub(super) fn commit_edit(&mut self, mut candidate: Self, final_edit: bool) {
-        let before = editable(self.snapshot());
-        let after = editable(candidate.snapshot());
         candidate.world.retain_operation_from(&self.world);
         candidate.world.retain_fixed_od_scenario_from(&self.world);
+        self.publish_reconciled_edit(candidate, final_edit);
+    }
+    /// Publish a validated candidate whose runtime and fixed OD were reconciled
+    /// to this same live baseline. Does not perform any fallible work.
+    pub(super) fn publish_reconciled_edit(&mut self, mut candidate: Self, final_edit: bool) {
+        let before = editable(self.snapshot());
+        let after = editable(candidate.snapshot());
         candidate.edit_history = self.edit_history.clone();
         if before != after {
             if final_edit {
