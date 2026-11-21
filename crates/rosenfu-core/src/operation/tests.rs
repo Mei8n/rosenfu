@@ -261,3 +261,91 @@ fn progressive_snapshot_mid_release_and_event_chunking_match() {
     assert_eq!(r.save(), stepped.save());
     assert!(r.occupied.is_empty());
 }
+
+#[test]
+fn terminal_hold_keeps_same_train_and_blocks_opposing_admission_until_return_clears() {
+    fn round_trip(id: &str, resource: &str) -> ServiceRunSpec {
+        let mut spec = service(id, resource);
+        spec.legs[0].dwell_ms = 30_000;
+        let mut reverse = spec.legs[0].clone();
+        std::mem::swap(&mut reverse.from, &mut reverse.to);
+        spec.legs.push(reverse);
+        spec
+    }
+    let rail = "rail:1:section:0:lane:0";
+    let mut runtime = OperationRuntime::new_with_terminal_hold(vec![
+        round_trip("1", rail),
+        round_trip("2", rail),
+        round_trip("3", "rail:2:section:0:lane:0"),
+    ])
+    .unwrap();
+    runtime.advance_to(0, 100).unwrap();
+    let leader = TrainKey {
+        service_id: "1".into(),
+        scheduled_ms: 0,
+    };
+    let other = TrainKey {
+        service_id: "2".into(),
+        scheduled_ms: 0,
+    };
+    assert!(matches!(
+        runtime
+            .trains
+            .values()
+            .find(|t| t.key.service_id == "3")
+            .unwrap()
+            .state,
+        TrainState::Moving { entered_ms: 0, .. }
+    ));
+    let arrived = runtime.advance_to(20_001, 100).unwrap();
+    assert_eq!(
+        arrived
+            .arrivals
+            .iter()
+            .filter(|a| a.train == leader)
+            .count(),
+        1
+    );
+    assert_eq!(Some(&leader), runtime.occupied.get(rail));
+    let saved: OperationSave =
+        serde_json::from_slice(&serde_json::to_vec(&runtime.save()).unwrap()).unwrap();
+    assert_eq!(saved.format, 4);
+    assert!(matches!(
+        OperationRuntime::restore(saved.clone()),
+        Err(OperationError::InvalidClock)
+    ));
+    let mut bad = saved.clone();
+    let TrainState::Moving { release_ms, .. } = &mut bad.trains[0].state else {
+        panic!("leader must retain the lane at the terminal")
+    };
+    *release_ms -= 1;
+    assert!(matches!(
+        OperationRuntime::restore_with_terminal_hold(bad),
+        Err(OperationError::InvalidClock)
+    ));
+    let mut reopened = OperationRuntime::restore_with_terminal_hold(saved).unwrap();
+    let before_advance = reopened.save();
+    let continuous = runtime.advance_to(200_000, 100).unwrap();
+    reopened.advance_to(49_999, 100).unwrap();
+    assert_eq!(Some(&leader), reopened.occupied.get(rail));
+    assert!(matches!(
+        reopened.trains[&other].state,
+        TrainState::Waiting { ready_ms: 0 }
+    ));
+    reopened.advance_to(50_000, 100).unwrap();
+    assert_eq!(1, reopened.trains[&leader].leg);
+    assert_eq!(0, reopened.trains[&leader].delay_ms);
+    assert_eq!(Some(&leader), reopened.occupied.get(rail));
+    reopened.advance_to(70_999, 100).unwrap();
+    assert!(matches!(
+        reopened.trains[&other].state,
+        TrainState::Waiting { .. }
+    ));
+    reopened.advance_to(71_000, 100).unwrap();
+    assert_eq!(71_000, reopened.trains[&other].delay_ms);
+    assert_eq!(Some(&other), reopened.occupied.get(rail));
+    reopened.advance_to(200_000, 100).unwrap();
+    assert_eq!(runtime.save(), reopened.save());
+    let mut replay = OperationRuntime::restore_with_terminal_hold(before_advance).unwrap();
+    assert_eq!(continuous, replay.advance_to(200_000, 100).unwrap());
+}

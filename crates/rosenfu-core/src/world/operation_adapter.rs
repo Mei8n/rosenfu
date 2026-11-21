@@ -494,7 +494,11 @@ impl World {
         for config in &bus_configs {
             specs.push(self.compile_bus_operation(config)?);
         }
-        let runtime = crate::operation::OperationRuntime::new(specs)?;
+        let runtime = if bus_configs.is_empty() && self.terminal_hold_eligible(&configs, &specs) {
+            crate::operation::OperationRuntime::new_with_terminal_hold(specs)?
+        } else {
+            crate::operation::OperationRuntime::new(specs)?
+        };
         self.operation = Some(WorldOperation {
             configs,
             bus_configs,
@@ -530,7 +534,9 @@ impl World {
             return Ok(());
         };
         let progressive = saved.runtime.format == 3;
+        let holding = saved.runtime.format == 4;
         if saved.runtime.format != 2
+            && !holding
             && !(progressive
                 && allow_qualified_qa
                 && !saved.invalidated
@@ -538,6 +544,30 @@ impl World {
                 && self.is_straight_rail_occupancy_qa(&saved.configs))
         {
             return Err(OperationError::InvalidClock);
+        }
+        if holding
+            && (!saved.bus_configs.is_empty()
+                || !(1..=4).contains(&saved.configs.len())
+                || saved
+                    .configs
+                    .iter()
+                    .map(|c| c.service_id.0.to_string())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != saved.configs.len()
+                || saved.configs.len() != saved.runtime.services.len()
+                || saved.configs.iter().any(|c| {
+                    !saved.runtime.services.iter().any(|s| {
+                        s.service_id == c.service_id.0.to_string()
+                            && s.vehicle == c.vehicle
+                            && s.timetable == c.timetable
+                            && s.legs.first().is_some_and(|l| l.dwell_ms == c.dwell_ms)
+                    })
+                })
+                || (!saved.invalidated
+                    && !self.terminal_hold_eligible(&saved.configs, &saved.runtime.services)))
+        {
+            return Err(OperationError::InvalidPath);
         }
         if !saved.invalidated {
             let mut specs = saved
@@ -556,7 +586,7 @@ impl World {
                 let spec = specs
                     .remove(id.as_str())
                     .ok_or(OperationError::InvalidPath)?;
-                let matches = if progressive {
+                let matches = if progressive || holding {
                     self.compile_operation(config)
                         .is_ok_and(|current| current == *spec)
                 } else {
@@ -579,7 +609,11 @@ impl World {
         {
             return Err(OperationError::InvalidClock);
         }
-        let mut runtime = crate::operation::OperationRuntime::restore(saved.runtime)?;
+        let mut runtime = if holding {
+            crate::operation::OperationRuntime::restore_with_terminal_hold(saved.runtime)?
+        } else {
+            crate::operation::OperationRuntime::restore(saved.runtime)?
+        };
         if saved.invalidated {
             runtime.set_paused(true);
         }
@@ -592,12 +626,91 @@ impl World {
         });
         Ok(())
     }
-    /// Narrow synthetic acceptance gate, not a general level-crossing detector.
+    fn terminal_hold_eligible(
+        &self,
+        configs: &[OperationServiceConfig],
+        specs: &[ServiceRunSpec],
+    ) -> bool {
+        self.straight_rail_geometry(configs, false)
+            && specs.len() == configs.len()
+            && specs.iter().all(|spec| {
+                let [outbound, returning] = spec.legs.as_slice() else {
+                    return false;
+                };
+                if outbound.from != returning.to || outbound.to != returning.from {
+                    return false;
+                }
+                // The initial model excludes points, junction locks and multiple lanes.
+                let resources = |leg: &RunLeg| {
+                    leg.sections
+                        .iter()
+                        .flat_map(|section| section.resources.iter().cloned())
+                        .collect::<std::collections::BTreeSet<_>>()
+                };
+                let first = resources(outbound);
+                if first.is_empty()
+                    || first != resources(returning)
+                    || first
+                        .iter()
+                        .any(|r| !r.contains(":section:") || !r.ends_with(":lane:0"))
+                {
+                    return false;
+                }
+                [&outbound.from, &outbound.to].iter().all(|&station| {
+                    let Ok(id) = station.parse::<u64>() else {
+                        return false;
+                    };
+                    let Some(p) = self
+                        .data
+                        .station_placements
+                        .iter()
+                        .find(|p| p.station_id == StationId(id))
+                    else {
+                        return false;
+                    };
+                    let Some(line) = self.data.alignments.iter().find(|a| a.id == p.alignment_id)
+                    else {
+                        return false;
+                    };
+                    if p.length_m < spec.vehicle.length_m + 4. || p.width_m < 4.1 {
+                        return false;
+                    }
+                    let centre = p.position * line.length_m();
+                    let start = centre - p.length_m / 2. - 2.;
+                    let end = centre + p.length_m / 2. + 2.;
+                    let mut section_start = 0.;
+                    line.section_lengths_m()
+                        .iter()
+                        .enumerate()
+                        .any(|(i, length)| {
+                            let section_end = section_start + length;
+                            let fits = start >= section_start
+                                && end <= section_end
+                                && first
+                                    .contains(&format!("rail:{}:section:{i}:lane:0", line.id.0));
+                            section_start = section_end;
+                            fits
+                        })
+                })
+            })
+    }
+
+    /// Narrow acceptance gate, not a general level-crossing detector.
     /// Every alignment in the world must be a local, monotone east-west flat
     /// ground single-track corridor; an optional second corridor must be well
     /// separated and neither corridor can be connected to anything else.
     fn is_straight_rail_occupancy_qa(&self, configs: &[OperationServiceConfig]) -> bool {
+        self.straight_rail_geometry(configs, true)
+    }
+
+    fn straight_rail_geometry(
+        &self,
+        configs: &[OperationServiceConfig],
+        progressive_test: bool,
+    ) -> bool {
         let d = &self.data;
+        let min_points = if progressive_test { 3 } else { 2 };
+        let min_blocks = if progressive_test { 3 } else { 1 };
         if !(1..=2).contains(&d.alignments.len())
             || !(1..=4).contains(&configs.len())
             || !d.alignment_connections.is_empty()
@@ -609,8 +722,8 @@ impl World {
         let mut latitudes = Vec::new();
         for a in &d.alignments {
             if a.track_type != TrackType::Normal
-                || !(3..=64).contains(&a.points.len())
-                || !(3..=8).contains(&a.section_count())
+                || !(min_points..=64).contains(&a.points.len())
+                || !(min_blocks..=8).contains(&a.section_count())
                 || a.vertical_profile.is_some()
                 || !a.section_profiles.is_empty()
                 || a.infrastructure
@@ -676,12 +789,30 @@ impl World {
     pub fn retain_operation_from(&mut self, previous: &World) {
         self.operation = previous.operation.clone();
         let invalid = self.operation.as_ref().is_some_and(|o| {
-            !o.invalidated
-                && o.configs.iter().any(|config| {
-                    o.runtime
-                        .service_spec(&config.service_id.0.to_string())
-                        .is_none_or(|spec| !self.operation_spec_matches(config, spec))
-                })
+            if o.invalidated {
+                return false;
+            }
+            if o.runtime.terminal_hold() {
+                let current = o
+                    .configs
+                    .iter()
+                    .map(|config| self.compile_operation(config))
+                    .collect::<Result<Vec<_>, _>>();
+                return match current {
+                    Ok(specs) => {
+                        !self.terminal_hold_eligible(&o.configs, &specs)
+                            || specs
+                                .iter()
+                                .any(|spec| o.runtime.service_spec(&spec.service_id) != Some(spec))
+                    }
+                    Err(_) => true,
+                };
+            }
+            o.configs.iter().any(|config| {
+                o.runtime
+                    .service_spec(&config.service_id.0.to_string())
+                    .is_none_or(|spec| !self.operation_spec_matches(config, spec))
+            })
         });
         let invalid = invalid
             || self.operation.as_ref().is_some_and(|o| {
@@ -1184,6 +1315,13 @@ mod tests {
         let (mut world, configs) = straight_occupancy_fixture();
         let mut format2 = world.clone();
         format2.configure_operation(configs.clone()).unwrap();
+        let legacy_specs = configs
+            .iter()
+            .map(|c| format2.compile_operation(c))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        format2.operation_mut().unwrap().runtime =
+            crate::operation::OperationRuntime::new(legacy_specs).unwrap();
         world
             .configure_straight_rail_occupancy_qa(configs.clone())
             .unwrap();
@@ -1300,6 +1438,95 @@ mod tests {
         old.restore_operation(format2.operation_save()).unwrap();
         assert_eq!(old.operation_save(), format2.operation_save());
         assert_eq!(old.operation_save().unwrap().runtime.format, 2);
+    }
+
+    #[test]
+    fn qualified_terminal_hold_is_saved_and_reopens_only_on_safe_geometry() {
+        use crate::operation::TrainState;
+
+        let (mut world, mut configs) = straight_occupancy_fixture();
+        configs[0].dwell_ms = 30_000;
+        world.configure_operation(configs.clone()).unwrap();
+        let leader = configs[0].service_id.0.to_string();
+        let rival = configs[1].service_id.0.to_string();
+        let tick = |w: &mut World, at| {
+            w.operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(at, 100)
+                .unwrap()
+        };
+        let t = |w: &World, id: &str| {
+            w.operation()
+                .unwrap()
+                .runtime
+                .trains()
+                .find(|t| t.key.service_id == id)
+                .unwrap()
+                .clone()
+        };
+        tick(&mut world, 0);
+        let outbound = t(&world, &leader);
+        let TrainState::Moving {
+            arrival_ms,
+            release_ms,
+            ..
+        } = outbound.state
+        else {
+            panic!("fixture leader must depart")
+        };
+        assert_eq!(release_ms, arrival_ms + 30_000);
+        tick(&mut world, release_ms - 1);
+        assert!(matches!(
+            t(&world, &rival).state,
+            TrainState::Waiting { .. }
+        ));
+        let bytes = serde_json::to_vec(&(world.snapshot(), world.operation_save())).unwrap();
+        let (draft, saved): (WorldDraft, Option<WorldOperationSave>) =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved.as_ref().unwrap().runtime.format, 4);
+        let mut reopened = World::new(draft.clone()).unwrap();
+        reopened.restore_operation(saved.clone()).unwrap();
+        assert_eq!(world.operation_save(), reopened.operation_save());
+        let mut changed = draft;
+        changed.station_placements[0].length_m = 32.;
+        let mut stale = World::new(changed).unwrap();
+        assert_eq!(
+            stale.restore_operation(saved),
+            Err(OperationError::InvalidPath)
+        );
+        stale.retain_operation_from(&world);
+        assert!(stale.operation().unwrap().invalidated);
+        assert!(stale.operation().unwrap().runtime.paused());
+        let frozen = stale.operation_save().unwrap();
+        let mut reopened_frozen = World::new(stale.snapshot().clone()).unwrap();
+        reopened_frozen
+            .restore_operation(Some(frozen.clone()))
+            .unwrap();
+        assert_eq!(reopened_frozen.operation_save(), Some(frozen.clone()));
+        let mut bad_frozen = frozen;
+        bad_frozen.configs[0].dwell_ms += 1;
+        assert_eq!(
+            reopened_frozen.restore_operation(Some(bad_frozen)),
+            Err(OperationError::InvalidPath)
+        );
+        tick(&mut world, release_ms);
+        let returning = t(&world, &leader);
+        assert_eq!(returning.key, outbound.key);
+        assert_eq!(returning.leg, 1);
+        assert!(matches!(
+            t(&world, &rival).state,
+            TrainState::Waiting { .. }
+        ));
+        tick(&mut reopened, release_ms);
+        assert_eq!(world.operation_save(), reopened.operation_save());
+        assert_eq!(tick(&mut world, 350_000), tick(&mut reopened, 350_000));
+        assert_eq!(world.operation_save(), reopened.operation_save());
+
+        // Outside the geometry qualification the unchanged legacy model remains.
+        configs[0].vehicle.length_m = 81.;
+        world.configure_operation(configs).unwrap();
+        assert_eq!(world.operation_save().unwrap().runtime.format, 2);
     }
 
     #[test]

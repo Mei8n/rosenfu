@@ -197,6 +197,81 @@ fn read_size_is_bounded_and_missing_files_are_reported() {
 }
 
 #[test]
+fn exact_disk_budget_and_trailing_bytes_apply_to_load_and_backup() {
+    use rosenfu_storage::{file_version, load_world_with_version, save_world_if_version};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bounded.json");
+    let backup = backup_path(&path);
+    let world = sample();
+    let mut bytes = encode(&world).unwrap();
+    bytes.resize(MAX_SAVE_BYTES, b' ');
+    fs::write(&path, &bytes).unwrap();
+    let (loaded, exact_version) = load_world_with_version(&path).unwrap();
+    assert_eq!(loaded, world);
+    assert_eq!(exact_version, file_version(&path).unwrap());
+
+    // Backup publication accepts whitespace at the cap and preserves exact
+    // source bytes, not a normalized reserialization of the now-known world.
+    let (_, normalized_version) = save_world_if_version(&path, &world, &exact_version).unwrap();
+    assert_ne!(normalized_version, exact_version);
+    assert_eq!(fs::read(&backup).unwrap(), bytes);
+    assert_eq!(load_world(&backup).unwrap(), world);
+
+    bytes.push(b' ');
+    fs::write(&path, &bytes).unwrap();
+    let oversized_version = file_version(&path).unwrap();
+    assert!(matches!(
+        load_world_with_version(&path),
+        Err(StorageError::TooLarge)
+    ));
+    assert!(matches!(
+        save_world_if_version(&path, &world, &oversized_version),
+        Err(StorageError::TooLarge)
+    ));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(file_version(&backup).unwrap(), exact_version);
+
+    let invalid = [encode(&world).unwrap(), b"x".to_vec()].concat();
+    fs::write(&path, &invalid).unwrap();
+    let invalid_version = file_version(&path).unwrap();
+    assert!(matches!(
+        load_world_with_version(&path),
+        Err(StorageError::Json(_))
+    ));
+    assert!(matches!(
+        save_world_if_version(&path, &world, &invalid_version),
+        Err(StorageError::Json(_))
+    ));
+    assert_eq!(fs::read(&path).unwrap(), invalid);
+    assert_eq!(file_version(&backup).unwrap(), exact_version);
+}
+
+#[test]
+fn whitespace_only_external_change_breaks_exact_save_version() {
+    use rosenfu_storage::{file_version, load_world_with_version, save_world_if_version};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("changed.json");
+    let world = sample();
+    save_world(&path, &world).unwrap();
+    save_world(&path, &world).unwrap();
+    let backup = backup_path(&path);
+    let before_backup = fs::read(&backup).unwrap();
+    let (loaded, baseline) = load_world_with_version(&path).unwrap();
+    let changed = [fs::read(&path).unwrap(), b" \n".to_vec()].concat();
+    fs::write(&path, &changed).unwrap();
+    let (edited, version) = load_world_with_version(&path).unwrap();
+    assert_eq!(loaded, edited);
+    assert_ne!(baseline, version);
+    assert_eq!(version, file_version(&path).unwrap());
+    assert!(matches!(
+        save_world_if_version(&path, &loaded, &baseline),
+        Err(StorageError::FileChanged)
+    ));
+    assert_eq!(fs::read(&path).unwrap(), changed);
+    assert_eq!(fs::read(&backup).unwrap(), before_backup);
+}
+
+#[test]
 fn missing_parent_does_not_create_partial_save() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("missing").join("world.rosenfu.json");

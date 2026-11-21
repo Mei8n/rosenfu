@@ -91,6 +91,36 @@ fn missing_modified_and_noncanonical_evidence_reject() {
     }
 }
 #[test]
+fn loading_and_backing_up_tampered_evidence_preserve_both_files() {
+    use rosenfu_core::world::WorldError;
+
+    let world = evidence_world();
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("world.json");
+    save_world(&path, &world).unwrap();
+    save_world(&path, &world).unwrap();
+    let backup = backup_path(&path);
+    let before_backup = std::fs::read(&backup).unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&before_backup).unwrap();
+    value["world"]["road_evidence_descriptors"][0]["canonical_sha256"] =
+        serde_json::json!("0".repeat(64));
+    let tampered = serde_json::to_vec(&value).unwrap();
+    std::fs::write(&path, &tampered).unwrap();
+
+    assert!(matches!(
+        load_world_with_version(&path),
+        Err(StorageError::InvalidWorld(WorldError::InvalidRoadEvidence))
+    ));
+    let baseline = file_version(&path).unwrap();
+    assert!(matches!(
+        save_world_if_version(&path, &world, &baseline),
+        Err(StorageError::InvalidWorld(WorldError::InvalidRoadEvidence))
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), tampered);
+    assert_eq!(std::fs::read(&backup).unwrap(), before_backup);
+}
+
+#[test]
 fn old24_is_rejected_without_touching_file_or_backup_and_oversize_save_is_atomic() {
     let world = evidence_world();
     let tmp = tempfile::tempdir().unwrap();
