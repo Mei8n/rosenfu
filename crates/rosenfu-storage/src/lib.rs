@@ -89,6 +89,61 @@ struct SaveDocument<W = WorldDraft> {
     fixed_od_scenario: Option<rosenfu_core::world::FixedOdScenario>,
 }
 
+// Serde may skip unknown values when decoding a typed struct. Unlike its
+// Value parser, that skip need not enforce numeric range or recursion limits.
+// Walk every value with the normal JSON parser, without building a DOM.
+struct CheckedJson;
+
+impl<'de> Deserialize<'de> for CheckedJson {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Check;
+
+        impl<'de> Visitor<'de> for Check {
+            type Value = CheckedJson;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a valid JSON value")
+            }
+
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                while seq.next_element::<CheckedJson>()?.is_some() {}
+                Ok(CheckedJson)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<CheckedJson, CheckedJson>()?.is_some() {}
+                Ok(CheckedJson)
+            }
+        }
+
+        deserializer.deserialize_any(Check)
+    }
+}
+
 // The low-allocation path must check object shape and required fields before
 // trusting defaults in WorldDraft. A failed typed parse is retried through the
 // Value path, preserving legacy diagnostics and last-wins duplicate handling.
@@ -210,7 +265,9 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         return Err(StorageError::TooLarge);
     }
     if let Ok(CurrentSave(document)) = serde_json::from_slice(bytes) {
-        return restore_document(document, SCHEMA_VERSION);
+        if serde_json::from_slice::<CheckedJson>(bytes).is_ok() {
+            return restore_document(document, SCHEMA_VERSION);
+        }
     }
     decode_document(serde_json::from_slice(bytes)?)
 }
@@ -613,21 +670,34 @@ fn prepare_backup_file(
     }
     // Parse the copied bytes without holding a full Vec or generic DOM on
     // the common path. The fallback reopens the exact same temp file identity.
-    match serde_json::from_reader(BufReader::new(temp.reopen()?)) {
-        Ok(CurrentSave(document)) => {
+    let typed = parse_save_temp::<CurrentSave>(&temp)?;
+    let restored_typed = if let Some(CurrentSave(document)) = typed {
+        if parse_save_temp::<CheckedJson>(&temp)?.is_some() {
             restore_document(document, SCHEMA_VERSION)?;
+            true
+        } else {
+            false
         }
-        Err(error) if error.io_error_kind().is_some() => {
-            return Err(save_reader_error(error));
-        }
-        Err(_) => {
-            let value = serde_json::from_reader(BufReader::new(temp.reopen()?))
-                .map_err(save_reader_error)?;
-            decode_document(value)?;
-        }
+    } else {
+        false
+    };
+    if !restored_typed {
+        let value =
+            serde_json::from_reader(BufReader::new(temp.reopen()?)).map_err(save_reader_error)?;
+        decode_document(value)?;
     }
     temp.as_file().sync_all()?;
     Ok(temp)
+}
+
+fn parse_save_temp<T: de::DeserializeOwned>(
+    temp: &NamedTempFile,
+) -> Result<Option<T>, StorageError> {
+    match serde_json::from_reader(BufReader::new(temp.reopen()?)) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.io_error_kind().is_some() => Err(save_reader_error(error)),
+        Err(_) => Ok(None),
+    }
 }
 
 fn save_reader_error(error: serde_json::Error) -> StorageError {
