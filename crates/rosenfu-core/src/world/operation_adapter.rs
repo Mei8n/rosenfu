@@ -6,6 +6,91 @@ use std::collections::{BTreeMap, BTreeSet};
 type RailCrossings = BTreeMap<AlignmentId, Vec<(f64, String)>>;
 const MAX_CROSSING_PAIR_CHECKS: usize = 32_768;
 const MAX_CROSSING_REFERENCES: usize = 16_384;
+const LANE_JOIN_PREFIX: &str = "rail:lane-join:";
+
+#[derive(Clone, Copy)]
+struct RailReservations<'a> {
+    crossings: &'a RailCrossings,
+    parallel_joins: bool,
+}
+
+fn has_parallel_join_locks(spec: &ServiceRunSpec) -> bool {
+    spec.legs
+        .iter()
+        .flat_map(|l| &l.sections)
+        .flat_map(|s| &s.resources)
+        .any(|id| id.starts_with(LANE_JOIN_PREFIX))
+}
+
+/// Only exact two-point, equal-height, opposed straight tangents. Merely
+/// having equal track counts does not prove independent lanes.
+fn straight_parallel_join(
+    a: &Alignment,
+    exit: AlignmentEndpoint,
+    b: &Alignment,
+    entry: AlignmentEndpoint,
+) -> Option<u8> {
+    if a.id == b.id
+        || a.track_type != TrackType::Normal
+        || b.track_type != TrackType::Normal
+        || a.section_count() != 1
+        || b.section_count() != 1
+        || a.vertical_profile.is_some()
+        || b.vertical_profile.is_some()
+    {
+        return None;
+    }
+    let aa = a.section_infrastructure(0)?;
+    let bb = b.section_infrastructure(0)?;
+    if aa.track_count != 2 || aa != bb {
+        return None;
+    }
+    let points = |a: &Alignment, endpoint| {
+        let [start, end] = <[GeoPoint; 2]>::try_from(a.points.as_slice()).ok()?;
+        Some(if endpoint == AlignmentEndpoint::Start {
+            (start, end)
+        } else {
+            (end, start)
+        })
+    };
+    let (at, ai) = points(a, exit)?;
+    let (bt, bi) = points(b, entry)?;
+    if at != bt {
+        return None;
+    }
+    let cos = at.latitude.to_radians().cos();
+    let u = (
+        (ai.longitude - at.longitude) * cos,
+        ai.latitude - at.latitude,
+    );
+    let v = (
+        (bi.longitude - bt.longitude) * cos,
+        bi.latitude - bt.latitude,
+    );
+    let norm = u.0.hypot(u.1) * v.0.hypot(v.1);
+    let dot = u.0 * v.0 + u.1 * v.1;
+    let cross = u.0 * v.1 - u.1 * v.0;
+    (norm > 1e-12 && dot < 0.0 && cross.abs() <= norm * 1e-9).then_some(aa.track_count)
+}
+
+fn lane_join_resource(
+    exit: AlignmentEndpointRef,
+    exit_lane: u8,
+    entry: AlignmentEndpointRef,
+    entry_lane: u8,
+) -> String {
+    let key = |e: AlignmentEndpointRef, lane| {
+        (e.alignment_id.0, e.endpoint == AlignmentEndpoint::End, lane)
+    };
+    let mut endpoints = [key(exit, exit_lane), key(entry, entry_lane)];
+    endpoints.sort_unstable();
+    let [(ai, ae, al), (bi, be, bl)] = endpoints;
+    format!(
+        "{LANE_JOIN_PREFIX}{ai}:{}:{al}:{bi}:{}:{bl}",
+        u8::from(ae),
+        u8::from(be)
+    )
+}
 
 fn crossing(a: &Alignment, b: &Alignment) -> Option<(f64, f64)> {
     let [p, q] = [a.points[0], a.points[1]];
@@ -262,6 +347,22 @@ impl World {
         turnback: bool,
         crossings: &RailCrossings,
     ) -> Result<ServiceRunSpec, OperationError> {
+        self.compile_operation_reservations(
+            config,
+            turnback,
+            RailReservations {
+                crossings,
+                parallel_joins: false,
+            },
+        )
+    }
+
+    fn compile_operation_reservations(
+        &self,
+        config: &OperationServiceConfig,
+        turnback: bool,
+        rules: RailReservations<'_>,
+    ) -> Result<ServiceRunSpec, OperationError> {
         let invalid = || OperationError::InvalidPath;
         let path = self
             .data
@@ -278,11 +379,11 @@ impl World {
             &occurrences,
             config.dwell_ms,
             false,
-            crossings,
+            rules,
         )?;
         if let Some(return_legs) = turnback
             .then(|| {
-                self.compile_return_direction(path, &occurrences, config.dwell_ms, &runs, crossings)
+                self.compile_return_direction(path, &occurrences, config.dwell_ms, &runs, rules)
                     .ok()
             })
             .flatten()
@@ -306,7 +407,7 @@ impl World {
         occurrences: &[ServicePathOccurrence],
         dwell_ms: u64,
         check_lane_incidence: bool,
-        crossings: &RailCrossings,
+        rules: RailReservations<'_>,
     ) -> Result<Vec<RunLeg>, OperationError> {
         let invalid = || OperationError::InvalidPath;
         let movements = self.track_movement_geometries().map_err(|_| invalid())?;
@@ -400,12 +501,40 @@ impl World {
                     .iter()
                     .map(|m| m.properties.speed_limit_kmh)
                     .fold(alignment(id)?.effective_design_speed_kmh(), f64::min);
-                // All paths sharing either turnout endpoint conflict. Conservative
-                // at junctions; independent disconnected crossings never conflict.
-                let resource = |e: AlignmentEndpointRef| {
-                    format!("rail:join:{}:{:?}", e.alignment_id.0, e.endpoint)
+                // Genuine turnouts and unqualified geometry retain the shared
+                // endpoint lock. Widen only an exact direct lane correspondence.
+                let verified_lanes = rules.parallel_joins
+                    && matching.is_empty()
+                    && connected.iter().all(|m| m.point.is_none())
+                    && straight_parallel_join(
+                        alignment(exit.alignment_id)?,
+                        exit.endpoint,
+                        alignment(entry.alignment_id)?,
+                        entry.endpoint,
+                    )
+                    .is_some_and(|width| {
+                        connected.len() == usize::from(width)
+                            && (0..width).all(|lane| {
+                                connected
+                                    .iter()
+                                    .filter(|m| m.from.lane_index == lane)
+                                    .count()
+                                    == 1
+                                    && connected.iter().filter(|m| m.to.lane_index == lane).count()
+                                        == 1
+                            })
+                    })
+                    && connected
+                        .iter()
+                        .any(|m| m.from.lane_index == exit_lane && m.to.lane_index == entry_lane);
+                let extra = if verified_lanes {
+                    vec![lane_join_resource(exit, exit_lane, entry, entry_lane)]
+                } else {
+                    let resource = |e: AlignmentEndpointRef| {
+                        format!("rail:join:{}:{:?}", e.alignment_id.0, e.endpoint)
+                    };
+                    vec![resource(exit), resource(entry)]
                 };
-                let extra = vec![resource(exit), resource(entry)];
                 spans.push(Span {
                     id,
                     from: position,
@@ -448,7 +577,11 @@ impl World {
                         span.cap,
                         &span.extra,
                         &internal,
-                        crossings.get(&a.id).map(Vec::as_slice).unwrap_or_default(),
+                        rules
+                            .crossings
+                            .get(&a.id)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
                         &mut pending,
                     )?;
                     cursor = p.position;
@@ -474,7 +607,11 @@ impl World {
                         span.cap,
                         &span.extra,
                         &internal,
-                        crossings.get(&a.id).map(Vec::as_slice).unwrap_or_default(),
+                        rules
+                            .crossings
+                            .get(&a.id)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
                         &mut pending,
                     )?;
                 }
@@ -495,7 +632,7 @@ impl World {
         occurrences: &[ServicePathOccurrence],
         dwell_ms: u64,
         outbound: &[RunLeg],
-        crossings: &RailCrossings,
+        rules: RailReservations<'_>,
     ) -> Result<Vec<RunLeg>, OperationError> {
         let invalid = || OperationError::InvalidPath;
         let start = occurrences.first().ok_or_else(invalid)?.station_id;
@@ -556,21 +693,14 @@ impl World {
         }
         // The outbound compiler historically tolerated selecting lanes that do
         // not meet at these joins. Don't infer a return for such a route.
-        self.compile_rail_direction(
-            &path.legs,
-            &path.stops,
-            occurrences,
-            dwell_ms,
-            true,
-            crossings,
-        )?;
+        self.compile_rail_direction(&path.legs, &path.stops, occurrences, dwell_ms, true, rules)?;
         let returns = self.compile_rail_direction(
             &reverse.legs,
             &stops,
             &reverse.occurrences,
             dwell_ms,
             true,
-            crossings,
+            rules,
         )?;
         let incoming = outbound
             .last()
@@ -695,6 +825,8 @@ fn is_false(value: &bool) -> bool {
 pub struct WorldOperationSave {
     #[serde(default, skip_serializing_if = "is_false")]
     pub crossing_reservations: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub parallel_join_lanes: bool,
     pub configs: Vec<OperationServiceConfig>,
     pub bus_configs: Vec<BusOperationConfig>,
     pub runtime: crate::operation::OperationSave,
@@ -737,7 +869,14 @@ impl World {
         let mut specs = Vec::with_capacity(configs.len() + bus_configs.len());
         let mut crossing_refs = 0usize;
         for config in &configs {
-            let spec = self.compile_operation_mode(config, true, &crossings)?;
+            let spec = self.compile_operation_reservations(
+                config,
+                true,
+                RailReservations {
+                    crossings: &crossings,
+                    parallel_joins: true,
+                },
+            )?;
             crossing_refs = crossing_refs.saturating_add(crossing_lock_count(&spec));
             if crossing_refs > MAX_CROSSING_REFERENCES {
                 return Err(OperationError::CrossingBudget);
@@ -770,6 +909,11 @@ impl World {
                     .service_spec(&c.service_id.0.to_string())
                     .is_some_and(has_crossing_locks)
             }),
+            parallel_join_lanes: o.configs.iter().any(|c| {
+                o.runtime
+                    .service_spec(&c.service_id.0.to_string())
+                    .is_some_and(has_parallel_join_locks)
+            }),
             runtime: o.runtime.save(),
             invalidated: o.invalidated,
             pending_target: o.pending_target,
@@ -791,7 +935,10 @@ impl World {
             self.operation = None;
             return Ok(());
         };
-        if saved.crossing_reservations != saved.runtime.services.iter().any(has_crossing_locks) {
+        if saved.crossing_reservations != saved.runtime.services.iter().any(has_crossing_locks)
+            || saved.parallel_join_lanes
+                != saved.runtime.services.iter().any(has_parallel_join_locks)
+        {
             return Err(OperationError::InvalidPath);
         }
         let progressive = saved.runtime.format == 3;
@@ -864,9 +1011,19 @@ impl World {
                 let spec = specs
                     .remove(id.as_str())
                     .ok_or(OperationError::InvalidPath)?;
-                let matches = if !crossings.is_empty() || has_crossing_locks(spec) {
-                    self.compile_operation_mode(config, true, &crossings)
-                        .is_ok_and(|current| current == *spec)
+                let matches = if saved.parallel_join_lanes
+                    || !crossings.is_empty()
+                    || has_crossing_locks(spec)
+                {
+                    self.compile_operation_reservations(
+                        config,
+                        true,
+                        RailReservations {
+                            crossings: &crossings,
+                            parallel_joins: saved.parallel_join_lanes,
+                        },
+                    )
+                    .is_ok_and(|current| current == *spec)
                 } else if progressive || holding {
                     self.compile_operation(config)
                         .is_ok_and(|current| current == *spec)
@@ -1097,11 +1254,23 @@ impl World {
                 && previous
                     .active_flat_crossings(&o.configs, limit)
                     .is_ok_and(|before| before != crossings);
-            if old_crossings || new_crossing_relation {
+            let old_parallel_joins = o.configs.iter().any(|c| {
+                o.runtime
+                    .service_spec(&c.service_id.0.to_string())
+                    .is_some_and(has_parallel_join_locks)
+            });
+            if old_parallel_joins || old_crossings || new_crossing_relation {
                 return o.configs.iter().any(|c| {
-                    self.compile_operation_mode(c, true, &crossings)
-                        .ok()
-                        .as_ref()
+                    self.compile_operation_reservations(
+                        c,
+                        true,
+                        RailReservations {
+                            crossings: &crossings,
+                            parallel_joins: old_parallel_joins,
+                        },
+                    )
+                    .ok()
+                    .as_ref()
                         != o.runtime.service_spec(&c.service_id.0.to_string())
                 });
             }
@@ -1555,6 +1724,7 @@ mod tests {
         legacy_runtime.advance_to(1_000, 100).unwrap();
         let saved = WorldOperationSave {
             crossing_reservations: false,
+            parallel_join_lanes: false,
             configs: vec![c.clone()],
             bus_configs: vec![],
             runtime: legacy_runtime.save(),

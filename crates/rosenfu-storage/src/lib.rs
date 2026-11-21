@@ -348,11 +348,13 @@ fn restore_document<W: Into<WorldDraft>>(
     document: SaveDocument<W>,
     version: u64,
 ) -> Result<World, StorageError> {
-    // Schema 26 predates runtime formats after v2 and crossing reservations. Keep that ingress
+    // Schema 26 predates runtime formats after v2 and the newer rail reservations. Keep that ingress
     // closed even when the current schema supports newer runtime formats.
     if version == 26
         && document.operation.as_ref().is_some_and(|operation| {
-            operation.runtime.format != 2 || operation.crossing_reservations
+            operation.runtime.format != 2
+                || operation.crossing_reservations
+                || operation.parallel_join_lanes
         })
     {
         return Err(StorageError::InvalidHeader);
