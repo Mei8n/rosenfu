@@ -106,7 +106,7 @@ fn follower_uses_rear_cleared_early_block_before_leader_arrives_and_save_reopens
         .map(|conf| w.compile_operation(conf).unwrap())
         .collect();
     w.configure_operation(c.clone()).unwrap();
-    assert_eq!(w.operation_save().unwrap().runtime.format, 3);
+    assert_eq!(w.operation_save().unwrap().runtime.format, 5);
     let mut old = w.clone();
     old.operation_mut().unwrap().runtime = OperationRuntime::new(legacy).unwrap();
     at(&mut w, 1000);
@@ -153,8 +153,8 @@ fn follower_uses_rear_cleared_early_block_before_leader_arrives_and_save_reopens
 #[test]
 fn same_full_path_still_waits_but_opposing_physical_lane_does_not() {
     for (level, opposite, format) in [
-        (InfrastructureLevel::Ground, false, 3),
-        (InfrastructureLevel::Ground, true, 3),
+        (InfrastructureLevel::Ground, false, 5),
+        (InfrastructureLevel::Ground, true, 5),
         (InfrastructureLevel::Elevated, true, 2),
     ] {
         let (mut w, c) = fixture(level, 2, !opposite, opposite);
@@ -181,7 +181,7 @@ fn grade_single_track_turnback_and_forged_ingress_never_admit_format_three() {
         let (mut w, c) = fixture(level, track, false, false);
         w.configure_operation(c).unwrap();
         let mut op = w.operation_save().unwrap();
-        assert_ne!(op.runtime.format, 3);
+        assert_ne!(op.runtime.format, 5);
         op.runtime.format = 3;
         assert!(World::new(w.snapshot().clone())
             .unwrap()
@@ -209,7 +209,7 @@ fn same_timetable_short_headway_still_reserves_every_required_section() {
     configs[0].timetable.last_departure_ms = 1_000;
     configs[0].timetable.headway_ms = 1_000;
     w.configure_operation(configs).unwrap();
-    assert_eq!(w.operation_save().unwrap().runtime.format, 3);
+    assert_eq!(w.operation_save().unwrap().runtime.format, 5);
     at(&mut w, 1_000);
     let lead_clear = w
         .operation()
@@ -233,4 +233,170 @@ fn same_timetable_short_headway_still_reserves_every_required_section() {
         t.key.scheduled_ms == 1_000
             && matches!(t.state, TrainState::Moving { entered_ms, .. } if entered_ms == lead_clear)
     }));
+}
+
+#[test]
+fn inline_terminal_dwell_preserves_active_and_frozen_operation_bytes() {
+    let (mut world, mut configs) = fixture(InfrastructureLevel::Ground, 2, true, false);
+    configs[0].dwell_ms = 30_000;
+    world.configure_operation(configs.clone()).unwrap();
+    let leader_id = configs[0].service_id.0.to_string();
+    at(&mut world, 1_000);
+    let lead = world
+        .operation()
+        .unwrap()
+        .runtime
+        .trains()
+        .find(|t| t.key.service_id == leader_id)
+        .unwrap();
+    let TrainState::Moving {
+        arrival_ms,
+        release_ms,
+        ..
+    } = lead.state
+    else {
+        panic!("expected leader travelling")
+    };
+    assert_eq!(release_ms, arrival_ms + 30_000);
+    at(&mut world, release_ms - 1);
+    assert!(waiting_at(&world, &configs[1]));
+    let bytes = rosenfu_storage::encode(&world).unwrap();
+    let mut opened = rosenfu_storage::decode(&bytes).unwrap();
+    assert_eq!(rosenfu_storage::encode(&opened).unwrap(), bytes);
+    let arrivals = at(&mut world, 300_000);
+    assert_eq!(at(&mut opened, 300_000), arrivals);
+    assert_eq!(opened.operation_save(), world.operation_save());
+
+    // Platform geometry no longer proves the train fits. A live copied
+    // runtime cannot be admitted, and a real edit keeps a paused snapshot.
+    let mut changed = world.snapshot().clone();
+    let terminal = world
+        .operation()
+        .unwrap()
+        .runtime
+        .service_spec(&leader_id)
+        .unwrap()
+        .legs[0]
+        .to
+        .parse::<u64>()
+        .unwrap();
+    changed
+        .station_placements
+        .iter_mut()
+        .find(|p| p.station_id.0 == terminal)
+        .unwrap()
+        .length_m = 32.;
+    let mut edited = World::new(changed).unwrap();
+    assert!(edited
+        .restore_operation(Some(world.operation_save().unwrap()))
+        .is_err());
+    edited.retain_operation_from(&world);
+    assert!(edited.operation_save().unwrap().invalidated);
+    let frozen = rosenfu_storage::encode(&edited).unwrap();
+    let after = rosenfu_storage::decode(&frozen).unwrap();
+    assert!(after.operation_save().unwrap().runtime.paused);
+    assert_eq!(rosenfu_storage::encode(&after).unwrap(), frozen);
+    edited.configure_operation(configs).unwrap();
+    at(&mut edited, 1_000);
+    let mut legacy = edited.operation_save().unwrap();
+    assert_eq!(legacy.runtime.format, 3);
+    let format3 = rosenfu_storage::encode(&edited).unwrap();
+    let older = rosenfu_storage::decode(&format3).unwrap();
+    assert_eq!(rosenfu_storage::encode(&older).unwrap(), format3);
+
+    // Re-labeling the old snapshot does not manufacture platform qualification.
+    legacy.runtime.format = 5;
+    assert!(edited.restore_operation(Some(legacy)).is_err());
+}
+
+#[test]
+fn inline_terminal_restore_rejects_impossible_first_leg_timing() {
+    use rosenfu_core::operation::OperationError;
+
+    let (mut world, mut configs) = fixture(InfrastructureLevel::Ground, 2, true, false);
+    // Both timetable entries lie inside the observed clock; a fabricated
+    // early admission must not be able to shorten the first terminal lease.
+    for config in &mut configs {
+        config.timetable.first_departure_ms += 1_000;
+        config.timetable.last_departure_ms += 1_000;
+    }
+    configs[0].dwell_ms = 30_000;
+    world.configure_operation(configs).unwrap();
+    at(&mut world, 3_000);
+    let saved = world.operation_save().unwrap();
+    assert_eq!(saved.runtime.format, 5);
+    let mut reopen = World::new(world.snapshot().clone()).unwrap();
+    reopen.restore_operation(Some(saved.clone())).unwrap();
+
+    let mut forged = saved.clone();
+    let moving = forged
+        .runtime
+        .trains
+        .iter_mut()
+        .find(|t| matches!(t.state, TrainState::Moving { .. }))
+        .unwrap();
+    let TrainState::Moving {
+        entered_ms,
+        arrival_ms,
+        release_ms,
+    } = &mut moving.state
+    else {
+        unreachable!("selected moving train")
+    };
+    *entered_ms -= 1;
+    *arrival_ms -= 1;
+    *release_ms -= 1;
+    assert_eq!(
+        reopen.restore_operation(Some(forged)),
+        Err(OperationError::InvalidClock)
+    );
+
+    let mut forged = saved.clone();
+    forged
+        .runtime
+        .trains
+        .iter_mut()
+        .find(|t| matches!(t.state, TrainState::Moving { .. }))
+        .unwrap()
+        .delay_ms += 1;
+    assert_eq!(
+        reopen.restore_operation(Some(forged)),
+        Err(OperationError::InvalidClock)
+    );
+
+    let mut forged = saved.clone();
+    let queue = forged
+        .runtime
+        .trains
+        .iter_mut()
+        .find(|t| matches!(t.state, TrainState::Waiting { .. }))
+        .unwrap();
+    queue.state = TrainState::Waiting {
+        ready_ms: queue.key.scheduled_ms + 1,
+    };
+    assert_eq!(
+        reopen.restore_operation(Some(forged)),
+        Err(OperationError::InvalidClock)
+    );
+
+    let mut forged = saved.clone();
+    forged
+        .runtime
+        .trains
+        .iter_mut()
+        .find(|t| matches!(t.state, TrainState::Waiting { .. }))
+        .unwrap()
+        .delay_ms += 1;
+    assert_eq!(
+        reopen.restore_operation(Some(forged)),
+        Err(OperationError::InvalidClock)
+    );
+    assert_eq!(reopen.operation_save(), Some(saved));
+
+    // A real late admission keeps the recorded first-leg delay on reopen.
+    at(&mut world, 100_000);
+    let saved = world.operation_save().unwrap();
+    assert!(saved.runtime.trains.iter().any(|t| t.delay_ms > 0));
+    reopen.restore_operation(Some(saved.clone())).unwrap();
+    assert_eq!(reopen.operation_save(), Some(saved));
 }
