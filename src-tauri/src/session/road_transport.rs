@@ -1,5 +1,7 @@
 use super::*;
-use rosenfu_core::road_transport::RoadTransport;
+use rosenfu_core::road_transport::{
+    import_native_pilot, PilotBusEdit, PilotRoadMode, RoadTransport,
+};
 
 impl WorldEditor {
     pub fn replace_road_transport(
@@ -16,6 +18,22 @@ impl WorldEditor {
             || replacement.evidence != expected.evidence
         {
             return Err("道路グラフの変更には検証済みの取得処理が必要です。".into());
+        }
+        if expected.uses_native_pilot_source() {
+            fn retained<T: PartialEq>(before: &[T], proposed: &[T]) -> bool {
+                let mut old = before.iter();
+                proposed
+                    .iter()
+                    .all(|item| old.any(|previous| previous == item))
+            }
+            // Native create/edit resolves the complete directed path and its
+            // approved stop positions itself. This endpoint remains for removal.
+            if !retained(&expected.bus_stops, &replacement.bus_stops)
+                || !retained(&expected.bus_routes, &replacement.bus_routes)
+                || replacement.tram_sections != expected.tram_sections
+            {
+                return Err("承認済み地域の路線変更には専用の操作を使用してください。".into());
+            }
         }
         let foreign_stops = |d: &RoadTransport| {
             d.bus_stops
@@ -68,49 +86,90 @@ impl WorldEditor {
         &mut self,
         confirmed_synthetic: bool,
     ) -> Result<WorldDraft, String> {
-        use rosenfu_core::road_transport::{Access, RoadEdge, RoadNode};
         if !confirmed_synthetic {
             return Err("実在道路ではないテストデータの確認が必要です。".into());
         }
+        self.install_road_graph(RoadTransport::synthetic_qa_graph())
+    }
+
+    pub fn install_native_road_pilot(&mut self, asset_id: &str) -> Result<WorldDraft, String> {
+        let graph = import_native_pilot(asset_id)
+            .map_err(|error| format!("承認済みの道路交通データを取得できません: {error:?}"))?;
+        self.install_road_graph(graph)
+    }
+
+    fn install_road_graph(&mut self, graph: RoadTransport) -> Result<WorldDraft, String> {
         let mut draft = self.snapshot();
         if draft.road_transport != RoadTransport::default() {
             return Err("道路交通データが既に存在します。上書きはしません。".into());
         }
-        let pts = [
-            GeoPoint {
-                latitude: 35.0,
-                longitude: 135.0,
-            },
-            GeoPoint {
-                latitude: 35.0,
-                longitude: 135.005,
-            },
-            GeoPoint {
-                latitude: 35.005,
-                longitude: 135.005,
-            },
-        ];
-        let mut graph = RoadTransport::default();
-        for (i, point) in pts.iter().enumerate() {
-            graph.nodes.push(RoadNode {
-                id: format!("qa:{i}"),
-                point: *point,
-            });
-        }
-        for (a, b) in [(0, 1), (1, 0), (1, 2), (2, 1)] {
-            graph.edges.push(RoadEdge {
-                id: format!("qa:{a}-{b}"),
-                from: format!("qa:{a}"),
-                to: format!("qa:{b}"),
-                source: "synthetic-qa-not-real-roads".into(),
-                revision: "1".into(),
-                geometry: vec![pts[a], pts[b]],
-                bus_access: Access::Allowed,
-                tram_access: Access::Allowed,
-                level: Some(rosenfu_core::world::InfrastructureLevel::Ground),
-            });
-        }
         draft.road_transport = graph;
+        self.commit_road_transport(draft)
+    }
+}
+
+impl WorldEditor {
+    pub fn edit_native_pilot_bus(&mut self, edit: PilotBusEdit) -> Result<WorldDraft, String> {
+        use rosenfu_core::road_transport::{BusRoute, BusStop, BusStopOccurrence};
+        let before = self.snapshot();
+        let mut draft = before.clone();
+        let graph = &mut draft.road_transport;
+        let existing = graph.bus_routes.iter().position(|r| r.id == edit.route_id);
+        match (existing, edit.expected_route.as_ref()) {
+            (None, None) => {}
+            (Some(i), Some(expected))
+                if graph.bus_routes[i] == *expected
+                    && expected.owner == self.company
+                    && expected.stops.len() == 2 => {}
+            _ => return Err("指定した自社バス系統が変更されています。読み直してください。".into()),
+        }
+        let edges = graph
+            .native_bus_path(&before, &edit.from, &edit.to)
+            .map_err(|error| format!("承認された停留所間の経路がありません: {error:?}"))?;
+        let last = edges.len() - 1;
+        let mut stops = vec![];
+        for (point, label, edge_index) in [(edit.from, "起点", 0), (edit.to, "終点", last)] {
+            let stop_id = if let Some(stop) = graph.bus_stops.iter().find(|s| {
+                s.owner == self.company
+                    && s.edge_id == point.edge_id
+                    && s.position == point.position
+            }) {
+                stop.id.clone()
+            } else {
+                // Reuse the same stop on re-edit. A revision suffix avoids
+                // reassigning an old stop still used by another local service.
+                let occupied: std::collections::BTreeSet<_> =
+                    graph.bus_stops.iter().map(|s| s.id.as_str()).collect();
+                let stop_id = (0..=graph.bus_stops.len())
+                    .map(|i| format!("{}:{label}:{i}", edit.route_id))
+                    .find(|id| !occupied.contains(id.as_str()))
+                    .ok_or("停留所IDを発行できません。")?;
+                graph.bus_stops.push(BusStop {
+                    id: stop_id.clone(),
+                    owner: self.company,
+                    name: label.into(),
+                    edge_id: point.edge_id,
+                    position: point.position,
+                });
+                stop_id
+            };
+            stops.push(BusStopOccurrence {
+                stop_id,
+                edge_index,
+            });
+        }
+        let route = BusRoute {
+            id: edit.route_id,
+            owner: self.company,
+            name: edit.name,
+            edges,
+            stops,
+        };
+        if let Some(i) = existing {
+            graph.bus_routes[i] = route;
+        } else {
+            graph.bus_routes.push(route);
+        }
         self.commit_road_transport(draft)
     }
 }
@@ -146,7 +205,7 @@ impl WorldEditor {
         let route = |from: &str, to: &str| -> Result<(Vec<String>, Vec<GeoPoint>), String> {
             let ids = before
                 .road_transport
-                .shortest_path(&before, from, to, true)
+                .native_shortest_path(&before, from, to, PilotRoadMode::Tram)
                 .map_err(|e| format!("検証済みの道路経路がありません: {e:?}"))?;
             let mut points: Vec<_> = ids
                 .iter()

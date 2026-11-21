@@ -370,7 +370,7 @@ fn restore_document<W: Into<WorldDraft>>(
     // The draft was validated above. Restoring operation and demand only
     // changes World state outside the draft. The canonical size check still
     // uses the complete document, including those restored fields.
-    write_bounded_save(&save_document(&world), io::sink(), MAX_SAVE_BYTES)?;
+    validate_save_footprint(&save_document(&world))?;
     Ok(world)
 }
 
@@ -460,13 +460,35 @@ fn save_document(world: &World) -> BorrowedSaveDocument<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SaveLayout {
+    Pretty,
+    Compact,
+}
+
+/// Keep the old wire bytes whenever they fit. Only a measured wire-size
+/// limit, not a serialization or disk failure, can choose compact JSON.
+fn prefer_pretty_save<T>(
+    mut attempt: impl FnMut(SaveLayout) -> Result<T, StorageError>,
+) -> Result<T, StorageError> {
+    match attempt(SaveLayout::Pretty) {
+        Err(StorageError::TooLarge) => attempt(SaveLayout::Compact),
+        result => result,
+    }
+}
+
 fn write_bounded_save<W: Write>(
     document: &BorrowedSaveDocument<'_>,
     writer: W,
     limit: usize,
+    layout: SaveLayout,
 ) -> Result<W, StorageError> {
     let mut writer = BoundedWriter::new(writer, limit);
-    if let Err(error) = serde_json::to_writer_pretty(&mut writer, document) {
+    let written = match layout {
+        SaveLayout::Pretty => serde_json::to_writer_pretty(&mut writer, document),
+        SaveLayout::Compact => serde_json::to_writer(&mut writer, document),
+    };
+    if let Err(error) = written {
         return Err(if writer.limit_hit {
             StorageError::TooLarge
         } else if let Some(kind) = error.io_error_kind() {
@@ -486,16 +508,19 @@ fn write_bounded_save<W: Write>(
     Ok(writer.inner)
 }
 
-/// Validate and count the actual pretty-printed save without allocating its output.
-pub fn ensure_world_saveable(world: &World) -> Result<(), StorageError> {
-    let document = checked_save_document(world)?;
-    write_bounded_save(&document, io::sink(), MAX_SAVE_BYTES)?;
+fn validate_save_footprint(document: &BorrowedSaveDocument<'_>) -> Result<(), StorageError> {
+    prefer_pretty_save(|layout| write_bounded_save(document, io::sink(), MAX_SAVE_BYTES, layout))?;
     Ok(())
+}
+
+/// Validate and count the actual save representation without allocating its output.
+pub fn ensure_world_saveable(world: &World) -> Result<(), StorageError> {
+    validate_save_footprint(&checked_save_document(world)?)
 }
 
 pub fn encode(world: &World) -> Result<Vec<u8>, StorageError> {
     let document = checked_save_document(world)?;
-    write_bounded_save(&document, Vec::new(), MAX_SAVE_BYTES)
+    prefer_pretty_save(|layout| write_bounded_save(&document, Vec::new(), MAX_SAVE_BYTES, layout))
 }
 
 #[cfg(test)]
@@ -507,16 +532,16 @@ fn bounded_write_matches_pretty_bytes_and_includes_final_newline() {
     old_bytes.push(b'\n');
     let limit = old_bytes.len();
     assert_eq!(
-        write_bounded_save(&document, Vec::new(), limit).unwrap(),
+        write_bounded_save(&document, Vec::new(), limit, SaveLayout::Pretty).unwrap(),
         old_bytes
     );
-    assert!(write_bounded_save(&document, io::sink(), limit).is_ok());
+    assert!(write_bounded_save(&document, io::sink(), limit, SaveLayout::Pretty).is_ok());
     assert!(matches!(
-        write_bounded_save(&document, io::sink(), limit - 1),
+        write_bounded_save(&document, io::sink(), limit - 1, SaveLayout::Pretty),
         Err(StorageError::TooLarge)
     ));
     assert!(matches!(
-        write_bounded_save(&document, Vec::new(), limit - 1),
+        write_bounded_save(&document, Vec::new(), limit - 1, SaveLayout::Pretty),
         Err(StorageError::TooLarge)
     ));
     assert_eq!(encode(&world).unwrap(), old_bytes);
@@ -628,17 +653,30 @@ fn prepare_world_file(
     path: &Path,
     document: &BorrowedSaveDocument<'_>,
 ) -> Result<(NamedTempFile, FileVersion), StorageError> {
-    let mut temp = temp_sibling(path)?;
-    let version = {
-        let output = BufWriter::new(HashingWriter::new(temp.as_file_mut()));
-        let output = write_bounded_save(document, output, MAX_SAVE_BYTES)?;
-        output
-            .into_inner()
-            .map_err(|error| error.into_error())?
-            .version()
-    };
-    temp.as_file().sync_all()?;
-    Ok((temp, version))
+    prepare_world_file_bounded(path, document, MAX_SAVE_BYTES)
+}
+
+fn prepare_world_file_bounded(
+    path: &Path,
+    document: &BorrowedSaveDocument<'_>,
+    limit: usize,
+) -> Result<(NamedTempFile, FileVersion), StorageError> {
+    prefer_pretty_save(|layout| {
+        // Every attempt owns its sibling and digest. An oversized pretty
+        // sibling is discarded before compact starts; the live save/backup
+        // remains untouched until the selected bounded output is synchronized.
+        let mut temp = temp_sibling(path)?;
+        let version = {
+            let output = BufWriter::new(HashingWriter::new(temp.as_file_mut()));
+            let output = write_bounded_save(document, output, limit, layout)?;
+            output
+                .into_inner()
+                .map_err(|error| error.into_error())?
+                .version()
+        };
+        temp.as_file().sync_all()?;
+        Ok((temp, version))
+    })
 }
 
 fn prepare_backup_file(
@@ -1008,6 +1046,105 @@ mod tests {
     }
 
     #[test]
+    fn compact_fallback_uses_one_bounded_representation_and_no_leftover_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bounded.json");
+        let mut world = World::default();
+        world.add_player("駅\n\" quoted".into()).unwrap();
+        let document = checked_save_document(&world).unwrap();
+        let mut expected = serde_json::to_vec(&document).unwrap();
+        expected.push(b'\n');
+        let limit = expected.len();
+        assert!(matches!(
+            write_bounded_save(&document, io::sink(), limit, SaveLayout::Pretty),
+            Err(StorageError::TooLarge)
+        ));
+        assert_eq!(
+            prefer_pretty_save(|layout| write_bounded_save(&document, Vec::new(), limit, layout))
+                .unwrap(),
+            expected
+        );
+        let (prepared, version) = prepare_world_file_bounded(&path, &document, limit).unwrap();
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(fs::read(prepared.path()).unwrap(), expected);
+        assert_eq!(version, bytes_version(&expected));
+        drop(prepared);
+        assert!(matches!(
+            prepare_world_file_bounded(&path, &document, limit - 1),
+            Err(StorageError::TooLarge)
+        ));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn exactly_16_mib_compact_save_reopens_and_keeps_exact_backups_and_cas() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capacity.json");
+        let mut world = World::default();
+        world.add_player("x".into()).unwrap();
+        let document = checked_save_document(&world).unwrap();
+        let padding = MAX_SAVE_BYTES - serde_json::to_vec(&document).unwrap().len() - 1;
+        let mut draft = world.snapshot().clone();
+        draft.players[0].name.push_str(&"x".repeat(padding));
+        world.replace(draft).unwrap();
+        assert!(matches!(
+            write_bounded_save(
+                &save_document(&world),
+                io::sink(),
+                MAX_SAVE_BYTES,
+                SaveLayout::Pretty
+            ),
+            Err(StorageError::TooLarge)
+        ));
+        ensure_world_saveable(&world).unwrap();
+        let canonical = encode(&world).unwrap();
+        assert_eq!(canonical.len(), MAX_SAVE_BYTES);
+        assert_eq!(canonical.last(), Some(&b'\n'));
+        let (_, initial) = create_world_if_version(&path, &world, &FileVersion::Missing).unwrap();
+        assert_eq!(initial, bytes_version(&canonical));
+        assert_eq!(fs::read(&path).unwrap(), canonical);
+        assert_eq!(
+            load_world_with_version(&path).unwrap(),
+            (world.clone(), initial.clone())
+        );
+
+        let mut draft = world.snapshot().clone();
+        draft.players[0].name.replace_range(..1, "y");
+        world.replace(draft).unwrap();
+        let (_, updated) = save_world_if_version(&path, &world, &initial).unwrap();
+        let backup = backup_path(&path);
+        assert_eq!(fs::read(&backup).unwrap(), canonical);
+        assert_eq!(
+            load_world(&backup).unwrap().snapshot().players[0]
+                .name
+                .as_bytes()[0],
+            b'x'
+        );
+        assert_eq!(file_version(&path).unwrap(), updated);
+        assert_ne!(updated, initial);
+        assert!(matches!(
+            save_world_if_version(&path, &world, &initial),
+            Err(StorageError::FileChanged)
+        ));
+        let sibling_count = fs::read_dir(dir.path()).unwrap().count();
+        let mut draft = world.snapshot().clone();
+        draft.players[0].name.push('z');
+        world.replace(draft).unwrap();
+        assert!(matches!(
+            ensure_world_saveable(&world),
+            Err(StorageError::TooLarge)
+        ));
+        assert!(matches!(encode(&world), Err(StorageError::TooLarge)));
+        assert!(matches!(
+            save_world_if_version(&path, &world, &updated),
+            Err(StorageError::TooLarge)
+        ));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), sibling_count);
+        assert_eq!(file_version(&path).unwrap(), updated);
+        assert_eq!(fs::read(&backup).unwrap(), canonical);
+    }
+
+    #[test]
     fn streaming_save_reports_disk_failure_separately_from_size_limit() {
         struct Broken;
         impl Write for Broken {
@@ -1023,10 +1160,15 @@ mod tests {
         }
         let world = World::default();
         let document = checked_save_document(&world).unwrap();
+        let mut attempts = 0;
         assert!(matches!(
-            write_bounded_save(&document, Broken, MAX_SAVE_BYTES),
+            prefer_pretty_save(|layout| {
+                attempts += 1;
+                write_bounded_save(&document, Broken, MAX_SAVE_BYTES, layout)
+            }),
             Err(StorageError::Io(ref error)) if error.kind()==io::ErrorKind::PermissionDenied
         ));
+        assert_eq!(attempts, 1);
     }
 
     #[test]

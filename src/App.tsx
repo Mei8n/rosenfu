@@ -1,5 +1,6 @@
 import {BusOperations,OperationClock,OperationProvider,ServiceOperations} from "./OperationsPanel";
 import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection} from "./RoadTransportPanel";
+import {RailJourneyReplayPanel} from "./RailJourneyReplayPanel";
 import {FixedOdPanel,type FixedOdScenario,type FixedOdScenarioView} from "./FixedOdPanel";
 import {mapRenderMetrics} from './mapRenderMetrics';
 import {ServiceDirectory} from "./ServiceDirectory";
@@ -117,7 +118,7 @@ type GeoPoint = { latitude: number; longitude: number };
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
+type EngineInfo = { road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
@@ -2094,7 +2095,7 @@ export function App() {
                 const result=await invoke<FixedOdScenarioView>("set_fixed_od_scenario",{expectedToken,scenario});
                 setDirty(true);setOperationRevision(n=>n+1);setConfirmLoad(false);return result;
               }finally{busyRef.current=false;setBusy(false);}
-            }:undefined}/>:<p>人口・需要・都市発展の画面は今後追加します。</p>}</section>
+            }:undefined}/>:<p>人口・需要・都市発展の画面は今後追加します。</p>}{info?.rail_journey_replay_enabled===true&&world&&<RailJourneyReplayPanel key={worldEpoch} stations={world.stations} services={world.services} enabled={enabled&&mainTab==="city"} worldVersion={demandVersion}/>}</section>
           <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3>
             <SaveSlots onRename={renameSavedWorld} deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} onSave={save} saveDisabled={!enabled||saveBlocked} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy||status!=="ready"} canSave={!saveBlocked&&!companySetupRequired} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{setSlotName(companyName);setSlotDialog("save-as");}} onNew={()=>{setSlotName("");setSlotDialog("new");}}/>
             {!activeSlotId&&<p>初回保存後に自動保存を開始します。</p>}

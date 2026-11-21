@@ -1,6 +1,8 @@
 //! Deterministic, headless operation. Infrastructure adapters supply physical
 //! distances, caps and shared resource IDs; the renderer never owns this clock.
 use serde::{Deserialize, Serialize};
+mod passenger_replay;
+pub use passenger_replay::{ReplayItinerary, ReplayItineraryStatus, ReplayRide};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,40 @@ pub struct AdvanceResult {
     pub reached_target: bool,
     pub arrivals: Vec<Arrival>,
 }
+/// Observations from a detached replay of the simulated clock, never a
+/// timetable offer or a measurement of real passengers. A leg beginning
+/// before the replay window may finish in it. Positions are occurrence
+/// indexes: repeated visits to the same station are not interchangeable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReplayedPassengerLeg {
+    pub train: TrainKey,
+    pub sequence: usize,
+    pub from: String,
+    pub to: String,
+    pub entered_ms: u64,
+    pub arrived_ms: u64,
+    /// Occupancy waiting accumulated by this train through the arrival,
+    /// including prior legs. Not an additional per-leg or passenger wait.
+    pub cumulative_reservation_wait_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PassengerReplay {
+    pub observed_from_ms: u64,
+    pub requested_until_ms: u64,
+    pub observed_until_ms: u64,
+    /// False means an event cap truncated observation; omitted rides are
+    /// not evidence of an unavailable service.
+    pub complete: bool,
+    pub completed_legs: Vec<ReplayedPassengerLeg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PassengerReplayError {
+    OutsideBudget,
+    Runtime(OperationError),
+}
+
 fn positive(x: f64) -> bool {
     x.is_finite() && x > 0.0
 }
@@ -443,6 +479,79 @@ impl OperationRuntime {
             })
             .collect()
     }
+    /// Preview a bounded number of exact operation events from the current
+    /// runtime snapshot. Does not advance the live simulation, persist
+    /// extra state, invent arrivals beyond the requested/reached window,
+    /// or modify planned OD. Clock speed/pause do not affect replay.
+    pub fn preview_passenger_replay(
+        &self,
+        until_ms: u64,
+        events: usize,
+    ) -> Result<PassengerReplay, PassengerReplayError> {
+        const MAX_SPAN_MS: u64 = 3_600_000;
+        const MAX_EVENTS: usize = 256;
+        const MAX_SERVICES: usize = 64;
+        const MAX_TRAINS: u64 = 64;
+        const MAX_STATIC_WEIGHT: usize = 262_144;
+        if until_ms
+            .checked_sub(self.now_ms)
+            .is_none_or(|span| span > MAX_SPAN_MS)
+            || events == 0
+            || events > MAX_EVENTS
+            || self.services.len() > MAX_SERVICES
+        {
+            return Err(PassengerReplayError::OutsideBudget);
+        }
+        // Count scheduled births in the whole requested window, even if
+        // some trains would have finished before other trains depart.
+        let mut trains = self.trains.len() as u64;
+        let mut weight = 0usize;
+        let mut spend = |units: usize| -> Result<(), PassengerReplayError> {
+            weight = weight
+                .checked_add(units)
+                .filter(|&total| total <= MAX_STATIC_WEIGHT)
+                .ok_or(PassengerReplayError::OutsideBudget)?;
+            Ok(())
+        };
+        for service in self.services.values() {
+            let t = &service.spec.timetable;
+            let end = t.last_departure_ms.min(until_ms);
+            if let Some(next) = service.next_departure.filter(|&next| next <= end) {
+                trains = trains
+                    .saturating_add((end - next) / t.headway_ms)
+                    .saturating_add(1);
+            }
+            if trains > MAX_TRAINS || service.spec.service_id.len() > 128 {
+                return Err(PassengerReplayError::OutsideBudget);
+            }
+            spend(service.spec.service_id.len())?;
+            for leg in &service.spec.legs {
+                if leg.from.len() > 128 || leg.to.len() > 128 {
+                    return Err(PassengerReplayError::OutsideBudget);
+                }
+                spend(128 + leg.from.len() + leg.to.len())?;
+                for section in &leg.sections {
+                    spend(64)?;
+                    for resource in &section.resources {
+                        spend(resource.len().saturating_add(128))?;
+                    }
+                }
+            }
+        }
+        let mut shadow = self.clone();
+        let mut completed_legs = Vec::new();
+        let result = shadow
+            .advance_to_inner(until_ms, events, Some(&mut completed_legs))
+            .map_err(PassengerReplayError::Runtime)?;
+        Ok(PassengerReplay {
+            observed_from_ms: self.now_ms,
+            requested_until_ms: until_ms,
+            observed_until_ms: result.now_ms,
+            complete: result.reached_target,
+            completed_legs,
+        })
+    }
+
     /// Call on the authority once per elapsed interval, never per viewer.
     /// A zero event budget makes no progress. Continue toward the SAME target
     /// after backpressure; do not add the wall delta again.
@@ -462,6 +571,15 @@ impl OperationRuntime {
         &mut self,
         target: u64,
         event_budget: usize,
+    ) -> Result<AdvanceResult, OperationError> {
+        self.advance_to_inner(target, event_budget, None)
+    }
+
+    fn advance_to_inner(
+        &mut self,
+        target: u64,
+        event_budget: usize,
+        mut replay: Option<&mut Vec<ReplayedPassengerLeg>>,
     ) -> Result<AdvanceResult, OperationError> {
         if target < self.now_ms {
             return Err(OperationError::InvalidClock);
@@ -514,11 +632,21 @@ impl OperationRuntime {
                 } = train.state
                 {
                     if arrival_ms == at {
+                        let leg = &self.services[&key.service_id].spec.legs[train.leg];
+                        if let Some(observations) = replay.as_mut() {
+                            observations.push(ReplayedPassengerLeg {
+                                train: key.clone(),
+                                sequence: train.leg,
+                                from: leg.from.clone(),
+                                to: leg.to.clone(),
+                                entered_ms,
+                                arrived_ms: at,
+                                cumulative_reservation_wait_ms: train.delay_ms,
+                            });
+                        }
                         arrivals.push(Arrival {
                             train: key.clone(),
-                            station_id: self.services[&key.service_id].spec.legs[train.leg]
-                                .to
-                                .clone(),
+                            station_id: leg.to.clone(),
                             at_ms: at,
                             delay_ms: train.delay_ms,
                         });
