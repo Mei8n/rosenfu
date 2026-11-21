@@ -8,6 +8,15 @@ pub struct SaveSlot {
     pub loadable: bool,
     pub error: Option<String>,
 }
+/// Listing metadata for an archived slot. Its world is deliberately not
+/// validated until it is restored to the active list.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchivedSaveSlot {
+    pub id: String,
+    pub name: String,
+    pub updated_at: Option<u64>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
@@ -53,22 +62,28 @@ pub fn save_slot_path(root: &Path, id: &str) -> Result<PathBuf, StorageError> {
     directory(&slot)?;
     Ok(slot.join("world.rosenfu.json"))
 }
-fn describe(id: String, name: String, path: &Path) -> SaveSlot {
-    let error = load_world(path).err().map(|e| e.to_string());
-    let updated_at = fs::symlink_metadata(path)
+fn updated_at(path: &Path) -> Option<u64> {
+    fs::symlink_metadata(path)
         .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs());
+        .map(|d| d.as_secs())
+}
+fn describe(id: String, name: String, path: &Path) -> SaveSlot {
+    let error = load_world(path).err().map(|e| e.to_string());
     SaveSlot {
         id,
         name,
-        updated_at,
+        updated_at: updated_at(path),
         loadable: error.is_none(),
         error,
     }
 }
-pub fn list_save_slots(root: &Path) -> Result<Vec<SaveSlot>, StorageError> {
+
+fn scan_save_slots<T>(
+    root: &Path,
+    describe: impl Fn(String, String, &Path) -> T,
+) -> Result<Vec<T>, StorageError> {
     if !root.exists() {
         return Ok(vec![]);
     }
@@ -103,9 +118,15 @@ pub fn list_save_slots(root: &Path) -> Result<Vec<SaveSlot>, StorageError> {
         };
         result.push(describe(id, name, &path));
     }
+    Ok(result)
+}
+
+pub fn list_save_slots(root: &Path) -> Result<Vec<SaveSlot>, StorageError> {
+    let mut result = scan_save_slots(root, describe)?;
     result.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
     Ok(result)
 }
+
 pub fn create_save_slot(
     root: &Path,
     name: &str,
@@ -237,6 +258,14 @@ pub fn move_save_slot(root: &Path, id: &str, restore: bool) -> Result<(), Storag
     }
     Ok(())
 }
-pub fn list_deleted_save_slots(root: &Path) -> Result<Vec<SaveSlot>, StorageError> {
-    list_save_slots(&root.join("deleted-saves"))
+pub fn list_deleted_save_slots(root: &Path) -> Result<Vec<ArchivedSaveSlot>, StorageError> {
+    let mut result = scan_save_slots(&root.join("deleted-saves"), |id, name, path| {
+        ArchivedSaveSlot {
+            id,
+            name,
+            updated_at: updated_at(path),
+        }
+    })?;
+    result.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
+    Ok(result)
 }

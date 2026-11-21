@@ -348,13 +348,12 @@ fn restore_document<W: Into<WorldDraft>>(
     document: SaveDocument<W>,
     version: u64,
 ) -> Result<World, StorageError> {
-    // Schema 26 predates all runtime formats after v2. Keep that ingress
+    // Schema 26 predates runtime formats after v2 and crossing reservations. Keep that ingress
     // closed even when the current schema supports newer runtime formats.
     if version == 26
-        && document
-            .operation
-            .as_ref()
-            .is_some_and(|operation| operation.runtime.format != 2)
+        && document.operation.as_ref().is_some_and(|operation| {
+            operation.runtime.format != 2 || operation.crossing_reservations
+        })
     {
         return Err(StorageError::InvalidHeader);
     }
@@ -1057,5 +1056,5 @@ mod tests {
 mod slots;
 pub use slots::{
     create_save_slot, list_deleted_save_slots, list_save_slots, move_save_slot, rename_save_slot,
-    save_slot_path, SaveSlot,
+    save_slot_path, ArchivedSaveSlot, SaveSlot,
 };

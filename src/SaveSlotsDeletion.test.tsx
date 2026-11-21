@@ -6,7 +6,7 @@ import {SaveSlots} from './SaveSlots';
 afterEach(cleanup);
 test('deletion requires explicit confirmation, retains failed dialog and supports restore',async()=>{
  const onDelete=vi.fn().mockRejectedValueOnce(Error('disk busy')).mockResolvedValue(undefined),onRestore=vi.fn().mockResolvedValue(undefined);
- const props={slots:[{id:'one',name:'私の世界',loadable:true}],deletedSlots:[{id:'two',name:'以前の世界',loadable:true}],current:'one',loading:false,error:'',busy:false,canSave:true,onRefresh:vi.fn(),onLoad:vi.fn(),onSaveAs:vi.fn(),onNew:vi.fn(),onDelete,onRestore};
+ const props={slots:[{id:'one',name:'私の世界',loadable:true}],deletedSlots:[{id:'two',name:'以前の世界'}],current:'one',loading:false,error:'',busy:false,canSave:true,onRefresh:vi.fn(),onLoad:vi.fn(),onSaveAs:vi.fn(),onNew:vi.fn(),onDelete,onRestore};
  render(<SaveSlots {...props}/>);
  fireEvent.click(screen.getByRole('button',{name:'私の世界を削除'}));expect(onDelete).not.toHaveBeenCalled();
  const dialog=within(screen.getByRole('dialog'));expect(dialog.getByText(/現在の編集中の内容は画面に残り/)).toBeTruthy();

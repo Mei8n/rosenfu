@@ -1,7 +1,8 @@
 import {useState} from "react";
 import "./SaveSlots.css";
 export type SaveSlot = {id:string;name:string;loadable:boolean;error?:string|null;updated_at?:number|null};
-type Props={slots:SaveSlot[];current:string|null;loading:boolean;error:string;busy:boolean;canSave:boolean;onRefresh:()=>void;onLoad:(id:string)=>void;onSaveAs:()=>void;onNew:()=>void;deletedSlots?:SaveSlot[];onDelete?:(id:string)=>Promise<void>;onRestore?:(id:string)=>Promise<void>;onRename?:(id:string,expectedName:string,name:string)=>Promise<void>;onSave?:()=>void;saveDisabled?:boolean};
+export type ArchivedSaveSlot = Pick<SaveSlot,"id"|"name"|"updated_at">;
+type Props={slots:SaveSlot[];current:string|null;loading:boolean;error:string;busy:boolean;canSave:boolean;onRefresh:()=>void;onLoad:(id:string)=>void;onSaveAs:()=>void;onNew:()=>void;deletedSlots?:ArchivedSaveSlot[];onDelete?:(id:string)=>Promise<void>;onRestore?:(id:string)=>Promise<void>;onRename?:(id:string,expectedName:string,name:string)=>Promise<void>;onSave?:()=>void;saveDisabled?:boolean};
 function savedTime(value:number|null|undefined){
  if(value==null||!Number.isFinite(value))return null;
  const date=new Date(value*1000);

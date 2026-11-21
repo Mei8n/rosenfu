@@ -1,8 +1,8 @@
 //! In-memory immutable evidence table. Persistence must reconstruct this through
 //! validated constructors; neither descriptors nor caller-supplied decoded objects are proof.
 use super::{
-    decode_request, decode_tile, raw_sha256, validate_request, DecodedTile, Error, EvidenceInput,
-    Result, TileBinding, MAX_REQUEST_BYTES, MAX_TILES, MAX_TILE_BYTES,
+    decode_request, decode_tile_with_verified_sha, raw_sha256, validate_request, DecodedTile,
+    Error, EvidenceInput, Result, TileBinding, MAX_REQUEST_BYTES, MAX_TILES, MAX_TILE_BYTES,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -254,7 +254,11 @@ impl EvidenceStore {
                 let key = DecodeKey::from(input.binding);
                 let digest = match self.state.canonical.get(&key) {
                     Some(old) => old.clone(),
-                    None => decode_tile(input.binding, input.raw)?.canonical_sha256,
+                    // Every new blob was SHA-checked above; old bytes are
+                    // immutable. Inputs select blobs by the binding's SHA.
+                    None => {
+                        decode_tile_with_verified_sha(input.binding, input.raw)?.canonical_sha256
+                    }
                 };
                 canonical.insert(key, digest);
             }
@@ -329,7 +333,8 @@ impl EvidenceStore {
                 let was_cached = cached.is_some();
                 let decoded = match cached {
                     Some(tile) => tile,
-                    None => Arc::new(decode_tile(input.binding, input.raw)?),
+                    // State is private and admitted by add() above.
+                    None => Arc::new(decode_tile_with_verified_sha(input.binding, input.raw)?),
                 };
                 if state.canonical.get(&key) != Some(&decoded.canonical_sha256) {
                     return Err(Error::Hash);
