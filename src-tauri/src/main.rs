@@ -909,6 +909,7 @@ fn main() {
             operation_commands::reset_operation,
             road_transport_commands::replace_road_transport,
             road_transport_commands::enable_road_qa_fixture,
+            road_transport_commands::install_native_road_pilot,
             road_transport_commands::find_road_path,
             road_transport_commands::edit_road_tram,
             engine_info,

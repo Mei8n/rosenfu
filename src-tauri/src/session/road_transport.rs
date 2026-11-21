@@ -1,5 +1,5 @@
 use super::*;
-use rosenfu_core::road_transport::RoadTransport;
+use rosenfu_core::road_transport::{import_native_pilot, PilotRoadMode, RoadTransport};
 
 impl WorldEditor {
     pub fn replace_road_transport(
@@ -68,47 +68,22 @@ impl WorldEditor {
         &mut self,
         confirmed_synthetic: bool,
     ) -> Result<WorldDraft, String> {
-        use rosenfu_core::road_transport::{Access, RoadEdge, RoadNode};
         if !confirmed_synthetic {
             return Err("実在道路ではないテストデータの確認が必要です。".into());
         }
+        self.install_road_graph(RoadTransport::synthetic_qa_graph())
+    }
+
+    pub fn install_native_road_pilot(&mut self, asset_id: &str) -> Result<WorldDraft, String> {
+        let graph = import_native_pilot(asset_id)
+            .map_err(|error| format!("承認済みの道路交通データを取得できません: {error:?}"))?;
+        self.install_road_graph(graph)
+    }
+
+    fn install_road_graph(&mut self, graph: RoadTransport) -> Result<WorldDraft, String> {
         let mut draft = self.snapshot();
         if draft.road_transport != RoadTransport::default() {
             return Err("道路交通データが既に存在します。上書きはしません。".into());
-        }
-        let pts = [
-            GeoPoint {
-                latitude: 35.0,
-                longitude: 135.0,
-            },
-            GeoPoint {
-                latitude: 35.0,
-                longitude: 135.005,
-            },
-            GeoPoint {
-                latitude: 35.005,
-                longitude: 135.005,
-            },
-        ];
-        let mut graph = RoadTransport::default();
-        for (i, point) in pts.iter().enumerate() {
-            graph.nodes.push(RoadNode {
-                id: format!("qa:{i}"),
-                point: *point,
-            });
-        }
-        for (a, b) in [(0, 1), (1, 0), (1, 2), (2, 1)] {
-            graph.edges.push(RoadEdge {
-                id: format!("qa:{a}-{b}"),
-                from: format!("qa:{a}"),
-                to: format!("qa:{b}"),
-                source: "synthetic-qa-not-real-roads".into(),
-                revision: "1".into(),
-                geometry: vec![pts[a], pts[b]],
-                bus_access: Access::Allowed,
-                tram_access: Access::Allowed,
-                level: Some(rosenfu_core::world::InfrastructureLevel::Ground),
-            });
         }
         draft.road_transport = graph;
         self.commit_road_transport(draft)
@@ -146,7 +121,7 @@ impl WorldEditor {
         let route = |from: &str, to: &str| -> Result<(Vec<String>, Vec<GeoPoint>), String> {
             let ids = before
                 .road_transport
-                .shortest_path(&before, from, to, true)
+                .native_shortest_path(&before, from, to, PilotRoadMode::Tram)
                 .map_err(|e| format!("検証済みの道路経路がありません: {e:?}"))?;
             let mut points: Vec<_> = ids
                 .iter()

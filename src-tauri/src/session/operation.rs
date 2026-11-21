@@ -530,50 +530,20 @@ mod tests {
         use rosenfu_core::road_transport::*;
         let mut e = editor();
         let mut d = e.snapshot();
-        let a = GeoPoint {
-            latitude: 35.,
-            longitude: 139.,
-        };
-        let b = GeoPoint {
-            latitude: 35.,
-            longitude: 139.01,
-        };
         d.road_transport = RoadTransport {
-            evidence: vec![],
-            nodes: vec![
-                RoadNode {
-                    id: "a".into(),
-                    point: a,
-                },
-                RoadNode {
-                    id: "b".into(),
-                    point: b,
-                },
-            ],
-            edges: vec![RoadEdge {
-                id: "ab".into(),
-                from: "a".into(),
-                to: "b".into(),
-                source: "synthetic-qa".into(),
-                revision: "1".into(),
-                geometry: vec![a, b],
-                bus_access: Access::Allowed,
-                tram_access: Access::Unknown,
-                level: None,
-            }],
             bus_stops: vec![
                 BusStop {
                     id: "A".into(),
                     owner: e.company,
                     name: "A".into(),
-                    edge_id: "ab".into(),
+                    edge_id: "qa:0-1".into(),
                     position: 0.2,
                 },
                 BusStop {
                     id: "B".into(),
                     owner: e.company,
                     name: "B".into(),
-                    edge_id: "ab".into(),
+                    edge_id: "qa:1-2".into(),
                     position: 0.8,
                 },
             ],
@@ -581,7 +551,7 @@ mod tests {
                 id: "R".into(),
                 owner: e.company,
                 name: "QA bus".into(),
-                edges: vec!["ab".into()],
+                edges: vec!["qa:0-1".into(), "qa:1-2".into()],
                 stops: vec![
                     BusStopOccurrence {
                         stop_id: "A".into(),
@@ -589,11 +559,11 @@ mod tests {
                     },
                     BusStopOccurrence {
                         stop_id: "B".into(),
-                        edge_index: 0,
+                        edge_index: 1,
                     },
                 ],
             }],
-            tram_sections: vec![],
+            ..RoadTransport::synthetic_qa_graph()
         };
         let mut candidate = e.clone();
         candidate.world.replace(d).unwrap();

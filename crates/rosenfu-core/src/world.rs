@@ -439,7 +439,7 @@ impl WorldDraft {
         ids(self.alignments.iter().map(|x| x.id.0), "alignment")?;
         self.validate_alignments()?;
         self.road_transport
-            .validate(self)
+            .validate_world(self)
             .map_err(|_| WorldError::InvalidRoadTransport)?;
         self.validate_station_groups()?;
         self.validate_alignment_connections()?;

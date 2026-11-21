@@ -1,9 +1,9 @@
-//! Offline proof gate for a narrowly reviewed road dataset. No importer, live
-//! capability, or permission inference is attached to the gate.
+//! Positive movement gate for an independently reviewed road graph.
 use super::*;
 use std::{cmp::Ordering, collections::BinaryHeap};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PilotRoadMode {
     Bus,
     Tram,
@@ -29,10 +29,36 @@ pub struct PilotRoad<'a> {
 }
 
 impl<'a> PilotRoad<'a> {
+    /// Compare the persisted graph against **independently trusted** pinned
+    /// native data before a graph can be used for path search or restored routes
+    /// can be accepted. The caller must pin and authenticate expected bytes
+    /// outside the save; neither a save's graph nor values received by IPC can
+    /// serve as the trusted argument. The snapshot is canonical and ordered;
+    /// user-created bus stops, bus paths and tram sections are not graph data.
+    pub fn from_pinned_graph(
+        graph: &'a RoadTransport,
+        world: &WorldDraft,
+        pinned_graph: &RoadTransport,
+        source: &str,
+        revision: &str,
+        rules: &[PilotTransition<'a>],
+    ) -> Result<Self, RoadTransportError> {
+        if graph.nodes != pinned_graph.nodes
+            || graph.edges != pinned_graph.edges
+            || graph.evidence != pinned_graph.evidence
+            || !pinned_graph.bus_stops.is_empty()
+            || !pinned_graph.bus_routes.is_empty()
+            || !pinned_graph.tram_sections.is_empty()
+        {
+            return Err(StaleSnapshot);
+        }
+        Self::checked(graph, world, source, revision, rules)
+    }
+
     /// Caller supplies the expected source/revision from a trusted pinned
     /// manifest, never from a save/map string. This checks graph consistency
     /// and positive movements; it does not authenticate the source or rules.
-    pub fn checked(
+    fn checked(
         graph: &'a RoadTransport,
         world: &WorldDraft,
         source: &str,
@@ -286,9 +312,10 @@ mod tests {
         graph: &'a RoadTransport,
         rules: &[PilotTransition<'a>],
     ) -> Result<PilotRoad<'a>, RoadTransportError> {
-        PilotRoad::checked(
+        PilotRoad::from_pinned_graph(
             graph,
             &WorldDraft::default(),
+            graph,
             "review-fixture",
             "test-1",
             rules,
@@ -363,7 +390,8 @@ mod tests {
 
     #[test]
     fn old_generic_validator_acceptance_does_not_authorize_saved_pilot_path() {
-        let mut graph = fixture();
+        let pinned = fixture();
+        let mut graph = pinned.clone();
         let mut world = WorldDraft::default();
         world.companies.push(Company {
             id: CompanyId(1),
@@ -395,11 +423,14 @@ mod tests {
                 },
             ],
         });
+        let graph: RoadTransport =
+            serde_json::from_str(&serde_json::to_string(&graph).unwrap()).unwrap();
         assert_eq!(graph.validate(&world), Ok(()));
         assert_eq!(
-            PilotRoad::checked(
+            PilotRoad::from_pinned_graph(
                 &graph,
                 &world,
+                &pinned,
                 "review-fixture",
                 "test-1",
                 &[rule("aj", "jd", Tram)]
@@ -407,9 +438,10 @@ mod tests {
             .err(),
             Some(AccessForbidden)
         );
-        assert!(PilotRoad::checked(
+        assert!(PilotRoad::from_pinned_graph(
             &graph,
             &world,
+            &pinned,
             "review-fixture",
             "test-1",
             &[rule("aj", "jd", Bus)]
@@ -418,7 +450,8 @@ mod tests {
     }
     #[test]
     fn matching_tram_geometry_is_not_permission_to_turn() {
-        let mut graph = fixture();
+        let pinned = fixture();
+        let mut graph = pinned.clone();
         let mut world = WorldDraft::default();
         let edges = ids(&["aj", "jd"]);
         let points: Vec<GeoPoint> = graph.nodes[..3].iter().map(|n| n.point).collect();
@@ -441,11 +474,14 @@ mod tests {
             to_position: 1.0,
             placement: TramPlacement::SharedRoad { edges },
         });
+        let graph: RoadTransport =
+            serde_json::from_str(&serde_json::to_string(&graph).unwrap()).unwrap();
         assert_eq!(graph.validate(&world), Ok(()));
         let check = |mode| {
-            PilotRoad::checked(
+            PilotRoad::from_pinned_graph(
                 &graph,
                 &world,
+                &pinned,
                 "review-fixture",
                 "test-1",
                 &[rule("aj", "jd", mode)],
@@ -453,5 +489,29 @@ mod tests {
         };
         assert_eq!(check(Bus).err(), Some(AccessForbidden));
         assert!(check(Tram).is_ok());
+    }
+
+    #[test]
+    fn pinned_graph_identity_is_not_just_source_and_revision_strings() {
+        let mut pinned = fixture();
+        pinned.edges[0].bus_access = Access::Unknown;
+        let restored = pinned.clone();
+        let world = WorldDraft::default();
+        let admissible =
+            |g| PilotRoad::from_pinned_graph(g, &world, &pinned, "review-fixture", "test-1", &[]);
+        assert_eq!(
+            admissible(&restored).unwrap().shortest_path(Bus, "a", "j"),
+            Err(DisconnectedPath)
+        );
+        assert_eq!(
+            admissible(&restored).unwrap().shortest_path(Tram, "a", "j"),
+            Ok(ids(&["aj"]))
+        );
+        let mut widened = pinned.clone();
+        widened.edges[0].bus_access = Access::Allowed;
+        assert_eq!(admissible(&widened).err(), Some(StaleSnapshot));
+        let mut reversed = pinned.clone();
+        reversed.edges[0].geometry.reverse();
+        assert_eq!(admissible(&reversed).err(), Some(StaleSnapshot));
     }
 }
