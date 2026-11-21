@@ -42,7 +42,7 @@ import {DEFAULT_INFRASTRUCTURE,COUNT_LABELS,LEVEL_LABELS,endpointInfrastructure,
 import {mergeSectionSelections,selectAlignmentSections,selectionBounds,type SelectionBox,type SectionSelection} from "./boxSelection";
 import "./boxSelection.css";
 import {HeightControls} from './HeightControls';
-import {SaveSlots,type SaveSlot} from "./SaveSlots";
+import {SaveSlots,type ArchivedSaveSlot,type SaveSlot} from "./SaveSlots";
 import {sameRouteBinding,ServiceRouteBindingEditor,type ServiceRouteBindingRecord} from "./ServiceRouteBinding";
 import {RouteDirectory} from "./RouteDirectory";
 import {PARALLEL_RANGE_M,parallelProjection,offsetTrack,parallelSection} from "./parallelTrack";
@@ -283,7 +283,7 @@ export function App() {
   const [dirty, setDirty] = useState(false);
   const [confirmLoad, setConfirmLoad] = useState(false);
   const [saveSlots,setSaveSlots]=useState<SaveSlot[]>([]);
-  const [deletedSaveSlots,setDeletedSaveSlots]=useState<SaveSlot[]>([]);
+  const [deletedSaveSlots,setDeletedSaveSlots]=useState<ArchivedSaveSlot[]>([]);
   const [activeSlotId,setActiveSlotId]=useState<string|null>(null);
   const [slotsReady,setSlotsReady]=useState(false);
   const [slotsLoading,setSlotsLoading]=useState(false);
@@ -1743,7 +1743,7 @@ export function App() {
   async function refreshSaveSlots(){
     const generation=++slotGeneration.current;setSlotsLoading(true);setSlotsError("");
     try{
-      const result=await invoke<{active_slot_id:string|null;slots:SaveSlot[];deleted_slots?:SaveSlot[]}>("list_save_slots");
+      const result=await invoke<{active_slot_id:string|null;slots:SaveSlot[];deleted_slots?:ArchivedSaveSlot[]}>("list_save_slots");
       if(!Array.isArray(result?.slots)||!(result.active_slot_id===null||typeof result.active_slot_id==="string"))throw Error("保存一覧を確認できません。");
       if(generation!==slotGeneration.current)return;
       setSaveSlots(result.slots);setDeletedSaveSlots(result.deleted_slots??[]);setActiveSlotId(result.active_slot_id);setSlotsReady(true);

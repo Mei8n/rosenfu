@@ -4,7 +4,7 @@ use super::*;
 pub struct SaveSlotList {
     pub active_slot_id: Option<String>,
     pub slots: Vec<rosenfu_storage::SaveSlot>,
-    pub deleted_slots: Vec<rosenfu_storage::SaveSlot>,
+    pub deleted_slots: Vec<rosenfu_storage::ArchivedSaveSlot>,
 }
 impl WorldEditor {
     pub fn rename_save_slot(
