@@ -361,10 +361,11 @@ impl World {
         }
         macro_rules! existing_only {
             ($field:ident) => {
+                let existing: BTreeSet<_> = self.data.$field.iter().map(|entry| entry.id).collect();
                 if candidate
                     .$field
                     .iter()
-                    .any(|entry| !self.data.$field.iter().any(|old| old.id == entry.id))
+                    .any(|entry| !existing.contains(&entry.id))
                 {
                     return Err(WorldError::UnallocatedId);
                 }
@@ -539,6 +540,44 @@ pub use fixed_od_scenario::FixedOdScenario;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_keeps_membership_ids_and_rejects_reintroducing_a_missing_id_atomically() {
+        let mut world = World::default();
+        let player = world.add_player("p".into()).unwrap();
+        let owner = world.add_company(player, "c".into()).unwrap();
+        for (name, latitude) in [("a", 35.0), ("b", 35.1)] {
+            world
+                .build_alignment(
+                    owner,
+                    name.into(),
+                    vec![
+                        GeoPoint {
+                            latitude,
+                            longitude: 139.0,
+                        },
+                        GeoPoint {
+                            latitude,
+                            longitude: 139.01,
+                        },
+                    ],
+                )
+                .unwrap();
+        }
+        let mut reordered = world.snapshot().clone();
+        reordered.alignments.reverse();
+        world.replace(reordered.clone()).unwrap();
+        let removed = reordered.alignments.remove(0);
+        world.replace(reordered.clone()).unwrap();
+        let mut stale = reordered.clone();
+        stale.alignments.push(removed);
+        // The counter and IDs are structurally valid, but replacement may not
+        // resurrect an alignment absent from the current world.
+        stale.validate().unwrap();
+        assert_eq!(world.replace(stale), Err(WorldError::UnallocatedId));
+        assert_eq!(world.snapshot(), &reordered);
+    }
+
     fn sample() -> WorldDraft {
         let mut w = World::default();
         let p = w.add_player("Player".into()).unwrap();
