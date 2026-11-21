@@ -942,11 +942,28 @@ impl WorldEditor {
                 .add_road_snapshot(snapshot)
                 .map_err(|error| error.to_string())?;
         }
-        candidate.build_construction_plan(alignments, stations)?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world)
-            .map_err(|error| error.to_string())?;
+        // The water model compares physical alignments, stations and connections
+        // from the live baseline. Newly staged road snapshots are validated on
+        // the candidate, and do not change those inputs.
+        candidate.prepare_construction_candidate(self.world.snapshot(), alignments, stations)?;
         candidate.deleted_alignment = None;
-        self.commit_edit(candidate, true);
+
+        // Preparation already validated the canonical save. Reconciliation
+        // only retains these non-draft payloads and may freeze an invalidated
+        // runtime; it does not change geometry or synthesize numeric inputs.
+        // Recount if reconciliation changed the prepared payload so that the
+        // final live state still respects the hard save cap.
+        let prepared_operation = candidate.world.operation_save();
+        let prepared_od = candidate.world.fixed_od_scenario().cloned();
+        candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
+        if prepared_operation != candidate.world.operation_save()
+            || prepared_od.as_ref() != candidate.world.fixed_od_scenario()
+        {
+            rosenfu_storage::ensure_world_saveable(&candidate.world)
+                .map_err(|error| error.to_string())?;
+        }
+        self.publish_reconciled_edit(candidate, true);
         Ok(self.snapshot())
     }
     pub fn road_assessments(&self) -> Vec<(AlignmentId, rosenfu_core::world::RoadAssessment)> {
@@ -4626,6 +4643,23 @@ mod tests {
             )
             .is_err());
         assert_eq!(editor.snapshot(), before);
+
+        let plan = serde_json::from_value(serde_json::json!({
+            "name": "着工上限確認",
+            "points": planned_alignment_points(),
+            "trackType": "normal",
+            "stations": [],
+        }))
+        .unwrap();
+        let revision = editor.world_edit_history().revision;
+        assert_eq!(
+            editor
+                .build_construction_plan_with_roads(vec![plan], vec![], vec![])
+                .unwrap_err(),
+            rosenfu_storage::StorageError::TooLarge.to_string()
+        );
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.world_edit_history().revision, revision);
     }
 
     #[test]
@@ -6142,6 +6176,229 @@ mod road_snapshot_transaction_tests {
             destination: None,
         }
     }
+    // The pre-#198 transaction is a test oracle, not a production fallback.
+    fn nested_construction_baseline(
+        editor: &mut WorldEditor,
+        alignments: Vec<PlannedAlignment>,
+        roads: Vec<RoadSnapshot>,
+    ) -> Result<WorldDraft, String> {
+        let mut outer = editor.clone();
+        for snapshot in roads {
+            outer
+                .world
+                .add_road_snapshot(snapshot)
+                .map_err(|e| e.to_string())?;
+        }
+        outer.build_construction_plan(alignments, vec![])?;
+        rosenfu_storage::ensure_world_saveable(&outer.world).map_err(|e| e.to_string())?;
+        outer.deleted_alignment = None;
+        editor.commit_edit(outer, true);
+        Ok(editor.snapshot())
+    }
+
+    #[test]
+    fn one_construction_candidate_matches_nested_live_operation_and_history() {
+        use rosenfu_core::operation::{Timetable, Vehicle};
+        use rosenfu_core::world::{FixedOdScenario, OperationServiceConfig, RouteSegment};
+
+        let mut initial = WorldEditor::new();
+        let mut existing = plan();
+        existing.points = vec![point(-0.01, 0.0), point(0.01, 0.0)];
+        let id = initial
+            .build_construction_plan(vec![existing], vec![])
+            .unwrap()
+            .alignments[0]
+            .id;
+        let a = initial
+            .world
+            .place_station_on_alignment(initial.company, "A".into(), id, 0.1, 60., 10.)
+            .unwrap();
+        let b = initial
+            .world
+            .place_station_on_alignment(initial.company, "B".into(), id, 0.9, 60., 10.)
+            .unwrap();
+        let segments = vec![RouteSegment::Alignment {
+            alignment_id: id,
+            from: a,
+            to: b,
+        }];
+        let occurrences = initial
+            .world
+            .preview_service_path(a, segments.clone())
+            .unwrap()
+            .occurrences;
+        let service_id = initial
+            .world
+            .add_service_path(
+                initial.company,
+                "Shuttle".into(),
+                a,
+                segments,
+                occurrences.into_iter().map(|o| o.reference).collect(),
+            )
+            .unwrap();
+        initial
+            .world
+            .configure_operation(vec![OperationServiceConfig {
+                service_id,
+                timetable: Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60_000,
+                },
+                vehicle: Vehicle {
+                    max_speed_kmh: 72.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.,
+                    length_m: 40.,
+                },
+                dwell_ms: 30_000,
+            }])
+            .unwrap();
+        initial
+            .world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1_000, 100)
+            .unwrap();
+        initial
+            .world
+            .restore_fixed_od_scenario(Some(FixedOdScenario {
+                origin_station_id: a.0.to_string(),
+                destination_station_id: b.0.to_string(),
+                trips: Some(31.),
+                alternative_seconds: None,
+            }))
+            .unwrap();
+        assert_eq!(initial.world.operation_save().unwrap().runtime.format, 4);
+        initial.rename_company("Changed".into()).unwrap();
+
+        for (count, valid) in [(1, true), (2, true), (2, false)] {
+            let make_plans = || {
+                let mut plans: Vec<_> = (1..=count)
+                    .map(|i| {
+                        let mut p = plan();
+                        let y = i as f64 * 0.004;
+                        p.points = vec![point(-0.01, y), point(0.01, y)];
+                        p
+                    })
+                    .collect();
+                if !valid {
+                    plans.last_mut().unwrap().points.truncate(1);
+                }
+                plans
+            };
+            let mut expected = initial.clone();
+            let mut actual = initial.clone();
+            let baseline = nested_construction_baseline(&mut expected, make_plans(), vec![roads()]);
+            let result =
+                actual.build_construction_plan_with_roads(make_plans(), vec![], vec![roads()]);
+            assert_eq!(result, baseline);
+            assert_eq!(expected.snapshot(), actual.snapshot());
+            assert_eq!(
+                expected.world.operation_save(),
+                actual.world.operation_save()
+            );
+            assert_eq!(
+                expected.world.fixed_od_scenario(),
+                actual.world.fixed_od_scenario()
+            );
+            if valid {
+                assert!(result.is_ok());
+                assert_eq!(actual.world.operation().unwrap().invalidated, count == 2);
+                let bytes = rosenfu_storage::encode(&actual.world).unwrap();
+                assert_eq!(bytes, rosenfu_storage::encode(&expected.world).unwrap());
+                assert_eq!(
+                    rosenfu_storage::decode(&bytes).unwrap().operation_save(),
+                    actual.world.operation_save()
+                );
+            } else {
+                assert!(result.is_err());
+                assert_eq!(actual.snapshot(), initial.snapshot());
+                assert_eq!(
+                    actual.world.operation_save(),
+                    initial.world.operation_save()
+                );
+            }
+            let state = |editor: &WorldEditor| {
+                let h = editor.world_edit_history();
+                (h.revision, h.undo_depth, h.redo_depth)
+            };
+            assert_eq!(state(&actual), state(&expected));
+            if !valid {
+                assert_eq!(state(&actual), state(&initial));
+            }
+        }
+    }
+
+    /// Identical release binary for both arms. Selection is optional so a host
+    /// can measure per-arm process RSS separately. Times are not CI assertions.
+    #[test]
+    #[ignore = "manual synthetic release benchmark"]
+    fn measure_one_construction_candidate() {
+        use std::time::Instant;
+        let arm = std::env::var("ROSENFU_CONSTRUCTION_BENCH_ARM").ok();
+        assert!(matches!(arm.as_deref(), None | Some("nested" | "single")));
+        for n in [100, 1_000, 12_500] {
+            let template = WorldEditor::new();
+            let mut draft = template.snapshot();
+            let mut fixture = template;
+            let mut line = plan();
+            line.points = vec![point(-0.01, 0.04), point(0.01, 0.04)];
+            let prototype = fixture
+                .build_construction_plan(vec![line], vec![])
+                .unwrap()
+                .alignments
+                .remove(0);
+            for i in 0..n {
+                let mut row = prototype.clone();
+                row.id = AlignmentId(draft.next_id);
+                draft.next_id += 1;
+                let y = 0.01 + 0.000003 * i as f64;
+                row.points = vec![point(-0.01, y), point(0.01, y)];
+                draft.alignments.push(row);
+            }
+            fixture.world = World::new(draft).unwrap();
+            for pair in 0..6 {
+                let arms = if pair % 2 == 0 {
+                    ["nested", "single"]
+                } else {
+                    ["single", "nested"]
+                };
+                let mut prior = None;
+                for name in arms {
+                    if arm.as_deref().is_some_and(|a| a != name) {
+                        continue;
+                    }
+                    let mut editor = fixture.clone();
+                    let request = vec![plan()];
+                    let evidence = vec![roads()];
+                    let t = Instant::now();
+                    let result = if name == "nested" {
+                        nested_construction_baseline(&mut editor, request, evidence)
+                    } else {
+                        editor.build_construction_plan_with_roads(request, vec![], evidence)
+                    }
+                    .unwrap();
+                    let edit_seconds = t.elapsed().as_secs_f64();
+                    let t = Instant::now();
+                    let save = rosenfu_storage::encode(&editor.world).unwrap();
+                    let save_seconds = t.elapsed().as_secs_f64();
+                    let ipc = serde_json::to_vec(&result).unwrap();
+                    println!("pair={pair} n={n} arm={name} edit_ms={:.3} save_ms={:.3} ipc_bytes={} save_bytes={}",
+                        edit_seconds * 1000., save_seconds * 1000., ipc.len(), save.len());
+                    if let Some((prior_save, prior_ipc)) = prior.take() {
+                        assert_eq!(save, prior_save);
+                        assert_eq!(ipc, prior_ipc);
+                    } else if arm.is_none() {
+                        prior = Some((save, ipc));
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn placement_verdict_matches_summary_without_reporting_uncomputed_crossings() {
         let editor = WorldEditor::new();
