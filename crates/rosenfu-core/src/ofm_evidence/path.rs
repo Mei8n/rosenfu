@@ -229,6 +229,13 @@ pub fn reconstruct_path(
     if required.len() != required_keys.len() || required != available {
         return Err(Error::Binding);
     }
+    let scoped;
+    let store = if store.is_decoded_scope() {
+        store
+    } else {
+        scoped = store.scope(required_keys)?;
+        &scoped
+    };
     let tiles: Vec<_> = store.bindings().map(|b| (b.x, b.y)).collect();
     let pairs = boundary_candidates(store, &tiles)?;
     let mut adjacent: BTreeMap<String, Vec<String>> = BTreeMap::new();

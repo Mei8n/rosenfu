@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from 'react';
 import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
@@ -12,7 +13,7 @@ afterEach(()=>{cleanup();vi.clearAllMocks();vi.unstubAllGlobals();localStorage.c
 async function start(){
  vi.stubGlobal('PointerEvent',MouseEvent);
  vi.stubGlobal('fetch',vi.fn().mockRejectedValue(Error('network intentionally unavailable')));
- vi.mocked(invoke).mockImplementation(async command=>{
+ vi.mocked(invoke).mockImplementation(async command=>{if(command==="preview_construction_plan")return {validationError:null};
   if(command==='engine_info')return {name:'Rosenfu',version:'road-water-acceptance'};
   if(command==='world_snapshot'||command==='build_plan'||command==='build_alignment')return empty;
   if(command==='list_save_slots')return {active_slot_id:'test',slots:[]};
@@ -33,7 +34,7 @@ test('unavailable road reference does not disable ordinary construction or claim
  expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).not.toContain('水域確認済み');
  expect(screen.getByRole('status',{name:'道路データ状態'}).textContent).not.toContain('踏切自動作成・水域建設判定は未実装');
  fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
- fireEvent.click(map,{clientX:180,clientY:130});fireEvent.click(map,{clientX:320,clientY:130});
+ await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:320,clientY:130});
  fireEvent.keyDown(document.body,{key:'Escape'});
  const button=screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement;
  expect(button.disabled).toBe(false);fireEvent.click(button);

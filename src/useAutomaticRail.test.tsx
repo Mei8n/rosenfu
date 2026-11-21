@@ -32,7 +32,7 @@ test('App ordinary save preserves selected rail route; adding and building uses 
  vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'auto-rail-save-test'}:command==='list_save_slots'?{active_slot_id:'test',slots:[]}:command==='save_world'?{saved:true}:world);
  const view=render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/auto-rail-save-test/);
  fireEvent.click(screen.getByRole('button',{name:'実在の路線網に合わせる'}));const worker=FakeWorker.instances[0];expect(worker).toBeDefined();
- act(()=>worker.reply({id:0,kind:'loaded',source}));fireEvent.click(screen.getByRole('button',{name:'拡大'}));fireEvent.click(screen.getByRole('button',{name:'拡大'}));
+ act(()=>worker.reply({id:0,kind:'loaded',source}));fireEvent.keyDown(window,{key:"+"});fireEvent.keyDown(window,{key:"+"});
  await waitFor(()=>expect(worker.messages.some(m=>m.kind==='view')).toBe(true));const request=worker.messages.filter(m=>m.kind==='view').at(-1)!;
  act(()=>worker.reply({id:request.id,kind:'view',view:{chains:[{id:7,points:route.points},{id:8,points:route.points}],truncated:false}}));
  fireEvent.click(screen.getByRole('button',{name:'実在線路の追従を開始'}));const map=view.container.querySelector('svg[role=img]')!;
@@ -47,12 +47,25 @@ test('App ordinary save preserves selected rail route; adding and building uses 
  const payload=vi.mocked(invoke).mock.calls.find(([command])=>command==='build_plan')![1] as {alignments:{points:unknown;reference:{provenance:{network_path:unknown}}}[]};expect(payload.alignments[0].points).toEqual(route.points);expect(payload.alignments[0].reference.provenance.network_path).toEqual(route.spans);
 });
 
-test.each([true,false])('App credits rendered source-derived built geometry, not orphan source records (%s)',async linked=>{
+test.each([true,false])('App retains water OSM attribution on sample background with or without derived rail (%s)',async linked=>{
  vi.useRealTimers();
  const points=[{latitude:35.67504,longitude:139.75},{latitude:35.676,longitude:139.751}];
  const world={next_id:'4',players:[{id:'1',name:'Player'}],companies:[{id:'2',owner:'1',name:'Railway'}],stations:[],tracks:[],routes:[],services:[],station_placements:[],source_records:[source],alignments:linked?[{id:'3',owner:'2',name:'Source rail',points,track_type:'normal',design_speed_kmh:120}]:[],alignment_provenance:linked?[{alignment_id:'3',start_point_index:0,end_point_index:1,source:{source_key:source.key,method:'rail_graph_route_v1',osm_way_id:'',mode:'rail',start_segment_index:0,end_segment_index:0,start_fraction:0,end_fraction:0,network_path:route.spans}}]:[]};
  vi.mocked(invoke).mockImplementation(async command=>command==='engine_info'?{name:'Rosenfu',version:'built-credit-test'}:command==='list_save_slots'?{active_slot_id:'test',slots:[]}:world);
  render(<App/>);fireEvent.click(screen.getByText('自作サンプル（オフライン）',{selector:'button'}));await screen.findByText(/built-credit-test/);
- const credits=screen.queryAllByRole('link',{name:'© OpenStreetMap contributors'});expect(credits).toHaveLength(linked?1:0);if(linked)expect(credits[0].closest('details')).toBeNull();
+ const credits=screen.queryAllByRole('link',{name:'© OpenStreetMap contributors'});expect(credits).toHaveLength(1);expect(credits[0].closest('details')).toBeNull();
  expect(FakeWorker.instances).toHaveLength(0);
+});
+
+test('session history restores exact worker route synchronously and rejects stale, forged and old-epoch snapshots',()=>{
+ const h=setup();ready(h);pick(h);const one=h.result.current.copy.sessionSnapshot;
+ pick(h,true);const two=h.result.current.copy.sessionSnapshot,preview=h.result.current.copy.plan.build;
+ act(()=>h.result.current.copy.setConfirmed(true));const messages=h.worker.messages.length;
+ act(()=>expect(h.result.current.copy.restoreSession(one,two)).toBe(true));expect(h.result.current.copy.picks).toHaveLength(1);expect(h.result.current.copy.confirmed).toBe(false);
+ act(()=>expect(h.result.current.copy.restoreSession(two,h.result.current.copy.sessionSnapshot)).toBe(true));expect(h.result.current.copy.plan.build).toEqual(preview);expect(h.worker.messages).toHaveLength(messages);
+ act(()=>expect(h.result.current.copy.restoreSession(one,one)).toBe(false));
+ act(()=>expect(h.result.current.copy.restoreSession({...two},h.result.current.copy.sessionSnapshot)).toBe(false));
+ act(()=>{void h.result.current.copy.click(a.point);expect(h.result.current.copy.restoreSession(one,h.result.current.copy.sessionSnapshot)).toBe(false);});
+ h.rerender({...h.props,worldEpoch:1});const worker=FakeWorker.instances.at(-1)!;act(()=>worker.reply({id:0,kind:'loaded',source}));
+ act(()=>expect(h.result.current.copy.restoreSession(two,h.result.current.copy.sessionSnapshot)).toBe(false));expect(h.result.current.copy.active).toBe(false);
 });

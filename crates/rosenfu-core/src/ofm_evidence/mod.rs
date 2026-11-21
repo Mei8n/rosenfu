@@ -12,7 +12,9 @@ pub use candidates::{boundary_candidates, validate_boundary_candidates, Boundary
 mod wire;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-pub use store::{EvidenceDescriptor, EvidenceStore, RawEvidence};
+pub use store::{
+    EvidenceDescriptor, EvidenceStore, RawEvidence, MAX_PINNED_BINDINGS, MAX_PINNED_RAW_BYTES,
+};
 use wire::{bytes, once, var, Field, Reader};
 
 pub const DECODER_RULE: &str = "ofm_transportation_z14_v1";
@@ -117,7 +119,7 @@ impl TileBinding {
 }
 /// Checks the whole request before decoding any tile, including reused evidence.
 /// Duplicate tile bindings and mixed provider revisions are rejected atomically.
-pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> {
+fn validate_request(inputs: &[EvidenceInput<'_>]) -> Result<()> {
     if inputs.is_empty() || inputs.len() > MAX_TILES {
         return Err(Error::Limit);
     }
@@ -135,6 +137,10 @@ pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> 
             return Err(Error::Limit);
         }
     }
+    Ok(())
+}
+pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> {
+    validate_request(inputs)?;
     inputs
         .iter()
         .map(|input| decode_tile(input.binding, input.raw))
@@ -148,6 +154,12 @@ pub fn decode_tile(binding: &TileBinding, raw: &[u8]) -> Result<DecodedTile> {
     if raw_sha256(raw) != binding.raw_sha256 {
         return Err(Error::Hash);
     }
+    decode_tile_with_verified_sha(binding, raw)
+}
+
+// The caller must already have checked the raw hash against the validated
+// binding. Archive callers obtain bytes only by SHA from the immutable store.
+fn decode_tile_with_verified_sha(binding: &TileBinding, raw: &[u8]) -> Result<DecodedTile> {
     let mut reader = Reader::new(raw);
     let mut transportation = None;
     let mut layers = 0;

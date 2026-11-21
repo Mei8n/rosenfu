@@ -142,8 +142,30 @@ impl Fine {
 #[derive(Clone, Default)]
 pub struct ConstructionWaterModel {
     fine: [Option<Arc<Fine>>; 3],
+    national: Option<super::water_national::NationalWaterModel>,
 }
 impl ConstructionWaterModel {
+    pub fn enable_national(&mut self) -> Result<(), String> {
+        self.national = Some(super::water_national::NationalWaterModel::new()?);
+        Ok(())
+    }
+    pub fn national_enabled(&self) -> bool {
+        self.national.is_some()
+    }
+    pub fn missing_zones(&self, bounds: [f64; 4]) -> Result<Vec<String>, String> {
+        self.national.as_ref().ok_or(UNKNOWN)?.missing(bounds)
+    }
+    /// Batch independent regions without repeated per-segment allocations.
+    pub fn missing_zones_many(
+        &self,
+        bounds: impl IntoIterator<Item = [f64; 4]>,
+    ) -> Result<Vec<String>, String> {
+        self.national.as_ref().ok_or(UNKNOWN)?.missing_many(bounds)
+    }
+    pub fn install_zone(&mut self, zone: Arc<crate::water_zone::WaterZone>) -> Result<(), String> {
+        self.national.as_mut().ok_or(UNKNOWN)?.install(zone)
+    }
+
     pub fn missing_requests(&self) -> Vec<WaterMaskRequest> {
         water_mask_requests()
             .into_iter()
@@ -167,6 +189,9 @@ impl ConstructionWaterModel {
 }
 impl WaterField for ConstructionWaterModel {
     fn water(&self, p: GeoPoint) -> Result<bool, String> {
+        if let Some(model) = &self.national {
+            return model.water(p);
+        }
         // Scope remains authoritative even if a future fine rectangle extends beyond it.
         let coarse = bundled()?.water(p)?;
         for (i, s) in SPECS.iter().enumerate() {
@@ -183,6 +208,9 @@ impl WaterField for ConstructionWaterModel {
         Ok(coarse)
     }
     fn cuts(&self, a: GeoPoint, b: GeoPoint) -> Result<Vec<f64>, String> {
+        if let Some(model) = &self.national {
+            return model.cuts(a, b);
+        }
         let mut cuts = bundled()?.cuts(a, b)?;
         for s in SPECS {
             let [w, south, e, n] = s.bounds();

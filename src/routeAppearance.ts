@@ -11,11 +11,9 @@ type AppearanceWorld = {
   station_placements?:{station_id:string;alignment_id:string;position:number}[];
   route_paths?:{route_id:string;segments:Segment[];member_stations:string[]}[];
 };
-/** Saved route membership only: a service, selected draft, or mere adjacency is not a route. */
-export function routeAppearance(world: AppearanceWorld | null) {
-  const stations = new Set<string>(), alignmentSections = new Map<string,GeoPoint[][]>();
-  if(!world)return {stations,alignmentSections};
-  const knownStations=new Set(world.stations.map(s=>s.id));
+/** Geometry only, shared by saved routes and non-persistent candidate overlays. */
+export function routeSegmentSections(world:AppearanceWorld,segments:Segment[]) {
+  const alignmentSections = new Map<string,GeoPoint[][]>();
   const placements=new Map(world.station_placements?.map(p=>[p.station_id,p]));
   const alignments=new Map(world.alignments?.map(a=>[a.id,a]));
   function section(alignmentId:string,from:string,to:string){
@@ -32,12 +30,19 @@ export function routeAppearance(world: AppearanceWorld | null) {
     points.push(pointOnAlignment(a.points,hi));
     const sections=alignmentSections.get(alignmentId)??[];sections.push(points);alignmentSections.set(alignmentId,sections);
   }
+  for(const s of segments)if(s.kind==="alignment")section(s.alignment_id,s.from,s.to);else {try{for(const span of corridorSpans(s,world))range(span.alignmentId,span.begin,span.finish);}catch{/* Invalid/stale metadata never paints unrelated tracks. */}}
+  return alignmentSections;
+}
+/** Saved route membership only: a service, selected draft, or mere adjacency is not a route. */
+export function routeAppearance(world: AppearanceWorld | null) {
+  const stations = new Set<string>(), alignmentSections = new Map<string,GeoPoint[][]>();
+  if(!world)return {stations,alignmentSections};
+  const knownStations=new Set(world.stations.map(s=>s.id));
   for(const route of world.routes){
     const path=world.route_paths?.find(p=>p.route_id===route.id);
-    if(path){
-      for(const id of path.member_stations)if(knownStations.has(id))stations.add(id);
-      for(const s of path.segments)if(s.kind==="alignment")section(s.alignment_id,s.from,s.to);else {try{for(const span of corridorSpans(s,world))range(span.alignmentId,span.begin,span.finish);}catch{/* Invalid/stale metadata never paints unrelated tracks. */}}
-    }
+    if(!path)continue;
+    for(const id of path.member_stations)if(knownStations.has(id))stations.add(id);
+    for(const [id,sections] of routeSegmentSections(world,path.segments))alignmentSections.set(id,[...(alignmentSections.get(id)??[]),...sections]);
   }
   return {stations,alignmentSections};
 }

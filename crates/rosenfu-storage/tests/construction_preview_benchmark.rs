@@ -1,71 +1,125 @@
-//! Headless release microbenchmark. Fixture setup and request creation are not timed.
+//! Headless benchmark of the real summary preview; no fixed CI timing threshold.
 #[allow(dead_code, unused_imports)]
 #[path = "../../../src-tauri/src/session.rs"]
 mod session;
-use rosenfu_core::world::{AlignmentId, World};
+use rosenfu_core::world::{AlignmentId, CoverageBounds, GeoPoint, RoadSnapshot, RoadWay, World};
 use session::{PlannedAlignment, WorldEditor};
+use std::sync::Mutex;
 use std::time::Instant;
-fn plan() -> PlannedAlignment {
-    serde_json::from_value(serde_json::json!({"name":"bench", "points":[
-        {"longitude":139.7671,"latitude":35.6812},
-        {"longitude":139.7681,"latitude":35.6812}],
-        "trackType":"normal","stations":[]})).unwrap()
-}
-fn editor(size: usize) -> WorldEditor {
-    let mut editor = WorldEditor::new();
-    let mut draft = editor.build_construction_plan(vec![plan()], vec![]).unwrap();
-    let template = draft.alignments[0].clone();
-    for _ in 1..size {
-        let mut alignment = template.clone();
-        alignment.id = AlignmentId(draft.next_id);
-        draft.next_id += 1;
-        draft.alignments.push(alignment);
+
+fn point(x: f64, y: f64) -> GeoPoint {
+    GeoPoint {
+        longitude: 139. + x,
+        latitude: 35. + y,
     }
-    let world = World::new(draft).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bench.json");
-    rosenfu_storage::create_world(&path, &world).unwrap();
-    editor.load(&path).unwrap();
-    editor
 }
-#[test]
-fn isolated_native_preview_entry_preserves_results_and_source() {
-    let editor = editor(4);
-    let before = editor.snapshot();
-    let old = editor.clone().preview_construction_plan(vec![plan()], vec![]);
-    let new = editor.clone().build_construction_plan(vec![plan()], vec![]);
-    assert_eq!(old, new);
-    assert_eq!(editor.snapshot(), before);
-    let bad = || { let mut p=plan(); p.points.clear(); p };
-    assert_eq!(editor.clone().preview_construction_plan(vec![bad()],vec![]),
-        editor.clone().build_construction_plan(vec![bad()],vec![]));
-    assert_eq!(editor.snapshot(), before);
+fn plan_value() -> serde_json::Value {
+    serde_json::json!({
+        "name": "benchmark", "points":[point(-0.01,0.), point(0.01,0.)],
+        "trackType":"normal", "stations":[]
+    })
 }
-#[test]
-#[ignore = "release timing, not a CI performance threshold"]
-fn construction_preview_timings() {
-    let sizes = std::env::var("ROSENFU_BENCH_SIZES").unwrap_or("100,1000".into());
-    for size in sizes.split(',').map(|s| s.parse::<usize>().unwrap()) {
-        assert!(size <= 10_000);
-        let editor = editor(size);
-        let before = editor.snapshot();
-        for mode in ["legacy-entry", "isolated-build", "with-roads"] {
-            let mut times = Vec::new();
-            for iteration in 0..12 {
-                let p=plan();
-                let start=Instant::now();
-                let result=match mode {
-                    "legacy-entry" => editor.clone().preview_construction_plan(vec![p],vec![]),
-                    "isolated-build" => editor.clone().build_construction_plan(vec![p],vec![]),
-                    _ => editor.clone().build_construction_plan_with_roads(vec![p],vec![],vec![]),
-                }.unwrap();
-                std::hint::black_box(result);
-                if iteration >= 2 { times.push(start.elapsed().as_secs_f64()*1000.0); }
+
+fn fixture(size: usize) -> (WorldEditor, usize) {
+    let mut editor = WorldEditor::new();
+    let mut draft = editor
+        .build_construction_plan(vec![serde_json::from_value(plan_value()).unwrap()], vec![])
+        .unwrap();
+    let alignment = draft.alignments[0].clone();
+    for i in 1..size {
+        let mut next = alignment.clone();
+        next.id = AlignmentId(draft.next_id);
+        draft.next_id += 1;
+        let x = 0.04 + (i % 110) as f64 * 0.001;
+        let y = -0.07 + (i / 110) as f64 * 0.001;
+        next.points = vec![point(x, y), point(x + 0.0007, y)];
+        draft.alignments.push(next);
+    }
+    let mut world = World::new(draft).unwrap();
+    let ways = (0..1_000)
+        .map(|i| {
+            let x = -0.009 + (i % 200) as f64 * 0.00009;
+            let y = ((i / 200) as f64 - 2.) * 0.007;
+            RoadWay {
+                id: format!("way/{}", i + 1),
+                points: (0..8)
+                    .map(|j| point(x + (j % 2) as f64 * 0.00001, y - 0.003 + 0.0009 * j as f64))
+                    .collect(),
+                coverage: None,
+                classification: None,
+                layer: None,
+                level: None,
+                bridge: None,
+                tunnel: None,
             }
-            times.sort_by(f64::total_cmp);
-            println!("alignments={size} mode={mode} median_ms={:.3} min_ms={:.3} max_ms={:.3}",
-                (times[4]+times[5])/2.0,times[0],times[9]);
+        })
+        .collect();
+    world
+        .add_road_snapshot(RoadSnapshot {
+            coverage_verified: true,
+            source: "preview-benchmark".into(),
+            source_url: "https://example.org/preview-benchmark.osm.pbf".into(),
+            source_sha256: "b".repeat(64),
+            attribution: "Synthetic regression".into(),
+            license: "ODbL-1.0".into(),
+            revision: "2026-11-21T00:00:00Z".into(),
+            road_coverage: vec![CoverageBounds {
+                west: 138.95,
+                east: 139.2,
+                south: 34.9,
+                north: 35.15,
+            }],
+            roads: ways,
+        })
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("fixture.json");
+    rosenfu_storage::create_world(&path, &world).unwrap();
+    let save_bytes = std::fs::metadata(&path).unwrap().len() as usize;
+    editor.load(&path).unwrap();
+    (editor, save_bytes)
+}
+
+#[test]
+#[ignore = "headless release measurements only"]
+fn construction_summary_timings() {
+    for n in [100, 1_000, 10_000] {
+        let (editor, save_bytes) = fixture(n);
+        let roads = Instant::now();
+        let count = editor
+            .road_assessments()
+            .into_iter()
+            .map(|(_, r)| r.crossings.len())
+            .sum::<usize>();
+        let roads_ms = roads.elapsed().as_secs_f64() * 1000.;
+        assert_eq!(count, 200);
+        let before = editor.snapshot();
+        let editor = Mutex::new(editor);
+        for sample in 0..7 {
+            let request = serde_json::to_vec(&plan_value()).unwrap();
+            let decode = Instant::now();
+            let plan = serde_json::from_slice::<PlannedAlignment>(&request).unwrap();
+            let decode_us = decode.elapsed().as_secs_f64() * 1e6;
+            let clone = Instant::now();
+            let isolated = editor.lock().unwrap().clone();
+            let lock_clone_ms = clone.elapsed().as_secs_f64() * 1000.;
+            let worker = Instant::now();
+            let result = isolated
+                .preview_construction_summary(vec![plan], vec![], vec![])
+                .unwrap();
+            let worker_ms = worker.elapsed().as_secs_f64() * 1000.;
+            let encode = Instant::now();
+            let bytes = serde_json::to_vec(&result).unwrap();
+            let encode_us = encode.elapsed().as_secs_f64() * 1e6;
+            assert_eq!(result.new_crossing_count, Some(0));
+            assert_eq!(result.roads_unverified, Some(false));
+            assert!(result.validation_error.is_none());
+            println!(
+                "n={n} sample={sample} road_pass_ms={roads_ms:.3} lock_clone_ms={lock_clone_ms:.3} worker_ms={worker_ms:.3} request_decode_us={decode_us:.3} response_encode_us={encode_us:.3} request_bytes={} response_bytes={} save_bytes={save_bytes}",
+                request.len(),
+                bytes.len()
+            );
         }
-        assert_eq!(editor.snapshot(),before);
+        assert_eq!(editor.lock().unwrap().snapshot(), before);
     }
 }

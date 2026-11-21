@@ -203,6 +203,14 @@ pub fn boundary_candidates(
     if required.len() != required_tiles.len() || required != available || required.is_empty() {
         return Err(Error::Binding);
     }
+    let scoped;
+    let store = if store.is_decoded_scope() {
+        store
+    } else {
+        let keys: Vec<_> = store.bindings().map(|b| b.canonical_url.clone()).collect();
+        scoped = store.scope(&keys)?;
+        &scoped
+    };
     let mut lines = Vec::new();
     let mut points = 0;
     for b in store.bindings() {

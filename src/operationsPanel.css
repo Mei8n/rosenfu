@@ -1,0 +1,12 @@
+.operation-clock { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; font-variant-numeric:tabular-nums; }
+.operation-clock label,.operation-clock output { white-space:nowrap; }
+.operation-clock [role=alert] { overflow-wrap:anywhere; }
+.service-operations { min-width:0; border-top:1px solid var(--edge); padding-top:8px; }
+.service-operations h4,.service-operations p { margin:0 0 7px; }
+.operation-form fieldset { min-width:0; padding:6px; }
+.operation-times { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-bottom:6px; }
+.operation-times label { display:grid; align-content:start; min-width:0; }
+.operation-times input { box-sizing:border-box; width:100%; min-width:0; }
+.operation-form details { margin-bottom:7px; }
+.operation-trains ul { padding:0; margin:8px 0; list-style:none; }
+.operation-trains li { display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--edge); padding:5px 0; }

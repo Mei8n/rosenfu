@@ -1,13 +1,19 @@
 //! In-memory immutable evidence table. Persistence must reconstruct this through
-//! `from_parts`; neither descriptors nor caller-supplied decoded objects are proof.
+//! validated constructors; neither descriptors nor caller-supplied decoded objects are proof.
 use super::{
-    decode_request, raw_sha256, DecodedTile, Error, EvidenceInput, Result, TileBinding,
-    MAX_REQUEST_BYTES, MAX_TILES, MAX_TILE_BYTES,
+    decode_request, decode_tile_with_verified_sha, raw_sha256, validate_request, DecodedTile,
+    Error, EvidenceInput, Result, TileBinding, MAX_REQUEST_BYTES, MAX_TILES, MAX_TILE_BYTES,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::{Arc, Mutex},
 };
+
+// The retained-world archive is distinct from one bounded transport or path request.
+pub const MAX_PINNED_BINDINGS: usize = 256;
+pub const MAX_PINNED_RAW_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PINNED_BOUND_BYTES: usize = 64 * 1024 * 1024;
+const CACHE_WEIGHT_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Untrusted transport input. Base64 and document-size checks belong to storage.
 #[derive(Debug)]
@@ -49,13 +55,61 @@ impl From<&TileBinding> for DecodeKey {
 struct State {
     blobs: BTreeMap<String, Arc<[u8]>>,
     bindings: BTreeMap<String, TileBinding>,
+    canonical: BTreeMap<DecodeKey, String>,
     decoded: BTreeMap<DecodeKey, Arc<DecodedTile>>,
+}
+/// Best-effort derived tile cache. Independent of the immutable archive: eviction
+/// or a contended/unavailable cache can never remove proof or change a result.
+#[derive(Debug, Default)]
+struct ScopeCache {
+    entries: VecDeque<(DecodeKey, Arc<DecodedTile>, usize)>,
+    weight: usize,
+}
+impl ScopeCache {
+    fn get(&mut self, key: &DecodeKey) -> Option<Arc<DecodedTile>> {
+        let pos = self.entries.iter().position(|entry| &entry.0 == key)?;
+        let entry = self.entries.remove(pos)?;
+        let tile = Arc::clone(&entry.1);
+        self.entries.push_back(entry);
+        Some(tile)
+    }
+    fn insert(&mut self, key: DecodeKey, tile: Arc<DecodedTile>) {
+        // Deliberately overcharge inlined line/attribute and map-node storage;
+        // separately count heap strings and coordinates. This is a cache weight,
+        // not a claim about native process RSS (the decoder also has hard limits).
+        let mut weight = 1024usize;
+        for line in &tile.lines {
+            weight = weight
+                .saturating_add(256)
+                .saturating_add(line.coordinates.capacity().saturating_mul(8));
+            for (name, value) in &line.attributes {
+                weight = weight.saturating_add(256).saturating_add(name.capacity());
+                if let super::RawValue::String(value) = value {
+                    weight = weight.saturating_add(value.capacity());
+                }
+            }
+        }
+        if weight > CACHE_WEIGHT_LIMIT || self.get(&key).is_some() {
+            return;
+        }
+        while self.entries.len() >= MAX_TILES
+            || self.weight.saturating_add(weight) > CACHE_WEIGHT_LIMIT
+        {
+            let Some((_, _, evicted)) = self.entries.pop_front() else {
+                return;
+            };
+            self.weight -= evicted;
+        }
+        self.entries.push_back((key, tile, weight));
+        self.weight += weight;
+    }
 }
 /// Cheap clones share immutable raw and decoded data. No Deserialize implementation:
 /// reloading arbitrary DTOs must go through `from_parts` and the bounded decoder.
 #[derive(Debug, Clone, Default)]
 pub struct EvidenceStore {
     state: Arc<State>,
+    cache: Arc<Mutex<ScopeCache>>,
 }
 impl EvidenceStore {
     /// Empty evidence cannot attest to any tile or coverage.
@@ -75,13 +129,50 @@ impl EvidenceStore {
         raw: Vec<RawEvidence>,
         bindings: Vec<TileBinding>,
     ) -> Result<Self> {
-        if raw.len() > MAX_TILES || bindings.len() > MAX_TILES {
+        self.add(raw, bindings, false, false)
+    }
+    /// Grow a retained archive by one bounded request; do not keep decoded geometry
+    /// for the whole world. Existing immutable proofs remain reachable by key.
+    pub(crate) fn with_pinned_additions(
+        &self,
+        raw: Vec<RawEvidence>,
+        bindings: Vec<TileBinding>,
+    ) -> Result<Self> {
+        self.add(raw, bindings, true, false)
+    }
+    /// Restore a persisted archive via the same content checks, never trusting digests
+    /// from a descriptor or increasing the budget of a subsequent path calculation.
+    pub fn from_archive_parts(raw: Vec<RawEvidence>, bindings: Vec<TileBinding>) -> Result<Self> {
+        Self::empty().add(raw, bindings, true, true)
+    }
+    fn add(
+        &self,
+        raw: Vec<RawEvidence>,
+        bindings: Vec<TileBinding>,
+        archive: bool,
+        restore: bool,
+    ) -> Result<Self> {
+        let input_count = if restore {
+            MAX_PINNED_BINDINGS
+        } else {
+            MAX_TILES
+        };
+        let input_bytes = if restore {
+            MAX_PINNED_RAW_BYTES
+        } else {
+            MAX_REQUEST_BYTES
+        };
+        if raw.len() > input_count || bindings.len() > input_count {
             return Err(Error::Limit);
+        }
+        let supplied: BTreeSet<_> = bindings.iter().map(|b| b.canonical_url.clone()).collect();
+        if archive && supplied.len() != bindings.len() {
+            return Err(Error::Binding);
         }
         let mut submitted = 0usize;
         for r in &raw {
             submitted = submitted.checked_add(r.bytes.len()).ok_or(Error::Limit)?;
-            if r.bytes.len() > MAX_TILE_BYTES || submitted > MAX_REQUEST_BYTES {
+            if r.bytes.len() > MAX_TILE_BYTES || submitted > input_bytes {
                 return Err(Error::Limit);
             }
             if raw_sha256(&r.bytes) != r.sha256 {
@@ -109,40 +200,87 @@ impl EvidenceStore {
                 candidate.insert(binding.canonical_url.clone(), binding);
             }
         }
-        if candidate.len() > MAX_TILES || blobs.len() > MAX_TILES {
+        let cap = if archive {
+            MAX_PINNED_BINDINGS
+        } else {
+            MAX_TILES
+        };
+        if candidate.len() > cap || blobs.len() > cap {
             return Err(Error::Limit);
         }
+        if archive {
+            let bytes = blobs.values().try_fold(0usize, |sum, raw| {
+                sum.checked_add(raw.len()).ok_or(Error::Limit)
+            })?;
+            if bytes > MAX_PINNED_RAW_BYTES {
+                return Err(Error::Limit);
+            }
+        }
+
         let mut used = BTreeSet::new();
         let mut inputs = Vec::with_capacity(candidate.len());
+        let mut total = 0usize;
+        let mut submitted_bound = 0usize;
+        let revision = candidate.values().next().map(|b| &b.revision);
         for binding in candidate.values() {
+            // Do not mix geography revisions within a world or silently rebind a tile.
+            if Some(&binding.revision) != revision {
+                return Err(Error::Binding);
+            }
             let raw = blobs.get(&binding.raw_sha256).ok_or(Error::Hash)?;
             used.insert(binding.raw_sha256.as_str());
+            total = total.checked_add(raw.len()).ok_or(Error::Limit)?;
+            if archive && !restore && supplied.contains(&binding.canonical_url) {
+                submitted_bound = submitted_bound.checked_add(raw.len()).ok_or(Error::Limit)?;
+            }
             inputs.push(EvidenceInput { binding, raw });
         }
-        // Reject orphan material rather than accumulating invisible payloads.
+        if archive && (total > MAX_PINNED_BOUND_BYTES || submitted_bound > MAX_REQUEST_BYTES) {
+            return Err(Error::Limit);
+        }
         if used.len() != blobs.len() {
             return Err(Error::Binding);
         }
         if inputs.is_empty() {
             return Ok(Self::empty());
         }
-        // Mandatory whole-context validation, also for reused/cached evidence.
-        let validated = decode_request(&inputs)?;
+
+        let mut canonical = BTreeMap::new();
         let mut decoded = BTreeMap::new();
-        for value in validated {
-            let key = DecodeKey::from(&value.binding);
-            let shared = match self.state.decoded.get(&key) {
-                Some(old) if old.as_ref() == &value => Arc::clone(old),
-                _ => Arc::new(value),
-            };
-            decoded.insert(key, shared);
+        if archive {
+            // The initial admission and every restore validate real bytes. For
+            // immutable old bindings, reuse only the already-derived digest.
+            for input in inputs {
+                let key = DecodeKey::from(input.binding);
+                let digest = match self.state.canonical.get(&key) {
+                    Some(old) => old.clone(),
+                    // Every new blob was SHA-checked above; old bytes are
+                    // immutable. Inputs select blobs by the binding's SHA.
+                    None => {
+                        decode_tile_with_verified_sha(input.binding, input.raw)?.canonical_sha256
+                    }
+                };
+                canonical.insert(key, digest);
+            }
+        } else {
+            for value in decode_request(&inputs)? {
+                let key = DecodeKey::from(&value.binding);
+                canonical.insert(key.clone(), value.canonical_sha256.clone());
+                let shared = match self.state.decoded.get(&key) {
+                    Some(old) if old.as_ref() == &value => Arc::clone(old),
+                    _ => Arc::new(value),
+                };
+                decoded.insert(key, shared);
+            }
         }
         Ok(Self {
             state: Arc::new(State {
                 blobs,
                 bindings: candidate,
+                canonical,
                 decoded,
             }),
+            cache: Arc::clone(&self.cache),
         })
     }
     /// Read-only whole-tile view of an already validated immutable store. This
@@ -171,12 +309,51 @@ impl EvidenceStore {
                 .blobs
                 .insert(binding.raw_sha256.clone(), Arc::clone(raw));
             let cache_key = DecodeKey::from(binding);
-            let decoded = self.state.decoded.get(&cache_key).ok_or(Error::Binding)?;
-            state.decoded.insert(cache_key, Arc::clone(decoded));
+            let canonical = self.state.canonical.get(&cache_key).ok_or(Error::Binding)?;
+            state.canonical.insert(cache_key.clone(), canonical.clone());
+            if let Some(decoded) = self.state.decoded.get(&cache_key) {
+                state.decoded.insert(cache_key, Arc::clone(decoded));
+            }
+        }
+        // Preflight the entire requested scope, including repeated blob usage,
+        // before decoding anything from the persistent archive.
+        if state.decoded.len() != state.bindings.len() {
+            let inputs: Vec<_> = state
+                .bindings
+                .values()
+                .map(|binding| EvidenceInput {
+                    binding,
+                    raw: &state.blobs[&binding.raw_sha256],
+                })
+                .collect();
+            validate_request(&inputs)?;
+            for input in inputs {
+                let key = DecodeKey::from(input.binding);
+                let cached = self.cache.lock().ok().and_then(|mut cache| cache.get(&key));
+                let was_cached = cached.is_some();
+                let decoded = match cached {
+                    Some(tile) => tile,
+                    // State is private and admitted by add() above.
+                    None => Arc::new(decode_tile_with_verified_sha(input.binding, input.raw)?),
+                };
+                if state.canonical.get(&key) != Some(&decoded.canonical_sha256) {
+                    return Err(Error::Hash);
+                }
+                if !was_cached {
+                    if let Ok(mut cache) = self.cache.lock() {
+                        cache.insert(key.clone(), Arc::clone(&decoded));
+                    }
+                }
+                state.decoded.insert(key, decoded);
+            }
         }
         Ok(Self {
             state: Arc::new(state),
+            cache: Arc::clone(&self.cache),
         })
+    }
+    pub(super) fn is_decoded_scope(&self) -> bool {
+        self.state.decoded.len() == self.state.bindings.len()
     }
     pub fn descriptors(&self) -> Vec<EvidenceDescriptor> {
         self.state
@@ -184,16 +361,17 @@ impl EvidenceStore {
             .values()
             .map(|binding| {
                 // Internal state is built only by the validated constructor above.
-                let decoded = &self.state.decoded[&DecodeKey::from(binding)];
+                let canonical = &self.state.canonical[&DecodeKey::from(binding)];
                 EvidenceDescriptor {
                     binding: binding.clone(),
                     byte_length: self.state.blobs[&binding.raw_sha256].len(),
-                    canonical_sha256: decoded.canonical_sha256.clone(),
+                    canonical_sha256: canonical.clone(),
                 }
             })
             .collect()
     }
-    /// Resolve a required binding; absence is an error, not an empty road context.
+    /// Resolve a tile in a decoded request/store scope. For a retained archive,
+    /// obtain a bounded `scope` first. Absence is not an empty road context.
     pub fn decoded(&self, canonical_url: &str) -> Result<&DecodedTile> {
         let b = self
             .state
@@ -232,7 +410,7 @@ impl PartialEq for EvidenceStore {
         Arc::ptr_eq(&self.state, &other.state)
             || (self.state.bindings == other.state.bindings
                 && self.state.blobs == other.state.blobs
-                && self.state.decoded == other.state.decoded)
+                && self.state.canonical == other.state.canonical)
     }
 }
 impl Eq for EvidenceStore {}

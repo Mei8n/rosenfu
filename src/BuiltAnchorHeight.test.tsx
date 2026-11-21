@@ -14,7 +14,7 @@ const world={next_id:'4',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1
 test('actual profile anchor height is not rounded to its nominal structure level',()=>{
  expect(builtAnchorHeight({...line,infrastructure:[],section_profiles:[{start_height_m:0,end_height_m:4.2},{start_height_m:4.2,end_height_m:0}]},1)).toBe(4.2);
 });
-test('built anchor update passes exact snapshot, preserves failed selection and supports Undo',async()=>{
+test('built anchor update passes exact snapshot, preserves failed selection and commits successful reconstruction',async()=>{
  const next={...world,alignments:[{...line,section_profiles:[{start_height_m:0,end_height_m:6},{start_height_m:6,end_height_m:0}]}]};
  let reject=true;
  vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async(command)=>{
@@ -22,7 +22,7 @@ test('built anchor update passes exact snapshot, preserves failed selection and 
   if(command==='world_snapshot')return world;
   if(command==='list_save_slots')return {active_slot_id:null,slots:[]};
   if(command==='update_alignment_anchor_height'){if(reject)throw Error('勾配制限');return next;}
-  if(command==='undo_alignment_deletion')return world;
+  if(command==='undo_world_edit')throw Error('built reconstruction is final');
   throw Error(command);
  });render(<App/>);await screen.findByText(/built-height-test/);
  fireEvent.click(screen.getByRole('tab',{name:'選択'}));
@@ -39,12 +39,12 @@ test('built anchor update passes exact snapshot, preserves failed selection and 
  fireEvent.click(within(screen.getByRole('group',{name:'建設済みアンカーの高さ'})).getByRole('button',{name:LEVEL_LABELS.elevated}));
  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='update_alignment_anchor_height')).toHaveLength(calls);
  // Even if a server returns an unchanged world for a different requested level,
- // retain the last real operation's Undo and the current selection.
+ // retain the committed world and current selection; no new history is invented.
  fireEvent.click(within(screen.getByRole('group',{name:'建設済みアンカーの高さ'})).getByRole('button',{name:LEVEL_LABELS.ground}));
  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='update_alignment_anchor_height')).toHaveLength(calls+1));await act(async()=>{});
  expect(screen.getByRole('group',{name:'建設済みアンカーの高さ'})).toBeTruthy();
- fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});await waitFor(()=>expect(invoke).toHaveBeenCalledWith('undo_alignment_deletion'));await act(async()=>{});
- fireEvent.click(screen.getByRole('button',{name:'建設済みアンカー 2 の高さを変更'}));expect(screen.getByText('建設済み · 高さ 0 m')).toBeTruthy();
+ await act(async()=>{fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});});expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='undo_world_edit'||command==='undo_alignment_deletion')).toBe(false);
+ expect(screen.getByText('建設済み · 高さ 6 m')).toBeTruthy();
 });
 
 test('late snapshot cleanup retains a newly selected current anchor, not stale IDs',()=>{

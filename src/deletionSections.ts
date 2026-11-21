@@ -6,7 +6,19 @@ export function deletionSections(line:{points:GeoPoint[];anchor_indices?:number[
  return values.slice(0,-1).map((start,index)=>({index,points:line.points.slice(start,values[index+1]+1)}));
 }
 export function anchorIndices(anchors:GeoPoint[],line:GeoPoint[]):number[]|undefined{
- let cursor=-1;
- const indices=anchors.map(anchor=>{const index=line.findIndex((point,index)=>index>cursor&&point.latitude===anchor.latitude&&point.longitude===anchor.longitude);cursor=index;return index;});
- return indices.length>=2&&indices[0]===0&&indices.at(-1)===line.length-1&&indices.every((n,i)=>n>=0&&(i===0||n>indices[i-1]))?indices:undefined;
+ if(anchors.length<2||anchors.length>line.length)return undefined;
+ const indices:number[]=[];
+ let cursor=0;
+ // Keep the first forward match, including duplicate coordinates. Forcing
+ // the final anchor onto the last point would accept some ambiguous loops.
+ for(const anchor of anchors){
+  while(cursor<line.length){
+   const point=line[cursor];
+   if(point.latitude===anchor.latitude&&point.longitude===anchor.longitude)break;
+   cursor++;
+  }
+  if(cursor===line.length||(!indices.length&&cursor!==0))return undefined;
+  indices.push(cursor++);
+ }
+ return indices.at(-1)===line.length-1?indices:undefined;
 }

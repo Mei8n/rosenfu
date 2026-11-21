@@ -113,11 +113,6 @@ select:disabled { opacity: .55; }
 .map-attribution p { margin-top: 4px; max-width: 540px; }
 .map-surface { background: #33483f; }
 .camera-controls { padding: 8px 15px; border-top: 1px solid #42584c; background: #17271f; }
-.camera-buttons { display: flex; flex-wrap: wrap; gap: 5px; }
-.camera-buttons button, .camera-coordinate-form button { font-size: 11px; padding: 5px 9px; }
-.camera-coordinate-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.camera-coordinate-form label { margin: 0; font-size: 10px; }
-.camera-coordinate-form input { width: 96px; font-size: 11px; padding: 5px; }
 .camera-controls > p { font-size: 10px; color: #a4b7a8; margin-top: 7px; }
 .camera-controls > p[role="alert"] { color: #efbda6; }
 .map-surface svg { touch-action: none; user-select: none; }
@@ -182,11 +177,6 @@ h1 span { font-size: 10px; color: #92a6b3; }
 .background-controls, .camera-controls { background: transparent; padding: 10px 12px; border-color: var(--border); }
 .background-controls select { flex: 1; min-width: 0; background: #26353d; }
 .background-controls > span { width: 100%; color: #9bb0bb; }
-.camera-buttons { gap: 4px; }
-.camera-buttons button { padding: 5px 8px; }
-.camera-coordinate-form { display: grid; grid-template-columns: 70px 1fr; }
-.camera-coordinate-form input { width: 100%; }
-.camera-coordinate-form button { grid-column: 1 / -1; }
 .camera-controls > p { line-height: 1.6; }
 .map-mode-controls { gap: 5px; }
 .map-mode-controls span { width: 100%; }
@@ -504,6 +494,9 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 /* Toolbar hit areas stay on the controls, never on a wrapping label. */
 .workbench .construction-toolbar .track-type-options { flex-wrap:nowrap; }
 .workbench .construction-toolbar .track-type-options button { flex:0 0 auto; white-space:nowrap; padding:3px 8px; min-width:0; }
+/* Keep the selected kind visible above generic secondary-button styles, including hover. */
+.workbench .construction-toolbar .track-type-options button[aria-pressed="true"],
+.workbench .construction-toolbar .track-type-options button[aria-pressed="true"]:hover { background:var(--accent); color:#1e2b2e; border-color:var(--accent); font-weight:700; box-shadow:inset 0 -2px 0 currentColor; }
 .workbench .construction-toolbar .target-speed-control { margin:0; white-space:nowrap; }
 .workbench .construction-toolbar .target-speed-control label { margin:0; }
 .workbench .construction-toolbar .speed-input button { flex:none; width:25px; height:25px; padding:0; }
@@ -571,3 +564,27 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
   .workbench .construction-toolbar .speed-input { max-width:100%; }
 }
 .workbench .route-station-select, .workbench .route-station-select * { cursor:crosshair; }
+
+/* Map legibility: neutral built infrastructure, blue plans, red refusals.
+   Screen-space widths remain readable without widening the hit targets. */
+.workbench .rail-casing { fill:none; stroke:#fffefa; stroke-width:var(--map-track-casing); stroke-linecap:butt; stroke-linejoin:round; vector-effect:non-scaling-stroke; pointer-events:none; }
+.workbench .alignment-path { stroke:#414a4d; stroke-width:var(--map-track-width); vector-effect:non-scaling-stroke; }
+.workbench .route-base .alignment-path { stroke:#858b8d; }
+.workbench .alignment-path.alignment-selected { stroke:#c17c0b; }
+.workbench .draft-path { stroke:#187cb2; stroke-width:var(--map-track-width); stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:7 3; vector-effect:non-scaling-stroke; }
+.workbench .draft-path.candidate-draft,.workbench .draft-path.road-drawing-preview,.workbench .draft-path.reference-copy-preview,.workbench .draft-path.anchor-drag-preview { stroke:#087ca0; stroke-width:var(--map-track-width); stroke-dasharray:none; }
+.workbench .inactive-plan .draft-path { stroke:#7a858b; }
+.workbench .draft-path.track-explicit-selection { stroke:#c17c0b; }
+.workbench .draft-path.invalid-candidate { stroke:#c43d45; stroke-dasharray:4 3; }
+
+/* Keep the placing panel's inline size independent of the open disclosure.
+   max-content let the speed row resize/recenter the entire toolbar. */
+.workbench .track-construction-toolbar {
+  box-sizing:border-box; width:340px; min-width:0; max-width:calc(100% - 24px);
+}
+.workbench .track-construction-toolbar .height-controls { flex-wrap:wrap; }
+.workbench .track-construction-toolbar .speed-input { min-width:0; flex-wrap:wrap; }
+
+/* Labels and station rims share the map's screen-space sizing. Platform polygons retain real size. */
+.workbench .station-marker text,.workbench .planned-station text { font-size:var(--station-label-size); stroke-width:3px; vector-effect:non-scaling-stroke; }
+.workbench .station-dot,.workbench .station-platform { vector-effect:non-scaling-stroke; }

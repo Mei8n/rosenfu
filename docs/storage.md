@@ -1,8 +1,10 @@
 # 保存仕様
 
-## 現行形式：schema 25
+## 現行形式：schema 27（α0.2）
 
-開発統合 `9e1aa5c1` は `format: "rosenfu-world"` と `schema_version: 25` を読み書きする。旧1〜24と未来の形式は、ワールドの復元前に非対応として拒否する。18読込・19保存の旧方針は廃止。自動移行や旧版との往復互換はない。本人のアルファ期の互換破棄承認に基づき、新規ワールドを作成する。これは旧ファイルの削除許可ではなく、読込失敗・通常保存拒否では本体と既存バックアップを変更しない。
+`format: "rosenfu-world"`、`schema_version: 27` で保存します。ワールド設備・地理根拠・運行状態に加え、固定ODの試算条件を任意で1組保存します。試算結果は保存しません。[固定OD](alpha02-fixed-od.md)を参照してください。
+
+直前のschema26は試算条件なしとして検証・読込できます。読込だけで本体を書き換えません。明示保存・有効化済みのオートセーブでのみ新形式を書き、通常保存の成功時は直前の本体をバックアップします。旧1〜25と未来の形式はワールドの復元前に非対応として拒否します。アルファ期の将来互換や27から26へのダウングレードは保証しません。読込失敗・通常保存拒否では本体と既存バックアップを変更しません。
 
 設備は Alignment と端点接続。すべての路線・系統に RoutePath / ServicePath が必要で、旧 Track、Route.tracks、OperatingService.tracks/stops は非対応。旧データを現形式番号に書き換えただけの偽装も拒否する。
 
@@ -53,11 +55,13 @@ cargo test --locked -p rosenfu-storage
 
 ## 復旧版で再実装した保存安全対策（2026-11-13）
 
-全編集は候補ワールドの検証とpretty JSONの16 MiB上限確認を通ってから反映する。小さなcompact JSONでも再保存時の上限を超える場合は読込を拒否する。サイズ確認は全出力をメモリへ確保しないカウンタで行う。
+全編集は候補ワールドの検証と、UTF-8 JSONの保存本体全体（末尾改行を含む）に対する16 MiB上限確認を通ってから反映する。従来どおり整形JSONを優先し、それだけが容量上限を超えた場合は、全フィールドを保持した同じschema27の非整形JSONで再試行する。非整形でも超える場合は読込・保存・着工を拒否し、既存の保存とバックアップを変更しない。形式不正やI/Oエラーでは再試行しない。サイズ確認は保存本体をメモリに構築せずに行う。手動更新および自動保存は、容量内の候補を同期してから従来のファイル版確認と原子的置換を行う。
+
+整形で収まる保存は従来のバイト列と同じ。非整形が必要な大きな保存は、旧版では同じschema27でも旧容量判定（整形し直し）により開けない。その場合は本対応版を使い、旧版に戻す場合は更新前の保存を使用する。移行のために読込だけで書き換えたり、保存済みの道路・地理根拠を削ったりはしない。
 
 セッションは読込・保存時のSHA-256を保持し、保存先が外部変更・削除されていれば拒否する。協調するプロセス間は`.lock` sidecarのOS try-lockで排他し、ロック競合は待ち続けずエラーにする。失敗した保存を成功扱いにせず、再読込／明示確認が必要。ロックを無視する外部編集やネットワークFSの完全なトランザクション保証ではない。
 
-オートセーブの状態確認は既に承認済みの同一ファイル版を無効化しない。古い応答は画面の世代識別で無視し、復元直後に遅れて状態確認が実行されても同一版への承認を保持する。既存スロットは状態確認時の版に対する明示置換許可を要求し、確認後に変化した場合は拒否する。競合後は自動再試行せず、ユーザーの再確認を待つ。不存在の再確認後はMissing版との比較で新規作成できる。
+オートセーブの状態確認は既に承認済みの同一ファイル版を無効化しない。古い応答は画面の世代識別で無視し、復元直後に遅れて状態確認が実行されても同一版への承認を保持する。自動保存は対象スロットの状態・版を確認して自動開始する。確認後の外部変更は拒否する。競合後は自動再試行せず、ユーザーの再確認を待つ。不存在の再確認後はMissing版との比較で新規作成できる。
 
 オートセーブ復元後の通常保存では、正常な既存manualを従来どおり.bakへ保存する。破損／容量超過manualのみ明示的復元に基づく修復保存を許し、既存.bakを保持する。未知の将来スキーマや読み取り権限エラーは破損と見なして上書きしない。
 
@@ -81,10 +85,9 @@ before replacing the active in-memory world.
 
 The previous fixed-path world remains available as a legacy list entry. Unsupported
 schemas are explained rather than migrated, erased or overwritten. A new current
-world can coexist with that file. Slot deletion is not exposed by this change.
+world can coexist with that file. Slot deletion is available after confirmation. It moves the slot into a recoverable archive; the deleted-save list can restore it. Deleting the active slot detaches the save target while preserving in-memory edits. A new company/world creates its own slot automatically; creation failure must not retain another world's save target. Legacy deletion moves only its manual save and leaves legacy autosave/backup untouched.
 Current-format storage tests cover independent labels/files/backups, incomplete
-creation visibility, invalid IDs and directory symlink rejection. Full session,
-UI and real-device acceptance remain separate verification gates.
+creation visibility, invalid IDs and directory symlink rejection. Session and frontend regression tests cover these operations. Native GUI and real-device acceptance remain separate verification gates.
 
 ### 現行形式の拡張メタデータ（schema 20で導入）
 

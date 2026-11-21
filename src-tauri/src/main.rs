@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod operation_commands;
+mod road_transport_commands;
 mod session;
+mod water_zone_delivery;
 use rosenfu_core::world::{AlignmentId, GeoPoint, RouteId, ServiceId, StationId, WorldDraft};
 use session::WorldEditor;
 use std::{path::PathBuf, sync::Mutex};
@@ -10,11 +13,25 @@ struct EngineSessionInfo {
     #[serde(flatten)]
     engine: rosenfu_core::EngineInfo,
     company_setup_required: bool,
+    operation_enabled: bool,
+    fixed_od_enabled: bool,
+    rail_journey_replay_enabled: bool,
+    fixed_od_scenario_enabled: bool,
+    road_transport_enabled: bool,
+    road_tram_enabled: bool,
+    bus_operation_enabled: bool,
 }
 #[tauri::command]
 fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInfo, String> {
     Ok(EngineSessionInfo {
         engine: rosenfu_core::engine_info(),
+        operation_enabled: true,
+        fixed_od_enabled: true,
+        rail_journey_replay_enabled: true,
+        fixed_od_scenario_enabled: true,
+        road_transport_enabled: true,
+        road_tram_enabled: true,
+        bus_operation_enabled: true,
         company_setup_required: editor
             .lock()
             .map_err(|_| "world state unavailable")?
@@ -67,13 +84,50 @@ fn stage_ofm_construction_plan(
 }
 #[tauri::command]
 fn water_mask_requests(
+    bounds: Option<[f64; 4]>,
     editor: State<'_, Mutex<WorldEditor>>,
-) -> Result<Vec<rosenfu_core::world::WaterMaskRequest>, String> {
-    Ok(editor
+) -> Result<Vec<serde_json::Value>, String> {
+    let editor = editor.lock().map_err(|_| "world state unavailable")?;
+    if editor.national_water_enabled() {
+        return match bounds {
+            Some(bounds) => Ok(editor
+                .missing_water_zones(bounds)?
+                .into_iter()
+                .map(|id| serde_json::json!({"id":id,"native":true}))
+                .collect()),
+            None => Ok(vec![]),
+        };
+    }
+    editor
+        .missing_water_masks()
+        .into_iter()
+        .map(|r| serde_json::to_value(r).map_err(|e| e.to_string()))
+        .collect()
+}
+#[tauri::command]
+async fn acquire_water_zone(
+    app: tauri::AppHandle,
+    delivery: State<'_, std::sync::Arc<water_zone_delivery::WaterZoneDelivery>>,
+    id: String,
+) -> Result<(), String> {
+    if id.len() > 32 {
+        return Err("未登録の水域データです。".into());
+    }
+    let delivery = delivery.inner().clone();
+    let zone = tauri::async_runtime::spawn_blocking(move || {
+        delivery.acquire(&id, &water_zone_delivery::Cancellation::default())
+    })
+    .await
+    .map_err(|_| "水域取得処理に失敗しました。")?
+    .map_err(|e| format!("水域データを取得できませんでした: {e}"))?;
+    let editor = app.state::<Mutex<WorldEditor>>();
+    let result = editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .missing_water_masks())
+        .install_water_zone(zone);
+    result
 }
+
 #[tauri::command]
 fn install_water_mask(
     editor: State<'_, Mutex<WorldEditor>>,
@@ -218,16 +272,39 @@ fn build_alignment_with_stations(
         }])
 }
 #[tauri::command]
-fn preview_construction_plan(
+async fn preview_construction_plan(
     editor: State<'_, Mutex<WorldEditor>>,
     alignments: Vec<session::PlannedAlignment>,
     stations: Option<Vec<session::PlannedBuiltStation>>,
-) -> Result<WorldDraft, String> {
-    let snapshot = editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .clone();
-    snapshot.preview_construction_plan(alignments, stations.unwrap_or_default())
+    roads: Option<Vec<rosenfu_core::world::RoadSnapshot>>,
+    validation_only: Option<bool>,
+) -> Result<session::ConstructionPreview, String> {
+    let validation_only = validation_only.unwrap_or(false);
+    let snapshot = {
+        let editor = editor.lock().map_err(|_| "world state unavailable")?;
+        if validation_only {
+            editor.construction_validation_snapshot()
+        } else {
+            editor.clone()
+        }
+    };
+    // Validation can be expensive: never run it on the UI event-loop thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        if validation_only {
+            return snapshot.validate_construction_placement(
+                alignments,
+                stations.unwrap_or_default(),
+                roads.unwrap_or_default(),
+            );
+        }
+        snapshot.preview_construction_summary(
+            alignments,
+            stations.unwrap_or_default(),
+            roads.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 fn build_plan(
@@ -315,6 +392,18 @@ fn set_service_color(
         .set_service_color(service_id, color, expected_color)
 }
 #[tauri::command]
+fn delete_service(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    expected_path: rosenfu_core::world::ServicePath,
+    expected_name: String,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .delete_service(service_id, expected_path, expected_name)
+}
+#[tauri::command]
 fn duplicate_service(
     editor: State<'_, Mutex<WorldEditor>>,
     service_id: ServiceId,
@@ -327,6 +416,29 @@ fn duplicate_service(
         .duplicate_service(service_id, expected_path, expected_name)
 }
 #[tauri::command]
+fn world_edit_history(
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<session::WorldEditHistory, String> {
+    Ok(editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .world_edit_history())
+}
+#[tauri::command]
+async fn undo_world_edit(
+    app: tauri::AppHandle,
+    expected_world: WorldDraft,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| editor.undo_world_edit(expected_world)).await
+}
+#[tauri::command]
+async fn redo_world_edit(
+    app: tauri::AppHandle,
+    expected_world: WorldDraft,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| editor.redo_world_edit(expected_world)).await
+}
+#[tauri::command]
 fn rename_station(
     editor: State<'_, Mutex<WorldEditor>>,
     station_id: StationId,
@@ -337,52 +449,67 @@ fn rename_station(
         .map_err(|_| "world state unavailable")?
         .rename_station(station_id, name)
 }
+// Keep the atomic editor transaction and its mutex on a blocking worker.
+// Demolition validates/remaps references and snapshots undo state; none of that
+// work, including waiting for another editor operation, belongs on the UI thread.
+async fn run_demolition(
+    app: tauri::AppHandle,
+    operation: impl FnOnce(&mut WorldEditor) -> Result<WorldDraft, String> + Send + 'static,
+) -> Result<WorldDraft, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Mutex<WorldEditor>>();
+        let mut editor = state.lock().map_err(|_| "world state unavailable")?;
+        operation(&mut editor)
+    })
+    .await
+    .map_err(|error| format!("撤去処理を完了できませんでした: {error}"))?
+}
 #[tauri::command]
-fn delete_station(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn delete_station(
+    app: tauri::AppHandle,
     station_id: StationId,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
 ) -> Result<WorldDraft, String> {
-    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
-    match construction_plans {
+    run_demolition(app, move |editor| match construction_plans {
         Some(plans) => editor.delete_station_with_plans(station_id, plans),
         None => editor.delete_station(station_id),
-    }
+    })
+    .await
 }
 #[tauri::command]
-fn delete_alignment(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn delete_alignment(
+    app: tauri::AppHandle,
     alignment_id: AlignmentId,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .delete_alignment_with_plans(alignment_id, construction_plans)
+    run_demolition(app, move |editor| {
+        editor.delete_alignment_with_plans(alignment_id, construction_plans)
+    })
+    .await
 }
 #[tauri::command]
-fn delete_alignment_section(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn delete_alignment_section(
+    app: tauri::AppHandle,
     alignment_id: AlignmentId,
     section_index: usize,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .delete_alignment_section(alignment_id, section_index, construction_plans)
+    run_demolition(app, move |editor| {
+        editor.delete_alignment_section(alignment_id, section_index, construction_plans)
+    })
+    .await
 }
 #[tauri::command]
-fn delete_alignment_sections(
-    editor: State<'_, Mutex<WorldEditor>>,
+async fn delete_alignment_sections(
+    app: tauri::AppHandle,
     selections: Vec<session::AlignmentSectionSelection>,
     expected_alignments: Vec<rosenfu_core::world::Alignment>,
     construction_plans: rosenfu_core::world::ConstructionPlans,
 ) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .delete_alignment_sections(selections, expected_alignments, construction_plans)
+    run_demolition(app, move |editor| {
+        editor.delete_alignment_sections(selections, expected_alignments, construction_plans)
+    })
+    .await
 }
 #[tauri::command]
 fn update_alignment_anchor_height(
@@ -425,11 +552,26 @@ fn update_alignment_section_infrastructure(
         )
 }
 #[tauri::command]
-fn undo_alignment_deletion(editor: State<'_, Mutex<WorldEditor>>) -> Result<WorldDraft, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .undo_alignment_deletion()
+async fn update_alignment_section_track_type(
+    app: tauri::AppHandle,
+    selections: Vec<session::AlignmentSectionSelection>,
+    expected_alignments: Vec<rosenfu_core::world::Alignment>,
+    track_type: rosenfu_core::world::TrackType,
+    construction_plans: rosenfu_core::world::ConstructionPlans,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| {
+        editor.update_alignment_section_track_type(
+            selections,
+            expected_alignments,
+            track_type,
+            construction_plans,
+        )
+    })
+    .await
+}
+#[tauri::command]
+async fn undo_alignment_deletion(app: tauri::AppHandle) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| editor.undo_alignment_deletion()).await
 }
 
 #[tauri::command]
@@ -628,6 +770,31 @@ fn list_save_slots(
         .list_save_slots(&save_root(&app)?)
 }
 #[tauri::command]
+fn rename_save_slot(
+    app: tauri::AppHandle,
+    editor: State<'_, Mutex<WorldEditor>>,
+    slot_id: String,
+    expected_name: String,
+    name: String,
+) -> Result<(), String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .rename_save_slot(&save_root(&app)?, &slot_id, &expected_name, &name)
+}
+#[tauri::command]
+fn move_save_slot(
+    app: tauri::AppHandle,
+    slot_id: String,
+    restore: bool,
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<(), String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .move_save_slot(&save_root(&app)?, &slot_id, restore)
+}
+#[tauri::command]
 fn create_new_world(
     company_name: String,
     editor: State<'_, Mutex<WorldEditor>>,
@@ -718,9 +885,38 @@ fn save_world(
         .save_active_slot(&save_root(&app)?, construction_plans, view_state)
 }
 fn main() {
+    let mut editor = WorldEditor::new();
+    editor
+        .enable_national_water()
+        .expect("invalid compiled water registry");
+    let delivery = water_zone_delivery::WaterZoneDelivery::new(
+        rosenfu_core::water_zone::registry::pins()
+            .expect("compiled water registry")
+            .to_vec(),
+        water_zone_delivery::HttpTransport::new().expect("water HTTPS client"),
+    )
+    .expect("water delivery registry");
     tauri::Builder::default()
-        .manage(Mutex::new(WorldEditor::new()))
+        .manage(std::sync::Arc::new(delivery))
+        .manage(Mutex::new(editor))
         .invoke_handler(tauri::generate_handler![
+            operation_commands::operation_snapshot,
+            operation_commands::preview_fixed_od,
+            operation_commands::preview_rail_journey_replay,
+            operation_commands::fixed_od_scenario,
+            operation_commands::set_fixed_od_scenario,
+            operation_commands::configure_bus_operation,
+            operation_commands::configure_operation_service,
+            operation_commands::set_operation_clock,
+            operation_commands::advance_operation,
+            operation_commands::reset_operation,
+            road_transport_commands::replace_road_transport,
+            road_transport_commands::enable_road_qa_fixture,
+            road_transport_commands::install_native_road_pilot,
+            road_transport_commands::list_native_road_regions,
+            road_transport_commands::edit_native_pilot_bus,
+            road_transport_commands::find_road_path,
+            road_transport_commands::edit_road_tram,
             engine_info,
             preview_service_path,
             create_service_path,
@@ -733,6 +929,7 @@ fn main() {
             ofm_world_token,
             stage_ofm_construction_plan,
             water_mask_requests,
+            acquire_water_zone,
             install_water_mask,
             preview_track_movement_geometry,
             preview_track_render_geometry,
@@ -747,15 +944,20 @@ fn main() {
             road_assessments,
             update_station_placement,
             place_station_on_alignment,
+            world_edit_history,
+            undo_world_edit,
+            redo_world_edit,
             rename_station,
             set_service_color,
             set_service_appearance,
             duplicate_service,
+            delete_service,
             delete_station,
             delete_alignment,
             delete_alignment_section,
             delete_alignment_sections,
             update_alignment_section_infrastructure,
+            update_alignment_section_track_type,
             update_alignment_anchor_height,
             undo_alignment_deletion,
             rename_company,
@@ -763,6 +965,8 @@ fn main() {
             rename_route,
             set_service_route_binding,
             list_save_slots,
+            move_save_slot,
+            rename_save_slot,
             create_new_world,
             load_save_slot,
             save_world_as,

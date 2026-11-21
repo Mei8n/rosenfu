@@ -1,5 +1,9 @@
+import {mapRenderMetrics} from './mapRenderMetrics';
+import {DEFAULT_DISPLAY_SETTINGS} from './displaySettings';
 // @vitest-environment jsdom
 import React from "react";
+import {settledMapClick} from "./testMapClick";
+import {panMap,sampleCamera} from "./mapTestNavigation";
 import { afterEach, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -17,13 +21,21 @@ function region(selector: string) {
   return within(element);
 }
 function renderStationEditor() { const result = render(<App />); fireEvent.click(region(".background-choices").getByRole("button",{name:"自作サンプル（オフライン）"})); fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab", { name: "駅設置" })); return result; }
-function desktop() {
+const placementBase = {...empty, next_id:"51", alignments:[{id:"50",owner:"2",name:"試験線",points:[{latitude:35.67504,longitude:139.72},{latitude:35.67504,longitude:139.78}]}],station_placements:[]};
+async function planStation() {
+  fireEvent.click(screen.getByRole("tab",{name:"建設"}));
+  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
+  await settledMapClick(interactiveMap(),{clientX:250,clientY:150});
+  await screen.findByText(/を計画に追加しました/);
+  fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));
+}
+function desktop(withAlignment=false) {
   vi.mocked(isTauri).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async (command) => {
     if(command==="list_save_slots")return {active_slot_id:"test-slot",slots:[]};
     if (command === "engine_info") return { name: "Rosenfu", version: "test-version" };
-    if (command === "world_snapshot") return empty;
-    if (command === "add_station" || command === "load_save_slot") return populated;
+    if (command === "world_snapshot") return withAlignment ? placementBase : empty;
+    if (command === "build_plan" || command === "load_save_slot") return populated;
     if (command === "save_world") return { saved: true };
     throw new Error(`unexpected command: ${command}`);
   });
@@ -67,15 +79,17 @@ test("station map placement requires a previously built alignment", async () => 
   expect(invoke).not.toHaveBeenCalledWith("add_station", expect.anything());
 });
 
-test.each([false,true])("coordinate entry preserves state on add_station failure (interleaved autosave_status=%s)", async (interleaveStatus) => {
-  desktop(); renderStationEditor(); await screen.findByText(/test-version/);
+test.each([false,true])("station plan preserves state on build_plan failure (interleaved autosave_status=%s)", async (interleaveStatus) => {
+  desktop(true); renderStationEditor(); await screen.findByText(/test-version/);
   const original=vi.mocked(invoke).getMockImplementation()!;
-  vi.mocked(invoke).mockImplementation((command,args)=>command==="add_station"?Promise.reject(new Error("invalid station")):original(command,args));
+  vi.mocked(invoke).mockImplementation((command,args)=>command==="build_plan"?Promise.reject(new Error("invalid station")):original(command,args));
   // An unrelated failing read must not consume the station failure fixture.
   if(interleaveStatus)await expect(invoke("autosave_status")).rejects.toThrow("unexpected command: autosave_status");
-  fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
+  await planStation();
   expect((await screen.findByRole("alert")).querySelector("span")).toHaveProperty("textContent", "処理できませんでした: invalid station");
-  expect(screen.queryByText("未保存の変更あり")).toBeNull();
+  expect(screen.getByText("未保存の変更あり")).toBeTruthy();
+  expect(screen.getByRole("button",{name:"計画を着工"})).toBeTruthy();
+  expect(document.querySelectorAll(".planned-station")).not.toHaveLength(0);
   expect(screen.getByText(/まだ駅はありません/)).toBeTruthy();
 });
 
@@ -91,13 +105,13 @@ test("save and load errors retain the current snapshot", async () => {
   expect(screen.getByText(/まだ駅はありません/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   await screen.findByText("保存したワールドを読み込みました。");
-  expect(screen.getByRole("button", { name: /中央 35.67500/, hidden:true })).toBeTruthy();
+  expect(screen.getByRole("button", { name: /^中央 /, hidden:true })).toBeTruthy();
 });
 
 test("loading over unsaved station edits requires an explicit choice", async () => {
-  desktop(); renderStationEditor(); await screen.findByText(/test-version/);
-  fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
-  await screen.findByText("新駅を配置しました。");
+  desktop(true); renderStationEditor(); await screen.findByText(/test-version/);
+  await planStation();
+  await screen.findByText("計画駅を建設しました。");
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   expect(invoke).not.toHaveBeenCalledWith("load_save_slot",{slotId:"test-slot"});
   fireEvent.click(screen.getByRole("button", { name: "戻る" }));
@@ -109,8 +123,8 @@ test("loading over unsaved station edits requires an explicit choice", async () 
 });
 
 test("pending operations block duplicate actions and successful save clears dirty state", async () => {
-  desktop(); renderStationEditor(); await screen.findByText(/test-version/);
-  fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
+  desktop(true); renderStationEditor(); await screen.findByText(/test-version/);
+  await planStation();
   await screen.findByText("未保存の変更あり");
   let finish!: (value: { saved: boolean }) => void;
   vi.mocked(invoke).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
@@ -248,24 +262,25 @@ test("background switching is display-only and outside viewport clicks never cre
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
 });
 
-test("rapid pan debounces new tile URLs while keeping shared DOM and existing tiles georeferenced", () => {
+test("rapid pan throttles new tile URLs while keeping shared DOM and existing tiles georeferenced", () => {
   vi.useFakeTimers(); vi.mocked(isTauri).mockReturnValue(false); renderStationEditor();
   fireEvent.click(screen.getByLabelText("駅名を表示"));
   fireEvent.click(screen.getByRole("button", { name: "地理院地図（オンライン）" }));
   const map = screen.getByRole("img", { name: "駅配置用地理院地図" });
   const original = new Map(Array.from(map.querySelectorAll("image")).map(image=>[image.getAttribute("data-tile-id")!,image]));
   for(const image of original.values()) fireEvent.load(image);
-  fireEvent.click(screen.getByRole("button", { name: "東へ移動" }));
+  panMap(300);
   act(()=>vi.advanceTimersByTime(100));
-  fireEvent.click(screen.getByRole("button", { name: "東へ移動" }));
+  panMap(300);
   const camera = panCamera(panCamera(DEFAULT_CAMERA,300,0),300,0);
   expect(Array.from(map.querySelectorAll("image")).map(image=>image.getAttribute("data-tile-id"))).toEqual(Array.from(original.keys()));
   const first = GSI_TILES[0];
   expect(Number(original.get(first.id)!.getAttribute("x"))).toBeCloseTo(positionTile(first,camera).x,8);
   const marker = map.querySelector(".station-marker")!;
   const station = project(35.685,139.735,camera);
-  expect(Number(marker.querySelector("text")?.getAttribute("x"))).toBeCloseTo(station.x + 18);
-  act(()=>vi.advanceTimersByTime(249));
+  expect(Number(marker.querySelector("text")?.getAttribute("x"))).toBeCloseTo(station.x + mapRenderMetrics(camera.zoom,DEFAULT_DISPLAY_SETTINGS.lineWidth,1).stationLabelOffset);
+  // The second movement must not restart the first 250 ms window.
+  act(()=>vi.advanceTimersByTime(149));
   expect(Array.from(map.querySelectorAll("image")).map(image=>image.getAttribute("data-tile-id"))).toEqual(Array.from(original.keys()));
   act(()=>vi.advanceTimersByTime(1));
   const current = Array.from(map.querySelectorAll("image:not([data-fallback-tile])"));
@@ -283,23 +298,23 @@ test("tile result metadata is discarded when tiles leave the viewport and zoom r
   const first = map.querySelector("image")!; const id = first.getAttribute("data-tile-id")!;
   fireEvent.error(first);
   expect(map.querySelector(`[data-failed-tile="${id}"]`)).toBeTruthy();
-  for(let i=0;i<6;i++) fireEvent.click(region(".camera-controls").getByRole("button", { name: "東へ移動" }));
+  for(let i=0;i<6;i++) panMap(300);
   act(()=>vi.advanceTimersByTime(250));
   expect(map.querySelector(`[data-failed-tile="${id}"]`)).toBeNull();
-  fireEvent.click(region(".camera-controls").getByRole("button", { name: "東京へ戻る" }));
+  panMap(-1800);
   act(()=>vi.advanceTimersByTime(250));
   expect(map.querySelector(`image[data-tile-id="${id}"]`)).toBeTruthy();
-  expect((region(".camera-controls").getByRole("button", { name: "縮小" }) as HTMLButtonElement).disabled).toBe(false);
-  for(let i=0;i<10;i++) fireEvent.click(region(".camera-controls").getByRole("button", { name: "拡大" }));
+  expect(screen.getByText("ZL 12 / Web Mercator")).toBeTruthy();
+  for(let i=0;i<10;i++) fireEvent.keyDown(window,{key:"+"});
   act(()=>vi.advanceTimersByTime(200));
-  expect((region(".camera-controls").getByRole("button", { name: "拡大" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText("ZL 20 / Web Mercator")).toBeTruthy();
   act(()=>vi.advanceTimersByTime(250));
   expect(Array.from(map.querySelectorAll("image")).every(image=>image.getAttribute("href")?.includes("/pale/17/"))).toBe(true);
   expect(invoke).not.toHaveBeenCalled();
 });
 
 test.each([false,true])("camera changes do not edit world IDs/coordinates and legacy reload restores default view (delayed slot refresh=%s)", async (delayedSlots) => {
-  desktop();
+  desktop(true);
   const original=vi.mocked(invoke).getMockImplementation()!;
   let slotReads=0,finishRefresh!:()=>void;
   const refreshed=new Promise(resolve=>{finishRefresh=()=>resolve({active_slot_id:"test-slot",slots:[]});});
@@ -309,8 +324,8 @@ test.each([false,true])("camera changes do not edit world IDs/coordinates and le
   });
   renderStationEditor(); await screen.findByText(/test-version/);
   const originalSnapshot = JSON.stringify(populated);
-  fireEvent.click(screen.getByRole("tab", {name:"駅"}));fireEvent.click(screen.getByRole("button", { name: "指定座標に配置" }));
-  await screen.findByText("新駅を配置しました。");
+  await planStation();
+  await screen.findByText("計画駅を建設しました。");
   fireEvent.click(screen.getByRole("button", { name: "保存" }));
   const saveButton=screen.getByRole("button",{name:"保存"}) as HTMLButtonElement;
   if(delayedSlots){await waitFor(()=>expect(slotReads).toBe(2));expect(saveButton.disabled).toBe(true);await act(async()=>finishRefresh());}
@@ -322,20 +337,23 @@ test.each([false,true])("camera changes do not edit world IDs/coordinates and le
   await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="autosave_status")).toHaveLength(2));
   expect(vi.mocked(invoke).mock.calls.slice(beforeReadiness).every(([command])=>command==="autosave_status")).toBe(true);
   const count = vi.mocked(invoke).mock.calls.length;
-  fireEvent.change(screen.getByLabelText("中心緯度"), { target: { value: "43.06" } });
-  fireEvent.change(screen.getByLabelText("中心経度"), { target: { value: "141.35" } });
-  fireEvent.click(screen.getByRole("button", { name: "座標へ移動" }));
-  fireEvent.click(screen.getByRole("button", { name: "拡大" }));
-  expect(vi.mocked(invoke).mock.calls, JSON.stringify(vi.mocked(invoke).mock.calls)).toHaveLength(count);
+  panMap(300,-180);
+  fireEvent.keyDown(window,{key:"+"});
+  // Camera movement may request water metadata, but must never write the world.
+  await waitFor(()=>expect(vi.mocked(invoke).mock.calls.slice(count)).toEqual([["water_mask_requests",{bounds:[139.8,35.7,139.9,35.75]}]]));
   expect(screen.queryByText("未保存の変更あり")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "読込" }));
   fireEvent.click(screen.getByRole("button", { name: "読込を続ける" }));
   await screen.findByText("保存したワールドを読み込みました。");
-  expect((screen.getByLabelText("中心緯度") as HTMLInputElement).value).toBe(DEFAULT_CAMERA.latitude.toFixed(5));
-  expect((screen.getByLabelText("中心経度") as HTMLInputElement).value).toBe(DEFAULT_CAMERA.longitude.toFixed(5));
-  expect(screen.getByRole("button", { name: /中央 35.67500, 139.75000/ })).toBeTruthy();
+  expect(sampleCamera().latitude).toBeCloseTo(DEFAULT_CAMERA.latitude,8);
+  expect(sampleCamera().longitude).toBeCloseTo(DEFAULT_CAMERA.longitude,8);
+  expect(screen.getByRole("button", { name: /^中央 /, hidden:true })).toBeTruthy();
+  const marker=document.querySelector(".station-marker circle")!;
+  const point=project(populated.stations[0].latitude,populated.stations[0].longitude,DEFAULT_CAMERA);
+  expect(Number(marker.getAttribute("cx"))).toBeCloseTo(point.x,5);
+  expect(Number(marker.getAttribute("cy"))).toBeCloseTo(point.y,5);
   expect(JSON.stringify(populated)).toBe(originalSnapshot);
-  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="add_station")).toHaveLength(1);
+  expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==="build_plan")).toHaveLength(1);
 });
 
 function pointer(target: Element, type: string, x: number, y: number, id = 1) {
@@ -360,7 +378,7 @@ test("move is the default mode and drags never create stations even in placement
   pointer(map,"pointerdown",250,150); pointer(map,"pointermove",270,150); pointer(map,"pointerup",270,150);
   fireEvent.click(map,{clientX:270,clientY:150});
   expect(invoke).not.toHaveBeenCalledWith("add_station",expect.anything());
-  expect(Number((screen.getByLabelText("中心経度") as HTMLInputElement).value)).toBeLessThan(DEFAULT_CAMERA.longitude);
+  expect(sampleCamera().longitude).toBeLessThan(DEFAULT_CAMERA.longitude);
   pointer(map,"pointerdown",250,150); pointer(map,"pointermove",252,150); pointer(map,"pointerup",252,150);
   fireEvent.click(map,{clientX:252,clientY:150});
   await screen.findByText(/処理できませんでした: 駅は線路上に置いてください/);
@@ -383,11 +401,11 @@ test("tool and mode switches cancel active drags and require renewed placement i
   const map = interactiveMap(); fireEvent.click(region(".camera-controls").getByRole("button",{name:"駅配置"}));
   pointer(map,"pointerdown",250,150); pointer(map,"pointermove",270,150);
   fireEvent.click(screen.getByRole("tab",{name:"路線"}));
-  const longitude = (region(".camera-controls").getByLabelText("中心経度") as HTMLInputElement).value;
+  const longitude = sampleCamera().longitude;
   pointer(map,"pointermove",400,150); pointer(map,"pointerup",400,150);
   fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(region(".editor-tabs").getByRole("tab",{name:"駅設置"}));
   fireEvent.click(map,{clientX:250,clientY:150});
-  expect((region(".camera-controls").getByLabelText("中心経度") as HTMLInputElement).value).toBe(longitude);
+  expect(sampleCamera().longitude).toBe(longitude);
   expect(region(".camera-controls").getByRole("button",{name:"駅配置"}).getAttribute("aria-pressed")).toBe("true");
   fireEvent.click(region(".camera-controls").getByRole("button",{name:"駅配置"}));
   pointer(map,"pointerdown",250,150); fireEvent.click(region(".camera-controls").getByRole("button",{name:"移動"})); pointer(map,"pointerup",250,150); fireEvent.click(map,{clientX:250,clientY:150});
@@ -461,10 +479,10 @@ test("bubbled child capture loss does not cancel the active SVG drag", async () 
   const background = map.querySelector("rect")!;
   pointer(background,"pointerdown",250,150);
   pointer(map,"pointermove",270,150);
-  const firstLongitude = Number((screen.getByLabelText("中心経度") as HTMLInputElement).value);
+  const firstLongitude = sampleCamera().longitude;
   pointer(background,"lostpointercapture",270,150);
   pointer(map,"pointermove",290,150);
-  const secondLongitude = Number((screen.getByLabelText("中心経度") as HTMLInputElement).value);
+  const secondLongitude = sampleCamera().longitude;
   expect(secondLongitude).toBeLessThan(firstLongitude);
   expect(map.classList.contains("map-dragging")).toBe(true);
   pointer(map,"pointerup",290,150);
@@ -537,7 +555,10 @@ test("station rename submits once, retains ID and coordinates, and needs world s
   await act(async () => finish({ ...populated, stations: [{ ...populated.stations[0], name: "新中央" }] }));
   expect((screen.getByLabelText("選択駅の名前") as HTMLInputElement).value).toBe("新中央");
   expect(screen.getByText("未保存の変更あり")).toBeTruthy();
-  expect(document.querySelector(".station-entry small")?.textContent).toBe("35.67500, 139.75000");
+  const marker=document.querySelector(".station-marker circle")!;
+  const expected=project(populated.stations[0].latitude,populated.stations[0].longitude,sampleCamera());
+  expect(Number(marker.getAttribute("cx"))).toBeCloseTo(expected.x,5);
+  expect(Number(marker.getAttribute("cy"))).toBeCloseTo(expected.y,5);
 });
 
 test("isolated station deletion confirms, handles failure, and prevents duplicate requests", async () => {
@@ -598,15 +619,17 @@ test("offline scene and grid follow camera pan and zoom without network requests
   vi.mocked(isTauri).mockReturnValue(false); render(<App />); fireEvent.click(screen.getByRole("button",{name:"自作サンプル（オフライン）"}));
   const scene = document.querySelector("[data-sample-scene]")!;
   expect(scene.getAttribute("patternTransform")).toBe("translate(0 0) scale(1)");
-  fireEvent.click(screen.getByRole("button", {name:"東へ移動"}));
+  panMap(300);
   const panned = scene.getAttribute("patternTransform")!;
   expect(panned).not.toBe("translate(0 0) scale(1)");
   expect(document.querySelector("#sample-grid")!.getAttribute("patternTransform")).toBe(panned);
-  fireEvent.click(screen.getByRole("button", {name:"拡大"}));
+  fireEvent.keyDown(window,{key:"+"});
   await waitFor(()=>expect(scene.getAttribute("patternTransform")).toContain("scale(2)"));
   expect(document.querySelectorAll("svg image")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", {name:"東京へ戻る"}));
-  expect(scene.getAttribute("patternTransform")).toBe("translate(0 0) scale(1)");
+  fireEvent.keyDown(window,{key:"-"});
+  await waitFor(()=>expect(scene.getAttribute("patternTransform")).toContain("scale(1)"));
+  panMap(-300);
+  expect(sampleCamera().longitude).toBeCloseTo(DEFAULT_CAMERA.longitude,8);
   expect(invoke).not.toHaveBeenCalled();
 });
 
@@ -616,7 +639,7 @@ test("offline background uses a continuous camera-anchored pattern and fills the
   expect(map.getAttribute("preserveAspectRatio")).toBe("xMidYMid slice");
   expect(map.querySelector("pattern#sample-scene")).toBeTruthy();
   expect(map.querySelector('.sample-background rect[fill="url(#sample-scene)"]')).toBeTruthy();
-  for(let i=0;i<8;i++) fireEvent.click(screen.getByRole("button",{name:"東へ移動"}));
+  for(let i=0;i<8;i++) panMap(300);
   expect(map.querySelector('pattern#sample-scene')?.getAttribute("patternTransform")).not.toBe("translate(0 0) scale(1)");
   expect(map.querySelectorAll("image")).toHaveLength(0);
 });
@@ -639,10 +662,10 @@ test("persisted alignment route is shown and protected against legacy editing",a
  vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{name:"Rosenfu",version:"test-version"}:world);
  renderStationEditor();await screen.findByText(/test-version/);
  fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.click(screen.getByRole("button",{name:"編集: 新方式本線"}));
- expect(screen.getByText("所属駅: 中央 → 東")).toBeTruthy();expect(screen.getByText(/建設線形 東西線形/)).toBeTruthy();
+ expect(within(screen.getByRole("list",{name:"所属駅"})).getAllByRole("listitem").map(item=>item.textContent)).toEqual(["中央","東"]);expect(screen.queryByText(/建設線形 東西線形/)).toBeNull();
  expect(screen.queryByLabelText("路線名")).toBeNull();
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="save_route")).toBe(false);
- fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^中央 35/}));
+ fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^中央 /}));
  expect(screen.getAllByText(/路線: 新方式本線/).length).toBeGreaterThan(0);
 });
 test("candidate apply invokes RoutePath save and marks world unsaved",async()=>{

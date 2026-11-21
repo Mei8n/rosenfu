@@ -1,3 +1,4 @@
+import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import {afterEach,expect,test,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen} from '@testing-library/react';
@@ -10,7 +11,7 @@ HTMLDialogElement.prototype.close=function(){this.removeAttribute('open');};
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 async function start(){
  vi.mocked(isTauri).mockReturnValue(true);
- vi.mocked(invoke).mockImplementation(async command=>{if(command==='engine_info')return {name:'Rosenfu',version:'mode-test'};if(command==='world_snapshot')return empty;if(command==='delete_alignment_section'||command==='delete_station')return empty;if(command==='undo_alignment_deletion')return empty;throw Error(command);});
+ vi.mocked(invoke).mockImplementation(async command=>{if(command==="preview_construction_plan")return {validationError:null};if(command==='engine_info')return {name:'Rosenfu',version:'mode-test'};if(command==='world_snapshot')return empty;if(command==='delete_alignment_section'||command==='delete_station')return empty;if(command==='undo_alignment_deletion')return empty;throw Error(command);});
  render(<App/>);await screen.findByText(/mode-test/);
  fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
@@ -20,9 +21,9 @@ async function start(){
 test.each(['delete','tracks','stations'].flatMap(mode=>[130,330].map(stationX=>({mode,stationX}))))('fresh split Undo/Redo preserves station at $stationX after switching to $mode',async ({mode,stationX})=>{
  const map=await start();
  fireEvent.click(screen.getByRole('tab',{name:'線路'}));
- const click=(x:number)=>fireEvent.click(map,{clientX:x,clientY:200,detail:1});
- click(80);click(180);click(280);click(380);click(380);
- fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));click(stationX);
+ const click=async (x:number)=>await settledMapClick(map,{clientX:x,clientY:200,detail:1});
+ await click(80);await click(180);await click(280);await click(380);await click(380);
+ fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));await click(stationX);
  expect(map.querySelectorAll('.planned-station')).toHaveLength(1);
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
  fireEvent.click(map.querySelector('[data-delete-plan-section="1"]')!);
@@ -49,9 +50,9 @@ test('later anchor edit is undone before the split deletion, without losing its 
  vi.stubGlobal('PointerEvent',MouseEvent);
  const map=await start();
  fireEvent.click(screen.getByRole('tab',{name:'線路'}));
- for(const x of [80,180,280,380,380])fireEvent.click(map,{clientX:x,clientY:200,detail:1});
+ for(const x of [80,180,280,380,380])await settledMapClick(map,{clientX:x,clientY:200,detail:1});
  fireEvent.click(screen.getByRole('tab',{name:'駅設置'}));
- fireEvent.click(map,{clientX:130,clientY:200,detail:1});
+ await settledMapClick(map,{clientX:130,clientY:200,detail:1});
  const original=Array.from(map.querySelectorAll('.draft-path')).map(p=>p.getAttribute('d'));
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
  fireEvent.click(map.querySelector('[data-delete-plan-section="1"]')!);
