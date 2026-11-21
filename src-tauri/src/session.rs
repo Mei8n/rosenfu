@@ -28,6 +28,20 @@ fn in_edit_extent(latitude: f64, longitude: f64) -> bool {
     (20.0..=46.0).contains(&latitude) && (122.0..=154.0).contains(&longitude)
 }
 
+/// Match validated snapshots by stable ID, then compare complete persistent values.
+fn changed_summary_alignment_ids(
+    before: &[rosenfu_core::world::Alignment],
+    after: &[rosenfu_core::world::Alignment],
+) -> std::collections::BTreeSet<AlignmentId> {
+    let previous: std::collections::BTreeMap<_, _> =
+        before.iter().map(|line| (line.id, line)).collect();
+    after
+        .iter()
+        .filter(|line| previous.get(&line.id).is_none_or(|old| *old != *line))
+        .map(|line| line.id)
+        .collect()
+}
+
 /// Compact advisory result; no preview world is serialized across IPC.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -892,12 +906,7 @@ impl WorldEditor {
             });
         }
         let after = self.snapshot();
-        let changed: std::collections::BTreeSet<_> = after
-            .alignments
-            .iter()
-            .filter(|line| !before.alignments.contains(line))
-            .map(|line| line.id)
-            .collect();
+        let changed = changed_summary_alignment_ids(&before.alignments, &after.alignments);
         let assessments = self.road_assessments();
         let roads_unverified = assessments
             .iter()
@@ -6410,6 +6419,28 @@ mod road_snapshot_transaction_tests {
             .unwrap();
         assert_eq!(preview.new_crossing_count, Some(0));
     }
+    #[test]
+    fn indexed_summary_diff_matches_full_comparison_for_edits_and_split_ids() {
+        let mut editor = WorldEditor::new();
+        let before = editor
+            .build_construction_plan(vec![plan(), plan(), plan()], vec![])
+            .unwrap()
+            .alignments;
+        let unchanged = before[0].clone();
+        let mut same_id_edit = before[1].clone();
+        same_id_edit.points[0].longitude -= 0.001;
+        let mut split_piece = before[2].clone();
+        split_piece.id = AlignmentId(1000);
+        let after = vec![split_piece, unchanged, same_id_edit];
+        let legacy: std::collections::BTreeSet<_> = after
+            .iter()
+            .filter(|line| !before.contains(line))
+            .map(|line| line.id)
+            .collect();
+        assert_eq!(legacy, [before[1].id, AlignmentId(1000)].into());
+        assert_eq!(changed_summary_alignment_ids(&before, &after), legacy);
+    }
+
     #[test]
     fn preview_shared_anchor_crossing_count_matches_commit_once() {
         let mut editor = WorldEditor::new();
