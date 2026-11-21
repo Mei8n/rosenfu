@@ -178,17 +178,29 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
             return Err(StorageError::InvalidHeader);
         }
     }
-    let mut document: SaveDocument = serde_json::from_value(value)?;
+    let document: SaveDocument = serde_json::from_value(value)?;
+    // Schema 26 predates all runtime formats after v2. Keep that ingress
+    // closed even when the current schema supports newer runtime formats.
+    if version == 26
+        && document
+            .operation
+            .as_ref()
+            .is_some_and(|operation| operation.runtime.format != 2)
+    {
+        return Err(StorageError::InvalidHeader);
+    }
     let store = document.road_evidence.restore(version == 26)?;
-    document.world.restore_road_evidence(store)?;
-    let mut world = World::new(document.world)?;
+    let mut world = World::from_saved_draft(document.world, store)?;
     world
         .restore_operation(document.operation)
         .map_err(|_| StorageError::InvalidHeader)?;
     world
         .restore_fixed_od_scenario(document.fixed_od_scenario)
         .map_err(|_| StorageError::InvalidHeader)?;
-    ensure_world_saveable(&world)?;
+    // The draft was validated above. Restoring operation and demand only
+    // changes World state outside the draft. The canonical size check still
+    // uses the complete document, including those restored fields.
+    write_bounded_save(&save_document(&world), io::sink(), MAX_SAVE_BYTES)?;
     Ok(world)
 }
 
@@ -262,16 +274,20 @@ impl<W: Write> Write for HashingWriter<W> {
 }
 
 fn checked_save_document(world: &World) -> Result<BorrowedSaveDocument<'_>, StorageError> {
+    world.snapshot().validate()?;
+    Ok(save_document(world))
+}
+
+fn save_document(world: &World) -> BorrowedSaveDocument<'_> {
     let data = world.snapshot();
-    data.validate()?;
-    Ok(BorrowedSaveDocument {
+    BorrowedSaveDocument {
         format: FORMAT,
         schema_version: SCHEMA_VERSION,
         world: data,
         road_evidence: BorrowedEvidenceEnvelope::from_store(&data.runtime_road_evidence),
         operation: world.operation_save(),
         fixed_od_scenario: world.fixed_od_scenario(),
-    })
+    }
 }
 
 fn write_bounded_save<W: Write>(

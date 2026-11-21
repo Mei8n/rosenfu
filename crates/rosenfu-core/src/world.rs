@@ -271,6 +271,17 @@ impl World {
             fixed_od_scenario: None,
         })
     }
+    /// Restore a saved snapshot with its separately decoded evidence. Attaching
+    /// the store does not rewrite the saved descriptors; validation must match
+    /// them to the evidence before the draft can become a running world.
+    pub fn from_saved_draft(
+        mut data: WorldDraft,
+        store: crate::ofm_evidence::EvidenceStore,
+    ) -> Result<Self, WorldError> {
+        data.runtime_road_evidence = store;
+        Self::new(data)
+    }
+
     /// UI JSON omits runtime evidence. Preserve the CURRENT table and reject
     /// manifest changes; explicit evidence attachment uses a different validated API.
     /// Returns a replacement without modifying the current world on any failure.

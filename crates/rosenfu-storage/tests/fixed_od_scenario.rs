@@ -31,6 +31,35 @@ fn reads_prior_schema_without_scenario_or_file_rewrite() {
 }
 
 #[test]
+fn legacy_schema_operation_remains_on_runtime_format_two() {
+    let mut old: Value =
+        serde_json::from_slice(include_bytes!("fixtures/schema-26-world.json")).unwrap();
+    old["operation"] = json!({
+        "configs": [], "bus_configs": [], "invalidated": false, "pending_target": null,
+        "runtime": {
+            "format": 2, "started": false, "now_ms": 0, "paused": false, "speed": 1,
+            "services": [], "trains": [], "next_departures": []
+        }
+    });
+    assert_eq!(
+        decode(&serde_json::to_vec(&old).unwrap())
+            .unwrap()
+            .operation_save()
+            .unwrap()
+            .runtime
+            .format,
+        2
+    );
+    for format in [1, 3, 4, 99] {
+        old["operation"]["runtime"]["format"] = json!(format);
+        assert!(matches!(
+            decode(&serde_json::to_vec(&old).unwrap()),
+            Err(StorageError::InvalidHeader)
+        ));
+    }
+}
+
+#[test]
 fn scenario_is_one_independent_input_no_results_and_orphan_can_load() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("world.json");
