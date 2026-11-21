@@ -888,6 +888,8 @@ impl World {
         }
         let runtime = if bus_configs.is_empty() && self.terminal_hold_eligible(&configs, &specs) {
             crate::operation::OperationRuntime::new_with_terminal_hold(specs)?
+        } else if bus_configs.is_empty() && self.following_eligible(&configs, &specs) {
+            crate::operation::OperationRuntime::new_with_progressive_rail(specs)?
         } else {
             crate::operation::OperationRuntime::new(specs)?
         };
@@ -943,14 +945,18 @@ impl World {
         }
         let progressive = saved.runtime.format == 3;
         let holding = saved.runtime.format == 4;
-        if saved.runtime.format != 2
-            && !holding
-            && !(progressive
-                && allow_qualified_qa
-                && !saved.invalidated
-                && saved.bus_configs.is_empty()
-                && self.is_straight_rail_occupancy_qa(&saved.configs))
-        {
+        let progressive_qualified = progressive
+            && saved.bus_configs.is_empty()
+            && !saved.parallel_join_lanes
+            && !saved.crossing_reservations
+            && if saved.invalidated {
+                saved.runtime.paused
+                    && Self::following_specs(&saved.configs, &saved.runtime.services)
+            } else {
+                self.following_eligible(&saved.configs, &saved.runtime.services)
+                    || (allow_qualified_qa && self.is_straight_rail_occupancy_qa(&saved.configs))
+            };
+        if saved.runtime.format != 2 && !holding && !progressive_qualified {
             return Err(OperationError::InvalidClock);
         }
         if holding
@@ -1049,6 +1055,8 @@ impl World {
         }
         let mut runtime = if holding {
             crate::operation::OperationRuntime::restore_with_terminal_hold(saved.runtime)?
+        } else if progressive_qualified {
+            crate::operation::OperationRuntime::restore_with_progressive_rail(saved.runtime)?
         } else {
             crate::operation::OperationRuntime::restore(saved.runtime)?
         };
@@ -1069,7 +1077,7 @@ impl World {
         configs: &[OperationServiceConfig],
         specs: &[ServiceRunSpec],
     ) -> bool {
-        self.straight_rail_geometry(configs, false)
+        self.straight_rail_geometry(configs, false, 1)
             && specs.len() == configs.len()
             && specs.iter().all(|spec| {
                 let [outbound, returning] = spec.legs.as_slice() else {
@@ -1133,18 +1141,99 @@ impl World {
             })
     }
 
+    // Product following is intentionally narrower than the test-only
+    // single-track experiment: only direct, one-way legs on independent
+    // double-track corridors, so no train tries to reacquire its own approach
+    // in reverse and no other route can enter across a turnout.
+    fn following_eligible(
+        &self,
+        configs: &[OperationServiceConfig],
+        specs: &[ServiceRunSpec],
+    ) -> bool {
+        self.straight_rail_geometry(configs, true, 2)
+            && Self::following_specs(configs, specs)
+            && specs.iter().all(|spec| {
+                let leg = &spec.legs[0];
+                [&leg.from, &leg.to].iter().all(|id| {
+                    let Ok(id) = id.parse::<u64>() else {
+                        return false;
+                    };
+                    let Some(p) = self
+                        .data
+                        .station_placements
+                        .iter()
+                        .find(|p| p.station_id == StationId(id))
+                    else {
+                        return false;
+                    };
+                    let Some(line) = self.data.alignments.iter().find(|a| a.id == p.alignment_id)
+                    else {
+                        return false;
+                    };
+                    let centre = p.position * line.length_m();
+                    // No parked train protrudes into an adjacent anchor
+                    // section at either modeled endpoint.
+                    let margin = spec.vehicle.length_m.max(p.length_m / 2.) + 2.;
+                    let mut left = 0.;
+                    line.section_lengths_m().into_iter().any(|length| {
+                        let right = left + length;
+                        let fits = centre - margin >= left && centre + margin <= right;
+                        left = right;
+                        fits
+                    })
+                })
+            })
+    }
+
+    // The intentionally frozen form cannot be checked against edited
+    // geography. Still require a scoped one-way rail spec, no road/point keys,
+    // and matching configs. It remains paused until explicit reconfiguration.
+    fn following_specs(configs: &[OperationServiceConfig], specs: &[ServiceRunSpec]) -> bool {
+        (1..=4).contains(&configs.len())
+            && configs.len() == specs.len()
+            && configs
+                .iter()
+                .map(|c| c.service_id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == configs.len()
+            && configs.iter().all(|c| {
+                specs
+                    .iter()
+                    .find(|spec| spec.service_id == c.service_id.0.to_string())
+                    .is_some_and(|spec| {
+                        let [leg] = spec.legs.as_slice() else {
+                            return false;
+                        };
+                        spec.timetable == c.timetable
+                            && spec.vehicle == c.vehicle
+                            && spec.vehicle.length_m <= 80.
+                            && leg.dwell_ms == c.dwell_ms
+                            && !leg.sections.is_empty()
+                            && leg.from != leg.to
+                            && leg.sections.iter().all(|s| {
+                                s.resources.len() == 1
+                                    && lane_resource(s).is_some_and(|r| {
+                                        r.ends_with(":lane:0") || r.ends_with(":lane:1")
+                                    })
+                            })
+                    })
+            })
+    }
+
     /// Narrow acceptance gate, not a general level-crossing detector.
     /// Every alignment in the world must be a local, monotone east-west flat
     /// ground single-track corridor; an optional second corridor must be well
     /// separated and neither corridor can be connected to anything else.
     fn is_straight_rail_occupancy_qa(&self, configs: &[OperationServiceConfig]) -> bool {
-        self.straight_rail_geometry(configs, true)
+        self.straight_rail_geometry(configs, true, 1)
     }
 
     fn straight_rail_geometry(
         &self,
         configs: &[OperationServiceConfig],
         progressive_test: bool,
+        tracks: u8,
     ) -> bool {
         let d = &self.data;
         let min_points = if progressive_test { 3 } else { 2 };
@@ -1164,9 +1253,13 @@ impl World {
                 || !(min_blocks..=8).contains(&a.section_count())
                 || a.vertical_profile.is_some()
                 || !a.section_profiles.is_empty()
-                || a.infrastructure
-                    .iter()
-                    .any(|s| *s != SectionInfrastructure::default())
+                || (0..a.section_count()).any(|i| {
+                    a.section_infrastructure(i)
+                        != Some(SectionInfrastructure {
+                            track_count: tracks,
+                            level: InfrastructureLevel::Ground,
+                        })
+                })
             {
                 return false;
             }
@@ -1232,6 +1325,22 @@ impl World {
         let invalid = self.operation.as_ref().is_some_and(|o| {
             if o.invalidated {
                 return false;
+            }
+            if o.runtime.progressive_rail() {
+                let active = o
+                    .configs
+                    .iter()
+                    .map(|c| self.compile_operation(c))
+                    .collect::<Result<Vec<_>, _>>();
+                return match active {
+                    Ok(specs) => {
+                        !self.following_eligible(&o.configs, &specs)
+                            || specs
+                                .iter()
+                                .any(|spec| o.runtime.service_spec(&spec.service_id) != Some(spec))
+                    }
+                    Err(_) => true,
+                };
             }
             let old_crossings = o.configs.iter().any(|c| {
                 o.runtime

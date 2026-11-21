@@ -261,11 +261,10 @@ impl OperationRuntime {
         Self::compile(specs, false, false)
     }
 
-    /// Opt-in experiment for trusted, directional rail-section resource IDs.
+    /// Qualified mode for trusted, directional rail-section resource IDs.
     /// Admission still reserves all resources to the next stop atomically; only
     /// a lane proven to have cleared the tail is released early. No station
     /// capacity or rolling block acquisition is implied.
-    #[cfg(test)]
     pub(crate) fn new_with_progressive_rail(
         specs: Vec<ServiceRunSpec>,
     ) -> Result<Self, OperationError> {
@@ -381,6 +380,10 @@ impl OperationRuntime {
             terminal_hold,
         })
     }
+    pub(crate) fn progressive_rail(&self) -> bool {
+        self.progressive_rail
+    }
+
     pub(crate) fn terminal_hold(&self) -> bool {
         self.terminal_hold
     }
@@ -692,19 +695,26 @@ impl OperationRuntime {
         }
     }
     pub fn restore(saved: OperationSave) -> Result<Self, OperationError> {
-        Self::restore_checked(saved, false)
+        Self::restore_checked(saved, false, false)
     }
 
     pub(crate) fn restore_with_terminal_hold(saved: OperationSave) -> Result<Self, OperationError> {
-        Self::restore_checked(saved, true)
+        Self::restore_checked(saved, true, false)
+    }
+
+    pub(crate) fn restore_with_progressive_rail(
+        saved: OperationSave,
+    ) -> Result<Self, OperationError> {
+        Self::restore_checked(saved, false, true)
     }
 
     fn restore_checked(
         saved: OperationSave,
         allow_terminal_hold: bool,
+        allow_progressive_rail: bool,
     ) -> Result<Self, OperationError> {
         let supported = saved.format == 2
-            || (cfg!(test) && saved.format == 3)
+            || ((cfg!(test) || allow_progressive_rail) && saved.format == 3)
             || (allow_terminal_hold && saved.format == 4);
         if !supported || (!saved.started && (saved.now_ms != 0 || !saved.trains.is_empty())) {
             return Err(OperationError::InvalidClock);
