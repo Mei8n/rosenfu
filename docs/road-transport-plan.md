@@ -56,8 +56,10 @@ The opt-in QA fixture is synthetic and visibly labeled. It exercises directed
 path validation and the real rail construction transaction. Managed trams can
 attach or detach the approved matching path; detaching does not move the rail.
 Rail dependencies still block removal, and each supported tram edit is saved and
-undoable atomically. This does not yet implement mixed traffic, actual on-road
-tram operations or crossing classification.
+undoable atomically. Managed dedicated and shared-road trams can run on their
+physical rails using the normal rail service model. The shared-road attachment
+does not yet add mixed-traffic conflicts, intersection control or a separate
+road running model for trams.
 
 ### 王子駅前〜飛鳥山: データ確認と未接続の検証基盤
 
@@ -117,3 +119,9 @@ ODbLを保持する。公開 API はアプリの実行時には呼ばない。
 `routing_authorized: false` 固定。車道と軌道の同一レーン・現行の通行許可、
 完全な道路網や隣接区間への接続を証明するものではない。
 元XMLや個人メタデータを保存・配布する処理ではなく、アプリからも呼ばない。
+
+### 共通時計・固定ODの受入範囲
+
+- バスは方向付き道路経路と停留所を検証し、鉄道と同じ運行時計で走る。旅客の停留所ID・系統IDは `bus:` 名前空間で鉄道と分離する。併用・専用トラムは実際に敷設した軌道を通常の鉄道系統として運行設定し、共通時計と固定ODに参加する。併用区間で自動車やバスと競合する仕組みではない。
+- 「都市」の固定OD試算で、任意の駅（トラム停留場を含む）とバス停の組を一つ、徒歩1〜60分で指定できる。指定した場合に限り試算内で両方向の乗換候補を追加し、時間・乗換回数と他の移動手段を比較する。近い駅や同名の地点を勝手につながない。実在の徒歩経路・通行可否、駅の統合、乗換設備の建設や保存を行う機能ではない。ワールドには従来の出発地・到着地・人数・代替所要時間のみ記録する。
+- 合成QAのバスを普通鉄道・専用トラム・併用トラムそれぞれと同時に動かす試験で、明示の徒歩リンクがない場合の未配分と、指定時の乗換・徒歩時間・人数・ワールド非変更を検査する。実地域の車両通行認証、全国データやWindows実機は別の受入項目。

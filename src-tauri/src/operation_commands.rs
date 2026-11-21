@@ -1,4 +1,4 @@
-use crate::session::{OperationView, WorldEditor};
+use crate::session::{FixedOdRoadTransfer, OperationView, WorldEditor};
 use rosenfu_core::{
     operation::{Timetable, Vehicle},
     world::ServiceId,
@@ -80,15 +80,17 @@ pub fn preview_fixed_od(
     destination_station_id: String,
     trips: Option<f64>,
     alternative_seconds: Option<f64>,
+    transfer: Option<FixedOdRoadTransfer>,
 ) -> Result<rosenfu_core::demand::OdAssignment, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .preview_fixed_od(
+        .preview_fixed_od_with_transfer(
             origin_station_id,
             destination_station_id,
             trips,
             alternative_seconds,
+            transfer,
         )
 }
 

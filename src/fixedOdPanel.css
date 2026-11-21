@@ -6,3 +6,5 @@
 .fixed-od-results dd { margin:0; font-variant-numeric:tabular-nums; text-align:right; }
 .fixed-od-paths { padding-left:1.6em; }
 .fixed-od-paths li { padding:5px 0; border-bottom:1px solid var(--edge); }
+.fixed-od-panel fieldset .fixed-od-transfer-toggle { display:flex; align-items:center; }
+.fixed-od-panel .fixed-od-transfer-toggle input { width:auto; }

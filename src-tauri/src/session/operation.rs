@@ -26,6 +26,15 @@ pub struct FixedOdScenarioView {
     scenario: Option<FixedOdScenario>,
 }
 
+/// A user-supplied walking assumption, not saved infrastructure or verified access.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FixedOdRoadTransfer {
+    pub station_id: String,
+    pub bus_stop_id: String,
+    pub walk_seconds: u32,
+}
+
 impl WorldEditor {
     pub fn operation_snapshot(&self) -> OperationView {
         let Some(o) = self.world.operation() else {
@@ -279,12 +288,30 @@ impl WorldEditor {
         Ok(self.fixed_od_scenario())
     }
 
+    #[cfg(test)]
     pub fn preview_fixed_od(
         &self,
         origin_station_id: String,
         destination_station_id: String,
         trips: Option<f64>,
         alternative_seconds: Option<f64>,
+    ) -> Result<rosenfu_core::demand::OdAssignment, String> {
+        self.preview_fixed_od_with_transfer(
+            origin_station_id,
+            destination_station_id,
+            trips,
+            alternative_seconds,
+            None,
+        )
+    }
+
+    pub fn preview_fixed_od_with_transfer(
+        &self,
+        origin_station_id: String,
+        destination_station_id: String,
+        trips: Option<f64>,
+        alternative_seconds: Option<f64>,
+        transfer: Option<FixedOdRoadTransfer>,
     ) -> Result<rosenfu_core::demand::OdAssignment, String> {
         use rosenfu_core::demand::*;
         let scenario = FixedOdScenario {
@@ -297,6 +324,42 @@ impl WorldEditor {
         if !scenario.endpoints_exist(self.world.snapshot()) {
             return Err("異なる既存の駅・停留所を選択してください。".into());
         }
+        let walks = if let Some(transfer) = transfer {
+            let rail = transfer.station_id;
+            let bus = transfer.bus_stop_id;
+            let seconds = f64::from(transfer.walk_seconds);
+            let endpoints = FixedOdScenario {
+                origin_station_id: rail.clone(),
+                destination_station_id: bus.clone(),
+                trips: None,
+                alternative_seconds: None,
+            };
+            if rail.starts_with("bus:")
+                || !bus.starts_with("bus:")
+                || !(60..=3600).contains(&transfer.walk_seconds)
+                || endpoints.validate().is_err()
+                || !endpoints.endpoints_exist(self.world.snapshot())
+            {
+                return Err(
+                    "徒歩乗り換えには既存の駅・バス停と1〜60分の所要時間を指定してください。"
+                        .into(),
+                );
+            }
+            vec![
+                WalkLink {
+                    from: rail.clone(),
+                    to: bus.clone(),
+                    seconds,
+                },
+                WalkLink {
+                    from: bus,
+                    to: rail,
+                    seconds,
+                },
+            ]
+        } else {
+            Vec::new()
+        };
         let operation = self
             .world
             .operation()
@@ -340,7 +403,7 @@ impl WorldEditor {
             }],
             alternative_seconds,
         };
-        assign_fixed_od(&[od], &legs, &[], &ChoiceWeights::default(), 10000)?
+        assign_fixed_od(&[od], &legs, &walks, &ChoiceWeights::default(), 10000)?
             .into_iter()
             .next()
             .ok_or("需要結果がありません。".into())
@@ -766,5 +829,187 @@ mod tests {
         e.reset_operation().unwrap();
         assert_eq!(e.operation_snapshot().now_ms, 0);
         assert!(e.operation_snapshot().services.is_empty());
+    }
+    #[test]
+    fn explicit_bus_walk_links_rail_and_both_tram_types_without_mutating_world() {
+        use rosenfu_core::road_transport::{BusRoute, BusStop, BusStopOccurrence};
+        use rosenfu_core::world::RouteSegment;
+
+        for road_tram in [None, Some(false), Some(true)] {
+            let mut e = WorldEditor::new();
+            e.company_setup_required = false;
+            let qa = e.enable_road_qa_fixture(true).unwrap();
+            let mut roads = qa.road_transport.clone();
+            roads.bus_stops = [("pickup", 0.2), ("dropoff", 0.8)]
+                .into_iter()
+                .map(|(id, position)| BusStop {
+                    id: id.into(),
+                    owner: e.company,
+                    edge_id: "qa:1-2".into(),
+                    name: id.into(),
+                    position,
+                })
+                .collect();
+            roads.bus_routes.push(BusRoute {
+                id: "bus-1".into(),
+                owner: e.company,
+                name: "Synthetic bus".into(),
+                edges: vec!["qa:1-2".into()],
+                stops: ["pickup", "dropoff"]
+                    .into_iter()
+                    .map(|id| BusStopOccurrence {
+                        edge_index: 0,
+                        stop_id: id.into(),
+                    })
+                    .collect(),
+            });
+            e.replace_road_transport(qa.road_transport, roads).unwrap();
+            let alignment = if let Some(shared) = road_tram {
+                e.edit_road_tram(RoadTramEdit::Build {
+                    from: "qa:0".into(),
+                    to: "qa:1".into(),
+                    name: "Synthetic tram".into(),
+                    shared,
+                })
+                .unwrap()
+                .alignments[0]
+                    .id
+            } else {
+                e.world
+                    .build_alignment(
+                        e.company,
+                        "Synthetic rail".into(),
+                        vec![
+                            GeoPoint {
+                                latitude: 35.,
+                                longitude: 135.,
+                            },
+                            GeoPoint {
+                                latitude: 35.,
+                                longitude: 135.005,
+                            },
+                        ],
+                    )
+                    .unwrap()
+            };
+            let origin = e
+                .world
+                .place_station_on_alignment(e.company, "Origin".into(), alignment, 0.1, 40., 8.)
+                .unwrap();
+            let station = e
+                .world
+                .place_station_on_alignment(e.company, "Transfer".into(), alignment, 0.85, 40., 8.)
+                .unwrap();
+            let segments = vec![RouteSegment::Alignment {
+                alignment_id: alignment,
+                from: origin,
+                to: station,
+            }];
+            let stops = e
+                .world
+                .preview_service_path(origin, segments.clone())
+                .unwrap()
+                .occurrences
+                .into_iter()
+                .map(|o| o.reference)
+                .collect();
+            let service = e
+                .world
+                .add_service_path(e.company, "Connections".into(), origin, segments, stops)
+                .unwrap();
+            let timetable = Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 60000,
+                headway_ms: 60000,
+            };
+            let vehicle = Vehicle {
+                max_speed_kmh: 35.,
+                acceleration_mps2: 1.,
+                braking_mps2: 1.2,
+                length_m: 12.,
+            };
+            e.configure_operation_service(service, timetable.clone(), vehicle.clone(), 10000)
+                .unwrap();
+            e.configure_bus_operation("bus-1".into(), timetable, vehicle, 30., 10000)
+                .unwrap();
+            e.world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(1000, 100)
+                .unwrap();
+            let view = e.operation_snapshot();
+            assert_eq!(view.now_ms, 1000);
+            assert!(view.trains.iter().any(|t| t.key.service_id == "bus:bus-1"));
+            assert!(view
+                .trains
+                .iter()
+                .any(|t| t.key.service_id == service.0.to_string()));
+            let before = rosenfu_storage::encode(&e.world).unwrap();
+            let origin = origin.0.to_string();
+            let station = station.0.to_string();
+            let preview = |transfer| {
+                e.preview_fixed_od_with_transfer(
+                    origin.clone(),
+                    "bus:dropoff".into(),
+                    Some(50.),
+                    None,
+                    transfer,
+                )
+            };
+            assert_eq!(preview(None).unwrap().unserved_trips, 50.);
+            let assumption = |bus_stop_id: &str, walk_seconds| FixedOdRoadTransfer {
+                station_id: station.clone(),
+                bus_stop_id: bus_stop_id.into(),
+                walk_seconds,
+            };
+            assert!(preview(Some(assumption("bus:missing", 180))).is_err());
+            assert!(preview(Some(assumption(&station, 180))).is_err());
+            assert!(preview(Some(assumption("bus:pickup", 0))).is_err());
+            assert!(preview(Some(FixedOdRoadTransfer {
+                station_id: "bus:dropoff".into(),
+                ..assumption("bus:pickup", 180)
+            }))
+            .is_err());
+            let assigned = preview(Some(assumption("bus:pickup", 180))).unwrap();
+            assert!(assigned.search_complete);
+            let [path] = assigned.rail.as_slice() else {
+                panic!("expected the single explicit public transport path");
+            };
+            assert_eq!(
+                path.services,
+                vec![service.0.to_string(), "bus:bus-1".into()]
+            );
+            assert_eq!(
+                path.stations,
+                vec![
+                    origin.clone(),
+                    station.clone(),
+                    "bus:pickup".into(),
+                    "bus:dropoff".into()
+                ]
+            );
+            assert_eq!(path.time.walk_seconds, 180.);
+            assert_eq!(path.time.transfers, 1);
+            assert_eq!(path.trips, 50.);
+            assert_eq!(
+                preview(Some(assumption("bus:pickup", 300))).unwrap().rail[0]
+                    .time
+                    .walk_seconds,
+                300.
+            );
+            let opposite = e
+                .preview_fixed_od_with_transfer(
+                    "bus:dropoff".into(),
+                    origin,
+                    Some(50.),
+                    None,
+                    Some(assumption("bus:pickup", 180)),
+                )
+                .unwrap();
+            assert!(opposite.rail.is_empty());
+            assert_eq!(opposite.unserved_trips, 50.);
+            assert_eq!(before, rosenfu_storage::encode(&e.world).unwrap());
+        }
     }
 }
