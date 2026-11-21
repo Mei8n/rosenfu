@@ -135,4 +135,47 @@ fn current_save_reopens_terminal_hold_without_admitting_opposing_train() {
         Err(StorageError::InvalidHeader)
     ));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+    // The nested TrainKey intentionally permits unknown fields. A typed
+    // parser's skip still must not bypass normal JSON range and depth checks.
+    let canonical = std::str::from_utf8(&bytes).unwrap();
+    let edit = |raw: &str| {
+        canonical.replacen(
+            r#""key": {"#,
+            &format!(r#""key": {{ "future_field": {raw},"#),
+            1,
+        )
+    };
+    let harmless = edit("123");
+    assert_ne!(harmless.as_bytes(), bytes);
+    assert_eq!(
+        decode(harmless.as_bytes()).unwrap().operation_save(),
+        load_world_with_version(&path).unwrap().0.operation_save()
+    );
+
+    let too_deep = format!("{}0{}", "[".repeat(127), "]".repeat(127));
+    let backup = rosenfu_storage::backup_path(&path);
+    save_world(&path, &world).unwrap();
+    let prior_backup = std::fs::read(&backup).unwrap();
+    for (bad, expected) in [
+        ("1e999", "number out of range"),
+        (&too_deep, "recursion limit exceeded"),
+    ] {
+        let malformed = edit(bad);
+        assert!(matches!(
+            decode(malformed.as_bytes()),
+            Err(StorageError::Json(error)) if error.to_string().contains(expected)
+        ));
+        std::fs::write(&path, malformed.as_bytes()).unwrap();
+        assert!(matches!(
+            load_world_with_version(&path),
+            Err(StorageError::Json(error)) if error.to_string().contains(expected)
+        ));
+        assert!(matches!(
+            save_world(&path, &world),
+            Err(StorageError::Json(error)) if error.to_string().contains(expected)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), malformed.as_bytes());
+        assert_eq!(std::fs::read(&backup).unwrap(), prior_backup);
+    }
 }

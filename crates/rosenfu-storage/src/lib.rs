@@ -2,7 +2,10 @@
 mod evidence;
 use evidence::{BorrowedEvidenceEnvelope, EvidenceEnvelope};
 use rosenfu_core::world::{World, WorldDraft, WorldError};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{self, DeserializeSeed, IntoDeserializer, MapAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -76,14 +79,174 @@ impl From<WorldError> for StorageError {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SaveDocument {
+struct SaveDocument<W = WorldDraft> {
     format: String,
     schema_version: u64,
-    world: WorldDraft,
+    world: W,
     road_evidence: EvidenceEnvelope,
     operation: Option<rosenfu_core::world::WorldOperationSave>,
     #[serde(default)]
     fixed_od_scenario: Option<rosenfu_core::world::FixedOdScenario>,
+}
+
+// Serde may skip unknown values when decoding a typed struct. Unlike its
+// Value parser, that skip need not enforce numeric range or recursion limits.
+// Walk every value with the normal JSON parser, without building a DOM.
+struct CheckedJson;
+
+impl<'de> Deserialize<'de> for CheckedJson {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Check;
+
+        impl<'de> Visitor<'de> for Check {
+            type Value = CheckedJson;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a valid JSON value")
+            }
+
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                while seq.next_element::<CheckedJson>()?.is_some() {}
+                Ok(CheckedJson)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<CheckedJson, CheckedJson>()?.is_some() {}
+                Ok(CheckedJson)
+            }
+        }
+
+        deserializer.deserialize_any(Check)
+    }
+}
+
+// The low-allocation path must check object shape and required fields before
+// trusting defaults in WorldDraft. A failed typed parse is retried through the
+// Value path, preserving legacy diagnostics and last-wins duplicate handling.
+struct CurrentSave(SaveDocument<RequiredWorldDraft>);
+
+impl<'de> Deserialize<'de> for CurrentSave {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct CurrentSaveVisitor;
+
+        impl<'de> Visitor<'de> for CurrentSaveVisitor {
+            type Value = CurrentSave;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a current Rosenfu save object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                let save = SaveDocument::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                if save.schema_version != SCHEMA_VERSION || save.format != FORMAT {
+                    return Err(de::Error::custom("not a current Rosenfu save"));
+                }
+                Ok(CurrentSave(save))
+            }
+        }
+
+        deserializer.deserialize_map(CurrentSaveVisitor)
+    }
+}
+
+const REQUIRED_WORLD_ARRAYS: [&str; 5] = [
+    "route_paths",
+    "service_paths",
+    "service_route_bindings",
+    "source_records",
+    "alignment_provenance",
+];
+
+struct RequiredWorldDraft(WorldDraft);
+impl From<RequiredWorldDraft> for WorldDraft {
+    fn from(draft: RequiredWorldDraft) -> Self {
+        draft.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RequiredWorldDraft {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct WorldVisitor;
+
+        impl<'de> Visitor<'de> for WorldVisitor {
+            type Value = RequiredWorldDraft;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a world object with explicit path and provenance arrays")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                struct RequiredFields<'a, A> {
+                    map: A,
+                    found: &'a mut [bool; REQUIRED_WORLD_ARRAYS.len()],
+                }
+
+                impl<'de, A: MapAccess<'de>> MapAccess<'de> for RequiredFields<'_, A> {
+                    type Error = A::Error;
+
+                    fn next_key_seed<K: DeserializeSeed<'de>>(
+                        &mut self,
+                        seed: K,
+                    ) -> Result<Option<K::Value>, Self::Error> {
+                        let Some(key) = self.map.next_key::<String>()? else {
+                            return Ok(None);
+                        };
+                        if let Some(index) = REQUIRED_WORLD_ARRAYS.iter().position(|&f| f == key) {
+                            self.found[index] = true;
+                        }
+                        seed.deserialize(key.into_deserializer()).map(Some)
+                    }
+
+                    fn next_value_seed<V: DeserializeSeed<'de>>(
+                        &mut self,
+                        seed: V,
+                    ) -> Result<V::Value, Self::Error> {
+                        self.map.next_value_seed(seed)
+                    }
+                }
+
+                let mut found = [false; REQUIRED_WORLD_ARRAYS.len()];
+                let draft = WorldDraft::deserialize(de::value::MapAccessDeserializer::new(
+                    RequiredFields {
+                        map,
+                        found: &mut found,
+                    },
+                ))?;
+                for (present, field) in found.into_iter().zip(REQUIRED_WORLD_ARRAYS) {
+                    if !present {
+                        return Err(de::Error::missing_field(field));
+                    }
+                }
+                Ok(RequiredWorldDraft(draft))
+            }
+        }
+
+        deserializer.deserialize_map(WorldVisitor)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -100,6 +263,11 @@ pub enum SaveOutcome {
 pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
     if bytes.len() > MAX_SAVE_BYTES {
         return Err(StorageError::TooLarge);
+    }
+    if let Ok(CurrentSave(document)) = serde_json::from_slice(bytes) {
+        if serde_json::from_slice::<CheckedJson>(bytes).is_ok() {
+            return restore_document(document, SCHEMA_VERSION);
+        }
     }
     decode_document(serde_json::from_slice(bytes)?)
 }
@@ -167,18 +335,19 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
     {
         return Err(StorageError::LegacyFormat);
     }
-    for field in [
-        "route_paths",
-        "service_paths",
-        "service_route_bindings",
-        "source_records",
-        "alignment_provenance",
-    ] {
+    for field in REQUIRED_WORLD_ARRAYS {
         if !data.get(field).is_some_and(|v| v.is_array()) {
             return Err(StorageError::InvalidHeader);
         }
     }
     let document: SaveDocument = serde_json::from_value(value)?;
+    restore_document(document, version)
+}
+
+fn restore_document<W: Into<WorldDraft>>(
+    document: SaveDocument<W>,
+    version: u64,
+) -> Result<World, StorageError> {
     // Schema 26 predates all runtime formats after v2. Keep that ingress
     // closed even when the current schema supports newer runtime formats.
     if version == 26
@@ -190,7 +359,7 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
         return Err(StorageError::InvalidHeader);
     }
     let store = document.road_evidence.restore(version == 26)?;
-    let mut world = World::from_saved_draft(document.world, store)?;
+    let mut world = World::from_saved_draft(document.world.into(), store)?;
     world
         .restore_operation(document.operation)
         .map_err(|_| StorageError::InvalidHeader)?;
@@ -499,18 +668,44 @@ fn prepare_backup_file(
     if version != *expected {
         return Err(StorageError::FileChanged);
     }
-    // Use the same world, version, and legacy validation as the ordinary load
-    // path, without also holding a full Vec of the copied JSON.
-    let value = serde_json::from_reader(BufReader::new(temp.reopen()?)).map_err(|error| {
-        if let Some(kind) = error.io_error_kind() {
-            StorageError::Io(io::Error::new(kind, error))
+    // Parse the copied bytes without holding a full Vec or generic DOM on
+    // the common path. The fallback reopens the exact same temp file identity.
+    let typed = parse_save_temp::<CurrentSave>(&temp)?;
+    let restored_typed = if let Some(CurrentSave(document)) = typed {
+        if parse_save_temp::<CheckedJson>(&temp)?.is_some() {
+            restore_document(document, SCHEMA_VERSION)?;
+            true
         } else {
-            StorageError::Json(error)
+            false
         }
-    })?;
-    decode_document(value)?;
+    } else {
+        false
+    };
+    if !restored_typed {
+        let value =
+            serde_json::from_reader(BufReader::new(temp.reopen()?)).map_err(save_reader_error)?;
+        decode_document(value)?;
+    }
     temp.as_file().sync_all()?;
     Ok(temp)
+}
+
+fn parse_save_temp<T: de::DeserializeOwned>(
+    temp: &NamedTempFile,
+) -> Result<Option<T>, StorageError> {
+    match serde_json::from_reader(BufReader::new(temp.reopen()?)) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.io_error_kind().is_some() => Err(save_reader_error(error)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn save_reader_error(error: serde_json::Error) -> StorageError {
+    if let Some(kind) = error.io_error_kind() {
+        StorageError::Io(io::Error::new(kind, error))
+    } else {
+        StorageError::Json(error)
+    }
 }
 
 fn persist(temp: NamedTempFile, path: &Path, replace: bool) -> Result<(), StorageError> {
@@ -613,6 +808,112 @@ pub fn replace_world_if_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_save_and_value_fallback_agree_on_shape_and_wire_bytes() {
+        let mut world = World::default();
+        world.add_player("test / 駅".into()).unwrap();
+        let bytes = encode(&world).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let CurrentSave(typed) = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            encode(&restore_document(typed, SCHEMA_VERSION).unwrap()).unwrap(),
+            bytes
+        );
+
+        let same = |data: &[u8]| {
+            let original = serde_json::from_slice(data)
+                .map_err(StorageError::Json)
+                .and_then(decode_document);
+            match (decode(data), original) {
+                (Ok(a), Ok(b)) => {
+                    assert_eq!(a, b);
+                    assert_eq!(encode(&a).unwrap(), encode(&b).unwrap());
+                }
+                (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
+                result => panic!("decoder disagreement: {result:?}"),
+            }
+        };
+        same(&bytes);
+        same(&serde_json::to_vec(&value).unwrap());
+        same(&[bytes.as_slice(), b" \n\r\t"].concat());
+        same(&[bytes.as_slice(), b"null"].concat());
+        same(&bytes[..bytes.len() - 3]);
+        same(b"[]");
+        same(b"null");
+        let name = String::from_utf8(bytes.clone()).unwrap();
+        // Prior Value-based loads accepted duplicates, with the last value
+        // winning. Do not broaden or change that behavior on rewrite.
+        same(
+            name.replacen(
+                r#""schema_version": 27,"#,
+                r#""schema_version": "discard", "schema_version": 27,"#,
+                1,
+            )
+            .as_bytes(),
+        );
+        same(
+            name.replacen(r#""name":"#, r#""name": false, "name":"#, 1)
+                .as_bytes(),
+        );
+        same(
+            name.replacen(r#""route_paths":"#, r#""route_\u0070aths":"#, 1)
+                .as_bytes(),
+        );
+        let mut cases = vec![];
+        for key in REQUIRED_WORLD_ARRAYS {
+            let mut missing = value.clone();
+            missing["world"].as_object_mut().unwrap().remove(key);
+            cases.push(missing);
+            let mut wrong_type = value.clone();
+            wrong_type["world"][key] = serde_json::json!({"empty":true});
+            cases.push(wrong_type);
+        }
+        for (key, val) in [
+            ("schema_version", serde_json::json!(26)),
+            ("schema_version", serde_json::json!(28)),
+            ("schema_version", serde_json::json!(27.0)),
+            ("format", serde_json::json!("other")),
+            ("unrecognized", serde_json::json!(true)),
+            ("world", serde_json::json!([])),
+        ] {
+            let mut changed = value.clone();
+            changed[key] = val;
+            cases.push(changed);
+        }
+        let mut legacy = value.clone();
+        legacy["world"]["tracks"] = serde_json::json!([]);
+        cases.push(legacy);
+        let mut legacy_path = value.clone();
+        legacy_path["world"]["route_paths"] = serde_json::json!([{"segments":[{"kind":"track"}]}]);
+        cases.push(legacy_path);
+        let mut prior_with_future_field = value.clone();
+        prior_with_future_field["schema_version"] = serde_json::json!(26);
+        prior_with_future_field["fixed_od_scenario"] = serde_json::Value::Null;
+        cases.push(prior_with_future_field);
+        for changed in cases {
+            same(&serde_json::to_vec(&changed).unwrap());
+        }
+    }
+
+    #[test]
+    fn streaming_backup_preserves_exact_current_bytes_with_legacy_duplicate_handling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("duplicate.json");
+        let world = World::default();
+        let bytes = String::from_utf8(encode(&world).unwrap())
+            .unwrap()
+            .replacen(r#""format":"#, r#""format": null, "format":"#, 1)
+            .into_bytes();
+        assert!(serde_json::from_slice::<CurrentSave>(&bytes).is_err());
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(load_world(&path).unwrap(), world);
+        let prior = file_version(&path).unwrap();
+        save_world_if_version(&path, &world, &prior).unwrap();
+        assert_eq!(fs::read(backup_path(&path)).unwrap(), bytes);
+        assert_eq!(fs::read(&path).unwrap(), encode(&world).unwrap());
+    }
+
     #[test]
     fn no_clobber_preserves_a_file_created_after_preparation() {
         let dir = tempfile::tempdir().unwrap();
