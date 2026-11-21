@@ -191,6 +191,40 @@ impl<'a> PilotRoad<'a> {
             return Err(InvalidData);
         }
 
+        self.search(mode, |_, edge| edge.from == from, |_, edge| edge.to == to)
+    }
+
+    pub(crate) fn bus_path_between(
+        &self,
+        from_edge: &str,
+        from_position: f64,
+        to_edge: &str,
+        to_position: f64,
+    ) -> Result<Vec<String>, RoadTransportError> {
+        if (from_edge == to_edge && from_position >= to_position)
+            || (from_position == 1.0
+                && to_position == 0.0
+                && self
+                    .edges
+                    .get(from_edge)
+                    .zip(self.edges.get(to_edge))
+                    .is_some_and(|(a, b)| a.to == b.from))
+        {
+            return Err(InvalidStopOrder);
+        }
+        self.search(
+            PilotRoadMode::Bus,
+            |id, _| id == from_edge,
+            |id, _| id == to_edge,
+        )
+    }
+
+    fn search(
+        &self,
+        mode: PilotRoadMode,
+        start: impl Fn(&str, &RoadEdge) -> bool,
+        finish: impl Fn(&str, &RoadEdge) -> bool,
+    ) -> Result<Vec<String>, RoadTransportError> {
         #[derive(PartialEq)]
         struct Entry<'a>(f64, &'a str);
         impl Eq for Entry<'_> {}
@@ -221,7 +255,7 @@ impl<'a> PilotRoad<'a> {
         let mut queue = BinaryHeap::new();
         let mut shortest = BTreeMap::new();
         for &id in lengths.keys() {
-            if self.edges[id].from == from {
+            if start(id, self.edges[id]) {
                 shortest.insert(id, (lengths[id], None));
                 queue.push(Entry(lengths[id], id));
             }
@@ -230,7 +264,7 @@ impl<'a> PilotRoad<'a> {
             if cost > shortest[id].0 {
                 continue;
             }
-            if self.edges[id].to == to {
+            if finish(id, self.edges[id]) {
                 let mut cursor = Some(id);
                 let mut path = Vec::new();
                 while let Some(current) = cursor {
@@ -238,7 +272,7 @@ impl<'a> PilotRoad<'a> {
                     cursor = shortest[current].1;
                 }
                 path.reverse();
-                self.validate_path(mode, Some(from), Some(to), &path)?;
+                self.validate_path(mode, None, None, &path)?;
                 return Ok(path);
             }
             for &out in self.transitions.get(&(mode, id)).into_iter().flatten() {

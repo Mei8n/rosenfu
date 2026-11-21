@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod native;
 mod pilot;
-pub use native::import_native_pilot;
+pub use native::{
+    import_native_pilot, native_road_regions, NativeRoadRegion, PilotBusEdit, StopPosition,
+};
 pub use pilot::PilotRoadMode;
 use pilot::{PilotRoad, PilotTransition};
 

@@ -81,3 +81,23 @@ pub fn install_native_road_pilot(
     }
     editor.install_native_road_pilot(&asset_id)
 }
+
+#[tauri::command]
+pub fn list_native_road_regions(
+) -> Result<Vec<rosenfu_core::road_transport::NativeRoadRegion>, String> {
+    rosenfu_core::road_transport::native_road_regions()
+        .map_err(|error| format!("道路データの確認に失敗しました: {error:?}"))
+}
+
+#[tauri::command]
+pub fn edit_native_pilot_bus(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    edit: rosenfu_core::road_transport::PilotBusEdit,
+) -> Result<WorldDraft, String> {
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    if editor.ofm_world_token()? != expected_world_token {
+        return Err("ワールドが変更されています。".into());
+    }
+    editor.edit_native_pilot_bus(edit)
+}
