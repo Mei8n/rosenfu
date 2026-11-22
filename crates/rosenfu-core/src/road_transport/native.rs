@@ -98,6 +98,18 @@ pub struct PilotBusEdit {
     pub expected_route: Option<BusRoute>,
     pub from: StopPosition,
     pub to: StopPosition,
+    /// Omitted by older endpoint-only callers. An explicit (possibly empty)
+    /// ordered plan can replace an existing multi-stop route using its CAS.
+    #[serde(default)]
+    pub via: Option<Vec<PilotBusWaypoint>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PilotBusWaypoint {
+    pub point: StopPosition,
+    /// Geometry alone is not boarding permission.
+    pub stop: bool,
 }
 
 #[derive(Serialize)]
@@ -260,6 +272,7 @@ impl Approved {
 }
 
 impl Approved {
+    #[cfg(test)]
     fn bus_path(
         &self,
         graph: &RoadTransport,
@@ -267,18 +280,34 @@ impl Approved {
         from: &StopPosition,
         to: &StopPosition,
     ) -> Result<Vec<String>, RoadTransportError> {
+        self.bus_path_via(graph, world, &[(from, true), (to, true)])
+            .map(|plan| plan.edges)
+    }
+
+    fn bus_path_via(
+        &self,
+        graph: &RoadTransport,
+        world: &WorldDraft,
+        points: &[(&StopPosition, bool)],
+    ) -> Result<BusPathVia, RoadTransportError> {
         let gate = self.gate(graph, world)?;
         let references = self.reviewed_boarding();
-        for target in [from, to] {
-            self.check_boarding(
-                &gate,
-                &references,
-                &target.edge_id,
-                target.position,
-                target.location_kind,
-            )?;
+        for &(target, stop) in points {
+            if stop {
+                self.check_boarding(
+                    &gate,
+                    &references,
+                    &target.edge_id,
+                    target.position,
+                    target.location_kind,
+                )?;
+            }
         }
-        gate.bus_path_between(&from.edge_id, from.position, &to.edge_id, to.position)
+        let route_points: Vec<_> = points
+            .iter()
+            .map(|(point, _)| (point.edge_id.as_str(), point.position))
+            .collect();
+        gate.bus_path_via(&route_points)
     }
 
     fn reviewed_boarding(&self) -> BTreeSet<(&str, u64)> {
@@ -462,8 +491,20 @@ impl RoadTransport {
         from: &StopPosition,
         to: &StopPosition,
     ) -> Result<Vec<String>, RoadTransportError> {
+        self.native_bus_path_via(world, &[(from, true), (to, true)])
+            .map(|plan| plan.edges)
+    }
+
+    pub fn native_bus_path_via(
+        &self,
+        world: &WorldDraft,
+        points: &[(&StopPosition, bool)],
+    ) -> Result<BusPathVia, RoadTransportError> {
+        if !(2..=MAX_BUS_WAYPOINTS).contains(&points.len()) {
+            return Err(InvalidData);
+        }
         let pinned = with_pins(|pins| approved_for(self, pins))?.ok_or(AccessForbidden)?;
-        pinned.bus_path(self, world, from, to)
+        pinned.bus_path_via(self, world, points)
     }
 
     fn has_qa_graph(&self) -> bool {
@@ -593,6 +634,25 @@ mod tests {
     }
 
     #[test]
+    fn bus_edit_wire_keeps_legacy_shape_and_explicit_waypoint_intent() {
+        let mut edit = serde_json::json!({
+            "route_id":"r", "name":"Test route", "expected_route":null,
+            "from": {"edge_id":"ab","position":0.25},
+            "to": {"edge_id":"bc","position":0.75}
+        });
+        let parsed: PilotBusEdit = serde_json::from_value(edit.clone()).unwrap();
+        assert!(parsed.via.is_none());
+        edit["via"] = serde_json::json!([]);
+        let parsed: PilotBusEdit = serde_json::from_value(edit.clone()).unwrap();
+        assert!(parsed.via.unwrap().is_empty());
+        edit["via"] = serde_json::json!([{"point":{"edge_id":"ab","position":0.5},"stop":false}]);
+        let parsed: PilotBusEdit = serde_json::from_value(edit.clone()).unwrap();
+        assert!(!parsed.via.unwrap()[0].stop);
+        edit["via"][0]["allowed"] = true.into();
+        assert!(serde_json::from_value::<PilotBusEdit>(edit).is_err());
+    }
+
+    #[test]
     fn shared_road_projection_uses_native_gate_without_registering_fixture() {
         let id = "synthetic-shared-road";
         let bytes = include_bytes!(concat!(
@@ -630,6 +690,28 @@ mod tests {
             position: 0.8,
             location_kind: Default::default(),
         };
+        let mut unreviewed_via = stops[1].clone();
+        unreviewed_via.position = 0.875;
+        let points = [
+            (&stops[0], true),
+            (&unreviewed_via, false),
+            (&stops[2], true),
+        ];
+        assert!(approved
+            .bus_path_via(&approved.graph, &world, &points)
+            .is_ok());
+        assert_eq!(
+            approved.bus_path_via(
+                &approved.graph,
+                &world,
+                &[
+                    (&stops[0], true),
+                    (&unreviewed_via, true),
+                    (&stops[2], true)
+                ],
+            ),
+            Err(AccessForbidden)
+        );
         assert_eq!(
             approved.bus_path(&approved.graph, &world, &stops[0], &unreviewed_stop),
             Err(AccessForbidden)

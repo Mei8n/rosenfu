@@ -128,7 +128,16 @@ impl WorldEditor {
 
 impl WorldEditor {
     pub fn edit_native_pilot_bus(&mut self, edit: PilotBusEdit) -> Result<WorldDraft, String> {
-        use rosenfu_core::road_transport::{BusRoute, BusStop, BusStopOccurrence};
+        use rosenfu_core::road_transport::{
+            BusRoute, BusStop, BusStopOccurrence, MAX_BUS_WAYPOINTS,
+        };
+        let via = edit.via.as_deref().unwrap_or_default();
+        if via.len() > MAX_BUS_WAYPOINTS - 2 {
+            return Err(format!(
+                "経由点は{}件まで指定できます。",
+                MAX_BUS_WAYPOINTS - 2
+            ));
+        }
         let before = self.snapshot();
         let mut draft = before.clone();
         let graph = &mut draft.road_transport;
@@ -138,15 +147,34 @@ impl WorldEditor {
             (Some(i), Some(expected))
                 if graph.bus_routes[i] == *expected
                     && expected.owner == self.company
-                    && expected.stops.len() == 2 => {}
+                    && (edit.via.is_some() || expected.stops.len() == 2) => {}
             _ => return Err("指定した自社バス系統が変更されています。読み直してください。".into()),
         }
-        let edges = graph
-            .native_bus_path(&before, &edit.from, &edit.to)
+        let points: Vec<_> = std::iter::once((&edit.from, true))
+            .chain(via.iter().map(|v| (&v.point, v.stop)))
+            .chain(std::iter::once((&edit.to, true)))
+            .collect();
+        let plan = graph
+            .native_bus_path_via(&before, &points)
             .map_err(road_path_help)?;
-        let last = edges.len() - 1;
+        let last = points.len() - 1;
         let mut stops = vec![];
-        for (point, label, edge_index) in [(edit.from, "起点", 0), (edit.to, "終点", last)] {
+        for (i, ((point, stop), edge_index)) in points
+            .into_iter()
+            .zip(plan.waypoint_edge_indices)
+            .enumerate()
+        {
+            if !stop {
+                continue;
+            }
+            let label = if i == 0 {
+                "起点".into()
+            } else if i == last {
+                "終点".into()
+            } else {
+                format!("経由停留所 {i}")
+            };
+
             let stop_id = if let Some(stop) = graph.bus_stops.iter().find(|s| {
                 s.owner == self.company
                     && s.edge_id == point.edge_id
@@ -166,8 +194,8 @@ impl WorldEditor {
                 graph.bus_stops.push(BusStop {
                     id: stop_id.clone(),
                     owner: self.company,
-                    name: label.into(),
-                    edge_id: point.edge_id,
+                    name: label,
+                    edge_id: point.edge_id.clone(),
                     position: point.position,
                     location_kind: point.location_kind,
                 });
@@ -182,7 +210,7 @@ impl WorldEditor {
             id: edit.route_id,
             owner: self.company,
             name: edit.name,
-            edges,
+            edges: plan.edges,
             stops,
         };
         if let Some(i) = existing {
@@ -368,5 +396,118 @@ impl WorldEditor {
         let after = candidate.snapshot();
         self.commit_edit(candidate, false);
         Ok(after)
+    }
+}
+
+#[cfg(all(test, feature = "dev-road-lab"))]
+mod tests {
+    use super::*;
+    use rosenfu_core::operation::{Timetable, Vehicle};
+    use rosenfu_core::road_transport::{
+        BusRoute, BusStopLocationKind, PilotBusWaypoint, StopPosition,
+    };
+
+    #[test]
+    fn lab_route_first_commits_guarded_path_and_stops_then_restores_operation() {
+        let mut editor = WorldEditor::new();
+        editor.create_new_world("Route test".into()).unwrap();
+        editor
+            .install_native_road_pilot("shimada-otsu-chubu-261120-lab-bus")
+            .unwrap();
+        let issue = |n, position| StopPosition {
+            edge_id: format!("osm:392108440:{n}:forward"),
+            position,
+            location_kind: BusStopLocationKind::PlayerCreated,
+        };
+        let via = || {
+            vec![
+                PilotBusWaypoint {
+                    point: issue(2, 0.5),
+                    stop: false,
+                },
+                PilotBusWaypoint {
+                    point: issue(3, 0.4),
+                    stop: true,
+                },
+            ]
+        };
+        let request = |expected_route: Option<BusRoute>, via| PilotBusEdit {
+            route_id: "owned-bus".into(),
+            name: "via stops".into(),
+            expected_route,
+            from: issue(1, 0.3),
+            to: issue(4, 0.7),
+            via,
+        };
+        let mut backwards = request(None, Some(via()));
+        backwards.via.as_mut().unwrap()[0].point = issue(1, 0.2);
+        let untouched = editor.snapshot();
+        let rev = editor.world_edit_history().revision;
+        assert!(editor.edit_native_pilot_bus(backwards).is_err());
+        assert_eq!(editor.snapshot(), untouched);
+        assert_eq!(editor.world_edit_history().revision, rev);
+
+        let made = editor
+            .edit_native_pilot_bus(request(None, Some(via())))
+            .unwrap();
+        let route = made.road_transport.bus_routes[0].clone();
+        assert_eq!(
+            route.edges,
+            (1..=4).map(|n| issue(n, 0.5).edge_id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            route.stops.iter().map(|s| s.edge_index).collect::<Vec<_>>(),
+            [0, 2, 3]
+        );
+        assert_eq!(made.road_transport.bus_stops.len(), 3);
+        let legacy_edit = request(Some(route.clone()), None);
+        assert!(editor.edit_native_pilot_bus(legacy_edit).is_err());
+        assert_eq!(editor.snapshot(), made);
+        let mut stale = route.clone();
+        stale.name = "Not current".into();
+        let saved_revision = editor.world_edit_history().revision;
+        assert!(editor
+            .edit_native_pilot_bus(request(Some(stale), Some(via())))
+            .is_err());
+        assert_eq!(editor.world_edit_history().revision, saved_revision);
+        assert_eq!(editor.snapshot(), made);
+
+        editor.undo_world_edit(editor.snapshot()).unwrap();
+        assert_eq!(editor.snapshot(), untouched);
+        editor.redo_world_edit(editor.snapshot()).unwrap();
+        assert_eq!(editor.snapshot(), made);
+        let operation_token = editor.operation_snapshot().timetable_edit_token.clone();
+        editor
+            .configure_bus_operation(
+                route.id.clone(),
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 70.0,
+                    acceleration_mps2: 1.0,
+                    braking_mps2: 1.2,
+                    length_m: 10.0,
+                },
+                30.0,
+                3_000,
+                &operation_token,
+            )
+            .unwrap();
+        let saved = editor.world.operation_save().unwrap();
+        assert_eq!(saved.runtime.services[0].legs.len(), 2);
+        assert_eq!(
+            saved.runtime.services[0].legs[0].to,
+            saved.runtime.services[0].legs[1].from
+        );
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("road-via.json");
+        editor.save(&file).unwrap();
+        editor.create_new_world("Other".into()).unwrap();
+        editor.load(&file).unwrap();
+        assert_eq!(editor.snapshot().road_transport, made.road_transport);
+        assert_eq!(editor.world.operation_save().unwrap(), saved);
     }
 }

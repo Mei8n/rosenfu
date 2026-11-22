@@ -7,9 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 mod native;
 mod pilot;
 pub use native::{
-    import_native_pilot, native_road_regions, NativeRoadRegion, PilotBusEdit, StopPosition,
+    import_native_pilot, native_road_regions, NativeRoadRegion, PilotBusEdit, PilotBusWaypoint,
+    StopPosition,
 };
-pub use pilot::PilotRoadMode;
+pub use pilot::{BusPathVia, PilotRoadMode, MAX_BUS_WAYPOINTS};
 use pilot::{PilotRoad, PilotTransition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

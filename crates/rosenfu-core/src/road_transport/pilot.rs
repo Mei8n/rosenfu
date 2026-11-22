@@ -22,6 +22,16 @@ const MAX_EDGES: usize = 4096;
 const MAX_TRANSITIONS: usize = 8192;
 const MAX_PATH: usize = 4096;
 
+/// Total directed points (including the two endpoints) per authored bus route.
+pub const MAX_BUS_WAYPOINTS: usize = 32;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BusPathVia {
+    pub edges: Vec<String>,
+    /// One edge occurrence per input point; two ordered points may share an edge.
+    pub waypoint_edge_indices: Vec<usize>,
+}
+
 pub struct PilotRoad<'a> {
     graph: &'a RoadTransport,
     edges: BTreeMap<&'a str, &'a RoadEdge>,
@@ -248,6 +258,40 @@ impl<'a> PilotRoad<'a> {
         self.search(mode, |_, edge| edge.from == from, |_, edge| edge.to == to)
     }
 
+    /// Resolve the positive directed slices through exact user-selected edge
+    /// positions. This plans geometry only; a caller must authorize boarding
+    /// independently wherever it chooses to place stops.
+    pub fn bus_path_via(&self, points: &[(&str, f64)]) -> Result<BusPathVia, RoadTransportError> {
+        if !(2..=MAX_BUS_WAYPOINTS).contains(&points.len())
+            || points.iter().any(|&(_, fraction)| !position(fraction))
+        {
+            return Err(InvalidData);
+        }
+        let mut edges = Vec::<String>::new();
+        let mut waypoint_edge_indices = Vec::with_capacity(points.len());
+        waypoint_edge_indices.push(0);
+        for w in points.windows(2) {
+            let [(from, from_position), (to, to_position)] = [w[0], w[1]];
+            let slice = self.bus_path_between(from, from_position, to, to_position)?;
+            let skip = usize::from(!edges.is_empty());
+            // The two slices meet at the exact same directed edge occurrence.
+            // Drop only the duplicate join edge, not a later lap's occurrence.
+            if skip == 1 && edges.last() != slice.first() {
+                return Err(DisconnectedPath);
+            }
+            if edges.len() + slice.len() - skip > MAX_PATH {
+                return Err(InvalidData);
+            }
+            edges.extend(slice.into_iter().skip(skip));
+            waypoint_edge_indices.push(edges.len() - 1);
+        }
+        self.validate_path(PilotRoadMode::Bus, None, None, &edges)?;
+        Ok(BusPathVia {
+            edges,
+            waypoint_edge_indices,
+        })
+    }
+
     pub(crate) fn bus_path_between(
         &self,
         from_edge: &str,
@@ -439,6 +483,62 @@ mod tests {
                 .unwrap()
                 .validate_reverse_tram_path(&path),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn bus_waypoints_keep_directed_join_and_repeated_edge_occurrences() {
+        let graph = fixture();
+        let gate = gate(
+            &graph,
+            &[
+                rule("ab", "bj", Bus),
+                rule("bj", "jd", Bus),
+                rule("bj", "ja", Bus),
+                rule("ja", "ab", Bus),
+                rule("aj", "jd", Tram),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            gate.bus_path_via(&[("ab", 0.2), ("ab", 0.6), ("jd", 0.8)]),
+            Ok(BusPathVia {
+                edges: ids(&["ab", "bj", "jd"]),
+                waypoint_edge_indices: vec![0, 0, 2]
+            }),
+        );
+        let looped = [
+            ("ab", 0.8),
+            ("bj", 0.5),
+            ("ja", 0.5),
+            ("ab", 0.2),
+            ("jd", 0.4),
+        ];
+        let expected = BusPathVia {
+            edges: ids(&["ab", "bj", "ja", "ab", "bj", "jd"]),
+            waypoint_edge_indices: vec![0, 1, 2, 3, 5],
+        };
+        assert_eq!(gate.bus_path_via(&looped), Ok(expected));
+        // Do not insert an implicit loop, jump between edges, or use a tram-only turn.
+        assert_eq!(
+            gate.bus_path_via(&[("ab", 0.8), ("ab", 0.2), ("jd", 0.4)]),
+            Err(InvalidStopOrder)
+        );
+        assert_eq!(
+            gate.bus_path_via(&[("jd", 0.5), ("bj", 0.5), ("ab", 0.5)]),
+            Err(DisconnectedPath)
+        );
+        assert_eq!(
+            gate.bus_path_via(&[("aj", 0.5), ("jd", 0.3), ("jd", 0.8)]),
+            Err(DisconnectedPath)
+        );
+        assert_eq!(
+            gate.bus_path_via(&[("ab", 0.5), ("bj", f64::NAN), ("jd", 0.5)]),
+            Err(InvalidData)
+        );
+        assert_eq!(
+            gate.bus_path_via(&[("ab", 0.5); MAX_BUS_WAYPOINTS + 1]),
+            Err(InvalidData)
         );
     }
 

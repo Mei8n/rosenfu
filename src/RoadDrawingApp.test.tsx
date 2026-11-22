@@ -108,3 +108,92 @@ test('unfittable road corner displays its specific refusal instead of adding an 
  vi.stubGlobal('PointerEvent',MouseEvent);const vertices=[{longitude:longitude-.0002,latitude},{longitude,latitude},{longitude,latitude:latitude+.001}];const {map,click}=await start(world,vertices);await click(-.0002);const point=project(latitude+.0008,longitude,camera);await act(async()=>{fireEvent.pointerMove(map,{clientX:point.x,clientY:point.y});await new Promise(r=>setTimeout(r,0));});await waitFor(()=>expect(document.querySelector('.drawing-metrics')?.textContent).toContain('カーブをつなぐための道路の長さが足りません'));
  await act(async()=>{fireEvent.click(map,{clientX:point.x,clientY:point.y,detail:1});await new Promise(r=>setTimeout(r,0));});expect(document.querySelectorAll('.draft-anchor')).toHaveLength(1);
 });
+test('tram Ctrl inverts snap at a stationary cursor, and clicking commits the shown geometry',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);
+ const vertices=[{longitude:longitude-.001,latitude},{longitude,latitude},{longitude,latitude:latitude+.001}];
+ const {map,click}=await start(world,vertices);
+ const toggle=screen.getByRole('button',{name:'道路に合わせる'});
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ expect(toggle.getAttribute('aria-pressed')).toBe('true');
+ fireEvent.click(toggle);
+ expect(toggle.getAttribute('aria-pressed')).toBe('false');
+ await click(-.0008);
+ const end=vertices.at(-1)!;
+ const point={longitude:end.longitude,latitude:latitude+.0008},pixel=project(point.latitude,point.longitude,camera);
+ const move=()=>fireEvent.pointerMove(map,{clientX:pixel.x,clientY:pixel.y});
+ const road=()=>document.querySelector('.road-drawing-preview');
+ await act(async()=>move());
+ expect(road()).toBeNull();
+ fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
+ await waitFor(()=>expect(road()).toBeTruthy());
+ fireEvent.keyUp(window,{key:'Control',ctrlKey:false});
+ expect(road()).toBeNull();
+ fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
+ await waitFor(()=>expect(road()).toBeTruthy());
+ const result=await createRoadDrawingEngine(mock.snapshot.bundle,[])({point,start:{longitude:longitude-.0008,latitude},radiusM:20});
+ if(result.kind!=='route')throw Error('fixture did not route');
+ const expectedLine=result.line;
+ RoadWorker.delay=true;
+ await act(async()=>{fireEvent.click(map,{clientX:pixel.x,clientY:pixel.y,detail:1,ctrlKey:true});await new Promise(r=>setTimeout(r,0));});
+ expect(RoadWorker.queued.length).toBeGreaterThan(0);
+ fireEvent.keyUp(window,{key:'Control',ctrlKey:false});
+ expect(road()).toBeNull();
+ RoadWorker.delay=false;
+ await act(async()=>{RoadWorker.queued.splice(0).forEach(deliver=>deliver());await new Promise(r=>setTimeout(r,0));});
+ await waitFor(()=>expect(document.querySelector('.confirmed-draft')).toBeTruthy());
+ const reqs=vi.mocked(invoke).mock.calls.filter(([name,args])=>name==='preview_construction_plan'&&(args as any)?.validationOnly);
+ const alignment=(reqs.at(-1)?.[1] as any).alignments[0];
+ expect(alignment.trackType).toBe('tram');
+ expect(alignment.points).toHaveLength(expectedLine.length);
+ alignment.points.forEach((p:any,i:number)=>{expect(p.longitude).toBeCloseTo(expectedLine[i].longitude,8);expect(p.latitude).toBeCloseTo(expectedLine[i].latitude,8);});
+ expect(toggle.getAttribute('aria-pressed')).toBe('false');
+});
+
+test('tram snap on falls back to normal track during Ctrl and reverts on release or blur',async()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent);
+ const {map,click}=await start();
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ await click(-.0008);
+ const p=project(latitude,longitude+.0008,camera);
+ await act(async()=>fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y}));
+ await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());
+ fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
+ expect(document.querySelector('.road-drawing-preview')).toBeNull();
+ expect(document.querySelector('.candidate-draft')).toBeTruthy();
+ fireEvent.keyUp(window,{key:'Control',ctrlKey:false});
+ await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());
+ fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
+ fireEvent.blur(window);
+ expect(document.querySelector('.road-drawing-preview')).toBeNull();
+ await act(async()=>fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y}));
+ await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());
+ expect(screen.getByRole('button',{name:'道路に合わせる'}).getAttribute('aria-pressed')).toBe('true');
+});
+
+test('a same-position double click finishes temporary tram road snap during native validation',async()=>{
+ const {click}=await start();
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ const toggle=screen.getByRole('button',{name:'道路に合わせる'});
+ fireEvent.click(toggle);
+ await click(-.0008);
+ fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
+ const base=vi.mocked(invoke).getMockImplementation()!;
+ let release!:(value:any)=>void;
+ vi.mocked(invoke).mockImplementation(async(c,a)=>c==='preview_construction_plan'&&(a as any)?.validationOnly===true
+   ?new Promise(resolve=>{release=resolve;})
+   :base(c,a));
+ await click(0,true);
+ await waitFor(()=>expect(release).toBeTruthy());
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ // The accepted click was road-assisted. Releasing Ctrl before the second
+ // browser click must not turn the finish intent into an ordinary placement.
+ fireEvent.keyUp(window,{key:'Control',ctrlKey:false});
+ await click(0,false,2);
+ await act(async()=>release({validationError:null,newCrossingCount:0}));
+ expect(document.querySelector('.confirmed-draft')).toBeTruthy();
+ expect(toggle.getAttribute('aria-pressed')).toBe('false');
+ vi.mocked(invoke).mockImplementation(base);
+ await click(.0008);
+ expect(document.querySelector('.parked-plan')).toBeTruthy();
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+});
