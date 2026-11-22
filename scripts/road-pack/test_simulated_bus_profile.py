@@ -23,22 +23,34 @@ class SimulatedBusProfileTests(unittest.TestCase):
             'modes': ['bus', 'tram'], 'turns': [], 'bus_stop_positions': [], 'allows_player_bus_stops': True,
         }
 
-    def setup_source(self, tags=None, branch_tags=None, *, metadata=True, barrier=False, restriction=None):
+    def setup_source(self, tags=None, branch_tags=None, *, metadata=True, barrier=False, restriction=None,
+                     restriction_kind='no_right_turn', fourth=None, intersect_only=False, split=False, attribution=True):
         root = ET.Element('osm', version='0.6')
         if metadata:
             ET.SubElement(root, 'meta', osm_base=self.policy['revision'])
-        for n, (lon, lat) in enumerate([
+        coordinates = [
             (139.002, 35.01), (139.006, 35.01), (139.010, 35.01),
             (139.006, 35.013), (139.002, 35.017), (139.010, 35.017),
-        ], 1):
+        ]
+        if fourth is not None:
+            coordinates.append(fourth)
+            if intersect_only:
+                coordinates.append(coordinates[1])  # identical geometry but distinct raw node
+        for n, (lon, lat) in enumerate(coordinates, 1):
             node = ET.SubElement(root, 'node', id=str(n), lon=str(lon), lat=str(lat))
             if barrier and n == 2:
                 ET.SubElement(node, 'tag', k='barrier', v='gate')
-        for n, refs, values in [
-            ('100', [1, 2, 3], dict({'highway': 'residential', 'source': 'test survey'}, **(tags or {}))),
-            ('200', [2, 4], dict({'highway': 'unclassified', 'source': 'test survey'}, **(branch_tags or {}))),
+        attribution_tags = {'source': 'test survey'} if attribution else {}
+        branch = {'highway': 'unclassified', **attribution_tags, **(branch_tags or {})}
+        cross_node = 8 if intersect_only else 2
+        ways = [
+            ('100', [1, 2, 3], {'highway': 'residential', **attribution_tags, **(tags or {})}),
+            ('200', [4, cross_node, 7] if fourth is not None and not split else [cross_node, 4], branch),
             ('300', [5, 6], {'highway': 'residential', 'oneway': 'no', 'bus': 'yes', 'tram': 'yes'}),
-        ]:
+        ]
+        if split:
+            ways.append(('201', [cross_node, 7], branch))
+        for n, refs, values in ways:
             way = ET.SubElement(root, 'way', id=n, version='1')
             for ref in refs:
                 ET.SubElement(way, 'nd', ref=str(ref))
@@ -47,7 +59,7 @@ class SimulatedBusProfileTests(unittest.TestCase):
         if restriction:
             relation = ET.SubElement(root, 'relation', id='500')
             ET.SubElement(relation, 'tag', k='type', v='restriction:bus')
-            ET.SubElement(relation, 'tag', k='restriction:bus', v='no_right_turn')
+            ET.SubElement(relation, 'tag', k='restriction:bus', v=restriction_kind)
             for kind, ref, role in [('way', '100', 'from'), ('node', '2', 'via'), ('way', restriction, 'to')]:
                 ET.SubElement(relation, 'member', type=kind, ref=ref, role=role)
         self.raw.write_bytes(ET.tostring(root))
@@ -95,6 +107,97 @@ class SimulatedBusProfileTests(unittest.TestCase):
                 self.assertNotIn('simulated turns', profile['origin'])
         self.setup_source(branch_tags={'access': 'private'})
         self.assertEqual(self.profile()['transitions'], [])  # unknown/denied arm blocks shared through
+
+    @staticmethod
+    def movements(asset):
+        return {(t['mode'], t['incoming'], t['outgoing']) for t in asset['transitions']}
+
+    def test_certified_four_arm_continues_on_each_original_way_only(self):
+        self.setup_source(fourth=(139.006, 35.007), tags={'oneway': '-1'})
+        asset = self.profile()
+        self.assertEqual(self.movements(asset), {
+            ('bus', 'osm:100:1:reverse', 'osm:100:0:reverse'),
+            ('bus', 'osm:200:0:forward', 'osm:200:1:forward'),
+            ('bus', 'osm:200:1:reverse', 'osm:200:0:reverse'),
+        })
+        self.assertTrue(all(e['tram_access'] == 'unknown' for e in asset['edges'] if e['id'].startswith(('osm:100:', 'osm:200:'))))
+        strict = {'bus': 'yes', 'tram': 'yes', 'oneway': 'no'}
+        self.setup_source(fourth=(139.006, 35.007), tags=strict, branch_tags=strict, attribution=False)
+        # Even explicitly permitted ground edges don't gain a new shared-node
+        # movement when the gameplay source profile is off.
+        baseline = native.project(self.raw, self.coverage, self.policy)
+        self.assertEqual(len(baseline['edges']), 10)
+        self.assertEqual(self.movements(baseline), set())
+        junction_certificate = self.cert.with_name('junctions.json')
+        junction_certificate.write_bytes(build.encoded({
+            **{k: self.policy[k] for k in ('source_sha256', 'coverage_sha256', 'revision', 'bounds')},
+            'format': 1, 'incident_ways_complete': True, 'restriction_relations_complete': True,
+        }))
+        both = self.certify()
+        both['simulated_junctions_sha256'] = build.sha(junction_certificate.read_bytes())
+        with_both = native.project(self.raw, self.coverage, both, bus_profile_coverage=self.cert,
+                                   junction_coverage=junction_certificate)
+        self.assertEqual(self.movements(with_both), {
+            ('bus', 'osm:100:0:forward', 'osm:100:1:forward'),
+            ('bus', 'osm:100:1:reverse', 'osm:100:0:reverse'),
+            ('bus', 'osm:200:0:forward', 'osm:200:1:forward'),
+            ('bus', 'osm:200:1:reverse', 'osm:200:0:reverse'),
+        })
+
+    def test_four_arm_prohibitions_and_ambiguous_approaches_remain_blocked(self):
+        fourth = (139.006, 35.007)
+        for flags in [
+            {'restriction': '100', 'restriction_kind': 'no_straight_on'},
+            {'barrier': True},
+            {'branch_tags': {'bus': 'no'}},
+            {'branch_tags': {'layer': '1'}},
+            {'branch_tags': {'oneway:conditional': 'yes @ (08:00-09:00)'}},
+            {'split': True},
+        ]:
+            with self.subTest(flags=flags):
+                self.setup_source(fourth=fourth, **flags)
+                self.assertEqual(self.movements(self.profile()), set())
+        # Repeated coordinates, same-side arms, and a badly skewed corner.
+        for bad_fourth in [(139.006, 35.013), (139.006, 35.014), (139.010, 35.009)]:
+            with self.subTest(bad_fourth=bad_fourth):
+                self.setup_source(fourth=bad_fourth)
+                self.assertEqual(self.movements(self.profile()), set())
+
+    def test_certified_halo_arms_are_evidence_not_playable_edges(self):
+        self.setup_source(fourth=(139.006, 34.995))  # beyond playable south edge, within proven halo
+        profile = self.profile()
+        self.assertFalse(any(e['id'].startswith('osm:200:') for e in profile['edges']))
+        self.assertEqual(self.movements(profile), {
+            ('bus', 'osm:100:0:forward', 'osm:100:1:forward'),
+            ('bus', 'osm:100:1:reverse', 'osm:100:0:reverse'),
+        })
+        for latitude in (34.98, 34.97):  # directly on the certified boundary and beyond
+            with self.subTest(latitude=latitude):
+                self.setup_source(fourth=(139.006, latitude))
+                self.assertEqual(self.movements(self.profile()), set())
+        # Both ends inside a concave halo is insufficient: the intervening
+        # segment must not go through an uncovered notch outside the inner area.
+        notch = [
+            [138.98, 34.98], [139.04, 34.98], [139.04, 34.997],
+            [139.004, 34.997], [139.004, 34.999], [139.04, 34.999],
+            [139.04, 35.04], [138.98, 35.04], [138.98, 34.98],
+        ]
+        self.coverage.write_bytes(build.encoded({'type': 'Polygon', 'coordinates': [notch]}))
+        self.policy['coverage_sha256'] = build.sha(self.coverage.read_bytes())
+        self.setup_source(fourth=(139.006, 34.995))
+        self.assertEqual(self.movements(self.profile()), set())
+
+    def test_equal_coordinates_do_not_join_crossing_raw_ways(self):
+        self.setup_source(fourth=(139.006, 35.007), intersect_only=True)
+        asset = self.profile()
+        raw = {n['id']: n['point'] for n in asset['nodes']}
+        self.assertEqual(raw['osm:2'], raw['osm:8'])
+        self.assertEqual(self.movements(asset), {
+            ('bus', 'osm:100:0:forward', 'osm:100:1:forward'),
+            ('bus', 'osm:100:1:reverse', 'osm:100:0:reverse'),
+            ('bus', 'osm:200:0:forward', 'osm:200:1:forward'),
+            ('bus', 'osm:200:1:reverse', 'osm:200:0:reverse'),
+        })
 
     def test_explicit_constraints_are_never_replaced_by_the_simulated_default(self):
         for key, value in [

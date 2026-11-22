@@ -350,8 +350,16 @@ bus service; native candidate origin explicitly labels the simulation.
 Tram eligibility and direction keep the original strict rules.
 
 The profile can continue an eligible bus along the **same raw way** through a
-fully covered, unambiguous three-arm junction with supported bus arms. It does
-not add turns between different ways. The existing, separately opted-in
+fully covered, unambiguous three-arm junction with supported bus arms. It can
+also continue straight through a simple four-arm junction when exactly two
+supported original ways both pass through the same raw node. All four arms
+must be distinct and separated by at least 30°, and each same-way pair
+must deviate from straight by at most 30°. Each local arm must stay strictly
+inside the source certificate's coverage polygon. An arm beyond the playable
+rectangle but inside that polygon may count only as evidence: no road edges
+are emitted because of it. Split, ambiguous, and tagged or restricted
+approaches remain excluded. The profile adds no U-turns or
+turns between different ways. The existing, separately opted-in
 simple-junction policy still needs explicit mode tags on every arm for its
 separate turn derivation. Existing policies and candidate bytes are unchanged
 when the bus profile is not selected. No production pin is created.

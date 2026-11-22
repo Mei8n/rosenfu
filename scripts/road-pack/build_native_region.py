@@ -7,6 +7,7 @@ import argparse
 from collections import defaultdict
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -219,6 +220,50 @@ def simple_junction_ways(node, accepted_ways, nodes, ways, incident, blocked_nod
     return raw_ways
 
 
+def simple_four_arm_bus_through(node, observed_ways, nodes, ways, incident, blocked_nodes, coverage):
+    """Exactly two ground original ways, both nearly straight through their common raw node."""
+    ways_here = incident[node]
+    if len(ways_here) != 2 or not ways_here <= observed_ways or node in blocked_nodes:
+        return False
+    arms = []
+    for way in sorted(ways_here):
+        refs, _ = ways[way]  # profiled ways have unique node refs
+        i = refs.index(node)
+        if i == 0 or i == len(refs) - 1:
+            return False  # do not infer same-road identity across split ways
+        arms.extend((refs[i-1], refs[i+1]))
+    if (len(set(arms)) != 4 or blocked_nodes.intersection(arms)
+            or len({nodes[n] for n in [node, *arms]}) != 5):
+        return False
+    lon, lat = nodes[node]
+    cos_lat = math.cos(math.radians(lat))
+    directions = []
+    for arm in arms:
+        lon1, lat1 = nodes[arm]
+        x, y = (lon1-lon)*cos_lat, lat1-lat
+        length = math.hypot(x, y)
+        directions.append((x/length, y/length))
+
+    def dot(a, b):
+        return a[0]*b[0] + a[1]*b[1]
+
+    # At least 30 degrees between arms. Within each raw way, allow no
+    # more than a 30-degree turn; centre-line coincidence is not a junction.
+    cos30 = math.sqrt(3)/2
+    if not (dot(directions[0], directions[1]) <= -cos30
+            and dot(directions[2], directions[3]) <= -cos30
+            and all(dot(a, b) <= cos30 for a in directions[:2] for b in directions[2:])):
+        return False
+    # A cross street may extend outside the playable rectangle. Its local
+    # arms are evidence only, and must lie strictly inside the certified halo.
+    # Keep even an observed arm unavailable if it touches/exits that polygon.
+    centre = nodes[node]
+    boundary = list(zip(coverage, coverage[1:]))
+    return all(build.inside(nodes[arm], coverage)
+               and not any(build.intersects(centre, nodes[arm], a, b) for a, b in boundary)
+               for arm in arms)
+
+
 def simulated_junction_rules(edges, accepted_ways, nodes, ways, incident, blocked_nodes):
     """Candidate gameplay rules, never an assertion of legal turns or real access."""
     incoming, outgoing = defaultdict(list), defaultdict(list)
@@ -284,7 +329,8 @@ def project(source, coverage, policy, *, junction_coverage=None, bus_profile_cov
     if simulate or simulated_bus:
         build.require(blocked_nodes <= nodes.keys() and blocked_ways <= ways.keys(),
                       'regional coverage contains an unresolved restriction member')
-    edges, used_nodes, sequences, accepted_ways, profiled_bus_ways = {}, set(), [], set(), set()
+    edges, used_nodes, sequences, accepted_ways = {}, set(), [], set()
+    profiled_bus_ways, observed_bus_ways = set(), set()
     for wid, (refs, tags) in sorted(ways.items()):
         if wid in blocked_ways or len(set(refs)) != len(refs):
             continue
@@ -299,6 +345,8 @@ def project(source, coverage, policy, *, junction_coverage=None, bus_profile_cov
         # gameplay profile never confers a tram edge or a tram direction.
         if 'allowed' not in access.values():
             continue
+        if simulated_bus and access['bus_access'] == 'allowed':
+            observed_bus_ways.add(wid)
         # Reject partial ways/boundary cuts and preserve the original node order;
         # splitting each surviving way at each raw node preserves true topology.
         if any(not (west < nodes[ref][0] < east and south < nodes[ref][1] < north)
@@ -340,8 +388,11 @@ def project(source, coverage, policy, *, junction_coverage=None, bus_profile_cov
                 if not simulated_bus:
                     continue
                 if node not in through_nodes:
-                    through_nodes[node] = simple_junction_ways(
-                        node, profiled_bus_ways, nodes, ways, incident, blocked_nodes) is not None
+                    through_nodes[node] = (
+                        simple_junction_ways(node, profiled_bus_ways, nodes, ways, incident, blocked_nodes) is not None
+                        or simple_four_arm_bus_through(
+                            node, observed_bus_ways, nodes, ways, incident, blocked_nodes, ring)
+                    )
                 if not through_nodes[node]:
                     continue
             for mode in MODES:
