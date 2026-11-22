@@ -553,3 +553,196 @@ fn live_crossing_wait_labels_follow_a_real_reservation_and_survive_reload() {
         }
     }
 }
+
+#[test]
+fn matched_crossing_allocates_actual_wait_once_and_keeps_post_departure_unknown() {
+    use rosenfu_core::demand::{ChoiceWeights, ObservedFixedOdStatus};
+
+    const TRIPS: f64 = 100.;
+    const ALTERNATIVE_S: f64 = 130.;
+    const DEPARTURE_MS: u64 = 5_000;
+    const READY_BEFORE_MS: u64 = 1_000;
+    const READY_DURING_WAIT_MS: u64 = 6_000;
+    const RIDE_MS: u64 = 92_240;
+    const CROSSING_WAIT_MS: u64 = 94_240;
+    let dir = tempfile::tempdir().unwrap();
+    let mut outputs = Vec::new();
+    for elevated in [false, true] {
+        let (mut world, mut configs) = fixture(true, elevated);
+        for config in &mut configs {
+            config.timetable.first_departure_ms = DEPARTURE_MS;
+            config.timetable.last_departure_ms = DEPARTURE_MS;
+        }
+        world.configure_operation(configs.to_vec()).unwrap();
+        let service = configs
+            .iter()
+            .map(|config| config.service_id.0.to_string())
+            .max()
+            .unwrap();
+        let offer = world
+            .operation()
+            .unwrap()
+            .runtime
+            .passenger_offers()
+            .into_iter()
+            .find(|o| o.service_id == service && o.sequence == 0)
+            .unwrap();
+        let planned = |editor: &WorldEditor| {
+            editor
+                .preview_fixed_od(
+                    offer.from.clone(),
+                    offer.to.clone(),
+                    Some(TRIPS),
+                    Some(ALTERNATIVE_S),
+                )
+                .unwrap()
+        };
+        let measured = |editor: &WorldEditor| {
+            editor
+                .preview_observed_fixed_od(
+                    offer.from.clone(),
+                    offer.to.clone(),
+                    Some(TRIPS),
+                    Some(ALTERNATIVE_S),
+                )
+                .unwrap()
+        };
+        let read_world = |world: &World, filename: &str| {
+            let path = dir.path().join(filename);
+            rosenfu_storage::save_world(&path, world).unwrap();
+            let mut editor = WorldEditor::new();
+            editor.load(&path).unwrap();
+            (editor, path)
+        };
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(READY_BEFORE_MS, 128)
+            .unwrap();
+        let (editor, _) = read_world(
+            &world,
+            if elevated {
+                "before-elevated.rosenfu"
+            } else {
+                "before-planar.rosenfu"
+            },
+        );
+        let planned_now = planned(&editor);
+        let observed_before = measured(&editor);
+        assert_eq!(observed_before.status, ObservedFixedOdStatus::Reached);
+        assert_eq!(observed_before.unresolved_trips, 0.);
+        assert!(
+            (observed_before.rail_trips + observed_before.alternative_trips - TRIPS).abs() < 1e-12
+        );
+        let it = observed_before.itinerary.as_ref().unwrap();
+        let extra = if elevated { 0 } else { CROSSING_WAIT_MS };
+        let expected_departure = DEPARTURE_MS + extra;
+        let expected_platform_wait = expected_departure - READY_BEFORE_MS;
+        assert_eq!(it.ready_ms, READY_BEFORE_MS);
+        assert_eq!(it.platform_wait_ms, expected_platform_wait);
+        assert_eq!(it.onboard_ms, RIDE_MS);
+        assert_eq!(it.arrival_ms, Some(expected_departure + RIDE_MS));
+        let [ride] = it.rides.as_slice() else {
+            panic!("expected the one overlapping service");
+        };
+        assert_eq!(&ride.service_id, &service);
+        assert_eq!(ride.departed_ms, expected_departure);
+        assert_eq!(
+            it.arrival_ms.unwrap() - it.ready_ms,
+            it.platform_wait_ms + it.onboard_ms
+        );
+        let weights = ChoiceWeights::default();
+        let exact_cost = expected_platform_wait as f64 / 1_000. * weights.wait
+            + RIDE_MS as f64 / 1_000. * weights.ride;
+        assert!((observed_before.generalized_rail_seconds.unwrap() - exact_cost).abs() < 1e-9);
+
+        // Same request after scheduled departure, with a saved live queue in
+        // the planar case and a non-boardable moving train in the elevated control.
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(READY_DURING_WAIT_MS, 128)
+            .unwrap();
+        let (mut reader, file) = read_world(
+            &world,
+            if elevated {
+                "during-elevated.rosenfu"
+            } else {
+                "during-planar.rosenfu"
+            },
+        );
+        assert_eq!(planned(&reader), planned_now);
+        let live_bytes = std::fs::read(&file).unwrap();
+        let live_view = serde_json::to_value(reader.operation_snapshot()).unwrap();
+        let result = measured(&reader);
+        let mut reload = WorldEditor::new();
+        reload.load(&file).unwrap();
+        assert_eq!(measured(&reload), result);
+        let reopened_view = serde_json::to_value(reload.operation_snapshot()).unwrap();
+        assert_eq!(reopened_view["now_ms"], live_view["now_ms"]);
+        assert_eq!(reopened_view["trains"], live_view["trains"]);
+        assert_ne!(
+            reopened_view["configuration_token"],
+            live_view["configuration_token"]
+        );
+        assert_eq!(
+            serde_json::to_value(reader.operation_snapshot()).unwrap(),
+            live_view
+        );
+        reader.save(&file).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), live_bytes);
+
+        let during_it = result.itinerary.as_ref().unwrap();
+        assert_eq!(during_it.ready_ms, READY_DURING_WAIT_MS);
+        let row = live_view["trains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"]["service_id"] == service)
+            .unwrap();
+        if elevated {
+            assert!(row.get("waiting_for").is_none());
+            assert_eq!(result.status, ObservedFixedOdStatus::NoArrivalWithinWindow);
+            assert_eq!(
+                during_it.observed_until_ms,
+                READY_DURING_WAIT_MS + 30 * 60_000
+            );
+            assert_eq!(during_it.arrival_ms, None);
+            assert!(during_it.rides.is_empty());
+            assert_eq!(result.unresolved_trips, TRIPS);
+            assert_eq!(result.rail_trips + result.alternative_trips, 0.);
+            assert_eq!(result.generalized_rail_seconds, None);
+        } else {
+            assert_eq!(row["waiting_for"], "crossing");
+            assert_eq!(result.status, ObservedFixedOdStatus::Reached);
+            assert_eq!(during_it.rides, it.rides);
+            assert_eq!(
+                during_it.platform_wait_ms,
+                expected_departure - READY_DURING_WAIT_MS
+            );
+            assert_eq!(during_it.onboard_ms, RIDE_MS);
+            assert_eq!(result.unresolved_trips, 0.);
+        }
+        let scheduled_path = &planned_now.rail[0];
+        assert_eq!(scheduled_path.time.wait_seconds, 30.);
+        assert_eq!(scheduled_path.time.ride_seconds, RIDE_MS as f64 / 1_000.);
+        println!("elevated={elevated}: planned wait/ride={}/{}s rail_trips={:.6}; observed wait/ride={}/{}s rail_trips={:.6}; after-departure status={:?} unresolved={}",
+            scheduled_path.time.wait_seconds, scheduled_path.time.ride_seconds, scheduled_path.trips,
+            it.platform_wait_ms as f64 / 1_000., it.onboard_ms as f64 / 1_000., observed_before.rail_trips,
+            result.status, result.unresolved_trips);
+        outputs.push((planned_now, observed_before));
+    }
+    let [(ground_planned, ground_observed), (elevated_planned, elevated_observed)] =
+        outputs.as_slice()
+    else {
+        unreachable!()
+    };
+    assert_eq!(ground_planned, elevated_planned);
+    assert!(ground_observed.rail_trips < elevated_observed.rail_trips);
+    let cost_delta = ground_observed.generalized_rail_seconds.unwrap()
+        - elevated_observed.generalized_rail_seconds.unwrap();
+    let expected_delta = CROSSING_WAIT_MS as f64 / 1_000. * ChoiceWeights::default().wait;
+    assert!((cost_delta - expected_delta).abs() < 1e-9);
+}
