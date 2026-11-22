@@ -95,7 +95,11 @@ impl WorldEditor {
         // the current store for comparison, never change the claimed manifest.
         // The historical target below retains its own evidence, not this store.
         expected.runtime_road_evidence = current.runtime_road_evidence.clone();
-        if current != editable(expected.clone()) {
+        // The IPC draft is already owned; move the UI fields aside instead of
+        // cloning every alignment just to exclude them from the CAS check.
+        let construction_plans = expected.construction_plans.take();
+        let view_state = expected.view_state.take();
+        if current != expected {
             return Err("ワールドが変更されています。最新の状態を確認してください。".into());
         }
         let entry = if redo {
@@ -116,8 +120,8 @@ impl WorldEditor {
         let mut draft = target.clone();
         // UI owns live plans and viewport. Validate them against restored IDs,
         // never overwrite them with an older saved or historical snapshot.
-        draft.construction_plans = expected.construction_plans;
-        draft.view_state = expected.view_state;
+        draft.construction_plans = construction_plans;
+        draft.view_state = view_state;
         let mut restored = World::new(draft).map_err(|e| e.to_string())?;
         let rebuilt_operation = if let Some(service_id) = entry.guarded_service_path {
             self.reconcile_service_path_edit(&mut restored, service_id)?
@@ -223,8 +227,21 @@ mod tests {
         assert_eq!(e.snapshot(), restored);
         assert_eq!(e.world_edit_history().revision, revision);
         assert_eq!(e.world_edit_history().redo_depth, 1);
-        e.redo_world_edit(restored).unwrap();
-        assert_eq!(e.snapshot().companies[0].name, "A");
+        let mut stale = restored.clone();
+        stale.companies[0].name = "stale claim".into();
+        assert_eq!(
+            e.redo_world_edit(stale).unwrap_err(),
+            "ワールドが変更されています。最新の状態を確認してください。"
+        );
+        assert_eq!(e.snapshot(), restored);
+        assert_eq!(e.world_edit_history().revision, revision);
+        assert_eq!(e.world_edit_history().redo_depth, 1);
+        let mut expected = restored;
+        expected.view_state.as_mut().unwrap().zoom = 14.;
+        let redone = e.redo_world_edit(expected.clone()).unwrap();
+        assert_eq!(redone.companies[0].name, "A");
+        assert_eq!(redone.construction_plans, expected.construction_plans);
+        assert_eq!(redone.view_state, expected.view_state);
     }
     #[test]
     fn world_history_chronology_identity_and_redo_invalidation() {
