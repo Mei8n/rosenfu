@@ -1,4 +1,4 @@
-//! Native trust boundary: only release-pinned bytes can authorize real road graph use.
+//! Native trust boundary: only embedded digest-pinned graphs can authorize gameplay.
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -14,6 +14,23 @@ struct Pin<'a> {
 // Intentionally empty until a real corridor and reuse rights are explicitly reviewed.
 // Never populate this from a save, IPC, filesystem lookup, network, or test fixture.
 const PINS: &[Pin<'static>] = &[];
+const LAB_ID: &str = "shimada-otsu-chubu-261120-lab-bus";
+
+#[cfg(all(feature = "dev-shimada-bus-lab", not(debug_assertions)))]
+compile_error!("dev-shimada-bus-lab is only permitted in debug source builds");
+
+#[cfg(all(feature = "dev-shimada-bus-lab", debug_assertions))]
+const LAB_PINS: &[Pin<'static>] = &[Pin {
+    id: LAB_ID,
+    sha256: [
+        0x20, 0xde, 0x06, 0x4b, 0x03, 0xe7, 0xc2, 0x2e, 0xb9, 0x25, 0x79, 0xe6, 0xd5, 0x3b, 0xde,
+        0x0d, 0x0b, 0x97, 0x87, 0x2c, 0x9f, 0x7a, 0x2b, 0xa4, 0x34, 0x6d, 0xf1, 0xeb, 0xbd, 0xd0,
+        0x5c, 0x92,
+    ],
+    bytes: include_bytes!("../../lab-data/shimada-otsu-lab-bus.json"),
+}];
+#[cfg(not(all(feature = "dev-shimada-bus-lab", debug_assertions)))]
+const LAB_PINS: &[Pin<'static>] = &[];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +82,8 @@ pub struct PilotBusEdit {
 
 #[derive(Serialize)]
 pub struct NativeRoadRegion {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    lab_only: bool,
     id: String,
     region: String,
     origin: String,
@@ -111,6 +130,23 @@ impl Pin<'_> {
         {
             return Err(InvalidData);
         }
+        let lab_only = id == LAB_ID;
+        // Lab geometry is not permission to drive or evidence of real stops.
+        // Do not allow the lab catalog to acquire reviewed stops or tram authority.
+        if lab_only
+            && (!asset.allows_player_bus_stops
+                || !asset.bus_stop_positions.is_empty()
+                || asset
+                    .edges
+                    .iter()
+                    .any(|edge| edge.tram_access == Access::Allowed)
+                || asset
+                    .transitions
+                    .iter()
+                    .any(|movement| movement.mode != PilotRoadMode::Bus))
+        {
+            return Err(AccessForbidden);
+        }
         let approved = Approved {
             graph: RoadTransport {
                 nodes: asset.nodes,
@@ -119,6 +155,7 @@ impl Pin<'_> {
             },
             source: format!("{SOURCE_PREFIX}{id}"),
             region: NativeRoadRegion {
+                lab_only,
                 id: asset.asset_id,
                 region: asset.region,
                 origin: asset.origin,
@@ -266,22 +303,26 @@ fn approved_for(
     approved_asset(asset_id, pins).map(Some)
 }
 
-/// Read a release-embedded and digest-pinned graph. No caller-controlled bytes or paths.
+/// Read an embedded and digest-pinned graph. No caller-controlled bytes or paths.
 pub fn import_native_pilot(asset_id: &str) -> Result<RoadTransport, RoadTransportError> {
     with_pins(|pins| approved_asset(asset_id, pins)).map(|approved| approved.graph)
 }
 
 fn approved_asset(asset_id: &str, pins: &[Pin<'_>]) -> Result<Approved, RoadTransportError> {
     pins.iter()
+        .filter(|pin| pin.id != LAB_ID)
+        .chain(LAB_PINS)
         .find(|pin| pin.id == asset_id)
         .ok_or(StaleSnapshot)?
         .authenticate()
 }
 
-/// Describe only readable, integrity-checked release pins. Empty is not a network error.
+/// Describe only readable, integrity-checked catalog pins. Empty is not a network error.
 pub fn native_road_regions() -> Result<Vec<NativeRoadRegion>, RoadTransportError> {
     with_pins(|pins| {
         pins.iter()
+            .filter(|pin| pin.id != LAB_ID)
+            .chain(LAB_PINS)
             .map(|pin| Ok(pin.authenticate()?.region))
             .collect()
     })
@@ -1078,4 +1119,49 @@ mod tests {
         assert!(restored.snapshot().alignments.is_empty());
         assert!(reopened.snapshot().road_transport.bus_routes.is_empty());
     }
+}
+
+#[cfg(all(test, not(feature = "dev-shimada-bus-lab")))]
+#[test]
+fn lab_region_is_not_available_without_debug_opt_in() {
+    assert!(PINS.is_empty());
+    assert!(native_road_regions().unwrap().is_empty());
+    assert_eq!(import_native_pilot(LAB_ID).err(), Some(StaleSnapshot));
+}
+
+#[cfg(all(test, feature = "dev-shimada-bus-lab", debug_assertions))]
+#[test]
+fn embedded_lab_is_separate_from_production_and_has_no_tram_or_reviewed_stop() {
+    assert!(PINS.is_empty());
+    let regions = native_road_regions().unwrap();
+    let [region] = regions.as_slice() else {
+        panic!("expected exactly one lab catalog entry");
+    };
+    assert_eq!(region.id, LAB_ID);
+    assert!(region.lab_only && region.allows_player_bus_stops);
+    assert!(region.bus_stop_positions.is_empty());
+    assert_eq!(serde_json::to_value(region).unwrap()["lab_only"], true);
+    assert_eq!(
+        import_native_pilot("unknown-lab").err(),
+        Some(StaleSnapshot)
+    );
+    let graph = import_native_pilot(LAB_ID).unwrap();
+    assert_eq!(graph.edges.len(), 15);
+    assert!(graph
+        .edges
+        .iter()
+        .all(|edge| edge.tram_access != Access::Allowed));
+    let mut draft = WorldDraft::default();
+    draft.road_transport = graph.clone();
+    assert!(crate::world::World::new(draft.clone()).is_ok());
+    draft.road_transport.edges[0].revision.push_str("-stale");
+    assert!(crate::world::World::new(draft).is_err());
+    let point = StopPosition {
+        edge_id: graph.edges[0].id.clone(),
+        position: 0.25,
+        location_kind: BusStopLocationKind::ReviewedReference,
+    };
+    assert!(graph
+        .native_bus_path(&WorldDraft::default(), &point, &point)
+        .is_err());
 }

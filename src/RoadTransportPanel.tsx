@@ -13,7 +13,8 @@ export type RoadTransportMutation = 'replace_road_transport' | 'enable_road_qa_f
 type StopLocationKind = 'reviewed_reference'|'player_created';
 type StopPosition = {edge_id:string;position:number;location_kind?:StopLocationKind};
 type RoadEdge = RoadTransportData['edges'][number];
-interface NativeRoadRegion {id:string;region:string;origin:string;revision:string;attribution:string;bus_stop_positions:StopPosition[];allows_player_bus_stops?:boolean;}
+interface NativeRoadRegion {id:string;region:string;origin:string;revision:string;attribution:string;bus_stop_positions:StopPosition[];allows_player_bus_stops?:boolean;lab_only?:boolean;}
+const labNotice = '検証用・実際の通行可否を示さない';
 type PilotBusEdit = {route_id:string;name:string;expected_route:RoadTransportData['bus_routes'][number]|null;from:StopPosition;to:StopPosition};
 export type RoadTramEdit = {kind:'build';from:string;to:string;name:string;shared:boolean} | {kind:'change_placement';alignment_id:string;from:string;to:string;shared:boolean} | {kind:'remove';alignment_id:string};
 export type RoadMapSelection = {from:string;to:string;revision:number};
@@ -160,20 +161,21 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
      name:name.trim(),expected_route:editing??null,from:fromPosition,to:toPosition}});
    setEditing(undefined);
  }
+ const catalogTitle=regions?.some(region=>region.lab_only)?'追加できる道路データ':'確認済みの実在道路';
  return <section aria-label="道路交通"><h3>道路交通</h3>
- <section aria-label="確認済みの実在道路">
-  <h4>確認済みの実在道路</h4>
+ <section aria-label={catalogTitle}>
+  <h4>{catalogTitle}</h4>
   {regionsFailed?<p role="alert">道路データの一覧を確認できませんでした。</p>:
    !regions?<p role="status">道路データを確認中</p>:
    regions.length===0?<p role="status">この版で追加できる承認済みの実在地域はありません。</p>:
    regions.map(region=><div key={region.id}>
-     <strong>{region.region}</strong><p>出所: {region.origin} / 版: {region.revision} / 帰属: {region.attribution}</p>
+     <strong>{region.region}</strong>{region.lab_only&&<p><span>{labNotice}</span> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors</a>（<a href="https://opendatacommons.org/licenses/odbl/1-0/" target="_blank" rel="noreferrer">ODbL 1.0</a>）</p>}<p>出所: {region.origin} / 版: {region.revision} / 帰属: {region.attribution}</p>
      {pilot?.id===region.id?<span>このワールドで使用中</span>:<button type="button" disabled={hasGraph||!enabled||busy}
        onClick={()=>void run(()=>mutate('install_native_road_pilot',{assetId:region.id}))}>{region.region}を追加</button>}
    </div>)}
   {hasGraph&&!pilot&&Boolean(regions?.length)&&<p>このワールドには道路データがあるため、上書きできません。</p>}
  </section>
- {!hasGraph?<><label><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>実在道路ではない検証用データを使用する</label><button disabled={!enabled||!confirmed||busy} onClick={()=>void run(()=>mutate('enable_road_qa_fixture',{confirmedSynthetic:true}))}>検証用道路を追加</button></>:<p role="status">{qa?'検証専用の架空道路。実在の地図・通行可能範囲ではありません。':pilot?(allowsPlayer?'確認済み道路の通行方向を使います。ゲーム内停留所は実在の停留所ではありません。':'承認された方向・経路・停留所だけを使用します。'):'この道路データは参照のみで、経路を作成できません。'}</p>}
+ {!hasGraph?<><label><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>実在道路ではない検証用データを使用する</label><button disabled={!enabled||!confirmed||busy} onClick={()=>void run(()=>mutate('enable_road_qa_fixture',{confirmedSynthetic:true}))}>検証用道路を追加</button></>:<p role="status">{qa?'検証専用の架空道路。実在の地図・通行可能範囲ではありません。':pilot?(pilot.lab_only?labNotice:allowsPlayer?'確認済み道路の通行方向を使います。ゲーム内停留所は実在の停留所ではありません。':'承認された方向・経路・停留所だけを使用します。'):'この道路データは参照のみで、経路を作成できません。'}</p>}
  {(qa||pilot)&&<>
  {!onPickOnMap&&<RoadPathPicker data={data} from={from} to={to} disabled={!enabled||busy} pick={pickInset}/>}
  {onPickOnMap&&<button type="button" disabled={!enabled||busy} onClick={onPickOnMap}>地図で起点・終点を選ぶ</button>}

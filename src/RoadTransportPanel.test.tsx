@@ -153,3 +153,21 @@ it('does not offer fictional stops on a region without an explicit capability',a
  await screen.findByLabelText('乗車');
  expect(screen.queryByText('ゲーム内停留所を置く')).toBeNull();
 });
+
+it('labels a developer lab corridor before import and after selection',async()=>{
+ const labId='shimada-otsu-chubu-261120-lab-bus';
+ const notice='検証用・実際の通行可否を示さない';
+ const lab={...region,id:labId,region:'開発ラボ',lab_only:true,allows_player_bus_stops:true,bus_stop_positions:[]};
+ vi.mocked(invoke).mockResolvedValue([lab]);
+ const run=vi.fn().mockResolvedValue({});
+ const view=render(<RoadTransportPanel data={empty} companyId="1" run={run}/>);
+ expect(await screen.findByText(notice)).toBeTruthy();
+ expect(screen.queryByRole('heading',{name:'確認済みの実在道路'})).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'開発ラボを追加'}));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('install_native_road_pilot',{assetId:labId}));
+ const labData={...native,edges:native.edges.map(edge=>({...edge,source:`native-pilot:${labId}`,level:'ground',tram_access:'unknown'}))};
+ view.rerender(<RoadTransportPanel data={labData} companyId="1" run={run}/>);
+ expect(screen.getByRole('status').textContent).toBe(notice);
+ expect(screen.queryByRole('button',{name:'開発ラボを追加'})).toBeNull();
+ expect(screen.queryByText('承認済みバス停位置')).toBeNull();
+});
