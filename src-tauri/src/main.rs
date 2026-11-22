@@ -918,6 +918,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             operation_commands::operation_snapshot,
             operation_commands::preview_fixed_od,
+            operation_commands::preview_observed_fixed_od,
             operation_commands::preview_rail_journey_replay,
             operation_commands::fixed_od_scenario,
             operation_commands::set_fixed_od_scenario,

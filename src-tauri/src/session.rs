@@ -10,7 +10,7 @@ mod history;
 mod operation;
 pub use deletion::AlignmentSectionSelection;
 pub use history::WorldEditHistory;
-pub use operation::{FixedOdRoadTransfer, FixedOdScenarioView};
+pub use operation::{FixedOdRoadTransfer, FixedOdScenarioView, ObservedFixedOdInput};
 pub use operation::{OperationTickView, OperationView};
 #[path = "session/ofm.rs"]
 mod ofm;

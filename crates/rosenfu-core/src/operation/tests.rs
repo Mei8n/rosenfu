@@ -391,3 +391,158 @@ fn release_and_departure_time_ties_respect_existing_waiting_order_after_resume()
     );
     assert_eq!(reopened.now_ms(), 21_000);
 }
+
+fn observed_scope_service(
+    id: &str,
+    road: bool,
+    resource: &str,
+    first: u64,
+    last: u64,
+) -> ServiceRunSpec {
+    let (from, to) = if road {
+        ("bus:a", "bus:b")
+    } else {
+        ("11", "12")
+    };
+    ServiceRunSpec {
+        service_id: id.into(),
+        vehicle: Vehicle {
+            max_speed_kmh: 36.,
+            acceleration_mps2: 1.,
+            braking_mps2: 1.,
+            length_m: 10.,
+        },
+        timetable: Timetable {
+            first_departure_ms: first,
+            last_departure_ms: last,
+            headway_ms: 20_000,
+        },
+        legs: vec![RunLeg {
+            from: from.into(),
+            to: to.into(),
+            sections: vec![Section {
+                length_m: 100.,
+                speed_limit_kmh: 36.,
+                resources: vec![resource.into()],
+            }],
+            dwell_ms: 0,
+        }],
+    }
+}
+
+#[test]
+fn rail_cohort_ignores_proven_independent_bus_births_without_changing_the_live_clock_or_state() {
+    let rail = observed_scope_service("1", false, "rail:1:section:0:lane:0", 0, 0);
+    let bus = observed_scope_service(
+        "bus:independent",
+        true,
+        "road:edge:independent",
+        0,
+        1_800_000,
+    );
+    let mixed = OperationRuntime::new(vec![rail.clone(), bus]).unwrap();
+    let untouched = mixed.clone();
+    assert_eq!(
+        mixed.preview_passenger_replay(1_800_000, 256),
+        Err(PassengerReplayError::OutsideBudget)
+    );
+    let expected = OperationRuntime::new(vec![rail])
+        .unwrap()
+        .preview_passenger_replay(1_800_000, 256)
+        .unwrap();
+    let observed = mixed.preview_rail_cohort_replay(1_800_000, 256).unwrap();
+    assert_eq!(observed, expected);
+    assert_eq!(
+        observed.earliest_rail_itinerary("11", "12").arrival_ms,
+        Some(20_000)
+    );
+    assert_eq!(mixed, untouched);
+}
+
+#[test]
+fn rail_cohort_omits_active_independent_road_leases_and_matches_unfiltered_rail_observations() {
+    let rail = observed_scope_service("1", false, "rail:1:section:0:lane:0", 0, 0);
+    let bus = observed_scope_service("bus:independent", true, "road:edge:independent", 0, 0);
+    let mut mixed = OperationRuntime::new(vec![rail, bus]).unwrap();
+    mixed.advance_to(5_000, 256).unwrap();
+    assert!(mixed.occupied.contains_key("road:edge:independent"));
+    assert!(mixed.occupied.contains_key("rail:1:section:0:lane:0"));
+    let untouched = mixed.clone();
+    let mut expected = mixed.preview_passenger_replay(1_800_000, 256).unwrap();
+    expected
+        .completed_legs
+        .retain(|leg| leg.train.service_id == "1");
+    assert_eq!(
+        mixed.preview_rail_cohort_replay(1_800_000, 256).unwrap(),
+        expected
+    );
+    assert_eq!(mixed, untouched);
+}
+
+#[test]
+fn rail_cohort_with_shared_or_unproven_resources_keeps_real_delay_and_the_full_budget_result() {
+    let resource = "rail:crossing:1:2";
+    let rail = observed_scope_service("1", false, resource, 1_000, 1_000);
+    let bus = observed_scope_service("bus:shared", true, resource, 0, 0);
+    let mixed = OperationRuntime::new(vec![rail.clone(), bus]).unwrap();
+    let full = mixed.preview_passenger_replay(1_800_000, 256).unwrap();
+    let result = mixed.preview_rail_cohort_replay(1_800_000, 256).unwrap();
+    assert_eq!(result, full);
+    assert!(result
+        .completed_legs
+        .iter()
+        .any(|leg| leg.train.service_id == "1" && leg.cumulative_reservation_wait_ms > 0));
+    let dense = observed_scope_service("bus:shared", true, resource, 0, 1_800_000);
+    let mixed = OperationRuntime::new(vec![rail.clone(), dense]).unwrap();
+    assert_eq!(
+        mixed.preview_rail_cohort_replay(1_800_000, 256),
+        Err(PassengerReplayError::OutsideBudget)
+    );
+    // Unknown stop namespace also refuses the projection even if every
+    // observed resource name is otherwise independent.
+    let mut unknown =
+        observed_scope_service("bus:noncanonical", true, "road:edge:separate", 0, 1_800_000);
+    unknown.legs[0].to = "12".into();
+    let mixed = OperationRuntime::new(vec![rail, unknown]).unwrap();
+    assert_eq!(
+        mixed.preview_rail_cohort_replay(1_800_000, 256),
+        Err(PassengerReplayError::OutsideBudget)
+    );
+}
+
+#[test]
+fn rail_cohort_keeps_unexplained_eligible_waiters_on_the_full_event_timeline() {
+    let rail = observed_scope_service("1", false, "rail:1:section:0:lane:0", 0, 0);
+    let bus = observed_scope_service(
+        "bus:independent",
+        true,
+        "road:edge:independent",
+        5_000,
+        5_000,
+    );
+    let mut mixed = OperationRuntime::new(vec![rail, bus]).unwrap();
+    let key = TrainKey {
+        service_id: "1".into(),
+        scheduled_ms: 0,
+    };
+    mixed.trains.insert(
+        key.clone(),
+        Train {
+            key,
+            leg: 0,
+            delay_ms: 0,
+            state: TrainState::Waiting { ready_ms: 0 },
+        },
+    );
+    mixed.services.get_mut("1").unwrap().next_departure = None;
+    assert!(!mixed.can_omit_road_replay());
+    let full = mixed.preview_passenger_replay(1_800_000, 256).unwrap();
+    assert_eq!(
+        mixed.preview_rail_cohort_replay(1_800_000, 256).unwrap(),
+        full
+    );
+    assert_eq!(
+        full.earliest_rail_itinerary("11", "12").arrival_ms,
+        Some(25_000)
+    );
+}

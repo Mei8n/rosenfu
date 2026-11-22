@@ -4,6 +4,16 @@ use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::OperationServiceConfig;
 #[path = "operation/bus_transfers.rs"]
 mod bus_transfers;
+/// Case-specific payload. Transfer/walking options belong only to scheduled OD.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObservedFixedOdInput {
+    pub origin_station_id: String,
+    pub destination_station_id: String,
+    pub trips: Option<f64>,
+    pub alternative_seconds: Option<f64>,
+}
+
 #[derive(serde::Serialize)]
 pub struct OperationLiveView {
     pub now_ms: u64,
@@ -514,6 +524,59 @@ impl WorldEditor {
                 }
             })?;
         Ok(replay.earliest_rail_itinerary(origin, destination))
+    }
+
+    /// A single explicitly requested cohort starts at the current simulation
+    /// time; aliases, nearby stops, and actual population are never inferred.
+    pub fn preview_observed_fixed_od(
+        &self,
+        origin_station_id: String,
+        destination_station_id: String,
+        trips: Option<f64>,
+        alternative_seconds: Option<f64>,
+    ) -> Result<rosenfu_core::demand::ObservedFixedOd, String> {
+        use rosenfu_core::{demand::ObservedFixedOd, operation::PassengerReplayError};
+        let scenario = FixedOdScenario {
+            origin_station_id,
+            destination_station_id,
+            trips,
+            alternative_seconds,
+        };
+        scenario.validate()?;
+        if scenario.origin_station_id.starts_with("bus:")
+            || scenario.destination_station_id.starts_with("bus:")
+            || !scenario.endpoints_exist(self.world.snapshot())
+        {
+            return Err("遅延を含む試算では、異なる既存の鉄道駅を選択してください。".into());
+        }
+        let operation = self
+            .world
+            .operation()
+            .ok_or("先に運行する系統を設定してください。")?;
+        if operation.invalidated {
+            return Err("運行経路の更新が必要です。".into());
+        }
+        let runtime = &operation.runtime;
+        let until = runtime
+            .now_ms()
+            .checked_add(30 * 60_000)
+            .ok_or("時計の範囲を超えました。")?;
+        let replay = match runtime.preview_rail_cohort_replay(until, 256) {
+            Ok(replay) => replay,
+            Err(PassengerReplayError::OutsideBudget) => {
+                return Ok(ObservedFixedOd::outside_budget(trips));
+            }
+            Err(PassengerReplayError::Runtime(_)) => {
+                return Err("運行の再現に失敗しました。".into())
+            }
+        };
+        Ok(ObservedFixedOd::from_replay(
+            &replay,
+            &scenario.origin_station_id,
+            &scenario.destination_station_id,
+            trips,
+            alternative_seconds,
+        ))
     }
 
     #[cfg(test)]
@@ -2058,5 +2121,21 @@ mod tests {
             assert_eq!(opposite.unserved_trips, 50.);
             assert_eq!(before, rosenfu_storage::encode(&e.world).unwrap());
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn observed_fixed_od_payload_rejects_unsupported_transfer_fields() {
+    let query = serde_json::json!({
+        "originStationId": "1", "destinationStationId": "2",
+        "trips": 100, "alternativeSeconds": 500,
+    });
+    assert!(serde_json::from_value::<ObservedFixedOdInput>(query.clone()).is_ok());
+    for key in ["transfer", "walkSeconds", "busLegs", "stationAliases"] {
+        let mut unsupported = query.clone();
+        // Null is not a supported option either; never silently drop it.
+        unsupported[key] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ObservedFixedOdInput>(unsupported).is_err());
     }
 }

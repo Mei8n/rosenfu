@@ -1,4 +1,6 @@
-use crate::session::{FixedOdRoadTransfer, OperationTickView, OperationView, WorldEditor};
+use crate::session::{
+    FixedOdRoadTransfer, ObservedFixedOdInput, OperationTickView, OperationView, WorldEditor,
+};
 use rosenfu_core::{
     operation::{Timetable, Vehicle},
     world::ServiceId,
@@ -93,6 +95,22 @@ pub fn preview_rail_journey_replay(
         .lock()
         .map_err(|_| "world state unavailable")?
         .preview_rail_journey_replay(&origin, &destination)
+}
+
+#[tauri::command]
+pub fn preview_observed_fixed_od(
+    editor: State<'_, Mutex<WorldEditor>>,
+    query: ObservedFixedOdInput,
+) -> Result<rosenfu_core::demand::ObservedFixedOd, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_observed_fixed_od(
+            query.origin_station_id,
+            query.destination_station_id,
+            query.trips,
+            query.alternative_seconds,
+        )
 }
 
 #[tauri::command]

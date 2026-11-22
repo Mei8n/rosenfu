@@ -440,6 +440,21 @@ fn native_journey_replay_respects_real_occupancy_and_does_not_replace_planned_od
         let result = editor
             .preview_rail_journey_replay(&leg.from, &leg.to)
             .unwrap();
+        let disk_before = std::fs::read(&path).unwrap();
+        let observed = editor
+            .preview_observed_fixed_od(leg.from.clone(), leg.to.clone(), Some(100.), Some(130.))
+            .unwrap();
+        assert_eq!(observed.itinerary.as_ref(), Some(&result));
+        assert!((observed.rail_trips + observed.alternative_trips - 100.).abs() < 1e-12);
+        assert!(editor
+            .preview_observed_fixed_od(
+                "bus:unsupported".into(),
+                leg.to.clone(),
+                Some(100.),
+                Some(130.)
+            )
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), disk_before);
         assert_eq!(
             serde_json::to_value(editor.operation_snapshot()).unwrap(),
             before
@@ -453,10 +468,12 @@ fn native_journey_replay_respects_real_occupancy_and_does_not_replace_planned_od
         assert!(editor
             .preview_rail_journey_replay("missing", &leg.to)
             .is_err());
-        (planned, result)
+        (planned, result, observed)
     };
-    let (plan_ground, ground) = preview(false);
-    let (plan_elevated, elevated) = preview(true);
+    let (plan_ground, ground, observed_ground) = preview(false);
+    let (plan_elevated, elevated, observed_elevated) = preview(true);
+    assert!(observed_ground.rail_trips < 50.);
+    assert!(observed_elevated.rail_trips > 50.);
     assert_eq!(plan_ground, plan_elevated);
     assert_eq!(ground.arrival_ms, Some(186_480));
     assert_eq!(elevated.arrival_ms, Some(92_240));

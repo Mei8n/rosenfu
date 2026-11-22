@@ -1,5 +1,8 @@
 //! Alpha 0.2 fixed-OD reference assignment. Synthetic inputs, not population data.
 //! No mutation, charging or capacity simulation occurs here. Recompute after network changes.
+mod observed_fixed_od;
+pub use observed_fixed_od::{ObservedFixedOd, ObservedFixedOdStatus};
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -544,25 +547,15 @@ fn assign_fixed_od_budgeted(
             results.push(result);
             continue;
         }
-        let best = result
-            .rail
-            .iter()
-            .map(|p| p.generalized_seconds)
-            .chain(od.alternative_seconds)
-            .min_by(f64::total_cmp);
-        if let Some(best) = best {
-            let score = |cost: f64| (-(cost - best) / weights.choice_scale_seconds).exp();
-            let other = od.alternative_seconds.map(score).unwrap_or(0.0);
-            let total = result
-                .rail
-                .iter()
-                .map(|p| score(p.generalized_seconds))
-                .sum::<f64>()
-                + other;
+        if let Some(scores) = ChoiceScores::new(
+            result.rail.iter().map(|p| p.generalized_seconds),
+            od.alternative_seconds,
+            weights.choice_scale_seconds,
+        ) {
             for path in &mut result.rail {
-                path.trips = trips * (score(path.generalized_seconds) / total);
+                path.trips = trips * scores.share(path.generalized_seconds);
             }
-            result.alternative_trips = trips * (other / total);
+            result.alternative_trips = trips * scores.alternative_share();
         } else if result.search_complete {
             result.unserved_trips = trips;
         } else {
@@ -571,6 +564,41 @@ fn assign_fixed_od_budgeted(
         results.push(result);
     }
     Ok(results)
+}
+
+/// Stable normalized choice scores with an exact best-score reference. Reused
+/// unchanged for scheduled and explicitly observed choices.
+struct ChoiceScores {
+    best: f64,
+    scale: f64,
+    other: f64,
+    total: f64,
+}
+
+impl ChoiceScores {
+    fn new(
+        rail: impl Iterator<Item = f64> + Clone,
+        alternative: Option<f64>,
+        scale: f64,
+    ) -> Option<Self> {
+        let best = rail.clone().chain(alternative).min_by(f64::total_cmp)?;
+        let score = |cost: f64| (-(cost - best) / scale).exp();
+        let other = alternative.map(score).unwrap_or(0.0);
+        Some(Self {
+            best,
+            scale,
+            other,
+            total: rail.map(score).sum::<f64>() + other,
+        })
+    }
+
+    fn share(&self, cost: f64) -> f64 {
+        (-(cost - self.best) / self.scale).exp() / self.total
+    }
+
+    fn alternative_share(&self) -> f64 {
+        self.other / self.total
+    }
 }
 
 fn checked_cost(value: f64) -> Result<(), String> {

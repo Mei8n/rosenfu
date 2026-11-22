@@ -840,23 +840,178 @@ impl OperationRuntime {
         until_ms: u64,
         events: usize,
     ) -> Result<PassengerReplay, PassengerReplayError> {
+        self.preview_passenger_replay_in_scope(until_ms, events, false)
+    }
+
+    /// Use the narrower observation budget for a rail-only cohort only if
+    /// every road run and its current leases are independent of every rail
+    /// run. Unknown resources and future mixed modes retain the full replay.
+    pub fn preview_rail_cohort_replay(
+        &self,
+        until_ms: u64,
+        events: usize,
+    ) -> Result<PassengerReplay, PassengerReplayError> {
+        self.preview_passenger_replay_in_scope(until_ms, events, self.can_omit_road_replay())
+    }
+
+    fn can_omit_road_replay(&self) -> bool {
+        // This proof must remain cheap even if the complete replay would
+        // refuse a large world. Current graphs express traffic interactions
+        // exclusively through the compiled locks. A future rail/road conflict
+        // must use a shared resource or explicitly disable this projection.
+        let mut work = 262_144usize;
+        let mut charge = |amount: usize| -> bool {
+            let Some(remaining) = work.checked_sub(amount) else {
+                return false;
+            };
+            work = remaining;
+            true
+        };
+        let road_tag = |value: &str| value.strip_prefix("bus:").is_some_and(|id| !id.is_empty());
+        let lock_in_family = |key: &str, road: bool| {
+            let namespace = if road { "road:edge:" } else { "rail:" };
+            key.strip_prefix(namespace)
+                .is_some_and(|suffix| !suffix.is_empty())
+        };
+        let mut have_bus = false;
+        let mut have_rail = false;
+        // Only attempt this for at most the existing service cap, and
+        // perform no heap allocation while proving the separation.
+        if self.services.len() > 64
+            || self.trains.len() > 64
+            || !self.services.keys().any(|id| road_tag(id))
+        {
+            return false;
+        }
+        for (id, service) in &self.services {
+            let road = road_tag(id);
+            if id != &service.spec.service_id
+                || id.len() > 128
+                || !charge(64 + id.len())
+                || service.legs.len() != service.spec.legs.len()
+                || (!road && id.parse::<u64>().is_err())
+            {
+                return false;
+            }
+            have_bus |= road;
+            have_rail |= !road;
+            let station_in_family = |key: &str| {
+                if road {
+                    road_tag(key)
+                } else {
+                    key.parse::<u64>().is_ok()
+                }
+            };
+            for (spec, leg) in service.spec.legs.iter().zip(&service.legs) {
+                if !charge(
+                    128usize
+                        .saturating_add(spec.from.len())
+                        .saturating_add(spec.to.len()),
+                ) || !station_in_family(&spec.from)
+                    || !station_in_family(&spec.to)
+                    || leg.resources.is_empty()
+                {
+                    return false;
+                }
+                // Crossing, lane, point, platform and terminal ownership all
+                // come from these compiled locks, including retained leases.
+                for key in leg
+                    .resources
+                    .iter()
+                    .chain(leg.early_releases.keys())
+                    .chain(leg.through_lane.iter())
+                {
+                    if !charge(64usize.saturating_add(key.len())) || !lock_in_family(key, road) {
+                        return false;
+                    }
+                }
+            }
+        }
+        for (resource, owner) in &self.occupied {
+            if !charge(64usize.saturating_add(resource.len()))
+                || !self.trains.contains_key(owner)
+                || !self.services.contains_key(&owner.service_id)
+                || !lock_in_family(resource, road_tag(&owner.service_id))
+            {
+                return false;
+            }
+        }
+        for (key, train) in &self.trains {
+            let Some(leg) = self
+                .services
+                .get(&key.service_id)
+                .and_then(|s| s.legs.get(train.leg))
+            else {
+                return false;
+            };
+            if train.key != *key {
+                return false;
+            }
+            if !road_tag(&key.service_id)
+                && matches!(train.state, TrainState::Waiting {ready_ms} if ready_ms <= self.now_ms)
+            {
+                // A previously eligible but unblocked waiter would use the
+                // next event as a wake-up even if that event were unrelated.
+                // Valid live frames normally admit it immediately; otherwise
+                // leave the full timeline in place, rather than guess.
+                let mut blocked = false;
+                for resource in &leg.resources {
+                    if !charge(64usize.saturating_add(resource.len())) {
+                        return false;
+                    }
+                    if self
+                        .occupied
+                        .get(resource)
+                        .is_some_and(|owner| !self.own_lease_allows_admission() || owner != key)
+                    {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if !blocked {
+                    return false;
+                }
+            }
+        }
+        have_bus && have_rail
+    }
+
+    fn preview_passenger_replay_in_scope(
+        &self,
+        until_ms: u64,
+        events: usize,
+        omit_proven_road: bool,
+    ) -> Result<PassengerReplay, PassengerReplayError> {
+        let keep = |id: &str| !omit_proven_road || !id.starts_with("bus:");
         const MAX_SPAN_MS: u64 = 3_600_000;
         const MAX_EVENTS: usize = 256;
         const MAX_SERVICES: usize = 64;
         const MAX_TRAINS: u64 = 64;
         const MAX_STATIC_WEIGHT: usize = 262_144;
+        let count_services = if omit_proven_road {
+            self.services.keys().filter(|id| keep(id)).count()
+        } else {
+            self.services.len()
+        };
         if until_ms
             .checked_sub(self.now_ms)
             .is_none_or(|span| span > MAX_SPAN_MS)
             || events == 0
             || events > MAX_EVENTS
-            || self.services.len() > MAX_SERVICES
+            || count_services > MAX_SERVICES
         {
             return Err(PassengerReplayError::OutsideBudget);
         }
         // Count scheduled births in the whole requested window, even if
         // some trains would have finished before other trains depart.
-        let mut trains = self.trains.len() as u64;
+        let mut trains = if omit_proven_road {
+            self.trains
+                .keys()
+                .filter(|key| keep(&key.service_id))
+                .count()
+        } else {
+            self.trains.len()
+        } as u64;
         let mut weight = 0usize;
         let mut spend = |units: usize| -> Result<(), PassengerReplayError> {
             weight = weight
@@ -865,7 +1020,11 @@ impl OperationRuntime {
                 .ok_or(PassengerReplayError::OutsideBudget)?;
             Ok(())
         };
-        for service in self.services.values() {
+        for service in self
+            .services
+            .values()
+            .filter(|service| keep(&service.spec.service_id))
+        {
             let t = &service.spec.timetable;
             let end = t.last_departure_ms.min(until_ms);
             if let Some(next) = service.next_departure.filter(|&next| next <= end) {
@@ -890,7 +1049,36 @@ impl OperationRuntime {
                 }
             }
         }
-        let mut shadow = self.clone();
+        let mut shadow = if omit_proven_road {
+            Self {
+                now_ms: self.now_ms,
+                paused: self.paused,
+                speed: self.speed,
+                started: self.started,
+                time_margin_ms: self.time_margin_ms,
+                rail_admission: self.rail_admission,
+                services: self
+                    .services
+                    .iter()
+                    .filter(|(id, _)| keep(id))
+                    .map(|(id, service)| (id.clone(), service.clone()))
+                    .collect(),
+                trains: self
+                    .trains
+                    .iter()
+                    .filter(|(key, _)| keep(&key.service_id))
+                    .map(|(key, train)| (key.clone(), train.clone()))
+                    .collect(),
+                occupied: self
+                    .occupied
+                    .iter()
+                    .filter(|(_, owner)| keep(&owner.service_id))
+                    .map(|(resource, owner)| (resource.clone(), owner.clone()))
+                    .collect(),
+            }
+        } else {
+            self.clone()
+        };
         let mut completed_legs = Vec::new();
         let result = shadow
             .advance_to_inner(until_ms, events, Some(&mut completed_legs))

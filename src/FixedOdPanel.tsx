@@ -6,6 +6,11 @@ export type FixedOdScenario={origin_station_id:string;destination_station_id:str
 export type FixedOdScenarioView={token:string;scenario:FixedOdScenario|null};
 type Allocation={stations:string[];services:string[];generalized_seconds:number;trips:number;time?:{walk_seconds:number;wait_seconds:number;ride_seconds:number;transfers:number}};
 type Result={potential_trips:number|null;rail:Allocation[];alternative_trips:number;unserved_trips:number;unresolved_trips:number;search_complete:boolean};
+type ObservedResult={
+ status:'reached'|'incomplete'|'no_arrival_within_window'|'outside_budget';
+ potential_trips:number|null;rail_trips:number;alternative_trips:number;unresolved_trips:number;
+ itinerary?:{ready_ms:number;arrival_ms:number|null;platform_wait_ms:number;onboard_ms:number}|null;
+};
 const quantity=(n:number)=>new Intl.NumberFormat('ja-JP',{maximumFractionDigits:1}).format(n);
 
 export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled,worldVersion,saveScenario}:{stations:Named[];services:Named[];busStops?:Named[];busRoutes?:Named[];enabled:boolean;worldVersion:unknown;saveScenario?:(expectedToken:string,scenario:FixedOdScenario|null)=>Promise<FixedOdScenarioView>}){
@@ -14,6 +19,7 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
  const [transferStation,setTransferStation]=useState(''),[transferStop,setTransferStop]=useState(''),[walkMinutes,setWalkMinutes]=useState('');
  const [trips,setTrips]=useState('100'),[alternative,setAlternative]=useState('');
  const [settled,setSettled]=useState<{world:unknown;result:Result}|null>(null);
+ const [settledObserved,setSettledObserved]=useState<{world:unknown;result:ObservedResult}|null>(null);
  const [failure,setFailure]=useState<{world:unknown;message:string}|null>(null);
  const [savedView,setSavedView]=useState<FixedOdScenarioView>();
  const saved=savedView?.scenario;
@@ -39,12 +45,13 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
  const latest=useRef({worldVersion,enabled}),flight=useRef<object|null>(null);
  latest.current={worldVersion,enabled};
  const result=settled?.world===worldVersion?settled?.result:null;
+ const observed=settledObserved?.world===worldVersion?settledObserved?.result:null;
  const error=failure?.world===worldVersion?failure?.message:null;
  const stops=busStops.map(stop=>({...stop,id:`bus:${stop.id}`}));
  const stationNames=new Map([...stations,...stops].map(s=>[s.id,s.name]));
  const serviceNames=new Map(services.map(s=>[s.id,s.name]));
  for(const route of busRoutes)serviceNames.set(`bus:${route.id}`,route.name);
- const dirty=()=>{setSettled(null);setFailure(null);};
+ const dirty=()=>{setSettled(null);setSettledObserved(null);setFailure(null);};
  function stationSelector(label:string,value:string,onChange:(value:string)=>void){
   return <label>{label}<select required value={value} onChange={event=>{onChange(event.target.value);dirty();}}>
    <option value="">{stops.length?'地点を選択':'駅を選択'}</option>
@@ -53,6 +60,7 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
   </select></label>;
  }
  const endpointsSelected=stationNames.has(origin)&&stationNames.has(destination)&&origin!==destination;
+ const observedAllowed=endpointsSelected&&!origin.startsWith('bus:')&&!destination.startsWith('bus:')&&!useTransfer;
  const savedOrphan=Boolean(saved&&(!stationNames.has(saved.origin_station_id)||!stationNames.has(saved.destination_station_id)));
  function input():FixedOdScenario|null{
   if(!endpointsSelected)return null;
@@ -91,6 +99,23 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
    if(latest.current.worldVersion===captured&&latest.current.enabled)setFailure({world:captured,message:String(cause)});
   }finally{if(flight.current===lock){flight.current=null;setPending(false);}}
  }
+ async function calculateObserved(){
+  if(!enabled||flight.current||scenarioFlight.current||!observedAllowed)return;
+  const scenario=input();
+  if(!scenario){setFailure({world:worldVersion,message:'人数は0〜10億の整数、代替手段の所要時間は正の値かつ1年以下を入力してください。'});return;}
+  const captured=worldVersion,lock={};flight.current=lock;setPending(true);dirty();
+  try{
+   const response=await invoke<ObservedResult>('preview_observed_fixed_od',{query:{
+    originStationId:scenario.origin_station_id,destinationStationId:scenario.destination_station_id,
+    trips:scenario.trips,alternativeSeconds:scenario.alternative_seconds
+   }});
+   if(latest.current.worldVersion!==captured||!latest.current.enabled)return;
+   if(!response||!['reached','incomplete','no_arrival_within_window','outside_budget'].includes(response.status))throw Error('遅延を含む試算の応答を確認できませんでした。');
+   setSettledObserved({world:captured,result:response});
+  }catch(cause){
+   if(latest.current.worldVersion===captured&&latest.current.enabled)setFailure({world:captured,message:String(cause)});
+  }finally{if(flight.current===lock){flight.current=null;setPending(false);}}
+ }
  return <section className="fixed-od-panel" aria-label="固定ODの需要試算">
   <h4>固定ODの需要試算</h4>
   <p>指定した{stops.length?"2地点":"2駅"}間の仮の移動需要を、現在のダイヤで試算します。実人口・実際の利用者数ではありません。</p>
@@ -116,6 +141,8 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
      </>}
     </fieldset>}
     <button type="submit" disabled={!endpointsSelected}>需要を試算</button>
+    <button type="button" disabled={!observedAllowed} onClick={()=>void calculateObserved()}>運行の遅れを含めて試算</button>
+    <p>遅れを含む試算は、今のゲーム時刻に出発駅へ着いた人を対象に、鉄道だけを30分間再現します。試算方式と結果は保存しません。</p>
     {persistence&&<button type="button" disabled={!endpointsSelected||saved===undefined} onClick={()=>void storeScenario(false)}>この試算条件をワールドに記録</button>}
    </fieldset>
   </form>}
@@ -129,6 +156,19 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
    <dt>利用できる経路なし</dt><dd>{quantity(result.unserved_trips)}人</dd>
    <dt>未確定</dt><dd>{quantity(result.unresolved_trips)}人</dd>
   </dl>:<p role="status">探索上限に達しました。{quantity(result.unresolved_trips)}人は未確定で、利用人数には含めません。</p>)}
+  {observed&&<section aria-label="遅れを含む需要試算結果">
+   <p>今の時刻からの最早到着1経路と、指定した代替手段を比較しています。ダイヤ全体の利用予測ではありません。</p>
+   {observed.status!=='reached'?<p role="status">
+    {observed.status==='no_arrival_within_window'?'30分以内に鉄道で到着できる経路を確認できませんでした。':'運行の再現が試算上限に達しました。'}
+    {observed.potential_trips===null?'需要人数は不明で、配分していません。':`移動需要 ${quantity(observed.unresolved_trips)}人は未確定です。`}
+   </p>:<>
+    {observed.potential_trips===null?<p role="status">移動需要は不明のため、人数は配分していません。</p>:<dl className="fixed-od-results">
+     <dt>この鉄道経路を利用</dt><dd>{quantity(observed.rail_trips)}人</dd>
+     <dt>別の移動手段を利用</dt><dd>{quantity(observed.alternative_trips)}人</dd>
+    </dl>}
+    {observed.itinerary?.arrival_ms!=null&&<p>所要 {quantity((observed.itinerary.arrival_ms-observed.itinerary.ready_ms)/60000)}分（待ち {quantity(observed.itinerary.platform_wait_ms/60000)}分、乗車 {quantity(observed.itinerary.onboard_ms/60000)}分）</p>}
+   </>}
+  </section>}
   {result?.search_complete&&result.rail.length>0&&<ol className="fixed-od-paths" aria-label="利用経路">
    {result.rail.map((path,index)=><li key={index}><strong>{quantity(path.trips)}人</strong> {path.stations.map(id=>stationNames.get(id)??'移動地点').join(' → ')}{path.services.length>0&&<div>{path.services.map(id=>serviceNames.get(id)??'別系統').join(' → ')}</div>}{path.time&&<div>推計: 待ち {quantity(path.time.wait_seconds/60)}分 / 乗車 {quantity(path.time.ride_seconds/60)}分 / 徒歩 {quantity(path.time.walk_seconds/60)}分 / 乗換 {path.time.transfers}回</div>}</li>)}
   </ol>}
