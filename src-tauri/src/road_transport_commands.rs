@@ -140,6 +140,8 @@ pub async fn preview_gameplay_ofm_bus(
     raw_evidence: Option<crate::session::OfmRawInput>,
     tile_binding: Option<crate::session::OfmBindingInput>,
     context_tiles: Option<Vec<CachedOfmBusTile>>,
+    request_stop_targets: Option<bool>,
+    request_auto_stop_suggestions: Option<bool>,
 ) -> Result<crate::session::GameplayBusPathPreview, String> {
     let cached = cached_tiles(raw_evidence, tile_binding, context_tiles)?;
     // Clone the immutable draft inputs/cache under the lock only. Geometry
@@ -149,7 +151,17 @@ pub async fn preview_gameplay_ofm_bus(
         .map_err(|_| "world state unavailable")?
         .clone();
     tauri::async_runtime::spawn_blocking(move || {
-        snapshot.preview_gameplay_ofm_bus(&expected_world_token, route_id, name, path, cached)
+        snapshot.preview_gameplay_ofm_bus_details(
+            &expected_world_token,
+            route_id,
+            name,
+            path,
+            cached,
+            crate::session::GameplayBusPreviewOptions {
+                request_stop_targets: request_stop_targets.unwrap_or(false),
+                request_auto_stop_suggestions: request_auto_stop_suggestions.unwrap_or(false),
+            },
+        )
     })
     .await
     .map_err(|_| "バス経路のプレビューを取得できません。".to_owned())?

@@ -190,6 +190,234 @@ mod tests {
             .unwrap();
     }
     #[test]
+    fn ordinary_closed_bus_uses_one_origin_and_a_real_intermediate_stop_for_one_lap() {
+        use rosenfu_core::ofm_evidence::{
+            BusInteriorStop, BusPathBinding, BusPattern, BusVertex, BusVia, BUS_GRAPH_RULE,
+        };
+        use rosenfu_core::operation::{Timetable, Vehicle};
+
+        let mut editor = WorldEditor::new();
+        editor.rename_company("環状バス".into()).unwrap();
+        let raw = "GowBCg50cmFuc3BvcnRhdGlvbngCKIAgEhMSBAAAAQEYAiIJCcgByAEK6AcAEhMSBAAAAQEYAiIJCbAJyAEKAKAGEhQSBAAAAQEYAiIKCbAJ6AcK5wefBhIWEgQAAAEBGAIiDAmAGYgOEpADANgEABoFY2xhc3MaBm9uZXdheSIHCgVtaW5vciIFCgN5ZXM=";
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .unwrap();
+        let sha = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+        let tile = fixture()["tileBindings"][0].clone();
+        let key = tile["canonical_url"].as_str().unwrap().to_string();
+        let cached = || {
+            vec![(
+                OfmRawInput {
+                    sha256: sha.clone(),
+                    byte_length: bytes.len(),
+                    base64: raw.into(),
+                },
+                OfmBindingInput {
+                    key: key.clone(),
+                    url: key.clone(),
+                    raw_sha256: sha.clone(),
+                    revision: tile["revision"].as_str().unwrap().into(),
+                    z: 14,
+                    x: tile["x"].as_u64().unwrap() as u32,
+                    y: tile["y"].as_u64().unwrap() as u32,
+                    decoder_rule: tile["decoder_rule"].as_str().unwrap().into(),
+                    license: "ODbL-1.0".into(),
+                    attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                },
+            )]
+        };
+        let at = |feature, vertex| BusVertex {
+            feature,
+            line: 0,
+            vertex,
+        };
+        let request = BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            tile_key: key.clone(),
+            tile_raw_sha256: sha.clone(),
+            respect_oneway: true,
+            start: at(0, 0),
+            end: at(0, 0),
+            additional_tiles: vec![],
+            end_tile_key: None,
+            pattern: Some(BusPattern::ClosedOneWay),
+            via: vec![BusVia {
+                id: "first".into(),
+                tile_key: key.clone(),
+                vertex: at(0, 1),
+            }],
+            interior_stops: vec![],
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["pattern"],
+            "closedOneWay"
+        );
+        let token = editor.ofm_world_token().unwrap();
+        let before = editor.snapshot();
+        let history = editor.world_edit_history();
+        let mut no_via = request.clone();
+        no_via.via.clear();
+        let mut wrong_end = request.clone();
+        wrong_end.end = at(1, 1);
+        let mut zero = request.clone();
+        zero.via[0].vertex = request.start;
+        for (candidate, text) in [(no_via, "環状線"), (wrong_end, "環状線"), (zero, "第1区間")]
+        {
+            let error = editor
+                .put_gameplay_ofm_bus(
+                    &token,
+                    "circle".into(),
+                    "町内一周".into(),
+                    candidate,
+                    cached(),
+                )
+                .err()
+                .unwrap();
+            assert!(error.contains(text), "{error}");
+            assert_eq!(editor.snapshot(), before);
+            assert_eq!(editor.world_edit_history().revision, history.revision);
+        }
+
+        let preview = editor
+            .preview_gameplay_ofm_bus_details(
+                &token,
+                "circle".into(),
+                "町内一周".into(),
+                request.clone(),
+                cached(),
+                crate::session::GameplayBusPreviewOptions {
+                    request_stop_targets: true,
+                    request_auto_stop_suggestions: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(preview.points.len(), 4);
+        assert_eq!(preview.points.first(), preview.points.last());
+        assert!(preview.length_m > 0.);
+        assert!(preview.return_path.is_none() && preview.return_unavailable_reason.is_none());
+        assert_eq!(preview.via_point_indices, [1]);
+        let wire = serde_json::to_value(&preview).unwrap();
+        assert!(wire.get("loopFallbackStop").is_some());
+        assert!(wire.get("returnPath").is_none());
+        let fallback = preview.loop_fallback_stop.unwrap();
+        assert_ne!(Some(&fallback.point), preview.points.first());
+        assert_eq!(editor.snapshot(), before);
+
+        let mut manual = request.clone();
+        manual.interior_stops.push(BusInteriorStop {
+            id: "manual".into(),
+            name: "通りの停留所".into(),
+            occurrence_key: preview.stop_occurrence_keys[0].clone(),
+            fraction_q: 500_000,
+        });
+        let manual_show = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "circle".into(),
+                "町内一周".into(),
+                manual.clone(),
+                cached(),
+            )
+            .unwrap();
+        assert!(manual_show.loop_fallback_stop.is_none());
+        let mut alternate = editor.clone();
+        let manual_world = alternate
+            .put_gameplay_ofm_bus(&token, "circle".into(), "町内一周".into(), manual, cached())
+            .unwrap();
+        assert_eq!(manual_world.road_transport.bus_stops.len(), 2);
+        assert!(manual_world
+            .road_transport
+            .bus_stops
+            .iter()
+            .any(|s| s.name == "通りの停留所"));
+        assert!(!manual_world
+            .road_transport
+            .bus_stops
+            .iter()
+            .any(|s| s.id == fallback.stop_id));
+
+        let accepted = editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "circle".into(),
+                "町内一周".into(),
+                request,
+                cached(),
+            )
+            .unwrap();
+        let route = &accepted.road_transport.bus_routes[0];
+        assert_eq!(route.edges.len(), 3);
+        assert_eq!(route.stops.len(), 2);
+        assert_eq!(accepted.road_transport.bus_stops.len(), 2);
+        assert_eq!(route.stops[1].stop_id, fallback.stop_id);
+        let a = &route.stops[0].stop_id;
+        let middle = &route.stops[1].stop_id;
+        let legs = accepted
+            .road_transport
+            .bus_legs(&accepted, "circle")
+            .unwrap();
+        assert_eq!((&legs[0].from_stop_id, &legs[0].to_stop_id), (a, middle));
+        assert_eq!((&legs[1].from_stop_id, &legs[1].to_stop_id), (middle, a));
+        assert!(legs.iter().all(|leg| leg.length_m > 0.));
+        assert!((legs.iter().map(|leg| leg.length_m).sum::<f64>() - preview.length_m).abs() < 1e-9);
+
+        editor
+            .configure_bus_operation(
+                "circle".into(),
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 60.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.2,
+                    length_m: 12.,
+                },
+                30.,
+                1_000,
+                &editor.operation_snapshot().timetable_edit_token,
+            )
+            .unwrap();
+        editor
+            .world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1000, 100)
+            .unwrap();
+        let active = editor.world.operation_save().unwrap();
+        assert_eq!(active.runtime.services[0].legs.len(), 2);
+        for (from, to) in [(a, middle), (middle, a)] {
+            let od = editor
+                .preview_fixed_od(format!("bus:{from}"), format!("bus:{to}"), Some(10.), None)
+                .unwrap();
+            assert!(od.search_complete);
+            assert!((od.rail.iter().map(|p| p.trips).sum::<f64>() - 10.).abs() < 1e-9);
+        }
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("closed-bus-loop.rosenfu");
+        editor.save(&file).unwrap();
+        editor.create_new_world("Other".into()).unwrap();
+        editor.load(&file).unwrap();
+        assert_eq!(editor.snapshot(), accepted);
+        assert_eq!(editor.world.operation_save().unwrap(), active);
+        let runtime = &mut editor.world.operation_mut().unwrap().runtime;
+        let completed = runtime.advance_to(400_000, 100).unwrap();
+        assert_eq!(
+            completed
+                .arrivals
+                .iter()
+                .map(|a| a.station_id.as_str())
+                .collect::<Vec<_>>(),
+            [format!("bus:{middle}"), format!("bus:{a}")]
+        );
+        assert_eq!(completed.arrivals[0].train, completed.arrivals[1].train);
+        assert!(runtime.trains().next().is_none());
+    }
+
+    #[test]
     fn ordinary_open_bus_returns_on_a_different_directed_path_without_minting_stops() {
         use rosenfu_core::ofm_evidence::{BusPathBinding, BusPattern, BusVertex, BUS_GRAPH_RULE};
         use rosenfu_core::operation::{Timetable, Vehicle};
@@ -241,6 +469,7 @@ mod tests {
                 additional_tiles: vec![],
                 end_tile_key: None,
                 pattern: Some(BusPattern::OpenRoundTrip),
+                interior_stops: vec![],
                 via: vec![],
             };
             (binding, cached)
@@ -530,6 +759,7 @@ mod tests {
             additional_tiles: vec![],
             end_tile_key: None,
             pattern: None,
+            interior_stops: vec![],
             via: vec![],
         };
         let before = editor.snapshot();
@@ -839,6 +1069,7 @@ mod tests {
             tile_raw_sha256: all[0].0.sha256.clone(),
             end_tile_key: Some(all[2].1.key.clone()),
             pattern: Some(BusPattern::OpenRoundTrip),
+            interior_stops: vec![],
             via: vec![BusVia {
                 id: "city-centre".into(),
                 tile_key: all[1].1.key.clone(),
@@ -920,9 +1151,64 @@ mod tests {
             preview.points.iter().copied().rev().collect::<Vec<_>>()
         );
         assert_eq!(editor.snapshot(), before);
-        let created = editor
-            .put_gameplay_ofm_bus(&token, "R3".into(), "3セル系統".into(), request, cached())
+        // Auto is an explicit draft choice, not a save mutation or a
+        // replacement of case-specific manually authored stops.
+        let suggestions = |binding: BusPathBinding| {
+            editor
+                .preview_gameplay_ofm_bus_details(
+                    &token,
+                    "R3".into(),
+                    "3セル系統".into(),
+                    binding,
+                    cached(),
+                    GameplayBusPreviewOptions {
+                        request_auto_stop_suggestions: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let auto = suggestions(request.clone());
+        assert_eq!(auto.points, preview.points);
+        assert_eq!(auto.auto_stop_suggestions.len(), 1);
+        assert!(auto.stop_occurrence_keys.is_empty()); // no unnecessary large DTO
+        assert_eq!(
+            auto.auto_stop_suggestions,
+            suggestions(request.clone()).auto_stop_suggestions
+        );
+        assert_eq!(editor.snapshot(), before);
+        let mut with_hand = request.clone();
+        let mut hand = auto.auto_stop_suggestions[0].clone();
+        hand.id = "keep-existing".into();
+        hand.name = "保護する停留所".into();
+        with_hand.interior_stops.push(hand);
+        let existing = suggestions(with_hand);
+        assert_eq!(existing.interior_stops[0].name, "保護する停留所");
+        assert!(existing.auto_stop_suggestions.is_empty());
+        let mut confirmed = request;
+        confirmed.interior_stops = auto.auto_stop_suggestions;
+        let confirmed_preview = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "R3".into(),
+                "3セル系統".into(),
+                confirmed.clone(),
+                cached(),
+            )
             .unwrap();
+        assert_eq!(confirmed_preview.points, preview.points);
+        assert_eq!(confirmed_preview.interior_stops.len(), 1);
+        assert!(confirmed_preview.interior_stops[0].serves_return);
+        // Even when the ideal is a control-point boundary, a proposal is
+        // strictly on a raw atom interior and never on the turn/node itself.
+        assert!(confirmed_preview
+            .points
+            .iter()
+            .all(|point| point != &confirmed_preview.interior_stops[0].point));
+        let created = editor
+            .put_gameplay_ofm_bus(&token, "R3".into(), "3セル系統".into(), confirmed, cached())
+            .unwrap();
+        assert_eq!(created.road_transport.bus_routes[0].stops.len(), 3);
         assert_eq!(created.road_evidence_descriptors.len(), 3);
         assert_eq!(created.road_transport.edges.len(), 4);
         let expected = [
@@ -962,7 +1248,7 @@ mod tests {
                 vec![],
             )
             .unwrap();
-        assert_eq!(replay, preview);
+        assert_eq!(replay, confirmed_preview);
     }
 
     #[test]
@@ -1017,6 +1303,7 @@ mod tests {
             additional_tiles: vec![],
             end_tile_key: None,
             pattern: Some(BusPattern::OpenRoundTrip),
+            interior_stops: vec![],
             via: vec![BusVia {
                 id: "shape".into(),
                 tile_key: key.into(),
@@ -1038,6 +1325,31 @@ mod tests {
         assert_eq!(home.points[0], strict.points[2]);
         assert_eq!(home.points[2], strict.points[0]);
         assert_ne!(home.points[1], strict.points[1]);
+        let targets = editor
+            .preview_gameplay_ofm_bus_details(
+                &token,
+                "B1".into(),
+                "折り返し".into(),
+                proof.clone(),
+                cache(),
+                GameplayBusPreviewOptions {
+                    request_stop_targets: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut detour_stop = proof.clone();
+        detour_stop
+            .interior_stops
+            .push(rosenfu_core::ofm_evidence::BusInteriorStop {
+                id: "on-out".into(),
+                name: "往路の停留所".into(),
+                occurrence_key: targets.stop_occurrence_keys[0].clone(),
+                fraction_q: 500_000,
+            });
+        let only_out = preview(detour_stop);
+        assert!(only_out.return_path.is_some());
+        assert!(!only_out.interior_stops[0].serves_return);
         let mut default = proof;
         default.respect_oneway = false;
         let relaxed = preview(default);
@@ -1045,6 +1357,251 @@ mod tests {
             relaxed.return_path.unwrap().points,
             relaxed.points.into_iter().rev().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn manual_stop_uses_exact_occurrence_preserves_geometry_and_serves_both_or_one() {
+        use rosenfu_core::ofm_evidence::{
+            BusInteriorStop, BusPathBinding, BusPattern, BusVertex, BusVia, BUS_GRAPH_RULE,
+        };
+        use rosenfu_core::operation::{Timetable, Vehicle};
+        let raw="Gj4KDnRyYW5zcG9ydGF0aW9ueAIogCASFxICAAAYAiIPCcgByAEa2AQA2AQA2AQAGgVjbGFzcyIHCgVtaW5vcg==";
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .unwrap();
+        let sha = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+        let tile = fixture()["tileBindings"][0].clone();
+        let key = tile["canonical_url"].as_str().unwrap();
+        let cache = || {
+            vec![(
+                OfmRawInput {
+                    sha256: sha.clone(),
+                    byte_length: bytes.len(),
+                    base64: raw.into(),
+                },
+                OfmBindingInput {
+                    key: key.into(),
+                    url: key.into(),
+                    raw_sha256: sha.clone(),
+                    revision: tile["revision"].as_str().unwrap().into(),
+                    z: 14,
+                    x: tile["x"].as_u64().unwrap() as u32,
+                    y: tile["y"].as_u64().unwrap() as u32,
+                    decoder_rule: tile["decoder_rule"].as_str().unwrap().into(),
+                    license: "ODbL-1.0".into(),
+                    attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                },
+            )]
+        };
+        let vertex = |n| BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: n,
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("停留所の検証".into()).unwrap();
+        let actual = BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            tile_key: key.into(),
+            tile_raw_sha256: sha.clone(),
+            respect_oneway: false,
+            start: vertex(0),
+            end: vertex(2),
+            additional_tiles: vec![],
+            end_tile_key: None,
+            pattern: Some(BusPattern::OpenRoundTrip),
+            via: vec![],
+            interior_stops: vec![],
+        };
+        let preview = |editor: &WorldEditor, p: BusPathBinding, cached| {
+            editor
+                .preview_gameplay_ofm_bus_details(
+                    &editor.ofm_world_token().unwrap(),
+                    "B1".into(),
+                    "市内線".into(),
+                    p,
+                    cached,
+                    GameplayBusPreviewOptions {
+                        request_stop_targets: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let stops = |id: &str, name: &str, target: &str| BusInteriorStop {
+            id: id.into(),
+            name: name.into(),
+            occurrence_key: target.into(),
+            fraction_q: 250_000,
+        };
+        let initial = editor.snapshot();
+        let short_auto = editor
+            .preview_gameplay_ofm_bus_details(
+                &editor.ofm_world_token().unwrap(),
+                "B1".into(),
+                "市内線".into(),
+                actual.clone(),
+                cache(),
+                GameplayBusPreviewOptions {
+                    request_auto_stop_suggestions: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(short_auto.auto_stop_suggestions.is_empty());
+        let baseline = preview(&editor, actual.clone(), cache());
+        assert_eq!(
+            baseline.stop_occurrence_keys.len(),
+            baseline.points.len() - 1
+        );
+        assert!(baseline.interior_stops.is_empty());
+        assert_eq!(editor.snapshot(), initial);
+        let mut simple = actual.clone();
+        simple
+            .interior_stops
+            .push(stops("centre", "中央", &baseline.stop_occurrence_keys[0]));
+        let proposed = preview(&editor, simple.clone(), cache());
+        assert_eq!(proposed.points, baseline.points);
+        assert!(proposed.interior_stops[0].serves_return);
+        let sw = editor
+            .put_gameplay_ofm_bus(
+                &editor.ofm_world_token().unwrap(),
+                "B1".into(),
+                "市内線".into(),
+                simple,
+                cache(),
+            )
+            .unwrap();
+        let id = proposed.interior_stops[0].stop_id.clone();
+        assert!(sw
+            .road_transport
+            .bus_stops
+            .iter()
+            .any(|s| s.id == id && s.position == 0.25));
+        let token = editor.operation_snapshot().timetable_edit_token.clone();
+        editor
+            .configure_bus_operation(
+                "B1".into(),
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 120000,
+                    headway_ms: 120000,
+                },
+                Vehicle {
+                    max_speed_kmh: 60.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.2,
+                    length_m: 12.,
+                },
+                30.,
+                3000,
+                &token,
+            )
+            .unwrap();
+        let operation = editor.world.operation().unwrap();
+        let cfg = operation.bus_configs[0].clone();
+        let full = editor.world.compile_bus_operation(&cfg).unwrap();
+        assert_eq!(full.legs.len(), 4);
+        assert_eq!(
+            full.legs
+                .iter()
+                .filter(|leg| leg.to == format!("bus:{id}"))
+                .count(),
+            2
+        );
+        assert!(full.legs.iter().all(|leg| leg.sections[0].length_m > 0.));
+        let mut runtime = operation.runtime.clone();
+        runtime.set_paused(false);
+        let arrived = runtime.advance_to(119_999, 1000).unwrap();
+        assert_eq!(
+            arrived
+                .arrivals
+                .iter()
+                .filter(|a| a.station_id == format!("bus:{id}"))
+                .count(),
+            2
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("interior.rosenfu");
+        editor.save(&file).unwrap();
+        let mut loaded = WorldEditor::new();
+        loaded.load(&file).unwrap();
+        assert_eq!(loaded.snapshot(), sw);
+        assert_eq!(loaded.world.compile_bus_operation(&cfg).unwrap(), full);
+
+        // Two distinct visits to the same outward atom and physical offset.
+        // Strict endpoint return traverses that location once and must not
+        // silently choose which authored stop to serve.
+        let mut looped = actual;
+        looped.respect_oneway = true;
+        looped.via = vec![
+            BusVia {
+                id: "out-first".into(),
+                tile_key: key.into(),
+                vertex: vertex(1),
+            },
+            BusVia {
+                id: "back-through".into(),
+                tile_key: key.into(),
+                vertex: vertex(0),
+            },
+        ];
+        let loop_preview = preview(&loaded, looped.clone(), vec![]);
+        assert_eq!(loop_preview.points[0], loop_preview.points[2]);
+        assert_ne!(
+            loop_preview.stop_occurrence_keys[0],
+            loop_preview.stop_occurrence_keys[2]
+        );
+        looped.interior_stops = vec![
+            stops("first", "一周目", &loop_preview.stop_occurrence_keys[0]),
+            stops("second", "二周目", &loop_preview.stop_occurrence_keys[2]),
+        ];
+        let loop_stops = preview(&loaded, looped.clone(), vec![]);
+        assert_eq!(loop_stops.interior_stops.len(), 2);
+        assert_eq!(
+            loop_stops.interior_stops[0].point,
+            loop_stops.interior_stops[1].point
+        );
+        assert_ne!(
+            loop_stops.interior_stops[0].stop_id,
+            loop_stops.interior_stops[1].stop_id
+        );
+        assert!(loop_stops.interior_stops.iter().all(|s| !s.serves_return));
+        let saved_loop = loaded
+            .put_gameplay_ofm_bus(
+                &loaded.ofm_world_token().unwrap(),
+                "B1".into(),
+                "市内線".into(),
+                looped.clone(),
+                vec![],
+            )
+            .unwrap();
+
+        let mut removed = looped.clone();
+        removed.via.clear();
+        let now = loaded.ofm_world_token().unwrap();
+        let err = loaded
+            .put_gameplay_ofm_bus(&now, "B1".into(), "市内線".into(), removed, vec![])
+            .err()
+            .unwrap();
+        assert!(err.contains("置き直してください"));
+        assert_eq!(loaded.snapshot(), saved_loop);
+
+        // A different end on the same last leg redraws the route, not either
+        // existing stop's exact atom/control occurrence.
+        looped.end = vertex(3);
+        let changed_preview = preview(&loaded, looped.clone(), vec![]);
+        assert!(changed_preview.points.len() > loop_stops.points.len());
+        assert_eq!(changed_preview.interior_stops, loop_stops.interior_stops);
+        let changed = loaded
+            .put_gameplay_ofm_bus(&now, "B1".into(), "延伸した市内線".into(), looped, vec![])
+            .unwrap();
+        assert!(changed
+            .road_transport
+            .bus_stops
+            .iter()
+            .any(|s| s.id == loop_stops.interior_stops[0].stop_id));
+        assert_eq!(loaded.undo_world_edit(changed).unwrap(), saved_loop);
     }
 
     fn request() -> PlannedAlignment {

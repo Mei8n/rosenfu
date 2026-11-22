@@ -3,7 +3,7 @@ import type {BusAnchor} from './ordinaryBusDraft';
 export type DraftControl={id:string;anchor:BusAnchor;};
 export type BusControlEnd='start'|'end';
 type End=BusControlEnd;
-type Body={controls:readonly DraftControl[];active:End};
+type Body={controls:readonly DraftControl[];active:End;closed?:true};
 type Frame<T>={body:Body;verified?:T};
 type Check={id:number;body:Body;finish:boolean};
 type Refusal={reason:string;leg?:number;attempt:Body};
@@ -18,7 +18,7 @@ const samePoint=(a:BusAnchor,b:BusAnchor)=>a.tile.x===b.tile.x&&a.tile.y===b.til
  a.tile.revision===b.tile.revision&&a.tile.rawSha256===b.tile.rawSha256&&
  ((a.raw.feature===b.raw.feature&&a.raw.line===b.raw.line&&a.raw.vertex===b.raw.vertex)||
   a.point.latitude===b.point.latitude&&a.point.longitude===b.point.longitude);
-const bodyCopy=(b:Body):Body=>({active:b.active,controls:[...b.controls]});
+const bodyCopy=(b:Body):Body=>({...b,controls:[...b.controls]});
 const trail=<T>(state:OrdinaryBusInteraction<T>)=>[...state.past.slice(-(HISTORY_LIMIT-1)),state.frame];
 
 export function emptyBusInteraction<T>(scope:unknown,limit=16):OrdinaryBusInteraction<T>{
@@ -29,6 +29,8 @@ function refuse<T>(s:OrdinaryBusInteraction<T>,body:Body,reason:string,leg?:numb
  return {...s,generation:s.generation+1,check:undefined,finish:undefined,refusal:{reason,leg,attempt:body}};
 }
 function propose<T>(s:OrdinaryBusInteraction<T>,body:Body):OrdinaryBusInteraction<T>{
+ if(body.closed&&(body.controls.length<3||!samePoint(body.controls[0].anchor,body.controls.at(-1)!.anchor)))
+  return refuse(s,body,'環状系統には起点と別の経由点が必要です。');
  if(body.controls.length>s.limit)return refuse(s,body,'経由点が多すぎます。');
  // Duplicate stable ID (history/conflict), or empty next segment, is never submitted.
  if(new Set(body.controls.map(c=>c.id)).size!==body.controls.length||
@@ -65,6 +67,11 @@ export function clickBusControl<T>(s:OrdinaryBusInteraction<T>,pick:DraftControl
  }
  return propose(s,{...body,controls:body.active==='start'?[pick,...controls]:[...controls,pick]});
 }
+export function closeBusCircuit<T>(s:OrdinaryBusInteraction<T>,startHandleId:string,terminalId:string):OrdinaryBusInteraction<T>{
+ const body=s.check?.body??s.frame.body,controls=body.controls;
+ if(s.finish||body.closed||body.active!=='end'||controls.length<2||controls[0].id!==startHandleId)return s;
+ return propose(s,{...body,closed:true,controls:[...controls,{id:terminalId,anchor:controls[0].anchor}]});
+}
 export function selectBusEnd<T>(s:OrdinaryBusInteraction<T>,end:End):OrdinaryBusInteraction<T>{
  const body=s.check?.body??s.frame.body;
  if(body.active===end)return s;
@@ -75,7 +82,8 @@ export function moveBusControl<T>(s:OrdinaryBusInteraction<T>,id:string,anchor:B
  if(s.finish)return s;
  const body=s.check?.body??s.frame.body,prev=body.controls.find(c=>c.id===id);
  if(!prev||samePoint(prev.anchor,anchor))return s;
- return propose(s,{...body,controls:body.controls.map(c=>c.id===id?{id,anchor}:c)});
+ const both=body.closed&&(prev===body.controls[0]||prev===body.controls.at(-1));
+ return propose(s,{...body,controls:body.controls.map((c,i)=>c.id===id||both&&(i===0||i===body.controls.length-1)?{id:c.id,anchor}:c)});
 }
 export function insertBusControl<T>(s:OrdinaryBusInteraction<T>,afterId:string,pick:DraftControl):OrdinaryBusInteraction<T>{
  if(s.finish)return s;
@@ -85,7 +93,9 @@ export function insertBusControl<T>(s:OrdinaryBusInteraction<T>,afterId:string,p
 }
 export function removeBusControl<T>(s:OrdinaryBusInteraction<T>,id:string):OrdinaryBusInteraction<T>{
  if(s.finish)return s;
- const body=s.check?.body??s.frame.body,controls=body.controls.filter(c=>c.id!==id);
+ const body=s.check?.body??s.frame.body;
+ if(body.closed&&(id===body.controls[0].id||id===body.controls.at(-1)?.id))return s;
+ const controls=body.controls.filter(c=>c.id!==id);
  return controls.length===body.controls.length?s:propose(s,{...body,controls});
 }
 export function settleBusValidation<T>(

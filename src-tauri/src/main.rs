@@ -21,8 +21,11 @@ struct EngineSessionInfo {
     ordinary_ofm_bus_enabled: bool,
     ordinary_ofm_bus_rectangle_enabled: bool,
     ordinary_ofm_bus_round_trip_enabled: bool,
+    ordinary_ofm_bus_closed_loop_enabled: bool,
     ordinary_ofm_bus_multiple_enabled: bool,
     ordinary_ofm_bus_waypoints_enabled: bool,
+    ordinary_ofm_bus_interior_stops_enabled: bool,
+    ordinary_ofm_bus_auto_stops_enabled: bool,
     road_tram_enabled: bool,
     bus_operation_enabled: bool,
 }
@@ -38,8 +41,11 @@ fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInf
         ordinary_ofm_bus_enabled: true,
         ordinary_ofm_bus_rectangle_enabled: true,
         ordinary_ofm_bus_round_trip_enabled: true,
+        ordinary_ofm_bus_closed_loop_enabled: true,
         ordinary_ofm_bus_multiple_enabled: true,
         ordinary_ofm_bus_waypoints_enabled: true,
+        ordinary_ofm_bus_interior_stops_enabled: true,
+        ordinary_ofm_bus_auto_stops_enabled: true,
         road_tram_enabled: true,
         bus_operation_enabled: true,
         company_setup_required: editor

@@ -2,9 +2,11 @@
 //! and a pinned rule. Hashes prove byte consistency, not supplier authenticity or coverage.
 //! No network, decompression, world mutation, or implicit repair is performed here.
 mod bus;
+pub(crate) use bus::BUS_STOP_DENOMINATOR;
 pub use bus::{
-    find_gameplay_bus_path, reconstruct_gameplay_bus_path, BusPath, BusPathBinding, BusPattern,
-    BusTileProof, BusVertex, BusVia, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
+    find_gameplay_bus_path, reconstruct_gameplay_bus_path, BusInteriorStop, BusPath,
+    BusPathBinding, BusPattern, BusTileProof, BusVertex, BusVia, BUS_GRAPH_RULE,
+    BUS_RECTANGLE_RULE,
 };
 mod candidates;
 mod path;
@@ -41,6 +43,7 @@ pub enum Error {
     Unsupported,
     InvalidAttribute,
     NoBusLeg(usize),
+    InvalidBusCircuit,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

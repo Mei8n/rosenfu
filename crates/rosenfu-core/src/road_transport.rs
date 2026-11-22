@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod native;
 mod ofm;
+pub use ofm::GameplayBusInteriorStopView;
 mod pilot;
 pub use native::{
     import_native_pilot, native_road_regions, NativeRoadRegion, PilotBusEdit, PilotBusWaypoint,
@@ -122,7 +123,10 @@ pub enum RoadTransportError {
     MissingReference,
     DisconnectedPath,
     MissingReturnPath,
+    InvalidBusCircuit,
     UnreachableBusLeg(usize),
+    MissingBusStopOccurrence,
+    AmbiguousBusStopOccurrence,
     AccessUnknown,
     AccessForbidden,
     WrongOwner,
@@ -506,6 +510,16 @@ impl RoadTransport {
             .iter()
             .find(|r| r.id == route_id)
             .ok_or(MissingReference)?;
+        if let Some(proof) = world
+            .ofm_gameplay_bus_routes
+            .get(route_id)
+            .filter(|proof| proof.pattern == Some(crate::ofm_evidence::BusPattern::ClosedOneWay))
+        {
+            if !std::ptr::eq(self, &world.road_transport) && self != &world.road_transport {
+                return Err(StaleSnapshot);
+            }
+            return world.gameplay_bus_closed_legs(route_id, proof);
+        }
         let edges = indexed(&self.edges, |e| &e.id)?;
         let stops = indexed(&self.bus_stops, |s| &s.id)?;
         route

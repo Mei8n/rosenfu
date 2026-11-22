@@ -1,4 +1,5 @@
 use super::*;
+use rosenfu_core::ofm_evidence::BusPattern;
 use rosenfu_core::road_transport::{
     import_native_pilot, PilotBusEdit, PilotRoadMode, RoadTransport,
 };
@@ -9,6 +10,7 @@ fn road_path_help(error: rosenfu_core::road_transport::RoadTransportError) -> St
         DisconnectedPath => {
             "選んだ向きでつながる経路がありません。道路の向きと起点・終点を選び直してください。"
         }
+        InvalidBusCircuit => "環状線は同じ出発点に戻し、別の経由点を1つ以上指定してください。",
         MissingReturnPath => {
             "選んだ範囲の道路に復路がありません。終点か一方通行の設定を見直してください。"
         }
@@ -17,6 +19,12 @@ fn road_path_help(error: rosenfu_core::road_transport::RoadTransportError) -> St
                 "第{}区間がつながりません。経由点を選び直してください。",
                 index + 1
             )
+        }
+        MissingBusStopOccurrence => {
+            "この停留所は変更後の経路上にありません。停留所を置き直してください。"
+        }
+        AmbiguousBusStopOccurrence => {
+            "同じ道路を通る位置が重なっています。停留所を置く通過を指定してください。"
         }
         InvalidStopOrder => "進行方向に沿って、乗車位置より先に降車位置を置いてください。",
         AccessUnknown | AccessForbidden => {
@@ -43,6 +51,20 @@ pub struct GameplayBusPathPreview {
     pub return_path: Option<GameplayBusReturnPreview>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_unavailable_reason: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stop_occurrence_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub interior_stops: Vec<rosenfu_core::road_transport::GameplayBusInteriorStopView>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auto_stop_suggestions: Vec<rosenfu_core::ofm_evidence::BusInteriorStop>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_fallback_stop: Option<rosenfu_core::road_transport::GameplayBusInteriorStopView>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GameplayBusPreviewOptions {
+    pub request_stop_targets: bool,
+    pub request_auto_stop_suggestions: bool,
 }
 
 #[derive(Debug, serde::Serialize, PartialEq)]
@@ -179,6 +201,7 @@ impl WorldEditor {
         Ok(self.snapshot())
     }
 
+    #[cfg(test)]
     pub fn preview_gameplay_ofm_bus(
         &self,
         expected_world_token: &str,
@@ -187,9 +210,30 @@ impl WorldEditor {
         path: rosenfu_core::ofm_evidence::BusPathBinding,
         cached: Vec<(OfmRawInput, OfmBindingInput)>,
     ) -> Result<GameplayBusPathPreview, String> {
+        self.preview_gameplay_ofm_bus_details(
+            expected_world_token,
+            route_id,
+            name,
+            path,
+            cached,
+            GameplayBusPreviewOptions::default(),
+        )
+    }
+
+    pub fn preview_gameplay_ofm_bus_details(
+        &self,
+        expected_world_token: &str,
+        route_id: String,
+        name: String,
+        path: rosenfu_core::ofm_evidence::BusPathBinding,
+        cached: Vec<(OfmRawInput, OfmBindingInput)>,
+        options: GameplayBusPreviewOptions,
+    ) -> Result<GameplayBusPathPreview, String> {
         // A partial outward preview must not permit a partial round-trip commit.
         let mut outward = path.clone();
-        outward.pattern = None;
+        if path.pattern == Some(BusPattern::OpenRoundTrip) {
+            outward.pattern = None;
+        }
         let world = match self.gameplay_ofm_bus_candidate(
             expected_world_token,
             route_id.clone(),
@@ -206,6 +250,10 @@ impl WorldEditor {
                     via_point_indices: vec![],
                     return_path: None,
                     return_unavailable_reason: None,
+                    stop_occurrence_keys: vec![],
+                    interior_stops: vec![],
+                    auto_stop_suggestions: vec![],
+                    loop_fallback_stop: None,
                 })
             }
             Err(other) => return Err(other.message()),
@@ -231,50 +279,78 @@ impl WorldEditor {
             points.extend(edge.geometry.iter().copied());
         }
         points.dedup();
-        let (return_path, return_unavailable_reason) = if path.pattern.is_some() {
-            match draft
-                .gameplay_bus_return_path(&outward)
-                .map_err(road_path_help)?
-            {
-                Some(back) if return_in_edit_extent(&back) => (
-                    Some(GameplayBusReturnPreview {
-                        points: back
-                            .points
-                            .iter()
-                            .map(|p| GeoPoint {
-                                latitude: p[1],
-                                longitude: p[0],
-                            })
-                            .collect(),
-                        length_m: back.length_m,
-                    }),
-                    None,
-                ),
-                Some(_) => (
-                    None,
-                    Some("復路が編集範囲の外へ出るため確定できません。".into()),
-                ),
-                None => (
-                    None,
-                    Some(road_path_help(
-                        rosenfu_core::road_transport::RoadTransportError::MissingReturnPath,
-                    )),
-                ),
-            }
-        } else {
-            (None, None)
-        };
-        let via_point_indices = if outward.via.is_empty() {
+        let mut verified_return = None;
+        let (return_path, return_unavailable_reason) =
+            if path.pattern == Some(BusPattern::OpenRoundTrip) {
+                match draft
+                    .gameplay_bus_return_path(&outward)
+                    .map_err(road_path_help)?
+                {
+                    Some(back) if return_in_edit_extent(&back) => {
+                        let preview = GameplayBusReturnPreview {
+                            points: back
+                                .points
+                                .iter()
+                                .map(|p| GeoPoint {
+                                    latitude: p[1],
+                                    longitude: p[0],
+                                })
+                                .collect(),
+                            length_m: back.length_m,
+                        };
+                        verified_return = Some(back);
+                        (Some(preview), None)
+                    }
+                    Some(_) => (
+                        None,
+                        Some("復路が編集範囲の外へ出るため確定できません。".into()),
+                    ),
+                    None => (
+                        None,
+                        Some(road_path_help(
+                            rosenfu_core::road_transport::RoadTransportError::MissingReturnPath,
+                        )),
+                    ),
+                }
+            } else {
+                (None, None)
+            };
+        let (via_point_indices, stop_occurrence_keys) =
+            if outward.via.is_empty() && !options.request_stop_targets {
+                (vec![], vec![])
+            } else {
+                let selected = rosenfu_core::ofm_evidence::reconstruct_gameplay_bus_path(
+                    &draft.runtime_road_evidence,
+                    &outward,
+                )
+                .map_err(|_| "経由点の位置を取得できません。")?
+                .ok_or("経由点の位置を取得できません。")?;
+                let keys = if options.request_stop_targets {
+                    let keys = selected.stop_occurrence_keys();
+                    if keys.len() + 1 != points.len() {
+                        return Err("停留所の候補を確認できません。".into());
+                    }
+                    keys
+                } else {
+                    vec![]
+                };
+                (selected.via_point_indices, keys)
+            };
+        let interior_stops = if path.interior_stops.is_empty() {
             vec![]
         } else {
-            rosenfu_core::ofm_evidence::reconstruct_gameplay_bus_path(
-                &draft.runtime_road_evidence,
-                &outward,
-            )
-            .map_err(|_| "経由点の位置を取得できません。")?
-            .ok_or("経由点の位置を取得できません。")?
-            .via_point_indices
+            draft
+                .gameplay_bus_interior_stop_views(&route_id, &path, verified_return.as_deref())
+                .map_err(road_path_help)?
         };
+        let auto_stop_suggestions =
+            if options.request_auto_stop_suggestions && return_unavailable_reason.is_none() {
+                draft
+                    .gameplay_bus_auto_stop_suggestions(&outward)
+                    .map_err(road_path_help)?
+            } else {
+                vec![]
+            };
         Ok(GameplayBusPathPreview {
             points,
             length_m: legs.iter().map(|leg| leg.length_m).sum(),
@@ -282,6 +358,12 @@ impl WorldEditor {
             via_point_indices,
             return_path,
             return_unavailable_reason,
+            stop_occurrence_keys,
+            interior_stops,
+            auto_stop_suggestions,
+            loop_fallback_stop: draft
+                .gameplay_bus_loop_fallback_view(&route_id, &path)
+                .map_err(road_path_help)?,
         })
     }
 
@@ -322,7 +404,7 @@ impl WorldEditor {
             .snapshot()
             .ofm_gameplay_bus_routes
             .get(&route_id)
-            .filter(|p| p.pattern.is_some())
+            .filter(|p| p.pattern == Some(BusPattern::OpenRoundTrip))
         {
             if world
                 .snapshot()

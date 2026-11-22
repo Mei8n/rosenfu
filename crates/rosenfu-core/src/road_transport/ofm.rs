@@ -1,5 +1,8 @@
 use super::*;
-use crate::ofm_evidence::{BusPath, BusPathBinding, BusPattern, MAX_PINNED_BINDINGS};
+use crate::ofm_evidence::{
+    raw_sha256, BusInteriorStop, BusPath, BusPathBinding, BusPattern, BUS_STOP_DENOMINATOR,
+    MAX_PINNED_BINDINGS,
+};
 use crate::world::InfrastructureLevel;
 
 const OFM_SOURCE: &str = "openfreemap_gameplay_bus";
@@ -23,8 +26,329 @@ fn merge<T: PartialEq>(
     }
 }
 
+const MAX_INTERIOR_STOPS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct StopPosition {
+    atom: usize,
+    fraction_q: u32,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedStop<'a> {
+    data: &'a crate::ofm_evidence::BusInteriorStop,
+    outward: StopPosition,
+    back: Option<StopPosition>,
+}
+
+fn interior_stop_id(route_id: &str, local_id: &str) -> String {
+    let input = format!("ofm-bus-interior-stop-v1\0{route_id}\0{local_id}");
+    format!("ofm-bus:stop:{}", raw_sha256(input.as_bytes()))
+}
+
+fn resolve_interior_stops<'a>(
+    binding: &'a BusPathBinding,
+    outward: &BusPath,
+    returned: Option<&BusPath>,
+) -> Result<Vec<ResolvedStop<'a>>, RoadTransportError> {
+    if binding.interior_stops.is_empty() {
+        return Ok(vec![]);
+    }
+    if binding.interior_stops.len() > MAX_INTERIOR_STOPS {
+        return Err(InvalidData);
+    }
+    let keys = outward.stop_occurrence_keys();
+    if keys.len() != outward.steps.len() {
+        return Err(InvalidData);
+    }
+    let mut occurrences = BTreeMap::new();
+    for (index, key) in keys.into_iter().enumerate() {
+        if occurrences.insert(key, index).is_some() {
+            return Err(AmbiguousBusStopOccurrence);
+        }
+    }
+    let mut reverse_atoms: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    if let Some(returned) = returned {
+        for i in 0..returned.steps.len() {
+            reverse_atoms
+                .entry(returned.physical_atom_id(i).ok_or(InvalidData)?)
+                .or_default()
+                .push(i);
+        }
+    }
+    let mut ids = BTreeSet::new();
+    let mut positions = BTreeSet::new();
+    let mut stops = Vec::with_capacity(binding.interior_stops.len());
+    for data in &binding.interior_stops {
+        if data.id.is_empty()
+            || data.id.len() > 80
+            || !data
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || !ids.insert(data.id.as_str())
+            || !label(&data.name)
+            || !(1..BUS_STOP_DENOMINATOR).contains(&data.fraction_q)
+        {
+            return Err(InvalidData);
+        }
+        let atom = *occurrences
+            .get(&data.occurrence_key)
+            .ok_or(MissingBusStopOccurrence)?;
+        let position = StopPosition {
+            atom,
+            fraction_q: data.fraction_q,
+        };
+        if !positions.insert(position) {
+            return Err(InvalidStopOrder);
+        }
+        let back = if let Some(returned) = returned {
+            let key = outward.physical_atom_id(atom).ok_or(InvalidData)?;
+            let candidates = reverse_atoms.get(&key).map_or(&[][..], Vec::as_slice);
+            let (from, to) = outward.control_pair(atom);
+            let reversed = (
+                BusPath::on_return_control(to),
+                BusPath::on_return_control(from),
+            );
+            let mut matching = candidates
+                .iter()
+                .copied()
+                .filter(|&i| returned.control_pair(i) == reversed);
+            let first = matching.next();
+            let selected = if first.is_some() && matching.next().is_none() {
+                first
+            } else if candidates.len() == 1 {
+                candidates.first().copied()
+            } else {
+                None
+            };
+            selected.map(|index| {
+                let outward_step = outward.steps[atom];
+                let return_step = returned.steps[index];
+                let same =
+                    (outward_step.from < outward_step.to) == (return_step.from < return_step.to);
+                StopPosition {
+                    atom: index,
+                    fraction_q: if same {
+                        data.fraction_q
+                    } else {
+                        BUS_STOP_DENOMINATOR - data.fraction_q
+                    },
+                }
+            })
+        } else {
+            None
+        };
+        stops.push(ResolvedStop {
+            data,
+            outward: position,
+            back,
+        });
+    }
+    let mut counts = BTreeMap::new();
+    for p in stops.iter().filter_map(|s| s.back) {
+        *counts.entry(p).or_insert(0) += 1;
+    }
+    for s in &mut stops {
+        // Two authored outward occurrences must not silently become the same
+        // return stop occurrence. Neither is announced on the ambiguous leg.
+        if s.back.is_some_and(|p| counts[&p] > 1) {
+            s.back = None;
+        }
+    }
+    stops.sort_by_key(|s| s.outward);
+    Ok(stops)
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameplayBusInteriorStopView {
+    pub id: String,
+    pub stop_id: String,
+    pub name: String,
+    pub point: GeoPoint,
+    pub serves_return: bool,
+}
+
+impl BusPath {
+    fn stop_point(&self, p: StopPosition) -> Result<GeoPoint, RoadTransportError> {
+        let [a, b] = self.points.get(p.atom..=p.atom + 1).ok_or(InvalidData)? else {
+            return Err(InvalidData);
+        };
+        let q = f64::from(p.fraction_q) / f64::from(BUS_STOP_DENOMINATOR);
+        Ok(GeoPoint {
+            longitude: a[0] + (b[0] - a[0]) * q,
+            latitude: a[1] + (b[1] - a[1]) * q,
+        })
+    }
+}
+
+const AUTO_BOARDING_GAP_UM: u128 = 2_000_000_000;
+const AUTO_MARGIN_UM: u128 = 5_000_000;
+
+fn auto_stop_suggestions(
+    binding: &BusPathBinding,
+    path: &BusPath,
+) -> Result<Vec<BusInteriorStop>, RoadTransportError> {
+    let placed = resolve_interior_stops(binding, path, None)?;
+    let capacity = MAX_INTERIOR_STOPS.saturating_sub(placed.len());
+    if capacity == 0 || path.steps.is_empty() {
+        return Ok(vec![]);
+    }
+    if path.steps.len() != path.atom_operation_micrometres.len() {
+        return Err(InvalidData);
+    }
+    let mut offset = Vec::with_capacity(path.steps.len() + 1);
+    offset.push(0_u128);
+    for &um in &path.atom_operation_micrometres {
+        offset.push(offset.last().ok_or(InvalidData)? + u128::from(um));
+    }
+    let total = *offset.last().ok_or(InvalidData)?;
+    let mut fixed = vec![0];
+    let mut physical_seen = BTreeSet::new();
+    let mut ids = BTreeSet::new();
+    let physical_position = |atom: usize, q: u32| -> Result<_, RoadTransportError> {
+        let step = path.steps.get(atom).ok_or(InvalidData)?;
+        let direction_agnostic_q = if step.from < step.to {
+            q
+        } else {
+            BUS_STOP_DENOMINATOR - q
+        };
+        Ok((
+            path.physical_atom_id(atom).ok_or(InvalidData)?,
+            direction_agnostic_q,
+        ))
+    };
+    for stop in placed {
+        let StopPosition { atom, fraction_q } = stop.outward;
+        let base = offset[atom]
+            + u128::from(path.atom_operation_micrometres[atom]) * u128::from(fraction_q)
+                / u128::from(BUS_STOP_DENOMINATOR);
+        fixed.push(base);
+        physical_seen.insert(physical_position(atom, fraction_q)?);
+        ids.insert(stop.data.id.as_str());
+    }
+    fixed.push(total);
+    let count = |gap: u128, threshold: u128| gap.saturating_sub(1) / threshold;
+    let requested: u128 = fixed
+        .windows(2)
+        .map(|p| count(p[1].saturating_sub(p[0]), AUTO_BOARDING_GAP_UM))
+        .sum();
+    if requested == 0 {
+        return Ok(vec![]);
+    }
+    // Preserve all hand positions. On exceptionally long routes, widen the
+    // target uniformly rather than truncate suggestions at one end.
+    let threshold = if requested > capacity as u128 {
+        AUTO_BOARDING_GAP_UM.max(total / (capacity as u128 + 1) + 1)
+    } else {
+        AUTO_BOARDING_GAP_UM
+    };
+    let keys = path.stop_occurrence_keys();
+    if keys.len() != path.steps.len() {
+        return Err(InvalidData);
+    }
+    let mut answer = vec![];
+    for gap in fixed.windows(2) {
+        let [a, b] = [gap[0], gap[1]];
+        let n = count(b.saturating_sub(a), threshold);
+        for i in 1..=n {
+            let target = a + (b - a) * i / (n + 1);
+            // Exact vertex ideals choose the following atom's interior,
+            // never a node/terminus/turn itself. Margin is limited by length.
+            let atom = offset.partition_point(|&o| o <= target).saturating_sub(1);
+            let Some(&length) = path.atom_operation_micrometres.get(atom) else {
+                continue;
+            };
+            let length = u128::from(length);
+            if length < 4 {
+                continue;
+            }
+            let margin = AUTO_MARGIN_UM.min(length / 4);
+            let q = ((target - offset[atom]).clamp(margin, length - margin)
+                * u128::from(BUS_STOP_DENOMINATOR)
+                + length / 2)
+                / length;
+            let q = (q as u32).clamp(1, BUS_STOP_DENOMINATOR - 1);
+            let placed = offset[atom] + length * u128::from(q) / u128::from(BUS_STOP_DENOMINATOR);
+            if placed <= a || placed >= b || !physical_seen.insert(physical_position(atom, q)?) {
+                continue;
+            }
+            let key = &keys[atom];
+            let identity = format!("ofm-bus-auto-passenger-stop-v1\0{key}\0{q}");
+            let id = format!("auto_{}", raw_sha256(identity.as_bytes()));
+            if ids.contains(id.as_str()) {
+                continue;
+            }
+            answer.push(BusInteriorStop {
+                id,
+                name: format!("停留所{}", answer.len() + 1),
+                occurrence_key: key.clone(),
+                fraction_q: q,
+            });
+        }
+    }
+    if answer.len() > capacity {
+        return Err(InvalidData);
+    }
+    Ok(answer)
+}
+
+/// An unsplit circuit needs a real interior boarding point. Place it near
+/// half the measured lap, on an exact route atom (never on a nearby road).
+fn loop_fallback(
+    binding: &BusPathBinding,
+    path: &BusPath,
+) -> Result<Option<StopPosition>, RoadTransportError> {
+    if binding.pattern != Some(BusPattern::ClosedOneWay) || !binding.interior_stops.is_empty() {
+        return Ok(None);
+    }
+    let total: u128 = path
+        .atom_operation_micrometres
+        .iter()
+        .map(|&n| u128::from(n))
+        .sum();
+    let target = total / 2;
+    let mut offset = 0;
+    for (atom, &length) in path.atom_operation_micrometres.iter().enumerate() {
+        let length = u128::from(length);
+        let end = offset + length;
+        if target < end && length > 0 {
+            let den = u128::from(BUS_STOP_DENOMINATOR);
+            let q = ((target - offset) * den + length / 2) / length;
+            return Ok(Some(StopPosition {
+                atom,
+                fraction_q: (q as u32).clamp(1, BUS_STOP_DENOMINATOR - 1),
+            }));
+        }
+        offset = end;
+    }
+    Err(InvalidStopOrder)
+}
+
+fn loop_fallback_id(route_id: &str) -> String {
+    format!("ofm-bus:{route_id}:環状中間")
+}
+
+fn closed_legs(
+    path: &BusPath,
+    route_id: &str,
+    binding: &BusPathBinding,
+) -> Result<Vec<BusLeg>, RoadTransportError> {
+    let mut middle: Vec<_> = resolve_interior_stops(binding, path, None)?
+        .iter()
+        .map(|s| (s.outward, interior_stop_id(route_id, &s.data.id)))
+        .collect();
+    if let Some(fallback) = loop_fallback(binding, path)? {
+        middle.push((fallback, loop_fallback_id(route_id)));
+    }
+    let seam_stop = format!("ofm-bus:{route_id}:起点");
+    metric_legs(path, &seam_stop, &seam_stop, middle)
+}
+
 fn project_route(
     path: &BusPath,
+    binding: &BusPathBinding,
     route: &BusRoute,
     nodes: &mut BTreeMap<String, RoadNode>,
     edges: &mut BTreeMap<String, RoadEdge>,
@@ -86,20 +410,48 @@ fn project_route(
         ids.push(id);
     }
     let mut occurrences = vec![];
-    for (name, edge_index, position) in [("起点", 0, 0.), ("終点", ids.len() - 1, 1.)] {
-        let id = format!("ofm-bus:{}:{name}", route.id);
+    let mut add = |id: String, name: String, index: usize, fraction_q: u32| {
         stops.push(BusStop {
             id: id.clone(),
             owner: route.owner,
-            name: name.into(),
-            edge_id: ids[edge_index].clone(),
-            position,
+            name,
+            edge_id: ids[index].clone(),
+            position: f64::from(fraction_q) / f64::from(BUS_STOP_DENOMINATOR),
             location_kind: BusStopLocationKind::PlayerCreated,
         });
         occurrences.push(BusStopOccurrence {
             stop_id: id,
-            edge_index,
+            edge_index: index,
         });
+    };
+    add(format!("ofm-bus:{}:起点", route.id), "起点".into(), 0, 0);
+    for stop in resolve_interior_stops(binding, path, None)? {
+        add(
+            interior_stop_id(&route.id, &stop.data.id),
+            stop.data.name.clone(),
+            stop.outward.atom,
+            stop.outward.fraction_q,
+        );
+    }
+    if binding.pattern == Some(BusPattern::ClosedOneWay) {
+        if let Some(p) = loop_fallback(binding, path)? {
+            add(
+                loop_fallback_id(&route.id),
+                "中間停留所".into(),
+                p.atom,
+                p.fraction_q,
+            );
+        }
+        // The lap closes at the first logical stop, not a second BusStop.
+        // Compile both positive legs now as well as during operation restore.
+        closed_legs(path, &route.id, binding)?;
+    } else {
+        add(
+            format!("ofm-bus:{}:終点", route.id),
+            "終点".into(),
+            ids.len() - 1,
+            BUS_STOP_DENOMINATOR,
+        );
     }
     Ok(BusRoute {
         id: route.id.clone(),
@@ -110,9 +462,67 @@ fn project_route(
     })
 }
 
+fn metric_legs(
+    path: &BusPath,
+    from: &str,
+    to: &str,
+    middle: Vec<(StopPosition, String)>,
+) -> Result<Vec<BusLeg>, RoadTransportError> {
+    if path.steps.is_empty() || path.steps.len() != path.atom_operation_micrometres.len() {
+        return Err(InvalidData);
+    }
+    let mut points = vec![(
+        StopPosition {
+            atom: 0,
+            fraction_q: 0,
+        },
+        from.to_owned(),
+    )];
+    points.extend(middle);
+    points.push((
+        StopPosition {
+            atom: path.steps.len() - 1,
+            fraction_q: BUS_STOP_DENOMINATOR,
+        },
+        to.to_owned(),
+    ));
+    let mut cumulative = vec![0u128];
+    for &um in &path.atom_operation_micrometres {
+        cumulative.push(cumulative.last().ok_or(InvalidData)? + u128::from(um));
+    }
+    let mm = |p: StopPosition| {
+        let um = cumulative[p.atom]
+            + u128::from(path.atom_operation_micrometres[p.atom]) * u128::from(p.fraction_q)
+                / u128::from(BUS_STOP_DENOMINATOR);
+        (um + 500) / 1000
+    };
+    points
+        .windows(2)
+        .map(|w| {
+            let [(p, a), (q, b)] = w else {
+                return Err(InvalidData);
+            };
+            let len = mm(*q)
+                .checked_sub(mm(*p))
+                .filter(|&n| n > 0)
+                .ok_or(InvalidStopOrder)?;
+            let traversed_edges = (p.atom..=q.atom)
+                .map(|i| path.source_atom_id(i).ok_or(InvalidData))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(BusLeg {
+                traversed_edges,
+                from_stop_id: a.clone(),
+                to_stop_id: b.clone(),
+                length_m: len as f64 / 1000.,
+            })
+        })
+        .collect()
+}
+
 fn outward_evidence_error(error: crate::ofm_evidence::Error) -> RoadTransportError {
     match error {
         crate::ofm_evidence::Error::NoBusLeg(index) => UnreachableBusLeg(index),
+        crate::ofm_evidence::Error::InvalidBusCircuit => InvalidBusCircuit,
         _ => StaleSnapshot,
     }
 }
@@ -128,7 +538,11 @@ fn project_world_routes(
     // requesting many long proofs, and aggregate materialized occurrences.
     let mut total_bindings = 0usize;
     for proof in bindings.values() {
-        let directions = if proof.pattern.is_some() { 2 } else { 1 };
+        let directions = if proof.pattern == Some(BusPattern::OpenRoundTrip) {
+            2
+        } else {
+            1
+        };
         total_bindings = total_bindings
             .checked_add(directions * proof.tile_keys().map_err(|_| InvalidData)?.len())
             .ok_or(InvalidData)?;
@@ -157,7 +571,7 @@ fn project_world_routes(
             return Err(InvalidData);
         }
         routes.push(project_route(
-            &path, route, &mut nodes, &mut edges, &mut stops,
+            &path, binding, route, &mut nodes, &mut edges, &mut stops,
         )?);
     }
     Ok(RoadTransport {
@@ -236,10 +650,122 @@ impl RoadTransport {
 }
 
 impl WorldDraft {
+    /// Generate addressed candidate stops in existing manual gaps. This is
+    /// read only; the ordinary route Confirm is the only persistence path.
+    pub fn gameplay_bus_auto_stop_suggestions(
+        &self,
+        binding: &BusPathBinding,
+    ) -> Result<Vec<BusInteriorStop>, RoadTransportError> {
+        let path = self
+            .runtime_road_evidence
+            .stored_gameplay_bus_path(binding)
+            .map_err(outward_evidence_error)?
+            .ok_or(DisconnectedPath)?;
+        auto_stop_suggestions(binding, &path)
+    }
+    pub fn gameplay_bus_interior_stop_views(
+        &self,
+        route_id: &str,
+        binding: &BusPathBinding,
+        returned: Option<&BusPath>,
+    ) -> Result<Vec<GameplayBusInteriorStopView>, RoadTransportError> {
+        let outward = self
+            .runtime_road_evidence
+            .stored_gameplay_bus_path(binding)
+            .map_err(outward_evidence_error)?
+            .ok_or(DisconnectedPath)?;
+        resolve_interior_stops(binding, &outward, returned)?
+            .into_iter()
+            .map(|stop| {
+                Ok(GameplayBusInteriorStopView {
+                    id: stop.data.id.clone(),
+                    stop_id: interior_stop_id(route_id, &stop.data.id),
+                    name: stop.data.name.clone(),
+                    point: outward.stop_point(stop.outward)?,
+                    serves_return: stop.back.is_some(),
+                })
+            })
+            .collect()
+    }
+
+    pub(super) fn gameplay_bus_closed_legs(
+        &self,
+        route_id: &str,
+        binding: &BusPathBinding,
+    ) -> Result<Vec<BusLeg>, RoadTransportError> {
+        let path = self
+            .runtime_road_evidence
+            .stored_gameplay_bus_path(binding)
+            .map_err(outward_evidence_error)?
+            .ok_or(DisconnectedPath)?;
+        closed_legs(&path, route_id, binding)
+    }
+
+    pub fn gameplay_bus_loop_fallback_view(
+        &self,
+        route_id: &str,
+        binding: &BusPathBinding,
+    ) -> Result<Option<GameplayBusInteriorStopView>, RoadTransportError> {
+        if binding.pattern != Some(BusPattern::ClosedOneWay) || !binding.interior_stops.is_empty() {
+            return Ok(None);
+        }
+        let path = self
+            .runtime_road_evidence
+            .stored_gameplay_bus_path(binding)
+            .map_err(outward_evidence_error)?
+            .ok_or(DisconnectedPath)?;
+        loop_fallback(binding, &path)?
+            .map(|p| {
+                Ok(GameplayBusInteriorStopView {
+                    id: "loop_fallback".into(),
+                    stop_id: loop_fallback_id(route_id),
+                    name: "中間停留所".into(),
+                    point: path.stop_point(p)?,
+                    serves_return: false,
+                })
+            })
+            .transpose()
+    }
+
+    /// Deterministic native outbound/return legs using the same authored stop
+    /// IDs as the existing RoadTransport projection and OD manager.
+    pub(crate) fn gameplay_bus_roundtrip_legs(
+        &self,
+        route_id: &str,
+        binding: &BusPathBinding,
+    ) -> Result<Vec<BusLeg>, RoadTransportError> {
+        let outward = self
+            .runtime_road_evidence
+            .stored_gameplay_bus_path(binding)
+            .map_err(outward_evidence_error)?
+            .ok_or(DisconnectedPath)?;
+        let returned = self
+            .checked_gameplay_bus_return(&outward)?
+            .ok_or(MissingReturnPath)?;
+        let stops = resolve_interior_stops(binding, &outward, Some(&returned))?;
+        let a = format!("ofm-bus:{route_id}:起点");
+        let z = format!("ofm-bus:{route_id}:終点");
+        let mut back: Vec<_> = stops
+            .iter()
+            .filter_map(|s| s.back.map(|p| (p, interior_stop_id(route_id, &s.data.id))))
+            .collect();
+        back.sort_by_key(|(p, _)| *p);
+        let forward = stops
+            .iter()
+            .map(|s| (s.outward, interior_stop_id(route_id, &s.data.id)))
+            .collect();
+        let mut legs = metric_legs(&outward, &a, &z, forward)?;
+        legs.extend(metric_legs(&returned, &z, &a, back)?);
+        Ok(legs)
+    }
+
     pub fn gameplay_bus_return_path(
         &self,
         request: &BusPathBinding,
     ) -> Result<Option<std::sync::Arc<BusPath>>, RoadTransportError> {
+        if request.pattern == Some(BusPattern::ClosedOneWay) {
+            return Ok(None);
+        }
         let outbound = self
             .runtime_road_evidence
             .stored_gameplay_bus_path(request)

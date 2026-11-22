@@ -1590,6 +1590,7 @@ fn bus_rectangle_query(tiles: &[TileBinding], end: BusVertex, oneway: bool) -> B
             .collect(),
         end_tile_key: Some(tiles.last().unwrap().canonical_url.clone()),
         pattern: None,
+        interior_stops: vec![],
         via: vec![],
         respect_oneway: oneway,
         start: bus_vertex(0, 0),

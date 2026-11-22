@@ -33,6 +33,7 @@ pub struct BusVertex {
 #[serde(rename_all = "camelCase")]
 pub enum BusPattern {
     OpenRoundTrip,
+    ClosedOneWay,
 }
 
 /// Authored geometry control. An intermediate path vertex is not a passenger
@@ -44,6 +45,17 @@ pub struct BusVia {
     pub tile_key: String,
     pub vertex: BusVertex,
 }
+
+/// Manual passenger stop on one already resolved outward route occurrence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BusInteriorStop {
+    pub id: String,
+    pub name: String,
+    pub occurrence_key: String,
+    pub fraction_q: u32,
+}
+pub(crate) const BUS_STOP_DENOMINATOR: u32 = 1_000_000;
 
 /// A reproducible request, not a proof or an independently trusted saved route.
 /// Call the solver again against the matching verified tile to reconstruct.
@@ -64,6 +76,8 @@ pub struct BusPathBinding {
     pub pattern: Option<BusPattern>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub via: Vec<BusVia>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interior_stops: Vec<BusInteriorStop>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +88,7 @@ pub struct BusPath {
     pub points: Vec<[f64; 2]>,
     pub length_m: f64,
     pub(crate) operation_length_mm: u64,
+    pub(crate) atom_operation_micrometres: Vec<u64>,
     /// Derived point indices in exact authored via order, not a stop decision.
     pub via_point_indices: Vec<usize>,
     pub(crate) steps: Vec<BusSourceStep>,
@@ -84,22 +99,61 @@ impl BusPath {
     /// Directed materialized identity shared by every ordinary route that
     /// traverses this exact verified raw segment (or owned seam-clipped part).
     pub fn source_atom_id(&self, index: usize) -> Option<String> {
+        self.atom_id(index, false)
+    }
+    pub(crate) fn physical_atom_id(&self, index: usize) -> Option<String> {
+        self.atom_id(index, true)
+    }
+    fn atom_id(&self, index: usize, physical: bool) -> Option<String> {
         let step = self.steps.get(index)?;
         let span = self.spans.get(step.span)?;
         let digest = self.source_atom_raw_sha(index)?;
+        let (a, b) = if physical && step.from > step.to {
+            (step.to, step.from)
+        } else {
+            (step.from, step.to)
+        };
         let key = format!(
             "ofm-bus-atom-v1\0{}\0{}\0{}\0{}\0{:016x}\0{:016x}",
             span.binding_key,
             digest,
             span.fragment_id,
             step.raw_ordinal,
-            step.from.to_bits(),
-            step.to.to_bits()
+            a.to_bits(),
+            b.to_bits()
         );
         Some(format!(
             "ofm-bus:edge:{}",
             super::raw_sha256(key.as_bytes())
         ))
+    }
+    pub(crate) fn control_pair(&self, index: usize) -> (&str, &str) {
+        let leg = self.via_point_indices.partition_point(|&i| i <= index);
+        let a = leg
+            .checked_sub(1)
+            .and_then(|i| self.binding.via.get(i))
+            .map_or("@start", |v| v.id.as_str());
+        let b = self.binding.via.get(leg).map_or("@end", |v| v.id.as_str());
+        (a, b)
+    }
+    pub(crate) fn on_return_control(id: &str) -> &str {
+        match id {
+            "@start" => "@end",
+            "@end" => "@start",
+            other => other,
+        }
+    }
+    /// One token per outward drawn segment. Control IDs disambiguate revisits
+    /// to the same directed atom without depending on editor array indices.
+    pub fn stop_occurrence_keys(&self) -> Vec<String> {
+        (0..self.steps.len())
+            .filter_map(|i| {
+                let atom = self.source_atom_id(i)?;
+                let (a, b) = self.control_pair(i);
+                let key = format!("ofm-bus-stop-occurrence-v1\0{a}\0{b}\0{atom}");
+                Some(super::raw_sha256(key.as_bytes()))
+            })
+            .collect()
     }
     pub(crate) fn source_atom_raw_sha(&self, index: usize) -> Option<&str> {
         let span = self.spans.get(self.steps.get(index)?.span)?;
@@ -444,6 +498,7 @@ pub fn find_gameplay_bus_path(
         additional_tiles: vec![],
         end_tile_key: None,
         pattern: None,
+        interior_stops: vec![],
         via: vec![],
     };
     solve_gameplay_bus_scope(store, &request)
@@ -847,6 +902,10 @@ pub(super) fn solve_gameplay_bus_graph(
     let Some(target) = graph.node_at(end_key, query.end) else {
         return failed(query.via.len());
     };
+    if query.pattern == Some(BusPattern::ClosedOneWay) && (source != target || query.via.is_empty())
+    {
+        return Err(Error::InvalidBusCircuit);
+    }
     nodes.push(target);
     let mut via_point_indices = Vec::with_capacity(query.via.len());
     let mut scratch = SearchScratch::new(graph.geometry.len());
@@ -871,6 +930,7 @@ pub(super) fn solve_gameplay_bus_graph(
     let mut steps = Vec::with_capacity(edges.len());
     let mut points_grid = vec![graph.geometry[source]];
     let mut length_um = 0u128;
+    let mut atom_operation_micrometres = Vec::new();
     let round_trip = query.pattern == Some(BusPattern::OpenRoundTrip);
     if round_trip && edges.len() > 4096 {
         return Err(Error::Limit);
@@ -879,15 +939,9 @@ pub(super) fn solve_gameplay_bus_graph(
         let line = &graph.lines[arc.line];
         let (from, to) = (arc.from_pos, arc.to_pos);
         let fragment_id = &line.fragment_id;
-        if round_trip {
-            length_um = length_um
-                .checked_add(bus_arc_micrometres(
-                    arc.weight,
-                    line.extent,
-                    line.metric_scale,
-                ))
-                .ok_or(Error::Limit)?;
-        }
+        let part = bus_arc_micrometres(arc.weight, line.extent, line.metric_scale);
+        length_um = length_um.checked_add(part).ok_or(Error::Limit)?;
+        atom_operation_micrometres.push(u64::try_from(part).map_err(|_| Error::Limit)?);
         if let Some(tail) = spans.last_mut().filter(|s| {
             &s.fragment_id == fragment_id
                 && s.to == from
@@ -920,6 +974,7 @@ pub(super) fn solve_gameplay_bus_graph(
         points,
         length_m,
         operation_length_mm: u64::try_from((length_um + 500) / 1000).map_err(|_| Error::Limit)?,
+        atom_operation_micrometres,
         via_point_indices,
     }))
 }

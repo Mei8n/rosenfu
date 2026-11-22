@@ -451,3 +451,47 @@ outbound shape controls stay outbound-only and the return independently finds
 a legal route between endpoints, avoiding a detour merely to revisit an
 outbound control. Intermediate passenger stop editing and fractional picks
 are follow-on, not part of this waypoint feature.
+
+### Manual interior passenger stops
+
+After confirming native preview geometry, a stop tool can request one
+`stopOccurrenceKey` per drawn outward segment (array indexed by the matching
+point pair). Each key binds the directed raw atom and its enclosing authored
+control pair, so distinct visits to the same road do not share a stop target.
+In `interiorStops`, an authored ID, display name, exact occurrence key and
+integer `fractionQ` (1–999,999 millionths) create a regular player BusStop.
+Automatic endpoint stops are unchanged. Edits to names/stops do not reroute or
+change the raw-geometry memo key.
+
+A stop's identity survives unrelated geometry edits while its exact occurrence
+is still present. Loss of that occurrence refuses the full edit and requires an
+explicit new selection; it does not search for a nearby road. Return operation
+serves the same stop only on a matching physical raw atom and unambiguous
+return occurrence, using the corresponding reverse fraction when applicable.
+A missing/detour return atom or conflicting repeated occurrence is displayed
+as outbound-only. Existing runtime/OD consumes ordinary stop IDs and sorted
+per-direction pieces; geometric paths, raw authority and occupancy keys do not
+change. No automatic stop spacing is implemented here.
+
+### Automatic intermediate passenger-stop suggestions
+
+An explicit Auto draft can request `requestAutoStopSuggestions` from the normal
+native Bus preview and add `autoStopSuggestions` to the same confirmed route's
+existing stop proof list. The preview is read-only and never replaces manually
+specified stops. There is no persisted automatic re-layout flag, so unrelated
+edits and reopening a world cannot alter these stops by themselves.
+
+The initial simulator heuristic fills gaps between termini and retained authored
+stops at roughly a 2 km maximum target using deterministic metric path lengths,
+with coarser spacing only to stay within the existing 64-intermediate-stop cap.
+It never adds a stop at an exact route node, adds no duplicate raw physical stop,
+and does not assume that an outward point is served on a detouring return.
+The existing stop proof owns the occurrence, fraction, ID, dwell and OD behavior.
+
+Design reference: [TrainsWorld 50f7b159, bus stops](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/docs/track-and-service.md#L2279-L2284)
+and [its spacing constants](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/sim/src/track/bus.rs#L33-L40).
+Its default distinguishes sparse passenger/demand stops from roughly 400 m street
+stop presentation/timing; it also considers nearby verified stations and crossings.
+This independent first Rosenfu implementation creates the sparse boardable stops
+only, not the street-only layer, stop dwell at drawn-only points, station snapping
+or crossing-based transfer creation.

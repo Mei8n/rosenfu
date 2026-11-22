@@ -1,17 +1,18 @@
 import {useState,useRef,useEffect} from 'react';
+import {appendBusStopSuggestions,verifyBusStopPlacement} from './ordinaryBusStops';
 import {createOrdinaryBusHover} from './ordinaryBusHover';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
-import {cachedBusHoverQuery,matchOrdinaryBusPreview,prepareOrdinaryBusQuery,restoreOrdinaryBusControls,snapOrdinaryBusVertex,type BusEvidenceReader,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
-import {clickBusControl,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
+import {cachedBusHoverQuery,matchOrdinaryBusPreview,prepareOrdinaryBusQuery,restoreOrdinaryBusControls,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusVertex,type BusEvidenceReader,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
+import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
 type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean};
 type DraftSpec={id:string;pattern?:OrdinaryBusPattern;savedPath?:OrdinaryBusQuery['path']};
 type Input={
- active:boolean;allow:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;descriptors:readonly unknown[];
+ active:boolean;allow:boolean;autoRoute:boolean;closedCapable?:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;descriptors:readonly unknown[];
  observe?:RouteTileObserver;read:BusEvidenceReader;token:()=>Promise<string>;
- preview:(query:OrdinaryBusQuery)=>Promise<OrdinaryBusPreviewReply>;commit:(query:OrdinaryBusQuery)=>Promise<unknown>;
+ preview:(query:OrdinaryBusPreviewQuery)=>Promise<OrdinaryBusPreviewReply>;commit:(query:OrdinaryBusQuery)=>Promise<unknown>;
 };
 const errorText=(e:unknown)=>e instanceof Error?e.message:typeof e==='string'?e:'バス系統を変更できませんでした。';
 type Frame=OrdinaryBusInteraction<Verified>;
@@ -51,7 +52,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
   hoverTimer.current=setTimeout(()=>{
    hoverTimer.current=undefined;
    const pt=hoverPoint.current,state=frameRef.current,proof=lastProof.current,src=latest.current.input;
-   if(!pt||!state||!proof||!canHover()){hover.offer(null);return;}
+   if(!pt||!state||!proof||state.frame.body.closed||!canHover()){hover.offer(null);return;}
    try{
     const anchor=snapOrdinaryBusVertex(src.snapshot,pt.at,pt.camera,pt.scale,undefined,true);
     const base=state.frame.body.controls;
@@ -88,27 +89,34 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
     serialNative.current=request.catch(()=>undefined);
     const result=await request;if(!alive()||!result)return;
     const {controls,preview}=restoreOrdinaryBusControls(saved,result);
+    if(saved.pattern==='closedOneWay'&&!!preview.loopFallbackStop===!!saved.interiorStops?.length)
+     throw Error('環状系統の途中停留所を確認できません。');
     if(preview.returnUnavailableReason)throw Error('既存系統の復路を確認できません。');
     lastProof.current=args;
-    publish({...fresh,frame:{body:{controls,active:'end'},verified:{token,path:saved,preview,retained:true}}});
+    publish({...fresh,frame:{body:{controls,active:'end',...(saved.pattern==='closedOneWay'?{closed:true as const}:{})},verified:{token,path:saved,preview,retained:true}}});
    }catch(e){if(alive())setError(errorText(e));}
    finally{if(previewJob.current===ctrl){previewJob.current=undefined;setRehydrating(false);}}
   })();
  }
  const canEdit=()=>latest.current.input.active&&latest.current.input.allow&&!running.current;
- async function build(controls:readonly DraftControl[],currentSpec:DraftSpec,name:string,signal:AbortSignal,final=false){
+ async function build(controls:readonly DraftControl[],currentSpec:DraftSpec,name:string,signal:AbortSignal,final=false,closed=false){
   const src=latest.current.input;
+  const pattern=closed?'closedOneWay':currentSpec.pattern;
   const prior=lastProof.current;
-  const cached=prior?.routeId===currentSpec.id&&cachedBusHoverQuery(prior,controls);
+  const cached=prior?.routeId===currentSpec.id&&prior.path.pattern===pattern&&cachedBusHoverQuery(prior,controls);
   if(cached&&!final)return {...cached,name};
   const expectedWorldToken=await src.token();
   if(signal.aborted)throw Error('経路の確認を中止しました。');
   if(cached&&cached.expectedWorldToken===expectedWorldToken)return {...cached,name};
   return prepareOrdinaryBusQuery(controls[0].anchor,controls.at(-1)!.anchor,name,currentSpec.id,expectedWorldToken,
-   src.read,src.descriptors,signal,src.observe,currentSpec.pattern,controls.slice(1,-1),currentSpec.savedPath?.respectOneway??false);
+   src.read,src.descriptors,signal,src.observe,pattern,controls.slice(1,-1),currentSpec.savedPath?.respectOneway??false,currentSpec.savedPath?.interiorStops);
  }
  async function finish(f:NonNullable<Frame['finish']>){
   if(!canEdit()||!spec.current||frameRef.current?.finish!==f)return;
+  if(f.verified.preview.returnUnavailableReason){
+   publish({...frameRef.current,finish:undefined});
+   setError(`復路を作れません。${f.verified.preview.returnUnavailableReason}`);return;
+  }
   const currentSpec=spec.current,scope=input.scope;
   const controller=new AbortController();
   previewJob.current=controller;running.current=true;setCommitting(true);setError('');
@@ -118,12 +126,28 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
    const name=latest.current.name.trim();
    const query:OrdinaryBusQuery=f.verified.retained?
     {expectedWorldToken:await latest.current.input.token(),routeId:currentSpec.id,name,path:f.verified.path,rawEvidence:null,tileBinding:null}:
-    await build(f.body.controls,currentSpec,name,controller.signal,true);
+    await build(f.body.controls,currentSpec,name,controller.signal,true,!!f.body.closed);
    if(controller.signal.aborted||!latest.current.input.active||latest.current.input.scope!==scope||!latest.current.input.allow||frameRef.current?.finish!==f)return;
-   if(query.expectedWorldToken!==f.verified.token||JSON.stringify(query.path)!==JSON.stringify(f.verified.path))throw Error('ワールドや道路が更新されました。位置を選び直してください。');
+   if(query.expectedWorldToken!==f.verified.token||!sameOrdinaryBusPath(query.path,f.verified.path))throw Error('ワールドや道路が更新されました。位置を選び直してください。');
    const title=latest.current.name.trim();
    if(!title)throw Error('バス系統名を入力してください。');
-   await latest.current.input.commit({...query,name:title});latest.current.onCommitted();
+   let path=query.path;
+   const current=()=>!controller.signal.aborted&&latest.current.input.active&&latest.current.input.scope===scope&&latest.current.input.allow&&frameRef.current?.finish===f;
+   if(latest.current.input.autoRoute&&!currentSpec.savedPath){
+    const evidence={...query,name:title,requestStopTargets:true as const};
+    const result=await latest.current.input.preview({...evidence,requestAutoStopSuggestions:true});
+    if(!current())return;
+    const verified=verifyBusStopPlacement(path,result);
+    if(!sameOrdinaryBusGeometry(f.verified.preview,verified))throw Error('停留所を確認中にバス経路が変わりました。位置を選び直してください。');
+    path=appendBusStopSuggestions(path,verified,verified.autoStopSuggestions??[]);
+    if(path!==query.path){
+     const check=await latest.current.input.preview({...evidence,path});
+     if(!current())return;
+     if(!sameOrdinaryBusGeometry(verified,verifyBusStopPlacement(path,check)))throw Error('停留所を確認中にバス経路が変わりました。位置を選び直してください。');
+    }
+   }
+   if(!current())return;
+   await latest.current.input.commit({...query,name:title,path});latest.current.onCommitted();
   }catch(e){
    const now=frameRef.current;
    if(now?.finish===f&&!controller.signal.aborted){publish({...now,finish:undefined});setError(errorText(e));}
@@ -147,7 +171,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
    try{
     const title=latest.current.name.trim();
     // The name field can remain temporarily empty while laying out geometry.
-    const query=await build(check.body.controls,currentSpec,title||'バス系統',ctrl.signal);
+    const query=await build(check.body.controls,currentSpec,title||'バス系統',ctrl.signal,false,!!check.body.closed);
     if(!alive())return;
     // At most one native graph query in flight per editor. A retired query
     // can finish, but intermediate pointer guesses do not queue behind it.
@@ -157,9 +181,11 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
     const reply=await request;
     if(!alive()||!reply)return;
     const controls=check.body.controls;
-    const matched=matchOrdinaryBusPreview(reply,controls[0].anchor,controls.at(-1)!.anchor,currentSpec.pattern,controls.map(c=>c.anchor));
+    const matched=matchOrdinaryBusPreview(reply,controls[0].anchor,controls.at(-1)!.anchor,query.path.pattern,controls.map(c=>c.anchor));
+    if('preview' in matched&&query.path.pattern==='closedOneWay'&&!!matched.preview.loopFallbackStop===!!query.path.interiorStops?.length)
+     throw Error('環状系統の途中停留所を確認できません。');
     const outcome:{reason:string;leg?:number}|{verified:Verified}='refusedLeg' in matched?{reason:'この区間を道路でつなげません。',leg:matched.refusedLeg}:
-      matched.preview.returnUnavailableReason?{reason:`復路を作れません。${matched.preview.returnUnavailableReason}`}:
+      matched.preview.returnUnavailableReason&&!(latest.current.input.closedCapable&&!currentSpec.savedPath)?{reason:`復路を作れません。${matched.preview.returnUnavailableReason}`}:
       {verified:{preview:matched.preview,token:query.expectedWorldToken,path:query.path}};
     if('verified' in outcome)lastProof.current=query;
     handle(settleBusValidation<Verified>(frameRef.current!,next.scope,check.id,outcome));
@@ -170,9 +196,16 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
  }
  function point(at:GeoPoint,camera:Camera,scale:number,detail:number,handleId?:string,moveId?:string,afterId?:string){
   const now=frameRef.current;if(!canEdit()||!now)return;
-  if(detail>=2&&!moveId&&!afterId){if(extend.current)handle(requestBusFinish(now));return;}
-  const controls=(now.check?.body??now.frame.body).controls;
+  const body=now.check?.body??now.frame.body,controls=body.controls;
+  if(detail>=2&&!moveId&&!afterId){if(extend.current&&!body.closed)handle(requestBusFinish(now));return;}
   const handleAt=controls.find(c=>c.id===handleId);
+  if(body.closed&&!moveId&&!afterId){
+   if(handleAt&&handleAt.id!==controls[0].id&&handleAt.id!==controls.at(-1)?.id)handle(removeBusControl(now,handleAt.id));
+   return;
+  }
+  if(extend.current&&!spec.current?.savedPath&&latest.current.input.closedCapable&&handleAt&&handleAt===controls[0]&&body.active==='end'&&controls.length>=2&&!moveId&&!afterId){
+   handle(closeBusCircuit(now,handleAt.id,`b-${crypto.randomUUID()}`));return;
+  }
   if(!extend.current&&!moveId&&!afterId){
    if(!handleAt)return; // blank clicks during edit never append.
    const index=controls.indexOf(handleAt);
@@ -205,7 +238,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
  // Do not expose previous valid preview as savable while a new pick is under review.
  const controls=(frame?.check?.body??frame?.frame.body)?.controls??[];
  const active=(frame?.check?.body??frame?.frame.body)?.active??'end';
- return {frame,controls,active,start,reset,point,confirm,history,committing,offerHover,clearHover,hoverPreview,exitExtension,extending:extension,
+ return {frame,controls,active,start,reset,point,confirm,history,closed:!!(frame?.check?.body??frame?.frame.body)?.closed,committing,offerHover,clearHover,hoverPreview,exitExtension,extending:extension,
   error:error||frame?.refusal?.reason||'',failedLeg:frame?.refusal?.leg,checking:rehydrating||!!frame?.check,
   ready:!!frame?.frame.verified&&!frame.check&&!frame.refusal&&!frame.finish,
   preview:frame?.check||frame?.refusal&&!spec.current?.savedPath?undefined:frame?.frame.verified?.preview};

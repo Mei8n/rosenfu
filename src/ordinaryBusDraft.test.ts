@@ -1,5 +1,5 @@
 import {expect,it,vi} from 'vitest';
-import {prepareOrdinaryBusQuery,snapOrdinaryBusVertex,verifyOrdinaryBusPreview} from './ordinaryBusDraft';
+import {prepareOrdinaryBusQuery,sameOrdinaryBusPath,snapOrdinaryBusVertex,verifyOrdinaryBusPreview} from './ordinaryBusDraft';
 import type {RoadSnapshot} from './automaticRoadData';
 import {roadTileBounds,type OpenFreeMapRoadLine} from './openFreeMapRoadData';
 const raw='1'.repeat(64), base='https://tiles.openfreemap.org/planet/r1/14',a={latitude:35.67504,longitude:139.748},b={latitude:35.67504,longitude:139.752};
@@ -90,4 +90,13 @@ it('accepts only a matching native return or explicit reason for a requested rou
  expect(()=>verifyOrdinaryBusPreview(decision,start(),end())).toThrow('一致');
  const refused={...out,returnUnavailableReason:'復路なし'};
  expect(verifyOrdinaryBusPreview(refused,start(),end(),'openRoundTrip')).toEqual(refused);
+});
+
+
+it('compares memoized and newly assembled proof by semantic field ordering, not key insertion order',async()=>{
+ const a0=start(),b0=end();
+ const read=vi.fn(),original=await prepareOrdinaryBusQuery(a0,b0,'B','R','T',read,[{binding:{canonical_url:base+'/14552/6452.pbf',raw_sha256:raw}}]);
+ const {start:from,end:to,...rest}=original.path;
+ expect(sameOrdinaryBusPath(original.path,{end:{vertex:to.vertex,feature:to.feature,line:to.line},...rest,start:from})).toBe(true);
+ expect(sameOrdinaryBusPath(original.path,{...rest,start:to,end:from})).toBe(false);
 });

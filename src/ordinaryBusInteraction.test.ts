@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {cancelBusInteraction,clickBusControl,emptyBusInteraction,insertBusControl,moveBusControl,redoBusDraft,removeBusControl,requestBusFinish,settleBusValidation,undoBusDraft,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
+import {cancelBusInteraction,clickBusControl,closeBusCircuit,emptyBusInteraction,insertBusControl,moveBusControl,redoBusDraft,removeBusControl,requestBusFinish,settleBusValidation,undoBusDraft,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
 const scope={};
 const from=(id:string,n:number):DraftControl=>({id,anchor:{
@@ -67,4 +67,21 @@ it('undo/cancel discards async commit intent; bounded drafts reject over-cap bef
  expect(settleBusValidation(cancel,scope,pending.check!.id,{verified:'abc'})).toBe(cancel);
  const limited=clickBusControl({...before,limit:2},c);
  expect(limited.check).toBeUndefined();expect(limited.refusal?.reason).toContain('多すぎます');
+});
+
+
+it('closes only the exact original control; dragging it moves both ends and Undo restores the open draft',()=>{
+ const open=initial();
+ expect(closeBusCircuit(open,c.id,'loop-end')).toBe(open);
+ const pending=closeBusCircuit(open,a.id,'loop-end');
+ expect(pending.finish).toBeUndefined();
+ expect(pending.check?.body.controls.map(c=>c.id)).toEqual(['a','b','loop-end']);
+ expect(pending.check?.body.controls.at(-1)?.anchor).toBe(a.anchor);
+ const closed=accept(pending,'loop-ab');
+ expect(closed.frame.body.closed).toBe(true);
+ expect(undoBusDraft(closed).frame.body.closed).toBeUndefined();
+ const moved=moveBusControl(closed,a.id,c.anchor);
+ expect(moved.check?.body.controls[0].anchor).toBe(c.anchor);
+ expect(moved.check?.body.controls.at(-1)?.anchor).toBe(c.anchor);
+ expect(removeBusControl(closed,b.id).refusal?.reason).toContain('環状系統');
 });

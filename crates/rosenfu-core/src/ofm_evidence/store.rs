@@ -429,6 +429,16 @@ impl EvidenceStore {
         proposed: &super::BusPathBinding,
         stored: bool,
     ) -> Result<Option<Arc<super::BusPath>>> {
+        let geometry_only;
+        let proposed = if proposed.interior_stops.is_empty() {
+            proposed
+        } else {
+            geometry_only = super::BusPathBinding {
+                interior_stops: vec![],
+                ..proposed.clone()
+            };
+            &geometry_only
+        };
         let keys = proposed.tile_keys()?;
         for (key, digest) in std::iter::once((&proposed.tile_key, &proposed.tile_raw_sha256)).chain(
             proposed
@@ -599,6 +609,7 @@ mod bus_preview_cache_tests {
                 vertex: v(1, 0),
             }],
             pattern: None,
+            interior_stops: vec![],
         };
         let first = stored.gameplay_bus_path(&q).unwrap().unwrap();
         let graph = |store: &EvidenceStore| {
@@ -609,6 +620,14 @@ mod bus_preview_cache_tests {
         let moved = stored.clone().gameplay_bus_path(&q).unwrap().unwrap();
         assert_ne!(first.via_point_indices, moved.via_point_indices);
         assert!(Arc::ptr_eq(&initialized, &graph(&stored)));
+        q.interior_stops.push(crate::ofm_evidence::BusInteriorStop {
+            id: "stop".into(),
+            name: "停留所".into(),
+            occurrence_key: moved.stop_occurrence_keys()[0].clone(),
+            fraction_q: 500_000,
+        });
+        let same_path = stored.gameplay_bus_path(&q).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&moved, &same_path));
         q.respect_oneway = true;
         assert!(stored.gameplay_bus_path(&q).unwrap().is_some());
         assert!(!Arc::ptr_eq(&initialized, &graph(&stored)));

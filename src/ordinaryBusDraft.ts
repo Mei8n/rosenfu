@@ -9,17 +9,20 @@ type Vertex={feature:number;line:number;vertex:number};
 type Tile={binding:OpenFreeMapEvidenceRequest;lines:OpenFreeMapRoadLine[]};
 export type BusAnchor={point:GeoPoint;raw:Vertex;tile:OpenFreeMapEvidenceRequest};
 type TileProof={tileKey:string;tileRawSha256:string};
-export type OrdinaryBusPattern='openRoundTrip';
+export type OrdinaryBusPattern='openRoundTrip'|'closedOneWay';
+export type BusInteriorStop={id:string;name:string;occurrenceKey:string;fractionQ:number};
+export type OrdinaryBusStopView={id:string;stopId:string;name:string;point:GeoPoint;servesReturn:boolean};
 export type BusWaypoint={id:string;anchor:BusAnchor};
 type BusWaypointProof={id:string;tileKey:string;vertex:Vertex};
 export type OrdinaryBusPreviewReply=OrdinaryBusPreview|{points:[];lengthM:0;failedLegIndex:number};
-export type OrdinaryBusPath=TileProof & {respectOneway:boolean;start:Vertex;end:Vertex;pattern?:OrdinaryBusPattern;via?:BusWaypointProof[]} & (
+export type OrdinaryBusPath=TileProof & {respectOneway:boolean;start:Vertex;end:Vertex;pattern?:OrdinaryBusPattern;via?:BusWaypointProof[];interiorStops?:BusInteriorStop[]} & (
  {rule:'ofm_ground_bus_z14_v1'}|{rule:'ofm_ground_bus_rectangle_z14_v2';endTileKey:string;additionalTiles:TileProof[]});
 type RawTilePair={rawEvidence:RawTileEvidence;tileBinding:TileEvidenceBinding};
 export type RouteTileObserver=(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal)=>Promise<OpenFreeMapEvidenceRequest[]>;
 export type OrdinaryBusQuery={expectedWorldToken:string;routeId:string;name:string;path:OrdinaryBusPath;rawEvidence:RawTileEvidence|null;tileBinding:TileEvidenceBinding|null;contextTiles?:RawTilePair[]};
+export type OrdinaryBusPreviewQuery=OrdinaryBusQuery & {requestStopTargets?:true;requestAutoStopSuggestions?:true};
 type BusLegPreview={points:GeoPoint[];lengthM:number};
-export type OrdinaryBusPreview=BusLegPreview & {returnPath?:BusLegPreview;returnUnavailableReason?:string;viaPointIndices?:number[]};
+export type OrdinaryBusPreview=BusLegPreview & {returnPath?:BusLegPreview;returnUnavailableReason?:string;viaPointIndices?:number[];stopOccurrenceKeys?:string[];interiorStops?:OrdinaryBusStopView[];autoStopSuggestions?:BusInteriorStop[];loopFallbackStop?:OrdinaryBusStopView};
 export type BusEvidenceReader=(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal)=>Promise<CurrentRoadEvidenceResult>;
 const supported=new Set(['primary','secondary','tertiary','minor','service','busway','bus_guideway']);
 const access=new Set(['yes','permissive','designated']);
@@ -86,6 +89,7 @@ export function snapOrdinaryBusVertex(snapshot:RoadSnapshot|undefined,at:GeoPoin
  if(related.some(c=>!sameTile(c.anchor.tile,anchor.tile)||!samePlace(c.anchor.point,anchor.point)))throw Error('位置が重なっています。地図を拡大して選び直してください。');
  return anchor;
 }
+const sameRawAnchor=(a:BusAnchor,b:BusAnchor)=>sameTile(a.tile,b.tile)&&a.raw.feature===b.raw.feature&&a.raw.line===b.raw.line&&a.raw.vertex===b.raw.vertex;
 const samePlace=(a:GeoPoint,b:GeoPoint)=>Math.abs(a.latitude-b.latitude)<1e-12&&Math.abs(a.longitude-b.longitude)<1e-12;
 
 export function ordinaryBusCells(start:OpenFreeMapEvidenceRequest,end:OpenFreeMapEvidenceRequest,via:readonly OpenFreeMapEvidenceRequest[]=[]):[number,number][]{
@@ -102,13 +106,16 @@ export function ordinaryBusCells(start:OpenFreeMapEvidenceRequest,end:OpenFreeMa
 
 export async function prepareOrdinaryBusQuery(
  start:BusAnchor,end:BusAnchor,name:string,routeId:string,expectedWorldToken:string,read:BusEvidenceReader,
- descriptors:readonly unknown[],signal?:AbortSignal,observe?:RouteTileObserver,pattern?:OrdinaryBusPattern,via:readonly BusWaypoint[]=[],respectOneway=false,
+ descriptors:readonly unknown[],signal?:AbortSignal,observe?:RouteTileObserver,pattern?:OrdinaryBusPattern,via:readonly BusWaypoint[]=[],respectOneway=false,interiorStops:readonly BusInteriorStop[]=[],
 ):Promise<OrdinaryBusQuery>{
  const anchors=[start,...via.map(w=>w.anchor),end];
- if(samePlace(start.point,end.point)||anchors.some((a,i)=>i>0&&samePlace(anchors[i-1].point,a.point)))throw Error('異なる道路位置を選んでください。');
+ if(pattern==='closedOneWay'?
+    !via.length||!sameRawAnchor(start,end)||!samePlace(start.point,end.point):
+    samePlace(start.point,end.point))throw Error('異なる道路位置を選んでください。');
+ if(anchors.some((a,i)=>i>0&&samePlace(anchors[i-1].point,a.point)))throw Error('連続する点は別の道路位置を選んでください。');
  if(via.length>30||new Set(via.map(w=>w.id)).size!==via.length||via.some(w=>!/^[-_A-Za-z0-9]{1,80}$/.test(w.id)))throw Error('経由点の指定が不正です。');
  const a=start.tile,b=end.tile;
- const base={tileKey:territory(a),tileRawSha256:a.rawSha256,respectOneway,start:start.raw,end:end.raw,...(pattern?{pattern}:{}),...(via.length?{via:via.map(w=>({id:w.id,tileKey:territory(w.anchor.tile),vertex:w.anchor.raw}))}:{})};
+ const base={...(interiorStops.length?{interiorStops:[...interiorStops]}:{}),tileKey:territory(a),tileRawSha256:a.rawSha256,respectOneway,start:start.raw,end:end.raw,...(pattern?{pattern}:{}),...(via.length?{via:via.map(w=>({id:w.id,tileKey:territory(w.anchor.tile),vertex:w.anchor.raw}))}:{})};
  let refs=[a],path:OrdinaryBusPath={...base,rule:'ofm_ground_bus_z14_v1'};
  if(anchors.some(w=>!sameTile(a,w.tile))){
   if(!observe)throw Error('経由点を含む道路データを確認できません。');
@@ -187,6 +194,11 @@ export function verifyOrdinaryBusPreview(result:OrdinaryBusPreview,start:BusAnch
    if(result.returnUnavailableReason!==undefined||!matchLeg(result.returnPath,end,start))throw error();
   }else if(typeof result.returnUnavailableReason!=='string'||!result.returnUnavailableReason.trim()||result.returnUnavailableReason.length>500)throw error();
  }else if(result.returnPath!==undefined||result.returnUnavailableReason!==undefined)throw error();
+ const fallback=result.loopFallbackStop;
+ if(pattern==='closedOneWay'){
+  if(!sameRawAnchor(start,end)||!samePlace(start.point,end.point))throw error();
+  if(fallback&&(!fallback.point||!finitePoint(fallback.point)||fallback.id!=='loop_fallback'||!fallback.stopId||!fallback.name||fallback.servesReturn!==false))throw error();
+ }else if(fallback!==undefined)throw error();
  return result;
 }
 
@@ -222,7 +234,7 @@ export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly Bus
  if(controls.length<2||controls.length>32)return;
  const [first,last]=[controls[0].anchor,controls.at(-1)!.anchor],previous=prior.path;
  if(territory(first.tile)!==previous.tileKey||first.tile.rawSha256!==previous.tileRawSha256||
-   samePlace(first.point,last.point)||controls.some((c,i)=>i>0&&samePlace(controls[i-1].anchor.point,c.anchor.point)))return;
+   (previous.pattern==='closedOneWay'?!sameRawAnchor(first,last):samePlace(first.point,last.point))||controls.some((c,i)=>i>0&&samePlace(controls[i-1].anchor.point,c.anchor.point)))return;
  const proof=[previous,...(previous.rule==='ofm_ground_bus_rectangle_z14_v2'?previous.additionalTiles:[])];
  if(controls.some(c=>!proof.some(p=>p.tileKey===territory(c.anchor.tile)&&p.tileRawSha256===c.anchor.tile.rawSha256)))return;
  let cells:[number,number][];
@@ -234,4 +246,20 @@ export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly Bus
  const path:OrdinaryBusPath={...base,start:first.raw,end:last.raw,...(via.length?{via}:{})};
  if(path.rule==='ofm_ground_bus_rectangle_z14_v2')path.endTileKey=territory(last.tile);
  return {...prior,path};
+}
+
+
+/** Fresh queries and memoized queries need not have the same JS key
+ * insertion order; binding membership and point order still must match. */
+export function sameOrdinaryBusPath(a:OrdinaryBusPath,b:OrdinaryBusPath):boolean{
+ const canonical=(value:unknown):unknown=>Array.isArray(value)?value.map(canonical):
+  value&&typeof value==='object'?Object.fromEntries(Object.entries(value).sort(([x],[y])=>x<y?-1:x>y?1:0).map(([k,v])=>[k,canonical(v)])):value;
+ return JSON.stringify(canonical(a))===JSON.stringify(canonical(b));
+}
+
+
+export function sameOrdinaryBusGeometry(a:OrdinaryBusPreview,b:OrdinaryBusPreview):boolean{
+ const equal=(x:BusLegPreview,y:BusLegPreview)=>x.lengthM===y.lengthM&&x.points.length===y.points.length&&
+  x.points.every((point,i)=>samePlace(point,y.points[i]));
+ return equal(a,b)&&(!a.returnPath&&!b.returnPath||!!a.returnPath&&!!b.returnPath&&equal(a.returnPath,b.returnPath));
 }

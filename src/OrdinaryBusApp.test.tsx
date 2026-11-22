@@ -32,7 +32,7 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean}){
+async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean}){
  const candidate=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
   ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
  ]}]}:tile;
@@ -50,13 +50,14 @@ async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rect
  const baseline=config.multiple?{
   ...world,ofm_gameplay_bus_routes:{[first.id]:config.savedProof?{
    rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,respectOneway:false,
-   start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:1},
+   start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:config.closedSaved?0:1},
+   ...(config.closedSaved?{pattern:'closedOneWay',via:[{id:'closed-via',tileKey:key,vertex:{feature:0,line:0,vertex:1}}]}:{}),
   }:{},[second.id]:{},[foreign.id]:{}},
   road_transport:{nodes:[],edges:[{id:'native-edge',geometry:[a,bend,b]}],bus_stops:[],tram_sections:[],
    bus_routes:[first,second,foreign,nonordinary]},
  }:undefined;
  vi.mocked(invoke).mockImplementation(async (command,args)=>{
-  if(command==='engine_info')return {version:'ordinary-test',road_transport_enabled:true,ordinary_ofm_bus_enabled:config.ordinary!==false,ordinary_ofm_bus_rectangle_enabled:config.rectangle===true,ordinary_ofm_bus_multiple_enabled:config.multiple===true,ordinary_ofm_bus_round_trip_enabled:config.roundTrip===true,ordinary_ofm_bus_waypoints_enabled:config.waypoints===true,operation_enabled:config.operation===true,bus_operation_enabled:config.operation===true};
+  if(command==='engine_info')return {version:'ordinary-test',road_transport_enabled:true,ordinary_ofm_bus_enabled:config.ordinary!==false,ordinary_ofm_bus_rectangle_enabled:config.rectangle===true,ordinary_ofm_bus_multiple_enabled:config.multiple===true,ordinary_ofm_bus_round_trip_enabled:config.roundTrip===true,ordinary_ofm_bus_waypoints_enabled:config.waypoints===true,ordinary_ofm_bus_interior_stops_enabled:config.interiorStops===true,ordinary_ofm_bus_auto_stops_enabled:config.autoStops===true,ordinary_ofm_bus_closed_loop_enabled:config.closed===true,operation_enabled:config.operation===true,bus_operation_enabled:config.operation===true};
   if(command==='ofm_world_token')return 'world-exact';
   if(command==='operation_snapshot')return {now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,
     timetable_edit_token:'fixture-operation-token',services:[],trains:[],bus_services:[]};
@@ -396,4 +397,187 @@ test('hover previews already cached roadway after coalescing without requesting 
  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
  fireEvent.pointerLeave(map);
  expect(screen.queryByLabelText('カーソル位置までのバス経路')).toBeNull();
+});
+
+
+test('ordinary buses place and rename an on-route stop; no world writes before explicit save',async()=>{
+ const occurrenceKey='a'.repeat(64),requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {pressPoint}=(await setup({waypoints:true,interiorStops:true,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
+  const req=requests().at(-1)![1] as {requestStopTargets?:boolean;path:{interiorStops?:{id:string;name:string;fractionQ:number}[]}};
+  return {points:[a,b],lengthM:370,stopOccurrenceKeys:[occurrenceKey],interiorStops:req.path.interiorStops?.map(stop=>({
+   id:stop.id,stopId:'native:'+stop.id,name:stop.name,servesReturn:false,
+   point:{latitude:a.latitude,longitude:a.longitude+(b.longitude-a.longitude)*stop.fractionQ/1_000_000},
+  }))};
+ }}))!;
+ fireEvent.click(screen.getByRole('button',{name:'停留所を編集'}));
+ await screen.findByLabelText('停留所を置くバス経路');
+ expect(requests()[0][1]).toMatchObject({expectedWorldToken:'world-exact',routeId:'owned-a',requestStopTargets:true,rawEvidence:null});
+ pressPoint({latitude:a.latitude,longitude:139.75});
+ const field=await screen.findByRole('textbox',{name:'停留所名 1'});
+ expect(screen.getByLabelText('停留所 1')).toBeTruthy();
+ fireEvent.change(field,{target:{value:'中央'}});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'停留所の編集を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({
+  expectedWorldToken:'world-exact',routeId:'owned-a',path:expect.objectContaining({interiorStops:[
+   {id:expect.any(String),name:'中央',occurrenceKey,fractionQ:500000},
+  ]}),
+ })));
+ const put=vi.mocked(invoke).mock.calls.find(c=>c[0]==='put_gameplay_ofm_bus')?.[1];
+ expect(put).not.toHaveProperty('requestStopTargets');
+});
+
+test('overlapping stops require an explicit occurrence and Escape discards the unconfirmed stop draft',async()=>{
+ const keys=['a','b','c'].map(s=>s.repeat(64)),requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {pressPoint}=(await setup({waypoints:true,interiorStops:true,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
+  const req=requests().at(-1)![1] as {path:{interiorStops?:{id:string;name:string;fractionQ:number}[]}};
+  return {points:[a,b,a,b],lengthM:1100,stopOccurrenceKeys:keys,interiorStops:req.path.interiorStops?.map(stop=>({
+   id:stop.id,stopId:'native:'+stop.id,name:stop.name,servesReturn:false,
+   point:{latitude:a.latitude,longitude:b.longitude+(a.longitude-b.longitude)*stop.fractionQ/1_000_000},
+  }))};
+ }}))!;
+ fireEvent.click(screen.getByRole('button',{name:'停留所を編集'}));
+ await screen.findByLabelText('停留所を置くバス経路');
+ pressPoint({latitude:a.latitude,longitude:139.75});
+ expect(screen.getByRole('group',{name:/この位置を経路が複数回通ります/})).toBeTruthy();
+ expect(requests()).toHaveLength(1);
+ fireEvent.click(screen.getByRole('button',{name:/通過 2/}));
+ await screen.findByRole('textbox',{name:'停留所名 1'});
+ expect(requests().at(-1)![1]).toMatchObject({path:{interiorStops:[{occurrenceKey:keys[1]}]}});
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.getByRole('button',{name:'停留所を編集'})).toBeTruthy();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+});
+
+
+test.each(['auto','manual','stale'] as const)('new route %s stop policy only adds validated hints in the single explicit transaction',async policy=>{
+ const occurrenceKey='a'.repeat(64),requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {pressPoint}=(await setup({waypoints:true,interiorStops:true,autoStops:true,preview:async()=>{
+  const req=requests().at(-1)![1] as {requestStopTargets?:boolean;requestAutoStopSuggestions?:boolean;path:{interiorStops?:{id:string;name:string;fractionQ:number}[]}};
+  const proposed={id:'auto-1',name:'自動 1',occurrenceKey:policy==='stale'?'b'.repeat(64):occurrenceKey,fractionQ:500000};
+  return {
+   points:[a,b],lengthM:2300,...(req.requestStopTargets?{stopOccurrenceKeys:[occurrenceKey]}:{}),
+   ...(req.requestAutoStopSuggestions?{autoStopSuggestions:[proposed]}:{}),
+   ...(req.path.interiorStops?{interiorStops:[{id:proposed.id,name:proposed.name,stopId:'native-auto-1',
+    point:{latitude:a.latitude,longitude:139.75},servesReturn:false}]}:{}),
+  };
+ }}))!;
+ const chooser=screen.getByRole('combobox',{name:'停留所の配置'}) as HTMLSelectElement;
+ expect(chooser.value).toBe('auto');
+ if(policy==='manual')fireEvent.change(chooser,{target:{value:'manual'}});
+ pressPoint(a);pressPoint(b);
+ await screen.findByText(policy==='manual'?'道路経路 2300 m・停留所2か所':'道路経路 2300 m・途中停留所は確定時に配置');
+ expect(requests()).toHaveLength(1);
+ expect(requests()[0][1]).not.toHaveProperty('requestAutoStopSuggestions');
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ if(policy==='stale'){
+  await screen.findByText('停留所の自動配置を確認できません。');
+  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+  return;
+ }
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything()));
+ const put=vi.mocked(invoke).mock.calls.find(c=>c[0]==='put_gameplay_ofm_bus')?.[1];
+ expect(put).not.toHaveProperty('requestAutoStopSuggestions');
+ expect(put).not.toHaveProperty('requestStopTargets');
+ if(policy==='manual'){
+  expect(requests()).toHaveLength(1);
+  expect(put).not.toHaveProperty('path.interiorStops');
+ }else{
+  expect(requests()).toHaveLength(3);
+  expect(requests()[1][1]).toMatchObject({requestAutoStopSuggestions:true,requestStopTargets:true});
+  expect(requests()[2][1]).toMatchObject({requestStopTargets:true,path:{interiorStops:[{id:'auto-1',occurrenceKey}]}});
+  expect(put).toMatchObject({path:{interiorStops:[{id:'auto-1',occurrenceKey}]}});
+ }
+});
+
+
+const loopAutomatic={id:'loop_fallback',stopId:'native-loop-fallback',name:'中間停留所',
+ point:{latitude:a.latitude,longitude:139.75},servesReturn:false};
+test('clicking the original start handle creates one circuit draft; only explicit confirmation writes',async()=>{
+ const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {pressPoint}=(await setup({waypoints:true,closed:true,roundTrip:true,preview:async()=>{
+  const req=requests().at(-1)![1] as {path:{pattern?:string}};
+  if(req.path.pattern==='closedOneWay')return {points:[a,b,a],lengthM:760,viaPointIndices:[1],loopFallbackStop:loopAutomatic};
+  return {points:[a,b],lengthM:380,returnPath:{points:[b,a],lengthM:380}};
+ }}))!;
+ pressPoint(a);pressPoint(b);await screen.findByLabelText('バス系統の復路プレビュー');
+ pressPoint(a,1,screen.getByLabelText('バスの起点'));
+ await screen.findByText('中間停留所（自動）');
+ expect(screen.getAllByLabelText('バスの起終点')).toHaveLength(1);
+ expect(screen.queryByLabelText('バスの終点')).toBeNull();
+ expect(screen.queryByLabelText('バス系統の復路プレビュー')).toBeNull();
+ expect(requests().at(-1)?.[1]).toMatchObject({path:{pattern:'closedOneWay',
+  start:{vertex:0},end:{vertex:0},via:[{vertex:{vertex:1}}]}});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({
+  path:expect.objectContaining({pattern:'closedOneWay',start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:0}}),
+ })));
+});
+
+test('escape invalidates pending closure; open endpoint click still finishes the non-loop as before',async()=>{
+ let settle!:(reply:unknown)=>void;
+ const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {pressPoint}=(await setup({waypoints:true,closed:true,preview:async()=>{
+  const req=requests().at(-1)![1] as {path:{pattern?:string}};
+  return req.path.pattern==='closedOneWay'?new Promise(resolve=>{settle=resolve;}):{points:[a,b],lengthM:380};
+ }}))!;
+ pressPoint(a);pressPoint(b);await screen.findByText('道路経路 380 m・停留所2か所');
+ pressPoint(a,1,screen.getByLabelText('バスの起点'));
+ await waitFor(()=>expect(settle).toBeTypeOf('function'));
+ fireEvent.keyDown(window,{key:'Escape'});
+ settle({points:[a,b,a],lengthM:760,viaPointIndices:[1],loopFallbackStop:loopAutomatic});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
+ pressPoint(a);pressPoint(b);await screen.findByText('道路経路 380 m・停留所2か所');
+ pressPoint(b,1,screen.getByLabelText('バスの終点'));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything()));
+ const put=vi.mocked(invoke).mock.calls.find(c=>c[0]==='put_gameplay_ofm_bus')?.[1];
+ expect(put).not.toHaveProperty('path.pattern');
+});
+
+test('saved circuit reopens without extending; native fallback is read-only and yields to manual stop',async()=>{
+ const keys=['a'.repeat(64),'b'.repeat(64)],requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {pressPoint}=(await setup({waypoints:true,closed:true,interiorStops:true,multiple:true,savedProof:true,closedSaved:true,autoStart:false,preview:async()=>{
+  const req=requests().at(-1)![1] as {requestStopTargets?:boolean;path:{interiorStops?:{id:string;name:string;fractionQ:number}[]}};
+  return {points:[a,b,a],lengthM:760,viaPointIndices:[1],...(req.requestStopTargets?{stopOccurrenceKeys:keys}:{}),
+   ...(req.path.interiorStops?.length?{interiorStops:req.path.interiorStops.map(s=>({...s,stopId:'native:'+s.id,servesReturn:false,
+    point:{latitude:a.latitude,longitude:a.longitude+(b.longitude-a.longitude)*s.fractionQ/1_000_000}}))}:{loopFallbackStop:loopAutomatic}),
+  };
+ }}))!;
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を引き直す'}));
+ await screen.findByText('中間停留所（自動）');
+ expect(screen.getAllByLabelText('バスの起終点')).toHaveLength(1);
+ pressPoint(waypoint);
+ expect(requests()).toHaveLength(1);
+ fireEvent.keyDown(window,{key:'Escape'});
+ fireEvent.click(screen.getByRole('button',{name:'停留所を編集'}));
+ await screen.findByText(/中間停留所（自動・追加すると置き換わります）/);
+ expect(screen.queryByRole('textbox',{name:'停留所名 1'})).toBeNull();
+ pressPoint({latitude:a.latitude,longitude:139.75});
+ fireEvent.click(screen.getByRole('button',{name:/通過 1/}));
+ await screen.findByRole('textbox',{name:'停留所名 1'});
+ expect(screen.queryByText(/中間停留所（自動・追加すると置き換わります）/)).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'この停留所を外す'}));
+ await screen.findByText(/中間停留所（自動・追加すると置き換わります）/);
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+});
+
+test('new loop can still be drafted when its open prefix has no return; the prefix cannot be saved',async()=>{
+ const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {pressPoint}=(await setup({waypoints:true,closed:true,roundTrip:true,preview:async()=>{
+  const req=requests().at(-1)![1] as {path:{pattern?:string}};
+  return req.path.pattern==='closedOneWay'?{points:[a,b,a],lengthM:760,viaPointIndices:[1],loopFallbackStop:loopAutomatic}:
+   {points:[a,b],lengthM:380,returnUnavailableReason:'別方向の道路を通れません。'};
+ }}))!;
+ pressPoint(a);pressPoint(b);
+ await screen.findByText(/復路を作れません/);
+ expect((screen.getByRole('button',{name:'バス系統を確定'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.keyDown(window,{key:'Enter'});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ pressPoint(a,1,screen.getByLabelText('バスの起点'));
+ await screen.findByText('中間停留所（自動）');
+ expect(requests().at(-1)?.[1]).toMatchObject({path:{pattern:'closedOneWay'}});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
 });
