@@ -13,6 +13,7 @@ pub enum OperationError {
     InvalidClock,
     CrossingBudget,
     CrossingPlatform,
+    ReservationScopeChanged,
     Overflow,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,6 +47,20 @@ pub struct Timetable {
     pub first_departure_ms: u64,
     pub last_departure_ms: u64,
     pub headway_ms: u64,
+}
+impl Timetable {
+    // A started runtime has already accounted for every departure up to now.
+    fn next_unprocessed_departure(&self, started: bool, now_ms: u64) -> Option<u64> {
+        if !started || now_ms < self.first_departure_ms {
+            return Some(self.first_departure_ms);
+        }
+        (now_ms - self.first_departure_ms)
+            .checked_div(self.headway_ms)
+            .and_then(|n| n.checked_add(1))
+            .and_then(|n| n.checked_mul(self.headway_ms))
+            .and_then(|d| self.first_departure_ms.checked_add(d))
+            .filter(|n| *n <= self.last_departure_ms)
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,7 +134,7 @@ struct CompiledService {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
-enum RailAdmissionModel {
+pub(crate) enum RailAdmissionModel {
     Fixed = 2,
     Progressive = 3,
     TurnbackHold = 4,
@@ -591,6 +606,58 @@ impl OperationRuntime {
         self.terminal_hold() || self.inline_platform_handoff()
     }
 
+    /// Transfer only an idle clock to a freshly compiled timetable. Departures
+    /// are on the new absolute timetable grid, never replayed through the past.
+    pub(crate) fn retain_idle_clock(&mut self, previous: &Self) -> Result<(), OperationError> {
+        if !previous.paused || !previous.trains.is_empty() {
+            return Err(OperationError::InvalidClock);
+        }
+        debug_assert!(!self.started && self.trains.is_empty());
+        self.now_ms = previous.now_ms;
+        self.speed = previous.speed;
+        self.started = previous.started;
+        for service in self.services.values_mut() {
+            service.next_departure = service
+                .spec
+                .timetable
+                .next_unprocessed_departure(self.started, self.now_ms);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_started(&self) -> bool {
+        self.started
+    }
+
+    pub(crate) fn admission_model(&self) -> RailAdmissionModel {
+        self.rail_admission
+    }
+
+    /// Verify neither the admission model nor another service's run changes.
+    /// A legacy outbound-only target also stays outbound unless its physical
+    /// route already invalidated the old run and must be recompiled.
+    pub(crate) fn retains_admission(
+        &self,
+        previous: &Self,
+        edited_service: &str,
+        previous_invalidated: bool,
+    ) -> bool {
+        self.rail_admission == previous.rail_admission
+            && previous.services.iter().all(|(id, before)| {
+                let Some(after) = self.services.get(id) else {
+                    return false;
+                };
+                if id != edited_service {
+                    return after.spec == before.spec;
+                }
+                previous_invalidated
+                    || (before.spec.legs.len() == after.spec.legs.len()
+                        && before.spec.legs.iter().zip(&after.spec.legs).all(|(a, b)| {
+                            a.from == b.from && a.to == b.to && a.sections == b.sections
+                        }))
+            })
+    }
+
     pub fn paused(&self) -> bool {
         self.paused
     }
@@ -1052,16 +1119,7 @@ impl OperationRuntime {
                     return Err(OperationError::InvalidTimetable);
                 }
             }
-            let expected = if !saved.started || saved.now_ms < table.first_departure_ms {
-                Some(table.first_departure_ms)
-            } else {
-                (saved.now_ms - table.first_departure_ms)
-                    .checked_div(table.headway_ms)
-                    .and_then(|n| n.checked_add(1))
-                    .and_then(|n| n.checked_mul(table.headway_ms))
-                    .and_then(|d| table.first_departure_ms.checked_add(d))
-                    .filter(|n| *n <= table.last_departure_ms)
-            };
+            let expected = table.next_unprocessed_departure(saved.started, saved.now_ms);
             if next != expected {
                 return Err(OperationError::InvalidTimetable);
             }

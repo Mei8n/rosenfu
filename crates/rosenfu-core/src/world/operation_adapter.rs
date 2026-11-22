@@ -1,8 +1,8 @@
 //! Authoritative physical service path adapter. Never uses screen coordinates.
 use super::*;
 use crate::operation::{
-    inline_lane_key, inline_platform_handoff, OperationError, RunLeg, Section, ServiceRunSpec,
-    Timetable, Vehicle,
+    inline_lane_key, inline_platform_handoff, OperationError, OperationRuntime, RailAdmissionModel,
+    RunLeg, Section, ServiceRunSpec, Timetable, Vehicle,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -868,6 +868,50 @@ impl World {
         configs: Vec<OperationServiceConfig>,
         bus_configs: Vec<BusOperationConfig>,
     ) -> Result<(), OperationError> {
+        self.operation = Some(self.compile_all_operation(configs, bus_configs, None)?);
+        Ok(())
+    }
+
+    /// Update configurations without replacing or replaying any active train.
+    /// A caller may not silently discard a pending catch-up target.
+    pub fn reconfigure_idle_operation(
+        &mut self,
+        configs: Vec<OperationServiceConfig>,
+        bus_configs: Vec<BusOperationConfig>,
+        edited_service: &str,
+    ) -> Result<(), OperationError> {
+        let old = self.operation.as_ref();
+        if old.is_some_and(|op| {
+            !op.runtime.paused()
+                || op.runtime.trains().next().is_some()
+                || op.pending_target.is_some()
+        }) {
+            return Err(OperationError::InvalidClock);
+        }
+        let started = old.filter(|old| old.runtime.has_started());
+        let previous_admission = started.map(|old| old.runtime.admission_model());
+        let mut candidate = self.compile_all_operation(configs, bus_configs, previous_admission)?;
+        if let Some(old) = started {
+            if !candidate
+                .runtime
+                .retains_admission(&old.runtime, edited_service, old.invalidated)
+            {
+                return Err(OperationError::ReservationScopeChanged);
+            }
+        }
+        if let Some(old) = old {
+            candidate.runtime.retain_idle_clock(&old.runtime)?;
+        }
+        self.operation = Some(candidate);
+        Ok(())
+    }
+
+    fn compile_all_operation(
+        &self,
+        configs: Vec<OperationServiceConfig>,
+        bus_configs: Vec<BusOperationConfig>,
+        previous_admission: Option<RailAdmissionModel>,
+    ) -> Result<WorldOperation, OperationError> {
         let crossings = self.active_flat_crossings(&configs, MAX_CROSSING_PAIR_CHECKS)?;
         let mut specs = Vec::with_capacity(configs.len() + bus_configs.len());
         let mut crossing_refs = 0usize;
@@ -889,25 +933,44 @@ impl World {
         for config in &bus_configs {
             specs.push(self.compile_bus_operation(config)?);
         }
-        let runtime = if bus_configs.is_empty() && self.terminal_hold_eligible(&configs, &specs) {
-            crate::operation::OperationRuntime::new_with_terminal_hold(specs)?
-        } else if bus_configs.is_empty() && self.inline_handoff_eligible(&configs, &specs) {
-            crate::operation::OperationRuntime::new_with_inline_platform_handoff(specs)?
-        } else if bus_configs.is_empty() && self.inline_terminal_dwell_eligible(&configs, &specs) {
-            crate::operation::OperationRuntime::new_with_inline_terminal_dwell(specs)?
-        } else if bus_configs.is_empty() && self.following_eligible(&configs, &specs) {
-            crate::operation::OperationRuntime::new_with_progressive_rail(specs)?
-        } else {
-            crate::operation::OperationRuntime::new(specs)?
+        use RailAdmissionModel::*;
+        let qualifies = |mode| match mode {
+            Fixed => true,
+            _ if !bus_configs.is_empty() => false,
+            TurnbackHold => self.terminal_hold_eligible(&configs, &specs),
+            InlinePlatformHandoff => self.inline_handoff_eligible(&configs, &specs),
+            InlineTerminalDwell => self.inline_terminal_dwell_eligible(&configs, &specs),
+            Progressive => self.following_eligible(&configs, &specs),
         };
-        self.operation = Some(WorldOperation {
+        // Fresh setup can choose a current supported model. A local edit of
+        // an existing simulation must not choose a newer one for the world.
+        let admission = match previous_admission {
+            Some(mode) if qualifies(mode) => mode,
+            Some(_) => return Err(OperationError::ReservationScopeChanged),
+            None => [
+                TurnbackHold,
+                InlinePlatformHandoff,
+                InlineTerminalDwell,
+                Progressive,
+            ]
+            .into_iter()
+            .find(|mode| qualifies(*mode))
+            .unwrap_or(Fixed),
+        };
+        let runtime = match admission {
+            Fixed => OperationRuntime::new(specs)?,
+            Progressive => OperationRuntime::new_with_progressive_rail(specs)?,
+            TurnbackHold => OperationRuntime::new_with_terminal_hold(specs)?,
+            InlineTerminalDwell => OperationRuntime::new_with_inline_terminal_dwell(specs)?,
+            InlinePlatformHandoff => OperationRuntime::new_with_inline_platform_handoff(specs)?,
+        };
+        Ok(WorldOperation {
             configs,
             bus_configs,
             runtime,
             invalidated: false,
             pending_target: None,
-        });
-        Ok(())
+        })
     }
     pub fn operation_save(&self) -> Option<WorldOperationSave> {
         self.operation.as_ref().map(|o| WorldOperationSave {
@@ -2299,6 +2362,57 @@ mod tests {
             1000,
         ));
         (world, configs)
+    }
+
+    #[test]
+    fn idle_timetable_edit_retains_legacy_progressive_instead_of_selecting_inline_dwell() {
+        let (mut world, mut configs) = inline_platform_fixture(30_000, true);
+        for config in &mut configs {
+            config.timetable.first_departure_ms += 500_000;
+            config.timetable.last_departure_ms += 500_000;
+        }
+        world.configure_operation(configs.clone()).unwrap();
+        assert_eq!(world.operation_save().unwrap().runtime.format, 5);
+        let specs = configs
+            .iter()
+            .map(|config| world.compile_operation(config))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let legacy = crate::operation::OperationRuntime::new_with_progressive_rail(specs).unwrap();
+        let runtime = &mut world.operation_mut().unwrap().runtime;
+        *runtime = legacy;
+        runtime.advance_to(200_000, 128).unwrap();
+        let mut reopened = World::new(world.snapshot().clone()).unwrap();
+        reopened.restore_operation(world.operation_save()).unwrap();
+        let unaffected = configs[0].service_id.0.to_string();
+        let run_before = reopened
+            .operation()
+            .unwrap()
+            .runtime
+            .service_spec(&unaffected)
+            .unwrap()
+            .clone();
+        let target = configs[2].service_id.0.to_string();
+        configs[2].timetable.first_departure_ms += 1_000;
+        configs[2].timetable.last_departure_ms += 1_000;
+        reopened
+            .reconfigure_idle_operation(configs.clone(), vec![], &target)
+            .unwrap();
+        let after = reopened.operation_save().unwrap();
+        assert_eq!(after.runtime.format, 3);
+        assert_eq!(after.runtime.now_ms, 200_000);
+        assert_eq!(after.configs, configs);
+        assert_eq!(
+            reopened
+                .operation()
+                .unwrap()
+                .runtime
+                .service_spec(&unaffected),
+            Some(&run_before)
+        );
+        let mut restored = World::new(reopened.snapshot().clone()).unwrap();
+        restored.restore_operation(Some(after)).unwrap();
+        assert_eq!(restored.operation_save(), reopened.operation_save());
     }
 
     #[test]

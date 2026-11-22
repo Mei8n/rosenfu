@@ -353,3 +353,67 @@ fn parked_lane_owner_and_timeline_are_verified_on_restore() {
     edited.configure_operation(c).unwrap();
     assert_eq!(edited.operation_save().unwrap().runtime.format, 2);
 }
+
+#[test]
+fn idle_edit_preserves_an_authentic_fixed_admission_save_and_unrelated_replay() {
+    let (mut world, mut configs) = corridor();
+    for config in &mut configs {
+        config.timetable.first_departure_ms += 500_000;
+        config.timetable.last_departure_ms += 500_000;
+    }
+    world.configure_operation(configs.clone()).unwrap();
+    assert_eq!(world.operation_save().unwrap().runtime.format, 6);
+    let modern = world.clone();
+    let legacy_specs = configs
+        .iter()
+        .map(|config| world.compile_operation(config))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    world.operation_mut().unwrap().runtime = OperationRuntime::new(legacy_specs).unwrap();
+    advance(&mut world, 200_000);
+    let mut reopened = rosenfu_storage::decode(&rosenfu_storage::encode(&world).unwrap()).unwrap();
+    assert_eq!(reopened, world);
+    let target = configs[3].service_id.0.to_string();
+    let unaffected_replay = |world: &World| {
+        world
+            .operation()
+            .unwrap()
+            .runtime
+            .preview_passenger_replay(900_000, 256)
+            .unwrap()
+            .completed_legs
+            .into_iter()
+            .filter(|leg| leg.train.service_id != target)
+            .collect::<Vec<_>>()
+    };
+    let old = unaffected_replay(&world);
+    assert!(!old.is_empty());
+    configs[3].timetable.first_departure_ms += 1_000;
+    configs[3].timetable.last_departure_ms += 1_000;
+    reopened
+        .reconfigure_idle_operation(configs.clone(), vec![], &target)
+        .unwrap();
+    let state = reopened.operation_save().unwrap();
+    assert_eq!(state.runtime.format, 2);
+    assert_eq!(state.configs, configs);
+    assert_eq!(state.runtime.now_ms, 200_000);
+    assert_eq!(unaffected_replay(&reopened), old);
+    assert_eq!(
+        rosenfu_storage::decode(&rosenfu_storage::encode(&reopened).unwrap()).unwrap(),
+        reopened
+    );
+
+    // The same API must refuse a new vehicle that would downgrade the
+    // whole running model, even with no current trains.
+    let mut modern = modern;
+    advance(&mut modern, 200_000);
+    let mut disqualified = modern.operation().unwrap().configs.clone();
+    disqualified[0].vehicle.length_m = 120.;
+    let first = disqualified[0].service_id.0.to_string();
+    let bytes = rosenfu_storage::encode(&modern).unwrap();
+    assert_eq!(
+        modern.reconfigure_idle_operation(disqualified, vec![], &first),
+        Err(OperationError::ReservationScopeChanged)
+    );
+    assert_eq!(rosenfu_storage::encode(&modern).unwrap(), bytes);
+}
