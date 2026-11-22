@@ -39,6 +39,10 @@ pub struct OperationLiveView {
     pub catching_up: bool,
     pub timetable_edit_token: String,
     pub timetable_edit_blocker: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rail_timetable_handoff_available: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rail_timetable_handoff_in_progress: bool,
     pub configuration_token: String,
     pub trains: Vec<OperationLiveTrain>,
 }
@@ -128,12 +132,26 @@ impl WorldEditor {
         None
     }
 
-    fn require_timetable_edit(&self, expected: &str) -> Result<(), String> {
+    fn rail_timetable_handoff_available(&self) -> bool {
+        self.world.operation().is_some_and(|op| {
+            !op.invalidated
+                && op.pending_target.is_none()
+                && op.runtime.paused()
+                && op.runtime.trains().next().is_some()
+        })
+    }
+
+    fn require_current_timetable_token(&self, expected: &str) -> Result<(), String> {
         if expected != self.operation_edit_token() {
             return Err(
                 "ワールドまたは運行状態が変更されました。最新の運行状態を確認してください。".into(),
             );
         }
+        Ok(())
+    }
+
+    fn require_timetable_edit(&self, expected: &str) -> Result<(), String> {
+        self.require_current_timetable_token(expected)?;
         self.timetable_edit_blocker()
             .map_or(Ok(()), |reason| Err(reason.into()))
     }
@@ -225,6 +243,9 @@ impl WorldEditor {
             catching_up: o.is_some_and(|o| o.pending_target.is_some()),
             timetable_edit_token: format!("{configuration_token}:{now_ms}"),
             timetable_edit_blocker: self.timetable_edit_blocker(),
+            rail_timetable_handoff_available: self.rail_timetable_handoff_available(),
+            rail_timetable_handoff_in_progress: o
+                .is_some_and(|op| op.runtime.rail_timetable_handoff_in_progress()),
             configuration_token,
             trains: o
                 .map(|o| {
@@ -302,18 +323,38 @@ impl WorldEditor {
         {
             return Err("自社の系統を選択してください。".into());
         }
-        self.require_timetable_edit(expected_operation_token)?;
-        let mut configs = self
-            .world
-            .operation()
-            .map(|o| o.configs.clone())
-            .unwrap_or_default();
+        self.require_current_timetable_token(expected_operation_token)?;
         let request = OperationServiceConfig {
             service_id,
             timetable,
             vehicle,
             dwell_ms,
         };
+        if self.rail_timetable_handoff_available() {
+            let mut candidate = self.world.clone();
+            candidate.handoff_active_rail_timetable(request).map_err(|e| match e {
+                rosenfu_core::operation::OperationError::TimetableHandoffPending =>
+                    "前のダイヤで発車した列車が残っています。その列車の運行が終わってから再変更してください。".to_owned(),
+                rosenfu_core::operation::OperationError::ReservationScopeChanged =>
+                    "列車が残っている間は今後の発車時刻だけ変更できます。車両と停車時間は変更していません。".to_owned(),
+                rosenfu_core::operation::OperationError::InvalidTimetable =>
+                    "現在時刻より後に少なくとも1便が必要です。ダイヤは変更していません。".to_owned(),
+                rosenfu_core::operation::OperationError::InvalidPath =>
+                    "運行が残っている間は、設定済みの鉄道系統の今後の発車時刻だけ変更できます。".to_owned(),
+                _ => format!("運行設定を適用できません: {e:?}"),
+            })?;
+            rosenfu_storage::ensure_world_saveable(&candidate).map_err(|e| e.to_string())?;
+            self.world = candidate;
+            self.operation_tick = None;
+            self.update_operation_revision();
+            return Ok(self.operation_snapshot());
+        }
+        self.require_timetable_edit(expected_operation_token)?;
+        let mut configs = self
+            .world
+            .operation()
+            .map(|o| o.configs.clone())
+            .unwrap_or_default();
         if let Some(prior) = configs.iter_mut().find(|c| c.service_id == service_id) {
             *prior = request;
         } else {
@@ -1640,10 +1681,17 @@ mod tests {
             .unwrap();
         let active = rosenfu_storage::encode(&e.world).unwrap();
         let active_token = e.operation_edit_token();
-        assert!(set_rail(&mut e, edit.clone(), &active_token)
+        assert!(e
+            .configure_operation_service(
+                initial.service_id,
+                edit.clone(),
+                initial.vehicle.clone(),
+                initial.dwell_ms + 1,
+                &active_token
+            )
             .err()
             .unwrap()
-            .contains("列車やバス"));
+            .contains("停車時間"));
         assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), active);
         assert_eq!(e.operation_edit_token(), active_token);
         {
@@ -1737,6 +1785,145 @@ mod tests {
         runtime.advance_to(280_000, 100).unwrap();
         assert_eq!(runtime.trains().count(), 1);
         assert_eq!(runtime.trains().next().unwrap().key.service_id, "bus:R");
+    }
+
+    #[test]
+    fn active_rail_timetable_handoff_has_a_disk_roundtrip_and_never_replays_old_dispatch() {
+        let mut e = editor();
+        let prior = e.operation_snapshot().services[0].clone();
+        let initial = Timetable {
+            first_departure_ms: 0,
+            last_departure_ms: 120_000,
+            headway_ms: 60_000,
+        };
+        let edit = Timetable {
+            first_departure_ms: 90_000,
+            last_departure_ms: 180_000,
+            headway_ms: 90_000,
+        };
+        let set = |e: &mut WorldEditor, timetable: Timetable, tok: &str| {
+            e.configure_operation_service(
+                prior.service_id,
+                timetable,
+                prior.vehicle.clone(),
+                prior.dwell_ms,
+                tok,
+            )
+        };
+        let tok = e.operation_edit_token();
+        set(&mut e, initial, &tok).unwrap();
+        add_test_bus(
+            &mut e,
+            Timetable {
+                first_departure_ms: 70_000,
+                last_departure_ms: 130_000,
+                headway_ms: 60_000,
+            },
+        );
+        e.world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(35_000, 100)
+            .unwrap();
+        let before = e.operation_snapshot();
+        let trial = rosenfu_core::operation::service_planning::FleetPlanningRequest::TimedHeadway {
+            headway_ms: edit.headway_ms,
+        };
+        let nominal = e
+            .preview_nominal_trainsets(prior.service_id, &before.configuration_token, trial)
+            .unwrap();
+        assert!(before.rail_timetable_handoff_available);
+        assert_eq!(before.trains[0].key.scheduled_ms, 0);
+        let paused = rosenfu_storage::encode(&e.world).unwrap();
+        e.world.operation_mut().unwrap().pending_target = Some(36_000);
+        assert!(!e.operation_snapshot().rail_timetable_handoff_available);
+        assert!(set(&mut e, edit.clone(), &before.timetable_edit_token).is_err());
+        e.world.operation_mut().unwrap().pending_target = None;
+        e.world.operation_mut().unwrap().invalidated = true;
+        assert!(!e.operation_snapshot().rail_timetable_handoff_available);
+        assert!(set(&mut e, edit.clone(), &before.timetable_edit_token).is_err());
+        e.world.operation_mut().unwrap().invalidated = false;
+        assert_eq!(paused, rosenfu_storage::encode(&e.world).unwrap());
+
+        let after = set(&mut e, edit.clone(), &before.timetable_edit_token).unwrap();
+        assert_eq!(after.now_ms, before.now_ms);
+        assert_eq!(after.trains, before.trains);
+        assert_eq!(after.bus_services, before.bus_services);
+        assert_eq!(after.services[0].timetable, edit);
+        assert!(
+            serde_json::to_value(&after.live).unwrap()["rail_timetable_handoff_in_progress"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_ne!(after.timetable_edit_token, before.timetable_edit_token);
+        assert!(set(&mut e, edit, &before.timetable_edit_token).is_err());
+        assert!(e
+            .preview_nominal_trainsets(prior.service_id, &before.configuration_token, trial)
+            .is_err());
+        assert_eq!(
+            e.preview_nominal_trainsets(prior.service_id, &after.configuration_token, trial)
+                .unwrap(),
+            nominal
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("handoff.rosenfu");
+        e.save(&file).unwrap();
+        let mixed = e.world.operation_save().unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&file).unwrap();
+        assert_eq!(reopened.world.operation_save(), Some(mixed));
+        assert!(
+            reopened
+                .operation_snapshot()
+                .rail_timetable_handoff_in_progress
+        );
+        let full = e
+            .world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(600_000, 1000)
+            .unwrap()
+            .arrivals;
+        let chunks = (40_000..=600_000)
+            .step_by(5_000)
+            .flat_map(|at| {
+                reopened
+                    .world
+                    .operation_mut()
+                    .unwrap()
+                    .runtime
+                    .advance_to(at, 1000)
+                    .unwrap()
+                    .arrivals
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks, full);
+        assert_eq!(reopened.world.operation_save(), e.world.operation_save());
+        assert!(
+            !reopened
+                .operation_snapshot()
+                .rail_timetable_handoff_in_progress
+        );
+        assert!(serde_json::to_value(&reopened.operation_snapshot().live)
+            .unwrap()
+            .get("rail_timetable_handoff_in_progress")
+            .is_none());
+        let rail = prior.service_id.0.to_string();
+        let rail_births = full
+            .iter()
+            .filter(|arrival| arrival.train.service_id == rail)
+            .map(|arrival| arrival.train.scheduled_ms)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rail_births, [0, 90_000, 180_000].into_iter().collect());
+        let buses = full
+            .iter()
+            .filter(|arrival| arrival.train.service_id.starts_with("bus:"))
+            .map(|arrival| arrival.train.scheduled_ms)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(buses, [70_000, 130_000].into_iter().collect());
     }
 
     #[test]

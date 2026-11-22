@@ -15,6 +15,7 @@ pub enum OperationError {
     CrossingBudget,
     CrossingPlatform,
     ReservationScopeChanged,
+    TimetableHandoffPending,
     Overflow,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,6 +51,16 @@ pub struct Timetable {
     pub headway_ms: u64,
 }
 impl Timetable {
+    fn is_valid(&self) -> bool {
+        self.headway_ms != 0 && self.first_departure_ms <= self.last_departure_ms
+    }
+
+    fn contains(&self, departure_ms: u64) -> bool {
+        departure_ms >= self.first_departure_ms
+            && departure_ms <= self.last_departure_ms
+            && (departure_ms - self.first_departure_ms).checked_rem(self.headway_ms) == Some(0)
+    }
+
     // A started runtime has already accounted for every departure up to now.
     fn next_unprocessed_departure(&self, started: bool, now_ms: u64) -> Option<u64> {
         if !started || now_ms < self.first_departure_ms {
@@ -160,6 +171,7 @@ struct CompiledLeg {
 struct CompiledService {
     spec: ServiceRunSpec,
     legs: Vec<CompiledLeg>,
+    journey_ms: u64,
     next_departure: Option<u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,8 +207,16 @@ pub struct OperationRuntime {
     services: BTreeMap<String, CompiledService>,
     trains: BTreeMap<TrainKey, Train>,
     occupied: BTreeMap<String, TrainKey>,
+    timetable_handoffs: BTreeMap<String, TimetableHandoff>,
     rail_admission: RailAdmissionModel,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TimetableHandoff {
+    cutover_ms: u64,
+    previous: Timetable,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationSave {
@@ -208,6 +228,8 @@ pub struct OperationSave {
     pub services: Vec<ServiceRunSpec>,
     pub trains: Vec<Train>,
     pub next_departures: Vec<(String, Option<u64>)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    timetable_handoffs: Vec<(String, TimetableHandoff)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvanceResult {
@@ -566,8 +588,7 @@ impl OperationRuntime {
             let t = &spec.timetable;
             if spec.service_id.trim().is_empty()
                 || services.contains_key(&spec.service_id)
-                || t.headway_ms == 0
-                || t.first_departure_ms > t.last_departure_ms
+                || !t.is_valid()
             {
                 return Err(OperationError::InvalidTimetable);
             }
@@ -710,6 +731,7 @@ impl OperationRuntime {
                 CompiledService {
                     spec,
                     legs,
+                    journey_ms: journey,
                     next_departure,
                 },
             );
@@ -723,6 +745,7 @@ impl OperationRuntime {
             services,
             trains: BTreeMap::new(),
             occupied: BTreeMap::new(),
+            timetable_handoffs: BTreeMap::new(),
             rail_admission,
         })
     }
@@ -796,6 +819,69 @@ impl OperationRuntime {
         Ok(())
     }
 
+    fn has_live_birth_at_or_before(
+        trains: &BTreeMap<TrainKey, Train>,
+        id: &str,
+        time: u64,
+    ) -> bool {
+        let first = TrainKey {
+            service_id: id.to_owned(),
+            scheduled_ms: 0,
+        };
+        trains
+            .range(first..)
+            .next()
+            .is_some_and(|(key, _)| key.service_id == id && key.scheduled_ms <= time)
+    }
+
+    /// Future dispatch only: all current trains and compiled leases stay in place.
+    /// One previous grid per affected service is sufficient; refuse overlapping
+    /// handoffs rather than accepting a birth not proven by its original grid.
+    pub(crate) fn handoff_rail_timetable(
+        &mut self,
+        id: &str,
+        timetable: Timetable,
+    ) -> Result<(), OperationError> {
+        if !self.paused || !self.started || self.trains.is_empty() {
+            return Err(OperationError::InvalidClock);
+        }
+        if id.parse::<u64>().is_err() {
+            return Err(OperationError::InvalidPath);
+        }
+        let service = self
+            .services
+            .get_mut(id)
+            .ok_or(OperationError::InvalidPath)?;
+        if service.spec.timetable == timetable {
+            return Ok(());
+        }
+        if !timetable.is_valid() {
+            return Err(OperationError::InvalidTimetable);
+        }
+        let next = timetable
+            .next_unprocessed_departure(true, self.now_ms)
+            .ok_or(OperationError::InvalidTimetable)?;
+        timetable
+            .last_departure_ms
+            .checked_add(service.journey_ms)
+            .ok_or(OperationError::Overflow)?;
+        if self.timetable_handoffs.contains_key(id) {
+            return Err(OperationError::TimetableHandoffPending);
+        }
+        if Self::has_live_birth_at_or_before(&self.trains, id, self.now_ms) {
+            self.timetable_handoffs.insert(
+                id.to_owned(),
+                TimetableHandoff {
+                    cutover_ms: self.now_ms,
+                    previous: service.spec.timetable.clone(),
+                },
+            );
+        }
+        service.spec.timetable = timetable;
+        service.next_departure = Some(next);
+        Ok(())
+    }
+
     pub(crate) fn has_started(&self) -> bool {
         self.started
     }
@@ -841,6 +927,11 @@ impl OperationRuntime {
     pub fn now_ms(&self) -> u64 {
         self.now_ms
     }
+    /// True while a save still needs a prior rail timetable to validate live births.
+    pub fn rail_timetable_handoff_in_progress(&self) -> bool {
+        !self.timetable_handoffs.is_empty()
+    }
+
     pub fn trains(&self) -> impl Iterator<Item = &Train> {
         self.trains.values()
     }
@@ -1106,6 +1197,8 @@ impl OperationRuntime {
                 started: self.started,
                 time_margin_ms: self.time_margin_ms,
                 rail_admission: self.rail_admission,
+                // Replay does not serialize or validate historical births.
+                timetable_handoffs: BTreeMap::new(),
                 services: self
                     .services
                     .iter()
@@ -1161,7 +1254,13 @@ impl OperationRuntime {
         target: u64,
         event_budget: usize,
     ) -> Result<AdvanceResult, OperationError> {
-        self.advance_to_inner(target, event_budget, None)
+        let result = self.advance_to_inner(target, event_budget, None)?;
+        if !self.timetable_handoffs.is_empty() {
+            self.timetable_handoffs.retain(|id, handoff| {
+                Self::has_live_birth_at_or_before(&self.trains, id, handoff.cutover_ms)
+            });
+        }
+        Ok(result)
     }
 
     fn advance_to_inner(
@@ -1391,6 +1490,11 @@ impl OperationRuntime {
             paused: self.paused,
             speed: self.speed,
             services: self.services.values().map(|s| s.spec.clone()).collect(),
+            timetable_handoffs: self
+                .timetable_handoffs
+                .iter()
+                .map(|(id, handoff)| (id.clone(), handoff.clone()))
+                .collect(),
         }
     }
     pub fn restore(saved: OperationSave) -> Result<Self, OperationError> {
@@ -1481,6 +1585,34 @@ impl OperationRuntime {
             }
             service.next_departure = next;
         }
+        if saved.timetable_handoffs.len() > runtime.services.len() {
+            return Err(OperationError::InvalidTimetable);
+        }
+        for (id, handoff) in saved.timetable_handoffs {
+            let service = runtime
+                .services
+                .get(&id)
+                .ok_or(OperationError::InvalidTimetable)?;
+            if !saved.started
+                || id.parse::<u64>().is_err()
+                || handoff.cutover_ms > saved.now_ms
+                || !handoff.previous.is_valid()
+                || handoff.previous == service.spec.timetable
+                || service
+                    .spec
+                    .timetable
+                    .next_unprocessed_departure(true, handoff.cutover_ms)
+                    .is_none()
+                || handoff
+                    .previous
+                    .last_departure_ms
+                    .checked_add(service.journey_ms)
+                    .is_none()
+                || runtime.timetable_handoffs.insert(id, handoff).is_some()
+            {
+                return Err(OperationError::InvalidTimetable);
+            }
+        }
         for train in saved.trains {
             let service = runtime
                 .services
@@ -1490,12 +1622,12 @@ impl OperationRuntime {
                 .legs
                 .get(train.leg)
                 .ok_or(OperationError::InvalidPath)?;
-            let table = &service.spec.timetable;
-            if train.key.scheduled_ms > saved.now_ms
-                || train.key.scheduled_ms < table.first_departure_ms
-                || train.key.scheduled_ms > table.last_departure_ms
-                || (train.key.scheduled_ms - table.first_departure_ms) % table.headway_ms != 0
-            {
+            let table = runtime
+                .timetable_handoffs
+                .get(&train.key.service_id)
+                .filter(|handoff| train.key.scheduled_ms <= handoff.cutover_ms)
+                .map_or(&service.spec.timetable, |handoff| &handoff.previous);
+            if train.key.scheduled_ms > saved.now_ms || !table.contains(train.key.scheduled_ms) {
                 return Err(OperationError::InvalidTimetable);
             }
             // Inline-terminal services have only their first leg. Their initial
@@ -1615,6 +1747,11 @@ impl OperationRuntime {
                     return Err(OperationError::InvalidClock);
                 }
             }
+        }
+        if runtime.timetable_handoffs.iter().any(|(id, handoff)| {
+            !Self::has_live_birth_at_or_before(&runtime.trains, id, handoff.cutover_ms)
+        }) {
+            return Err(OperationError::InvalidTimetable);
         }
         runtime.paused = saved.paused;
         Ok(runtime)

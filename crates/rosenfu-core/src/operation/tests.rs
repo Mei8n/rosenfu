@@ -582,3 +582,118 @@ fn current_rail_wait_reports_actual_join_lane_and_unknown_owners() {
         assert_eq!(runtime.rail_wait_reason(&key), None);
     }
 }
+
+#[test]
+fn active_rail_schedule_cutover_keeps_occupancy_and_original_births() {
+    let mut a = service("1", "rail:1:section:0:lane:0");
+    a.legs[0].sections[0].length_m = 1_000.;
+    a.timetable.last_departure_ms = 120_000;
+    let mut b = service("2", "rail:2:section:0:lane:0");
+    b.timetable = Timetable {
+        first_departure_ms: 10_000,
+        last_departure_ms: 130_000,
+        headway_ms: 60_000,
+    };
+    let mut current = OperationRuntime::new(vec![a, b]).unwrap();
+    current.advance_to(35_000, 100).unwrap();
+    let old = current.clone();
+    let requested = Timetable {
+        first_departure_ms: 90_000,
+        last_departure_ms: 180_000,
+        headway_ms: 90_000,
+    };
+    current.set_paused(false);
+    assert_eq!(
+        current.handoff_rail_timetable("1", requested.clone()),
+        Err(OperationError::InvalidClock)
+    );
+    current.set_paused(true);
+    current
+        .handoff_rail_timetable("1", requested.clone())
+        .unwrap();
+    assert_eq!(current.trains, old.trains);
+    assert_eq!(current.occupied, old.occupied);
+    assert_eq!(current.services["2"], old.services["2"]);
+    assert_eq!(current.rail_admission, old.rail_admission);
+    assert_eq!(current.now_ms(), 35_000);
+    assert!(current.paused());
+    let mixed = current.save();
+    assert_eq!(
+        mixed.next_departures,
+        vec![
+            ("1".to_owned(), Some(90_000)),
+            ("2".to_owned(), Some(70_000))
+        ]
+    );
+    assert_eq!(mixed.timetable_handoffs.len(), 1);
+    let mut another = requested.clone();
+    another.headway_ms = 120_000;
+    assert_eq!(
+        current.handoff_rail_timetable("1", another),
+        Err(OperationError::TimetableHandoffPending)
+    );
+    assert_eq!(current.save(), mixed);
+    let mut altered = mixed.clone();
+    altered.timetable_handoffs.clear();
+    assert_eq!(
+        OperationRuntime::restore(altered),
+        Err(OperationError::InvalidTimetable)
+    );
+    let mut altered = mixed.clone();
+    altered.timetable_handoffs[0].1.cutover_ms = 36_000;
+    assert_eq!(
+        OperationRuntime::restore(altered),
+        Err(OperationError::InvalidTimetable)
+    );
+    let mut altered = mixed.clone();
+    altered.next_departures[0].1 = Some(60_000);
+    assert_eq!(
+        OperationRuntime::restore(altered),
+        Err(OperationError::InvalidTimetable)
+    );
+
+    let mut reopened = OperationRuntime::restore(
+        serde_json::from_slice(&serde_json::to_vec(&mixed).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reopened, current);
+    let expected = current.advance_to(300_000, 100).unwrap().arrivals;
+    let actual = (40_000..=300_000)
+        .step_by(5_000)
+        .flat_map(|now| reopened.advance_to(now, 100).unwrap().arrivals)
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+    assert_eq!(reopened, current);
+    assert!(current.save().timetable_handoffs.is_empty());
+    let births = |id| {
+        expected
+            .iter()
+            .filter(|e| e.train.service_id == id)
+            .map(|e| e.train.scheduled_ms)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(births("1"), [0, 90_000, 180_000]);
+    assert_eq!(births("2"), [70_000, 130_000]);
+}
+
+#[test]
+fn live_cutover_never_spawns_a_departure_equal_to_its_processed_boundary() {
+    let mut a = service("1", "rail:1:section:0:lane:0");
+    a.legs[0].sections[0].length_m = 1_000.;
+    let mut runtime = OperationRuntime::new(vec![a]).unwrap();
+    runtime.advance_to(35_000, 100).unwrap();
+    runtime
+        .handoff_rail_timetable(
+            "1",
+            Timetable {
+                first_departure_ms: 35_000,
+                last_departure_ms: 95_000,
+                headway_ms: 60_000,
+            },
+        )
+        .unwrap();
+    assert_eq!(runtime.services["1"].next_departure, Some(95_000));
+    assert_eq!(runtime.advance_to(35_000, 100).unwrap().arrivals, []);
+    assert_eq!(runtime.trains().count(), 1);
+    assert_eq!(OperationRuntime::restore(runtime.save()).unwrap(), runtime);
+}

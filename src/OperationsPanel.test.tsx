@@ -292,3 +292,29 @@ test('a mismatched compact token is rejected instead of borrowing stale timetabl
  expect(screen.getByText('2日目 00:00')).toBeTruthy();
  expect(screen.getByText('この系統のダイヤは未設定です。')).toBeTruthy();
 });
+
+test('the active handoff exposes only the existing rail timetable and submits unchanged vehicle and dwell', async()=>{
+ const paused={...snapshot,now_ms:35000,timetable_edit_blocker:'車両が走行中',rail_timetable_handoff_available:true,services:[config]};
+ vi.mocked(invoke).mockResolvedValue(paused);
+ render(operation());
+ const submit=await screen.findByRole('button',{name:'今後の発車時刻を変更'});
+ expect((screen.getByLabelText('駅の停車時間（秒）') as HTMLInputElement).disabled).toBe(true);
+ expect((screen.getByLabelText('最高速度（km/h）') as HTMLInputElement).disabled).toBe(true);
+ fireEvent.change(screen.getByLabelText('初発時刻'),{target:{value:'00:01:30'}});
+ fireEvent.click(submit);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('configure_operation_service',{
+  serviceId:'12',expectedOperationToken:'initial-token',timetable:{...config.timetable,first_departure_ms:90000},
+  vehicle:config.vehicle,dwellMs:config.dwell_ms
+ }));
+});
+
+test('clock warns about older builds only while native reports mixed timetable births',async()=>{
+ vi.mocked(invoke).mockImplementation(async command=>command==='operation_snapshot'
+  ?{...snapshot,rail_timetable_handoff_in_progress:true,services:[config]}
+  :{...snapshot,services:[config]});
+ render(operation());
+ const notice=await screen.findByText(/この間に保存したデータは旧ビルドでは開けません/);
+ expect(notice.getAttribute('role')).toBe('status');
+ fireEvent.change(screen.getByLabelText('速度'),{target:{value:'4'}});
+ await waitFor(()=>expect(screen.queryByText(/この間に保存したデータは旧ビルドでは開けません/)).toBeNull());
+});

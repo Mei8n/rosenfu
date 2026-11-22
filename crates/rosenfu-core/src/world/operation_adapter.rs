@@ -904,6 +904,31 @@ impl World {
         self.reconfigure_idle_operation_with_policy(configs, bus_configs, edited_service, false)
     }
 
+    /// Change only the future departure grid of an already configured rail
+    /// service. Occupied track, vehicle, dwell and all other services stay put.
+    pub fn handoff_active_rail_timetable(
+        &mut self,
+        request: OperationServiceConfig,
+    ) -> Result<(), OperationError> {
+        let operation = self.operation.as_mut().ok_or(OperationError::InvalidPath)?;
+        if operation.invalidated || operation.pending_target.is_some() {
+            return Err(OperationError::InvalidClock);
+        }
+        let existing = operation
+            .configs
+            .iter_mut()
+            .find(|old| old.service_id == request.service_id)
+            .ok_or(OperationError::InvalidPath)?;
+        if existing.vehicle != request.vehicle || existing.dwell_ms != request.dwell_ms {
+            return Err(OperationError::ReservationScopeChanged);
+        }
+        operation
+            .runtime
+            .handoff_rail_timetable(&request.service_id.0.to_string(), request.timetable.clone())?;
+        existing.timetable = request.timetable;
+        Ok(())
+    }
+
     /// Revalidate an idle service-path edit without selecting a different
     /// admission model, even if the currently configured world has yet to run.
     /// Only use this on an isolated candidate whose path edit invalidated the

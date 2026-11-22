@@ -9,7 +9,7 @@ type Config={timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type ServiceConfig=Config&{service_id:string};
 type BusConfig=Config&{route_id:string;assumed_speed_kmh:number;turnaround_ms?:number};
 type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'track';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
-export type OperationView={now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[]};
+export type OperationView={now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[]};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
 type Commands={reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
 type OperationContext={view:OperationView|null;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
@@ -98,6 +98,7 @@ export function OperationClock(){
    <label>速度<select value={view.speed} disabled={clockDisabled} onChange={e=>void send('set_operation_clock',{paused:view.paused,speed:Number(e.target.value)})}>{speeds.map(speed=><option key={speed} value={speed}>{speed}倍</option>)}</select></label>
    {(view.invalidated||view.now_ms>0||hasConfigured)&&<button type="button" className="secondary" disabled={disabled} onClick={()=>setConfirmReset(true)}>運行をリセット</button>}
    {view.invalidated&&<span role="status">路線または系統が変更され、運行を停止しました。{view.timetable_edit_blocker??"ダイヤを適用し直すと、時刻を保って再開できます。"}</span>}
+   {view.rail_timetable_handoff_in_progress===true&&<span role="status">変更前のダイヤで発車した列車が運行中です。この間に保存したデータは旧ビルドでは開けません。</span>}
    {view.catching_up&&<span role="status">運行時刻に追いつく処理中</span>}
    {confirmReset&&<div className="operation-reset" role="group" aria-label="運行リセットの確認"><p>時刻と鉄道・バスの全ダイヤを消去します。線路・駅・停留所・路線・系統は残ります。</p><button type="button" className="danger" disabled={disabled} onClick={()=>{setConfirmReset(false);void send('reset_operation',undefined);}}>時刻とダイヤを消去</button><button type="button" className="secondary" onClick={()=>setConfirmReset(false)}>リセットを取り消す</button></div>}
   </>:<span>{error?'時刻を取得できません':'時刻を確認中…'}</span>}
@@ -122,7 +123,7 @@ function departure(dayValue:string,time:string){
  return (d-1)*day+parts[0]*60*minute+parts[1]*minute+(parts[2]??0)*1000;
 }
 
-function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToken,bus=false,ordinaryRoundTrip=false}:{serviceId:string;expectedOperationToken:string;config?:Config|BusConfig;now:number;disabled:boolean;send:OperationContext['send'];bus?:boolean;ordinaryRoundTrip?:boolean}){
+function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToken,bus=false,ordinaryRoundTrip=false,scheduleOnly=false}:{serviceId:string;expectedOperationToken:string;config?:Config|BusConfig;now:number;disabled:boolean;send:OperationContext['send'];bus?:boolean;ordinaryRoundTrip?:boolean;scheduleOnly?:boolean}){
  const [form,setForm]=useState(()=>initialForm(config,now,bus));
  const [validation,setValidation]=useState('');
  const newTurnaround=ordinaryRoundTrip&&!config?defaultOpenBusTurnaroundMs:undefined;
@@ -132,8 +133,8 @@ function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToke
   event.preventDefault();if(disabled)return;
   const start=departure(form.firstDay,form.firstTime),end=departure(form.lastDay,form.lastTime);
   const timetable={first_departure_ms:start,last_departure_ms:end,headway_ms:Math.round(Number(form.headway)*minute)};
-  const vehicle={max_speed_kmh:Number(form.maxSpeed),acceleration_mps2:Number(form.acceleration),braking_mps2:config?.vehicle.braking_mps2??(bus?1.2:1),length_m:Number(form.length)};
-  const dwellMs=Math.round(Number(form.dwell)*1000);
+  const vehicle=scheduleOnly&&config?config.vehicle:{max_speed_kmh:Number(form.maxSpeed),acceleration_mps2:Number(form.acceleration),braking_mps2:config?.vehicle.braking_mps2??(bus?1.2:1),length_m:Number(form.length)};
+  const dwellMs=scheduleOnly&&config?config.dwell_ms:Math.round(Number(form.dwell)*1000);
   if(![start,end,timetable.headway_ms,dwellMs].every(Number.isSafeInteger)||end<start||timetable.headway_ms<=0||dwellMs<0||!Object.values(vehicle).every(n=>Number.isFinite(n)&&n>0)||!form.dwell.trim()){
    setValidation('発車時刻・運転間隔・車両性能を確認してください。終発は初発以降にしてください。');return;
   }
@@ -143,7 +144,7 @@ function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToke
    void send('configure_bus_operation',{routeId:serviceId,expectedOperationToken,timetable,vehicle,dwellMs,assumedSpeedKmh,...(newTurnaround===undefined?{}:{turnaroundMs:newTurnaround})});
   }else void send('configure_operation_service',{serviceId,expectedOperationToken,timetable,vehicle,dwellMs});
  }
- const number=(key:keyof Form,label:string,min:number,step:string|number='any',max?:number)=><label>{label}<input type="number" required min={min} max={max} step={step} value={form[key]} onChange={e=>update(key,e.target.value)}/></label>;
+ const number=(key:keyof Form,label:string,min:number,step:string|number='any',max?:number)=><label>{label}<input type="number" disabled={scheduleOnly&&(key==='dwell'||key==='maxSpeed'||key==='acceleration'||key==='length')} required min={min} max={max} step={step} value={form[key]} onChange={e=>update(key,e.target.value)}/></label>;
  return <form className="operation-form" onSubmit={save}><fieldset disabled={disabled}><legend>簡易ダイヤ</legend>
   <div className="operation-times">{number('firstDay','初発の日（何日目）',1,1)}<label>初発時刻<input type="time" required step="1" value={form.firstTime} onChange={e=>update('firstTime',e.target.value)}/></label>
   {number('lastDay','終発の日（何日目）',1,1)}<label>終発時刻<input type="time" required step="1" value={form.lastTime} onChange={e=>update('lastTime',e.target.value)}/></label></div>
@@ -153,7 +154,7 @@ function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToke
   <details><summary>使用車両の性能</summary><div className="operation-times">{number('maxSpeed','最高速度（km/h）',1)}{number('acceleration','加速度（m/s²）',0.01)}{number('length',bus?'車両長（m）':'編成長（m）',1)}</div></details>
   {now>0&&departure(form.lastDay,form.lastTime)<=now&&<p>指定した終発時刻はすでに過ぎています。</p>}
   {validation&&<p role="alert">{validation}</p>}
-  <button type="submit">{config?'ダイヤの変更を適用':'運行を設定'}</button>
+  <button type="submit">{scheduleOnly?"今後の発車時刻を変更":config?'ダイヤの変更を適用':'運行を設定'}</button>
  </fieldset></form>;
 }
 
@@ -169,10 +170,11 @@ export function ServiceOperations({serviceId,enabled}:{serviceId:string;enabled:
  const config=view.services.find(row=>row.service_id===serviceId);
  const blocker=view.timetable_edit_blocker;
  const trains=view.trains.filter(train=>train.key.service_id===serviceId);
+ const scheduleOnly=!!config&&view.paused&&!view.invalidated&&!view.catching_up&&view.rail_timetable_handoff_available===true;
  return <section className="service-operations" aria-label="系統の運行">
   <h4>運行</h4>
-  <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={!enabled||busy||blocked||!!blocker} send={send} expectedOperationToken={view.timetable_edit_token}/>
-  {blocker?<p>{blocker}</p>:view.now_ms>0&&<p>現在の時刻と他のダイヤはそのままです。変更後の過去の便は走りません。</p>}
+  <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={!enabled||busy||blocked||(!!blocker&&!scheduleOnly)} scheduleOnly={scheduleOnly} send={send} expectedOperationToken={view.timetable_edit_token}/>
+  {scheduleOnly?<p>すでに発車した車両の運行はそのままです。現在より後の発車時刻だけ変更できます。</p>:blocker?<p>{blocker}</p>:view.now_ms>0&&<p>現在の時刻と他のダイヤはそのままです。変更後の過去の便は走りません。</p>}
   {config&&view.configuration_token&&<TrainsetPlanning serviceId={serviceId} configurationToken={view.configuration_token}
    currentHeadwayMs={config.timetable.headway_ms} enabled={enabled&&!blocked&&!view.invalidated}/>}
   <ActiveVehicles trains={trains} configured={!!config} now={view.now_ms} invalidated={view.invalidated}/>
