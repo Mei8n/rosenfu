@@ -1628,8 +1628,15 @@ impl World {
         configs: &[OperationServiceConfig],
         specs: &[ServiceRunSpec],
     ) -> bool {
+        // A single, straight block is an even narrower case of format 6:
+        // while parked it owns its whole directional lane, and the outgoing
+        // leg requests that same lane only. It cannot wait on a different
+        // holder and a same-lane train must not enter during the dwell.
+        let one_block = matches!(self.data.alignments.as_slice(),
+            [line] if line.section_count() == 1 && line.points.len() == 2)
+            && self.straight_rail_geometry(configs, false, 2);
         Self::inline_handoff_specs(configs, specs)
-            && self.straight_rail_geometry(configs, true, 2)
+            && (one_block || self.straight_rail_geometry(configs, true, 2))
             && specs.iter().all(|spec| {
                 spec.legs.iter().all(|leg| {
                     [
