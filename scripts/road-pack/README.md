@@ -324,3 +324,38 @@ This is a gameplay option to choose stops on already approved, directed bus
 edges. It creates no real stops, does not grant mode access, and never adds
 routing transitions. The simulated-junction policy does not enable player stop
 placement, and player stop placement does not enable simulated junctions.
+
+### Opt-in Japanese local-street bus simulation
+
+`--bus-profile-coverage <certificate.json>` is a separate, offline option.
+The region policy must list its exact SHA-256 as `simulated_bus_profile_sha256`
+and enable the bus mode. The certificate is a format-1 JSON document with
+`profile: "jp-local-simulated-bus-v1"`, `country: "JP"`, and the exact same
+`source_sha256`, `coverage_sha256`, `revision`, and `bounds` as the region policy.
+It must affirm `raw_way_access_and_direction_tags_complete`,
+`raw_node_tags_complete`, `incident_ways_complete`, and
+`restriction_relations_complete`. The raw XML must carry matching snapshot
+revision metadata. This is an operator attestation, not evidence created by the
+command; a clipped map response or a v1 crossing pack alone does not qualify.
+
+The simulator accepts only supported ground `residential` and `unclassified`
+ways. Explicit `oneway=yes|-1|no` is respected. On these simple street types
+only, an omitted oneway tag yields two simulated travel directions, and an
+omitted bus tag can allow **simulated bus use**. Explicit denials, variants such
+as conditional/directional restrictions, unrecognized tags or structures,
+unsupported surfaces, tagged nodes and applicable restriction relations stay
+excluded. Exact `source` is accepted as attribution metadata only. The data
+does not establish legal access, public ownership, road clearance, or actual
+bus service; native candidate origin explicitly labels the simulation.
+Tram eligibility and direction keep the original strict rules.
+
+The profile can continue an eligible bus along the **same raw way** through a
+fully covered, unambiguous three-arm junction with supported bus arms. It does
+not add turns between different ways. The existing, separately opted-in
+simple-junction policy still needs explicit mode tags on every arm for its
+separate turn derivation. Existing policies and candidate bytes are unchanged
+when the bus profile is not selected. No production pin is created.
+
+Tag sources: [OSM Japan road conventions](https://wiki.openstreetmap.org/wiki/Japan_tagging),
+[OSM oneway conventions](https://wiki.openstreetmap.org/wiki/Key:oneway),
+and [OSM access fallback caveats](https://wiki.openstreetmap.org/wiki/Default_access_restrictions).

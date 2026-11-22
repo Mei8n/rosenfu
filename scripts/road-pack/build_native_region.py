@@ -35,6 +35,10 @@ POLICY_FIELDS = {
     'bounds', 'modes', 'turns', 'bus_stop_positions',
 }
 JUNCTION_CERTIFICATE = 'simulated_junctions_sha256'
+BUS_PROFILE_CERTIFICATE = 'simulated_bus_profile_sha256'
+BUS_PROFILE = 'jp-local-simulated-bus-v1'
+SIMULATED_BUS_ORIGIN = ' [Rosenfu simulated bus access]'
+PROFILE_SURFACES = {'paved', 'asphalt', 'concrete', 'paving_stones'}
 PLAYER_BUS_STOPS = 'allows_player_bus_stops'
 
 
@@ -54,14 +58,17 @@ def point_dto(point):
     return {'longitude': point[0], 'latitude': point[1]}
 
 
-def parse_source(source, source_sha, revision):
+def parse_source(source, source_sha, revision, *, require_snapshot_revision=False):
     _, _, root = build.read_osm_xml(source, INPUT_BYTES, source_sha)
     build.require(root.get('version') == '0.6', 'raw OSM version mismatch')
     build.require(len(root) <= MAX_ITEMS, 'raw OSM element limit')
     metadata = root.findall('meta')
     build.require(len(metadata) <= 1, 'duplicate OSM revision metadata')
-    if metadata and metadata[0].get('osm_base') is not None:
-        build.require(datetime.fromisoformat(metadata[0].get('osm_base')) == datetime.fromisoformat(revision),
+    source_revision = metadata[0].get('osm_base') if metadata else None
+    if require_snapshot_revision:
+        build.require(bool(source_revision), 'simulated bus profile requires raw snapshot revision metadata')
+    if source_revision is not None:
+        build.require(datetime.fromisoformat(source_revision) == datetime.fromisoformat(revision),
                       'raw OSM revision mismatch')
     nodes, ways, incident = {}, {}, defaultdict(set)
     blocked_nodes, blocked_ways, relations = set(), set(), set()
@@ -117,6 +124,46 @@ def supported(tags):
             and all(key not in tags or tags[key] in POSITIVE for key in GENERAL_ACCESS))
 
 
+def supported_simulated_bus(tags):
+    source = tags.get('source')
+    return (tags.keys() <= WAY_KEYS | {'source'}
+            and (source is None or bool(source.strip()) and all(ord(c) >= 32 and ord(c) != 127 for c in source))
+            and tags.get('highway') in STREETS
+            and tags.get('oneway', 'no') in ('yes', 'no', '-1')
+            and tags.get('surface', 'paved') in PROFILE_SURFACES
+            and all(tags.get(key, value) == value for key, value in STRUCTURE.items())
+            and all(key not in tags or tags[key] in POSITIVE for key in GENERAL_ACCESS))
+
+
+def verify_simulated_bus_profile(path, policy):
+    digest = policy.get(BUS_PROFILE_CERTIFICATE)
+    build.require((path is not None) == (BUS_PROFILE_CERTIFICATE in policy),
+                  'simulated bus profile requires both policy opt-in and a separate source certificate')
+    if path is None:
+        return False
+    build.require('bus' in policy['modes'], 'simulated bus profile requires enabled bus mode')
+    build.require(isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest),
+                  'invalid simulated bus source certificate digest')
+    raw = build.read_limited(path, 1024 * 1024)
+    build.require(build.sha(raw) == digest, 'simulated bus source certificate digest mismatch')
+    certificate = json.loads(raw, object_pairs_hook=unique_json)
+    binding = ('source_sha256', 'coverage_sha256', 'revision', 'bounds')
+    attest = ('raw_way_access_and_direction_tags_complete', 'raw_node_tags_complete',
+              'incident_ways_complete', 'restriction_relations_complete')
+    build.require(isinstance(certificate, dict)
+                  and set(certificate) == {'format', 'profile', 'country', *binding, *attest}
+                  and type(certificate['format']) is int and certificate['format'] == 1
+                  and certificate['profile'] == BUS_PROFILE and certificate['country'] == 'JP'
+                  and all(certificate[k] is True for k in attest),
+                  'missing affirmative Japanese raw tag, topology or restriction coverage')
+    build.require(all(build.encoded(certificate[k]) == build.encoded(policy[k]) for k in binding),
+                  'simulated bus certificate does not bind the exact region snapshot')
+    west, south, east, north = policy['bounds']
+    build.require(122 <= west < east <= 154 and 20 <= south < north <= 46,
+                  'simulated bus region outside supported map rectangle')
+    return True
+
+
 def positive_rule(edges, mode, incoming, outgoing):
     build.require(mode in MODES and incoming in edges and outgoing in edges,
                   'reviewed movement references an unavailable edge')
@@ -149,6 +196,29 @@ def verify_junction_coverage(path, policy):
     return True
 
 
+def simple_junction_ways(node, accepted_ways, nodes, ways, incident, blocked_nodes):
+    raw_ways = incident[node]
+    if not (2 <= len(raw_ways) <= 3 and raw_ways <= accepted_ways):
+        return None
+    arms = []
+    for way in raw_ways:
+        refs, _ = ways[way]  # accepted ways have unique node refs
+        index = refs.index(node)
+        arms.extend(refs[max(0, index-1):index])
+        arms.extend(refs[index+1:index+2])
+    if (len(arms) != 3 or len(set(arms)) != 3 or blocked_nodes.intersection(arms)
+            or len({nodes[n] for n in [node, *arms]}) != 4):
+        return None
+    centre = nodes[node]
+    vectors = [(nodes[a][0]-centre[0], nodes[a][1]-centre[1]) for a in arms]
+    # Same-side collinear arms can be overlapping ways or a split lane
+    # representation, not the bounded simple junction supported here.
+    if any(a[0]*b[1] == a[1]*b[0] and a[0]*b[0] + a[1]*b[1] > 0
+           for i, a in enumerate(vectors) for b in vectors[i+1:]):
+        return None
+    return raw_ways
+
+
 def simulated_junction_rules(edges, accepted_ways, nodes, ways, incident, blocked_nodes):
     """Candidate gameplay rules, never an assertion of legal turns or real access."""
     incoming, outgoing = defaultdict(list), defaultdict(list)
@@ -157,24 +227,8 @@ def simulated_junction_rules(edges, accepted_ways, nodes, ways, incident, blocke
         outgoing[edge['from'][4:]].append(edge)
     rules = set()
     for node in incoming.keys() & outgoing.keys():
-        raw_ways = incident[node]
-        if not (2 <= len(raw_ways) <= 3 and raw_ways <= accepted_ways):
-            continue
-        arms = []
-        for way in raw_ways:
-            refs, _ = ways[way]  # accepted ways have unique node refs
-            index = refs.index(node)
-            arms.extend(refs[max(0, index-1):index])
-            arms.extend(refs[index+1:index+2])
-        if (len(arms) != 3 or len(set(arms)) != 3 or blocked_nodes.intersection(arms)
-                or len({nodes[n] for n in [node, *arms]}) != 4):
-            continue
-        centre = nodes[node]
-        vectors = [(nodes[a][0]-centre[0], nodes[a][1]-centre[1]) for a in arms]
-        # Same-side collinear arms can be overlapping ways or a split lane
-        # representation, not the bounded simple junction supported here.
-        if any(a[0]*b[1] == a[1]*b[0] and a[0]*b[0] + a[1]*b[1] > 0
-               for i, a in enumerate(vectors) for b in vectors[i+1:]):
+        raw_ways = simple_junction_ways(node, accepted_ways, nodes, ways, incident, blocked_nodes)
+        if raw_ways is None:
             continue
         for mode in MODES:
             # Even a third arm with unknown mode permission defeats automatic
@@ -190,9 +244,9 @@ def simulated_junction_rules(edges, accepted_ways, nodes, ways, incident, blocke
     return rules
 
 
-def project(source, coverage, policy, *, junction_coverage=None):
+def project(source, coverage, policy, *, junction_coverage=None, bus_profile_coverage=None):
     build.require(isinstance(policy, dict)
-                  and POLICY_FIELDS <= set(policy) <= POLICY_FIELDS | {JUNCTION_CERTIFICATE, PLAYER_BUS_STOPS}
+                  and POLICY_FIELDS <= set(policy) <= POLICY_FIELDS | {JUNCTION_CERTIFICATE, PLAYER_BUS_STOPS, BUS_PROFILE_CERTIFICATE}
                   and type(policy['format']) is int and policy['format'] == 1, 'invalid region policy')
     allows_player_bus_stops = policy.get(PLAYER_BUS_STOPS, False)
     build.require(type(allows_player_bus_stops) is bool, 'player bus stop opt-in must be boolean')
@@ -221,17 +275,28 @@ def project(source, coverage, policy, *, junction_coverage=None):
     build.require(isinstance(turns, list) and len(turns) <= MAX_TRANSITIONS
                   and isinstance(stops, list) and len(stops) <= MAX_STOPS, 'region policy limits')
     simulate = verify_junction_coverage(junction_coverage, policy)
-    origin = policy['origin'] + (SIMULATED_TURN_ORIGIN if simulate else '')
-    build.require(len(origin) <= 128, 'origin plus simulated-turn label exceeds limit')
-    nodes, ways, incident, blocked_nodes, blocked_ways = parse_source(source, policy['source_sha256'], revision)
-    if simulate:
+    simulated_bus = verify_simulated_bus_profile(bus_profile_coverage, policy)
+    origin = (policy['origin'] + (SIMULATED_TURN_ORIGIN if simulate else '')
+              + (SIMULATED_BUS_ORIGIN if simulated_bus else ''))
+    build.require(len(origin) <= 128, 'origin plus simulation label exceeds limit')
+    nodes, ways, incident, blocked_nodes, blocked_ways = parse_source(
+        source, policy['source_sha256'], revision, require_snapshot_revision=simulated_bus)
+    if simulate or simulated_bus:
         build.require(blocked_nodes <= nodes.keys() and blocked_ways <= ways.keys(),
-                      'junction coverage contains an unresolved restriction member')
-    edges, used_nodes, sequences, accepted_ways = {}, set(), [], set()
+                      'regional coverage contains an unresolved restriction member')
+    edges, used_nodes, sequences, accepted_ways, profiled_bus_ways = {}, set(), [], set(), set()
     for wid, (refs, tags) in sorted(ways.items()):
-        if wid in blocked_ways or not supported(tags) or len(set(refs)) != len(refs):
+        if wid in blocked_ways or len(set(refs)) != len(refs):
             continue
-        access = {f'{m}_access': mode_access(tags, m, modes) for m in MODES}
+        strict = supported(tags)
+        if not simulated_bus and not strict:
+            continue
+        access = {f'{m}_access': mode_access(tags, m, modes) if strict else 'unknown' for m in MODES}
+        if simulated_bus:
+            access['bus_access'] = (mode_access({'bus': tags.get('bus', 'yes')}, 'bus', modes)
+                                    if supported_simulated_bus(tags) else 'unknown')
+        # Tram keeps the original strict evidence and oneway requirements; the
+        # gameplay profile never confers a tram edge or a tram direction.
         if 'allowed' not in access.values():
             continue
         # Reject partial ways/boundary cuts and preserve the original node order;
@@ -240,9 +305,11 @@ def project(source, coverage, policy, *, junction_coverage=None):
                for ref in refs):
             continue
         accepted_ways.add(wid)
+        if simulated_bus and access['bus_access'] == 'allowed':
+            profiled_bus_ways.add(wid)
         directed = list(zip(refs, refs[1:]))
         for direction in ('forward', 'reverse'):
-            if tags['oneway'] == ('-1' if direction == 'forward' else 'yes'):
+            if tags.get('oneway', 'no') == ('-1' if direction == 'forward' else 'yes'):
                 continue
             sequence = []
             for n, pair in enumerate(directed):
@@ -262,12 +329,23 @@ def project(source, coverage, policy, *, junction_coverage=None):
             sequences.append(sequence if direction == 'forward' else sequence[::-1])
     build.require(bool(edges), 'region has no supported positive-access edges')
     rules = set()
+    through_nodes = {}
     for sequence in sequences:
         for a, b in zip(sequence, sequence[1:]):
-            if a is None or b is None or len(incident[edges[a]['to'][4:]]) != 1:
-                continue  # no implicit transition at a shared node, including an excluded way
+            if a is None or b is None:
+                continue
+            node = edges[a]['to'][4:]
+            shared = len(incident[node]) != 1
+            if shared:
+                if not simulated_bus:
+                    continue
+                if node not in through_nodes:
+                    through_nodes[node] = simple_junction_ways(
+                        node, profiled_bus_ways, nodes, ways, incident, blocked_nodes) is not None
+                if not through_nodes[node]:
+                    continue
             for mode in MODES:
-                if edges[a][f'{mode}_access'] == 'allowed':
+                if (not shared or mode == 'bus') and edges[a][f'{mode}_access'] == 'allowed':
                     rules.add((mode, a, b))
     for turn in turns:
         build.require(isinstance(turn, dict) and set(turn) == {'mode', 'incoming', 'outgoing'}
@@ -308,12 +386,14 @@ def main():
     p.add_argument('--coverage', required=True, type=Path)
     p.add_argument('--policy', required=True, type=Path)
     p.add_argument('--junction-coverage', type=Path, help='separate simulated-junction coverage certificate')
+    p.add_argument('--bus-profile-coverage', type=Path, help='separate raw Japanese road coverage certificate')
     p.add_argument('--output', required=True, type=Path)
     args = p.parse_args()
     try:
         policy_bytes = build.read_limited(args.policy, 1024 * 1024)
         policy = json.loads(policy_bytes, object_pairs_hook=unique_json)
-        asset = project(args.source, args.coverage, policy, junction_coverage=args.junction_coverage)
+        asset = project(args.source, args.coverage, policy, junction_coverage=args.junction_coverage,
+                        bus_profile_coverage=args.bus_profile_coverage)
         payload = build.encoded(asset)
         build.require(len(payload) <= MAX_OUTPUT_BYTES, 'native asset byte limit')
         # A successful output never changes an existing artifact. Root validates
@@ -329,6 +409,8 @@ def main():
         if args.junction_coverage is not None:
             receipt.update(movement_policy='simulated-simple-at-grade-v1',
                            simulated_junctions_sha256=policy[JUNCTION_CERTIFICATE])
+        if args.bus_profile_coverage is not None:
+            receipt.update(bus_profile=BUS_PROFILE, simulated_bus_profile_sha256=policy[BUS_PROFILE_CERTIFICATE])
         if asset.get(PLAYER_BUS_STOPS):
             receipt[PLAYER_BUS_STOPS] = True
         print(json.dumps(receipt))
