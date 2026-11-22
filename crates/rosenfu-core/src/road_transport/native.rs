@@ -317,6 +317,36 @@ impl RoadTransport {
         Err(AccessForbidden)
     }
 
+    /// Only native shared-road sections need road authority when a rail
+    /// service travels opposite the direction of the section's frozen edges.
+    pub(crate) fn validate_reverse_native_tram(
+        &self,
+        world: &WorldDraft,
+        reversed: &BTreeSet<AlignmentId>,
+    ) -> Result<(), RoadTransportError> {
+        if reversed.is_empty() || !self.uses_native_pilot_source() {
+            return Ok(());
+        }
+        let mut paths = self
+            .tram_sections
+            .iter()
+            .filter(|section| reversed.contains(&section.alignment_id))
+            .filter_map(|section| match &section.placement {
+                TramPlacement::SharedRoad { edges } => Some(edges),
+                TramPlacement::Dedicated => None,
+            })
+            .peekable();
+        if paths.peek().is_none() {
+            return Ok(());
+        }
+        let pinned = with_pins(|pins| approved_for(self, pins))?.ok_or(AccessForbidden)?;
+        let gate = pinned.gate(self, world)?;
+        for path in paths {
+            gate.validate_reverse_tram_path(path)?;
+        }
+        Ok(())
+    }
+
     /// Use the reviewed boarding edge, not adjacent nodes or nearest geometry.
     pub fn native_bus_path(
         &self,
@@ -455,6 +485,63 @@ mod tests {
     }
 
     #[test]
+    fn shared_road_projection_uses_native_gate_without_registering_fixture() {
+        let id = "synthetic-shared-road";
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/road-pack/fixtures/shared-road-fixture/native-expected.json"
+        ));
+        assert_eq!(import_native_pilot(id), Err(StaleSnapshot));
+        assert_eq!(
+            format!("{:x}", Sha256::digest(bytes)),
+            "ca71ffe54c0c8b53f741f56fc0ee50bcf16cc26bae16389ec8f8a6a572d213ac"
+        );
+        let approved = Pin {
+            id,
+            bytes,
+            sha256: Sha256::digest(bytes).into(),
+        }
+        .authenticate()
+        .unwrap();
+        let world = WorldDraft::default();
+        let stops = &approved.region.bus_stop_positions;
+        for (from, to, legs) in [(0, 1, 2), (0, 2, 4)] {
+            assert_eq!(
+                approved
+                    .bus_path(&approved.graph, &world, &stops[from], &stops[to])
+                    .unwrap()
+                    .len(),
+                legs
+            );
+        }
+        assert!(approved
+            .bus_path(&approved.graph, &world, &stops[2], &stops[0])
+            .is_err());
+        let unreviewed_stop = StopPosition {
+            edge_id: stops[2].edge_id.clone(),
+            position: 0.8,
+        };
+        assert_eq!(
+            approved.bus_path(&approved.graph, &world, &stops[0], &unreviewed_stop),
+            Err(AccessForbidden)
+        );
+        let gate = approved.gate(&approved.graph, &world).unwrap();
+        assert!(gate
+            .shortest_path(PilotRoadMode::Bus, "osm:1", "osm:7")
+            .is_err());
+        assert!(gate
+            .shortest_path(PilotRoadMode::Tram, "osm:1", "osm:5")
+            .is_err());
+        assert!(gate
+            .shortest_path(PilotRoadMode::Tram, "osm:5", "osm:4")
+            .is_ok());
+
+        let mut forged = approved.graph.clone();
+        forged.edges[0].tram_access = Access::Allowed;
+        assert_eq!(approved.gate(&forged, &world).err(), Some(StaleSnapshot));
+    }
+
+    #[test]
     fn validates_native_manifest_and_even_trusted_input_is_not_automatically_permitted() {
         let mut value = asset();
         value["transitions"][0]["outgoing"] = "unknown".into();
@@ -549,6 +636,160 @@ mod tests {
         assert!(approved.gate(&graph, &world).is_ok());
         graph.bus_stops[0].position = 0.26;
         assert_eq!(approved.gate(&graph, &world).err(), Some(AccessForbidden));
+    }
+
+    #[test]
+    fn native_tram_reversal_requires_exact_approved_opposite_edge_for_all_rail_operations() {
+        use crate::operation::{OperationError, Timetable, Vehicle};
+        use crate::world::{OperationServiceConfig, RouteSegment, World};
+
+        // Try a dedicated control, then one-way, a mismatched opposite
+        // carriageway, and an expressly authorized opposite track traversal.
+        for (shared, reverse) in [
+            (false, None),
+            (true, None),
+            (true, Some(false)),
+            (true, Some(true)),
+        ] {
+            let mut fixture = asset();
+            fixture["transitions"] = serde_json::json!([]);
+            fixture["bus_stop_positions"] = serde_json::json!([]);
+            let edges = fixture["edges"].as_array_mut().unwrap();
+            edges.truncate(1);
+            let outbound: RoadEdge = serde_json::from_value(edges[0].clone()).unwrap();
+            if let Some(exact) = reverse {
+                let mut edge = outbound.clone();
+                edge.id = "test:1-0".into();
+                (edge.from, edge.to) = (edge.to, edge.from);
+                edge.geometry.reverse();
+                if !exact {
+                    let a = edge.geometry[0];
+                    let b = edge.geometry[1];
+                    edge.geometry.insert(
+                        1,
+                        GeoPoint {
+                            latitude: (a.latitude + b.latitude) / 2.0 + 0.00001,
+                            longitude: (a.longitude + b.longitude) / 2.0,
+                        },
+                    );
+                }
+                edges.push(serde_json::to_value(edge).unwrap());
+            }
+            let bytes = serde_json::to_vec(&fixture).unwrap();
+            TEST_PIN.replace(Some((Sha256::digest(&bytes).into(), bytes)));
+            struct Clear;
+            impl Drop for Clear {
+                fn drop(&mut self) {
+                    TEST_PIN.replace(None);
+                }
+            }
+            let _clear = Clear;
+
+            let mut world = World::new(WorldDraft::default()).unwrap();
+            let player = world.add_player("Player".into()).unwrap();
+            let owner = world.add_company(player, "Company".into()).unwrap();
+            let mut draft = world.snapshot().clone();
+            draft.road_transport = import_native_pilot("review-fixture").unwrap();
+            world.replace(draft).unwrap();
+            let line = world
+                .build_alignment_typed(
+                    owner,
+                    "Tram".into(),
+                    outbound.geometry.clone(),
+                    TrackType::Tram,
+                )
+                .unwrap();
+            let mut draft = world.snapshot().clone();
+            draft.road_transport.tram_sections.push(TramSection {
+                alignment_id: line,
+                alignment_geometry: outbound.geometry,
+                from_position: 0.0,
+                to_position: 1.0,
+                placement: if shared {
+                    TramPlacement::SharedRoad {
+                        edges: vec![outbound.id],
+                    }
+                } else {
+                    TramPlacement::Dedicated
+                },
+            });
+            world.replace(draft).unwrap();
+            let a = world
+                .place_station_on_alignment(owner, "A".into(), line, 0.2, 40., 8.)
+                .unwrap();
+            let b = world
+                .place_station_on_alignment(owner, "B".into(), line, 0.8, 40., 8.)
+                .unwrap();
+            let mut add = |from, to| {
+                let segments = vec![RouteSegment::Alignment {
+                    alignment_id: line,
+                    from,
+                    to,
+                }];
+                let stops = world
+                    .preview_service_path(from, segments.clone())
+                    .unwrap()
+                    .occurrences
+                    .into_iter()
+                    .map(|occurrence| occurrence.reference)
+                    .collect();
+                world
+                    .add_service_path(owner, "Tram service".into(), from, segments, stops)
+                    .unwrap()
+            };
+            let outbound = add(a, b);
+            let inbound = add(b, a);
+            let config = |service_id| OperationServiceConfig {
+                service_id,
+                timetable: Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60_000,
+                },
+                vehicle: Vehicle {
+                    max_speed_kmh: 35.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.2,
+                    length_m: 12.,
+                },
+                dwell_ms: 10_000,
+            };
+            let reverse_allowed = !shared || reverse == Some(true);
+            let outward = world.compile_operation(&config(outbound)).unwrap();
+            assert_eq!(outward.legs.len(), if reverse_allowed { 2 } else { 1 });
+            assert_eq!(outward.legs[0].to, b.0.to_string());
+            world.configure_operation(vec![config(outbound)]).unwrap();
+            let before = world.snapshot().clone();
+            let saved = world.operation_save();
+            let result = world.configure_operation(vec![config(inbound)]);
+            if reverse_allowed {
+                result.unwrap();
+                assert_eq!(
+                    world.compile_operation(&config(inbound)).unwrap().legs[0].to,
+                    a.0.to_string()
+                );
+            } else {
+                assert_eq!(result, Err(OperationError::InvalidPath));
+                assert_eq!(world.snapshot(), &before);
+                assert_eq!(world.operation_save(), saved);
+
+                // A previously compiled, live reverse spec cannot get through
+                // normal save restore by carrying its own rail resources.
+                let mut dedicated = World::new(before.clone()).unwrap();
+                let mut draft = dedicated.snapshot().clone();
+                draft.road_transport.tram_sections[0].placement = TramPlacement::Dedicated;
+                dedicated.replace(draft).unwrap();
+                dedicated
+                    .configure_operation(vec![config(inbound)])
+                    .unwrap();
+                assert_eq!(
+                    world.restore_operation(dedicated.operation_save()),
+                    Err(OperationError::InvalidPath)
+                );
+                assert_eq!(world.snapshot(), &before);
+                assert_eq!(world.operation_save(), saved);
+            }
+        }
     }
 
     #[test]

@@ -229,3 +229,44 @@ node cache remain inside the same own-work budget; no source data is sent elsewh
 Extraction/shutdown has a two-hour default deadline; error, timeout or parent
 interruption terminates and joins the child before temporary-directory cleanup.
 No index is published on failure.
+
+## Native road region projection (offline candidate only)
+
+One source can serve different consumers without treating a map line as
+permission to drive. Run the existing v1 pack producer for crossing/reference
+geometry and `build_native_region.py` for the directed bus/tram candidate from
+the **same exact raw OSM XML**, coverage polygon, and revision:
+
+```sh
+cd scripts/road-pack
+f=fixtures/shared-road-fixture
+python3 build_native_region.py "$f/survey.osm" --coverage "$f/coverage.json" \
+  --policy "$f/policy.json" --output /tmp/rosenfu-native-shared-road.json
+python3 -m unittest test_build_native_region
+```
+
+The example is synthetic, never real-road authority. The build checks hashes
+from the supplied region policy, not the truth or completeness of that policy.
+Use a separately verified full regional source (including nodes, ways and
+restriction relations, not a v1 crossing pack or generalized OpenFreeMap
+tiles). Review origin/revision/bounds against its source, rights and updates
+before any real artifact can be approved. This tool makes no network requests
+and does not change the crossing pack format or production provider.
+
+For this initial narrow profile, only complete interior residential and
+unclassified ways with explicit `oneway=yes|no|-1` are considered. A region mode
+and explicit `bus` or `tram=yes|designated` are both necessary; missing
+permission remains unknown, and general denials, unsupported tags or structures,
+tagged nodes, and affected restriction members exclude movement. Geometry comes
+from ordered source node IDs, not proximity or a guessed junction at tile
+seams. Unshared same-way continuation is derived; an actual shared junction
+needs an explicit reviewed directed movement. Boarding positions are reviewed
+per region once, not registered per bus route. Nothing here performs a legal
+assessment of bus service or tram construction on the source roads.
+
+The output uses the existing native candidate format 1. It cannot activate
+real routes by itself: a release still needs an independent data review and
+a digest pin in the native registry, which this tool never touches. The initial
+fixture's three boarding positions permit different routes from one region;
+the same graph cannot be widened by a save or frontend request. Source refresh
+or loading more than one region in a world is outside this increment.

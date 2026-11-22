@@ -31,3 +31,6 @@
 
 # Preserve bundled upstream license bytes.
 src/assets/fonts/line-seed-jp/OFL.txt -text whitespace=-trailing-space,cr-at-eol
+
+# Exact source/coverage digests and generated native fixture bytes
+/scripts/road-pack/fixtures/shared-road-fixture/* text eol=lf

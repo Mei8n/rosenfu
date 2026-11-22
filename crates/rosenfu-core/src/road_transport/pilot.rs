@@ -176,6 +176,54 @@ impl<'a> PilotRoad<'a> {
         Ok(())
     }
 
+    /// The reverse of a frozen tram section must follow the exact same
+    /// surveyed polyline on independently allowed opposite edges, including
+    /// their positive tram transitions. An alternate path between endpoints
+    /// or a nearby opposite carriageway is not the built track.
+    pub(super) fn validate_reverse_tram_path(
+        &self,
+        path: &[String],
+    ) -> Result<(), RoadTransportError> {
+        let mut reverse_by_endpoints = BTreeMap::<_, Vec<_>>::new();
+        for &edge in self.edges.values() {
+            if Self::edge_is_allowed(edge, PilotRoadMode::Tram) {
+                reverse_by_endpoints
+                    .entry((edge.to.as_str(), edge.from.as_str()))
+                    .or_default()
+                    .push(edge);
+            }
+        }
+        let mut predecessors: Option<Vec<&str>> = None;
+        for id in path.iter().rev() {
+            let edge = self.edges.get(id.as_str()).ok_or(MissingReference)?;
+            let permitted = predecessors.as_ref().map(|previous| {
+                previous
+                    .iter()
+                    .filter_map(|incoming| self.transitions.get(&(PilotRoadMode::Tram, incoming)))
+                    .flatten()
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+            });
+            let candidates: Vec<_> = reverse_by_endpoints
+                .get(&(edge.from.as_str(), edge.to.as_str()))
+                .into_iter()
+                .flatten()
+                .filter(|candidate| {
+                    permitted
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(candidate.id.as_str()))
+                        && candidate.geometry.iter().eq(edge.geometry.iter().rev())
+                })
+                .map(|candidate| candidate.id.as_str())
+                .collect();
+            if candidates.is_empty() {
+                return Err(AccessForbidden);
+            }
+            predecessors = Some(candidates);
+        }
+        predecessors.map(|_| ()).ok_or(InvalidData)
+    }
+
     /// State is the incoming directed edge, not the node. Arriving at a junction
     /// via a different predecessor may allow a different next movement.
     pub fn shortest_path(
@@ -358,6 +406,34 @@ mod tests {
 
     fn ids(path: &[&str]) -> Vec<String> {
         path.iter().map(|s| (*s).into()).collect()
+    }
+
+    #[test]
+    fn reverse_tram_requires_a_positive_reverse_movement_not_just_two_opposite_edges() {
+        let mut graph = fixture();
+        let mut reverse = graph
+            .edges
+            .iter()
+            .find(|edge| edge.id == "jd")
+            .unwrap()
+            .clone();
+        reverse.id = "dj".into();
+        (reverse.from, reverse.to) = (reverse.to, reverse.from);
+        reverse.geometry.reverse();
+        graph.edges.push(reverse);
+        let path = ids(&["aj", "jd"]);
+        assert_eq!(
+            gate(&graph, &[rule("dj", "ja", Bus)])
+                .unwrap()
+                .validate_reverse_tram_path(&path),
+            Err(AccessForbidden)
+        );
+        assert_eq!(
+            gate(&graph, &[rule("dj", "ja", Tram)])
+                .unwrap()
+                .validate_reverse_tram_path(&path),
+            Ok(())
+        );
     }
 
     #[test]

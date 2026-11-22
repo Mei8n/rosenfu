@@ -435,6 +435,7 @@ impl World {
         let mut runs = Vec::new();
         let mut pending = Vec::new();
         let mut last_stop = occurrences.first().ok_or_else(invalid)?.station_id;
+        let mut reversed_tram = BTreeSet::new();
         for leg in legs {
             let (from, to, connections) = match &leg.segment {
                 RouteSegment::Alignment { from, to, .. } => (*from, *to, &[][..]),
@@ -563,6 +564,9 @@ impl World {
             for span in spans {
                 let a = alignment(span.id)?;
                 let forward = span.to > span.from;
+                if span.to < span.from && a.track_type == TrackType::Tram {
+                    reversed_tram.insert(a.id);
+                }
                 let mut cursor = span.from;
                 while next_occurrence < leg_occurrences.len() {
                     let occurrence = leg_occurrences[next_occurrence];
@@ -626,6 +630,10 @@ impl World {
         if !pending.is_empty() || runs.is_empty() {
             return Err(invalid());
         }
+        self.data
+            .road_transport
+            .validate_reverse_native_tram(&self.data, &reversed_tram)
+            .map_err(|_| invalid())?;
         Ok(runs)
     }
 

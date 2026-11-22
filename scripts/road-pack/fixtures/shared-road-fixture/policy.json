@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "asset_id": "synthetic-shared-road",
+  "source_sha256": "b3c19901a209f5b310917097fb3c035a48a41fff97c075dffa8773e2511c5235",
+  "coverage_sha256": "d0942693506ae9e12ae691aedc9a685cf907e3363fadefe18cf614f5295b34c8",
+  "revision": "2026-11-14T21:20:41Z",
+  "origin": "Synthetic fixture; not observed roads",
+  "region": "Synthetic shared-road region",
+  "bounds": [
+    139.0,
+    35.0,
+    139.02,
+    35.02
+  ],
+  "modes": [
+    "bus",
+    "tram"
+  ],
+  "turns": [
+    {
+      "mode": "bus",
+      "incoming": "osm:101:2:forward",
+      "outgoing": "osm:102:0:forward"
+    }
+  ],
+  "bus_stop_positions": [
+    {
+      "edge_id": "osm:101:0:forward",
+      "position": 0.25
+    },
+    {
+      "edge_id": "osm:101:1:forward",
+      "position": 0.5
+    },
+    {
+      "edge_id": "osm:102:0:forward",
+      "position": 0.75
+    }
+  ]
+}
