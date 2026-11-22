@@ -109,7 +109,7 @@ test.each([
 test('rail shows scheduled dwell, live path wait, and rear clearance separately',async()=>{
  const trains:OperationView['trains']=[
   {key:{service_id:'12',scheduled_ms:0},leg:1,delay_ms:0,state:{state:'waiting',ready_ms:7000}},
-  {key:{service_id:'12',scheduled_ms:1000},leg:1,delay_ms:1100,state:{state:'waiting',ready_ms:2500}},
+  {key:{service_id:'12',scheduled_ms:1000},leg:1,delay_ms:1100,waiting_for:'junction',state:{state:'waiting',ready_ms:2500}},
   {key:{service_id:'12',scheduled_ms:2000},leg:0,delay_ms:700,state:{state:'moving',entered_ms:2500,arrival_ms:5000,release_ms:5500}},
   {key:{service_id:'12',scheduled_ms:3000},leg:0,delay_ms:0,state:{state:'waiting',ready_ms:5100}},
  ];
@@ -118,7 +118,7 @@ test('rail shows scheduled dwell, live path wait, and rear clearance separately'
  const rows=(await screen.findByRole('list',{name:'運行中・待機中の列車'})).querySelectorAll('li');
  expect(rows[0].textContent).toContain('停車中');
  expect(rows[0].textContent).not.toContain('遅れ');
- expect(rows[1].textContent).toContain('進路待ち');
+ expect(rows[1].textContent).toContain('進路待ち（分岐・接続）');
  expect(rows[1].textContent).toContain('遅れ 4秒');
  expect(rows[2].textContent).toContain('到着済み');
  expect(rows[2].textContent).toContain('遅れ 1秒');
@@ -128,16 +128,17 @@ test('rail shows scheduled dwell, live path wait, and rear clearance separately'
 
 test('a train entering after a wait does not count the same delay twice',async()=>{
  const key={service_id:'12',scheduled_ms:1000};
- const wait={...snapshot,now_ms:6000,paused:false,services:[config],trains:[{key,leg:0,delay_ms:0,state:{state:'waiting',ready_ms:2000}}]} satisfies OperationView;
+ const wait={...snapshot,now_ms:6000,paused:false,services:[config],trains:[{key,leg:0,delay_ms:0,waiting_for:'crossing',state:{state:'waiting',ready_ms:2000}}]} satisfies OperationView;
  const enter={...wait,now_ms:6200,trains:[{key,leg:0,delay_ms:4200,state:{state:'moving',entered_ms:6200,arrival_ms:9000,release_ms:9500}}]} satisfies OperationView;
  vi.useFakeTimers();
  vi.mocked(invoke).mockImplementation(async command=>command==='advance_operation'?enter:wait);
  render(operation());
  await act(async()=>{});
- expect(screen.getByText('進路待ち')).toBeTruthy();
+ expect(screen.getByText('進路待ち（平面交差）')).toBeTruthy();
  expect(screen.getByText('遅れ 4秒')).toBeTruthy();
  await act(async()=>vi.advanceTimersByTime(500));
  expect(screen.getByText('走行中')).toBeTruthy();
+ expect(screen.queryByText('進路待ち（平面交差）')).toBeNull();
  expect(screen.getByText('遅れ 5秒')).toBeTruthy();
  expect(screen.queryByText('進路待ち')).toBeNull();
 });

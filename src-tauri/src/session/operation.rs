@@ -1,5 +1,5 @@
 use super::*;
-use rosenfu_core::operation::{Timetable, Train, Vehicle};
+use rosenfu_core::operation::{RailWaitReason, Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::OperationServiceConfig;
 #[path = "operation/bus_transfers.rs"]
@@ -14,6 +14,22 @@ pub struct ObservedFixedOdInput {
     pub alternative_seconds: Option<f64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct OperationLiveTrain {
+    #[serde(flatten)]
+    pub train: Train,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<RailWaitReason>,
+}
+
+impl std::ops::Deref for OperationLiveTrain {
+    type Target = Train;
+
+    fn deref(&self) -> &Self::Target {
+        &self.train
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct OperationLiveView {
     pub now_ms: u64,
@@ -24,7 +40,7 @@ pub struct OperationLiveView {
     pub timetable_edit_token: String,
     pub timetable_edit_blocker: Option<&'static str>,
     pub configuration_token: String,
-    pub trains: Vec<Train>,
+    pub trains: Vec<OperationLiveTrain>,
 }
 
 #[derive(serde::Serialize)]
@@ -211,7 +227,18 @@ impl WorldEditor {
             timetable_edit_blocker: self.timetable_edit_blocker(),
             configuration_token,
             trains: o
-                .map(|o| o.runtime.trains().cloned().collect())
+                .map(|o| {
+                    o.runtime
+                        .trains()
+                        .map(|train| OperationLiveTrain {
+                            train: train.clone(),
+                            waiting_for: (!o.invalidated
+                                && matches!(train.state, rosenfu_core::operation::TrainState::Waiting { ready_ms } if ready_ms <= now_ms))
+                            .then(|| o.runtime.rail_wait_reason(&train.key))
+                            .flatten(),
+                        })
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
     }

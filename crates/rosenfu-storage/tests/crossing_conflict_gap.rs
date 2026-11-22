@@ -483,3 +483,73 @@ fn native_journey_replay_respects_real_occupancy_and_does_not_replace_planned_od
     );
     assert_eq!((ground.onboard_ms, elevated.onboard_ms), (92_240, 92_240));
 }
+
+#[test]
+fn live_crossing_wait_labels_follow_a_real_reservation_and_survive_reload() {
+    for elevated in [false, true] {
+        let (mut world, configs) = fixture(true, elevated);
+        world.configure_operation(configs.to_vec()).unwrap();
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1_000, 128)
+            .unwrap();
+        let before = rosenfu_storage::encode(&world).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("source.rosenfu");
+        rosenfu_storage::save_world(&file, &world).unwrap();
+        let mut editor = WorldEditor::new();
+        editor.load(&file).unwrap();
+        let wire = serde_json::to_value(editor.operation_snapshot()).unwrap();
+        let rows = wire["trains"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let causes: Vec<_> = rows
+            .iter()
+            .filter_map(|row| row.get("waiting_for"))
+            .collect();
+        if elevated {
+            assert!(causes.is_empty());
+        } else {
+            assert_eq!(causes, [&serde_json::json!("crossing")]);
+            assert_eq!(
+                rows.iter()
+                    .find(|row| row.get("waiting_for").is_some())
+                    .unwrap()["state"]["state"],
+                "waiting"
+            );
+        }
+        editor.save(&file).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        let release_ms = world
+            .operation()
+            .unwrap()
+            .runtime
+            .trains()
+            .find_map(|row| {
+                if let rosenfu_core::operation::TrainState::Moving { release_ms, .. } = row.state {
+                    Some(release_ms)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(release_ms, 128)
+            .unwrap();
+        let released_file = dir.path().join("released.rosenfu");
+        rosenfu_storage::save_world(&released_file, &world).unwrap();
+        editor.load(&released_file).unwrap();
+        let released = editor.operation_snapshot();
+        assert!(released.trains.iter().all(|row| row.waiting_for.is_none()));
+        if !elevated {
+            assert!(released.trains.iter().any(|row| {
+                matches!(row.state, rosenfu_core::operation::TrainState::Moving { entered_ms, .. } if entered_ms == release_ms)
+                    && row.delay_ms == release_ms
+            }));
+        }
+    }
+}

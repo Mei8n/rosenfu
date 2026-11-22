@@ -108,6 +108,35 @@ pub struct Train {
     pub delay_ms: u64,
     pub state: TrainState,
 }
+/// A currently contested resource, not a timetable estimate or a track capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RailWaitReason {
+    Crossing,
+    Junction,
+    Track,
+}
+
+impl RailWaitReason {
+    fn of_resource(resource: &str) -> Option<Self> {
+        if resource.starts_with("rail:crossing:") {
+            return Some(Self::Crossing);
+        }
+        if resource.starts_with("rail:join:") || resource.starts_with("rail:lane-join:") {
+            return Some(Self::Junction);
+        }
+        let mut parts = resource.split(':');
+        if matches!(
+            (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+            (Some("rail"), Some(alignment), Some("point"), Some(anchor), None)
+                if alignment.parse::<u64>().is_ok() && anchor.parse::<usize>().is_ok()
+        ) {
+            return Some(Self::Junction);
+        }
+        rail_lane(resource).then_some(Self::Track)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arrival {
     pub train: TrainKey,
@@ -724,6 +753,29 @@ impl OperationRuntime {
         self.terminal_hold() || self.parked_platform_handoff()
     }
 
+    fn reservation_blocks(&self, resource: &str, key: &TrainKey) -> bool {
+        self.occupied
+            .get(resource)
+            .is_some_and(|owner| !self.own_lease_allows_admission() || owner != key)
+    }
+
+    /// First current rail reservation conflict in deterministic resource order.
+    /// May report no category for an unknown resource. Scheduled dwell, moving
+    /// vehicles and any bus are never reported as rail reservation waits.
+    pub fn rail_wait_reason(&self, key: &TrainKey) -> Option<RailWaitReason> {
+        key.service_id.parse::<u64>().ok()?;
+        let train = self.trains.get(key)?;
+        if !matches!(train.state, TrainState::Waiting { ready_ms } if ready_ms <= self.now_ms) {
+            return None;
+        }
+        let leg = self.services.get(&key.service_id)?.legs.get(train.leg)?;
+        let resource = leg
+            .resources
+            .iter()
+            .find(|key_resource| self.reservation_blocks(key_resource, key))?;
+        RailWaitReason::of_resource(resource)
+    }
+
     /// Transfer only an idle clock to a freshly compiled timetable. Departures
     /// are on the new absolute timetable grid, never replayed through the past.
     pub(crate) fn retain_idle_clock(&mut self, previous: &Self) -> Result<(), OperationError> {
@@ -959,11 +1011,7 @@ impl OperationRuntime {
                     if !charge(64usize.saturating_add(resource.len())) {
                         return false;
                     }
-                    if self
-                        .occupied
-                        .get(resource)
-                        .is_some_and(|owner| !self.own_lease_allows_admission() || owner != key)
-                    {
+                    if self.reservation_blocks(resource, key) {
                         blocked = true;
                         break;
                     }
@@ -1264,11 +1312,7 @@ impl OperationRuntime {
             for (ready, key) in waiting {
                 let t = &self.trains[&key];
                 let c = &self.services[&key.service_id].legs[t.leg];
-                if c.resources.iter().any(|r| {
-                    self.occupied
-                        .get(r)
-                        .is_some_and(|owner| !self.own_lease_allows_admission() || *owner != key)
-                }) {
+                if c.resources.iter().any(|r| self.reservation_blocks(r, &key)) {
                     continue;
                 }
                 let arrival_ms = at

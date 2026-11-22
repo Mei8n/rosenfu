@@ -546,3 +546,39 @@ fn rail_cohort_keeps_unexplained_eligible_waiters_on_the_full_event_timeline() {
         Some(25_000)
     );
 }
+
+#[test]
+fn current_rail_wait_reports_actual_join_lane_and_unknown_owners() {
+    for (resource, expected) in [
+        ("rail:join:1:End", Some(RailWaitReason::Junction)),
+        ("rail:lane-join:1:1:0:2:0:0", Some(RailWaitReason::Junction)),
+        ("rail:1:point:1", Some(RailWaitReason::Junction)),
+        ("rail:1:section:0:lane:0", Some(RailWaitReason::Track)),
+        ("future_reservation", None),
+    ] {
+        let first = observed_scope_service("1", false, resource, 0, 0);
+        let second = observed_scope_service("2", false, resource, 1_000, 1_000);
+        let mut runtime = OperationRuntime::new(vec![first, second]).unwrap();
+        let key = TrainKey {
+            service_id: "2".into(),
+            scheduled_ms: 1_000,
+        };
+        runtime.advance_to(999, 10).unwrap();
+        assert_eq!(runtime.rail_wait_reason(&key), None);
+        runtime.advance_to(1_000, 10).unwrap();
+        assert!(matches!(
+            runtime.trains[&key].state,
+            TrainState::Waiting { ready_ms: 1_000 }
+        ));
+        assert_eq!(runtime.rail_wait_reason(&key), expected);
+        runtime.advance_to(21_000, 10).unwrap();
+        assert!(matches!(
+            runtime.trains[&key].state,
+            TrainState::Moving {
+                entered_ms: 21_000,
+                ..
+            }
+        ));
+        assert_eq!(runtime.rail_wait_reason(&key), None);
+    }
+}

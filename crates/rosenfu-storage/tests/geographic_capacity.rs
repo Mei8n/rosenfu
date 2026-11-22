@@ -317,3 +317,109 @@ fn bounded_geographic_archive_reopens_offline_without_losing_routes_or_revisions
         MAX_PINNED_BINDINGS, raw.len(), raw.values().map(Vec::len).sum::<usize>(), saved.len(), paths.len(),
     );
 }
+
+#[test]
+fn archive_weighted_limit_and_scope_are_independent_of_unique_saved_bytes() {
+    const MIB: usize = 1024 * 1024;
+    // Valid MVT with 1,024 same-size dense road features. Pad an ignored
+    // protobuf field so the exact byte boundary is independent of the fixture.
+    let dense = |seed| {
+        let mut raw = synthetic_mvt(1024, seed);
+        bytes(9, &vec![0; MIB - raw.len() - 4], &mut raw);
+        assert_eq!(raw.len(), MIB);
+        RawEvidence {
+            sha256: raw_sha256(&raw),
+            bytes: raw,
+        }
+    };
+    let raw = || vec![dense(1), dense(2)];
+    let digests = raw().into_iter().map(|r| r.sha256).collect::<Vec<_>>();
+    assert_ne!(digests[0], digests[1]);
+    // Four separated synthetic strips. Each distinct coordinate has its own
+    // canonical binding although 32 bindings share each raw blob.
+    let bindings: Vec<_> = [(14624, 6016), (14552, 6451), (14358, 6506), (14126, 6567)]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(region, (x, y))| {
+            let hash = &digests[region % 2];
+            (0..16).map(move |i| bound(REV, x + i, y, hash))
+        })
+        .collect();
+    assert_eq!(bindings.len(), 64);
+    let start = Instant::now();
+    let store = EvidenceStore::from_archive_parts(raw(), bindings.clone()).unwrap();
+    let admit = start.elapsed();
+    assert_eq!(store.blobs().map(|(_, b)| b.len()).sum::<usize>(), 2 * MIB);
+    assert_eq!(store.bindings().count(), 64);
+    let weighted = store
+        .bindings()
+        .map(|b| store.raw(&b.raw_sha256).unwrap().len())
+        .sum::<usize>();
+    assert_eq!(weighted, 64 * MIB);
+    let mut world = World::new(WorldDraft::default().with_road_evidence(store).unwrap()).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("weighted-geography.json");
+    save_world(&file, &world).unwrap();
+    let staged = fs::read(&file).unwrap();
+    world
+        .add_player("Independent save generation".into())
+        .unwrap();
+    save_world(&file, &world).unwrap();
+    let saved = fs::read(&file).unwrap();
+    assert_ne!(saved, staged);
+    let wire: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(
+        wire["road_evidence"]["raw_blobs"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        wire["road_evidence"]["bindings"].as_array().unwrap().len(),
+        64
+    );
+    assert!(saved.len() < MAX_SAVE_BYTES);
+    let start = Instant::now();
+    let (mut opened, version) = load_world_with_version(&file).unwrap();
+    let reopen = start.elapsed();
+    assert_eq!(opened, world);
+    let archive = &opened.snapshot().runtime_road_evidence;
+    for region in bindings.chunks(16) {
+        let scope = archive.scope(&keys(&region[..8])).unwrap();
+        assert_eq!(
+            scope.decoded(&region[7].canonical_url).unwrap().lines.len(),
+            1_024
+        );
+        assert!(matches!(
+            archive.scope(&keys(&region[..9])),
+            Err(Error::Limit)
+        ));
+    }
+    let extra = bound(REV, 14150, 6567, &digests[0]);
+    let mut too_many_weighted = bindings;
+    too_many_weighted.push(extra.clone());
+    assert!(too_many_weighted.len() < MAX_PINNED_BINDINGS);
+    assert!(matches!(
+        EvidenceStore::from_archive_parts(raw(), too_many_weighted),
+        Err(Error::Limit)
+    ));
+    let seam: serde_json::Value = serde_json::from_str(include_str!(
+        "../../rosenfu-core/tests/fixtures/ofm_session_synthetic.json"
+    ))
+    .unwrap();
+    let mut plans: ConstructionPlans = serde_json::from_value(seam["plans"].clone()).unwrap();
+    plans.parked_paths.clear();
+    let mut valid = opened.clone();
+    valid
+        .stage_ofm_construction_plans(plans.clone(), vec![], vec![])
+        .unwrap();
+    assert_eq!(
+        opened.stage_ofm_construction_plans(plans, vec![], vec![extra]),
+        Err(WorldError::InvalidRoadEvidence)
+    );
+    assert_eq!(opened, world);
+    assert_eq!(file_version(&file).unwrap(), version);
+    assert_eq!(fs::read(&file).unwrap(), saved);
+    let backup = backup_path(&file);
+    assert_eq!(fs::read(&backup).unwrap(), staged);
+    assert_ne!(load_world_with_version(&backup).unwrap().0, world);
+    eprintln!("synthetic binding weight: 64 keys, {} unique raw bytes, {weighted} bytes weighted, {} save bytes, restore archive {admit:?}, file reopen {reopen:?}", 2 * MIB, saved.len());
+}
