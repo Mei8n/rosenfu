@@ -349,3 +349,45 @@ fn terminal_hold_keeps_same_train_and_blocks_opposing_admission_until_return_cle
     let mut replay = OperationRuntime::restore_with_terminal_hold(before_advance).unwrap();
     assert_eq!(continuous, replay.advance_to(200_000, 100).unwrap());
 }
+
+#[test]
+fn release_and_departure_time_ties_respect_existing_waiting_order_after_resume() {
+    let mut later = service("0", "shared");
+    later.timetable.first_departure_ms = 21_000;
+    later.timetable.last_departure_ms = 21_000;
+    let mut runtime =
+        OperationRuntime::new(vec![later, service("1", "shared"), service("2", "shared")]).unwrap();
+
+    let before_release = runtime.advance_to(21_000, 2).unwrap();
+    assert!(!before_release.reached_target);
+    assert_eq!(before_release.now_ms, 20_000);
+    assert_eq!(before_release.arrivals[0].train.service_id, "1");
+
+    let mut reopened = OperationRuntime::restore(runtime.save()).unwrap();
+    let resumed = reopened.advance_to(21_000, 1).unwrap();
+    assert!(resumed.reached_target);
+    assert!(resumed.arrivals.is_empty());
+    let order = reopened
+        .trains()
+        .map(|train| (&*train.key.service_id, train.state.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        vec![
+            ("0", TrainState::Waiting { ready_ms: 21_000 }),
+            (
+                "2",
+                TrainState::Moving {
+                    entered_ms: 21_000,
+                    arrival_ms: 41_000,
+                    release_ms: 42_000,
+                },
+            ),
+        ]
+    );
+    assert_eq!(
+        reopened.advance_to(u64::MAX, 0),
+        Err(OperationError::Overflow)
+    );
+    assert_eq!(reopened.now_ms(), 21_000);
+}

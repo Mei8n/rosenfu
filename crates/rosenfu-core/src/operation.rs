@@ -161,6 +161,7 @@ pub struct OperationRuntime {
     paused: bool,
     speed: u32,
     started: bool,
+    time_margin_ms: u64,
     services: BTreeMap<String, CompiledService>,
     trains: BTreeMap<TrainKey, Train>,
     occupied: BTreeMap<String, TrainKey>,
@@ -530,6 +531,7 @@ impl OperationRuntime {
         rail_admission: RailAdmissionModel,
     ) -> Result<Self, OperationError> {
         let mut services = BTreeMap::new();
+        let mut time_margin_ms = 0;
         for spec in specs {
             let t = &spec.timetable;
             if spec.service_id.trim().is_empty()
@@ -616,6 +618,11 @@ impl OperationRuntime {
                     .and_then(|n| n.checked_add(physical_clearance_ms))
                     .and_then(|n| n.checked_add(l.dwell_ms))
                     .ok_or(OperationError::Overflow)?;
+                time_margin_ms = time_margin_ms.max(
+                    duration_ms
+                        .saturating_add(clearance_ms)
+                        .saturating_add(l.dwell_ms),
+                );
                 legs.push(CompiledLeg {
                     duration_ms,
                     clearance_ms,
@@ -682,6 +689,7 @@ impl OperationRuntime {
             paused: true,
             speed: 1,
             started: false,
+            time_margin_ms,
             services,
             trains: BTreeMap::new(),
             occupied: BTreeMap::new(),
@@ -928,24 +936,18 @@ impl OperationRuntime {
         if target < self.now_ms {
             return Err(OperationError::InvalidClock);
         }
-        let margin = self
-            .services
-            .values()
-            .flat_map(|s| s.legs.iter().zip(&s.spec.legs))
-            .map(|(c, l)| {
-                c.duration_ms
-                    .saturating_add(c.clearance_ms)
-                    .saturating_add(l.dwell_ms)
-            })
-            .max()
-            .unwrap_or(0);
-        if target.checked_add(margin).is_none() {
+        if target.checked_add(self.time_margin_ms).is_none() {
             return Err(OperationError::Overflow);
         }
+        let mut departure = self
+            .services
+            .values()
+            .filter_map(|service| service.next_departure)
+            .min();
         let mut arrivals = Vec::new();
         let mut events = 0;
         loop {
-            let next = self.next_event();
+            let next = self.next_event(departure);
             let Some(at) = next.filter(|at| *at <= target) else {
                 self.started = true;
                 self.now_ms = target;
@@ -1031,24 +1033,33 @@ impl OperationRuntime {
                     }
                 }
             }
-            for (id, s) in &mut self.services {
-                if s.next_departure == Some(at) {
-                    let key = TrainKey {
-                        service_id: id.clone(),
-                        scheduled_ms: at,
-                    };
-                    self.trains.insert(
-                        key.clone(),
-                        Train {
-                            key,
-                            leg: 0,
-                            delay_ms: 0,
-                            state: TrainState::Waiting { ready_ms: at },
-                        },
-                    );
-                    s.next_departure = at
-                        .checked_add(s.spec.timetable.headway_ms)
-                        .filter(|n| *n <= s.spec.timetable.last_departure_ms);
+            // Train events do not change timetable cursors; preserving the
+            // minimum in this advance avoids rescanning every service twice
+            // at arrival, rear-clear, or dwell-only events.
+            if departure == Some(at) {
+                departure = None;
+                for (id, s) in &mut self.services {
+                    if s.next_departure == Some(at) {
+                        let key = TrainKey {
+                            service_id: id.clone(),
+                            scheduled_ms: at,
+                        };
+                        self.trains.insert(
+                            key.clone(),
+                            Train {
+                                key,
+                                leg: 0,
+                                delay_ms: 0,
+                                state: TrainState::Waiting { ready_ms: at },
+                            },
+                        );
+                        s.next_departure = at
+                            .checked_add(s.spec.timetable.headway_ms)
+                            .filter(|n| *n <= s.spec.timetable.last_departure_ms);
+                    }
+                    if let Some(next) = s.next_departure {
+                        departure = Some(departure.map_or(next, |previous| previous.min(next)));
+                    }
                 }
             }
             let mut waiting: Vec<_> = self
@@ -1094,12 +1105,7 @@ impl OperationRuntime {
             }
         }
     }
-    fn next_event(&self) -> Option<u64> {
-        let mut next = self
-            .services
-            .values()
-            .filter_map(|s| s.next_departure)
-            .min();
+    fn next_event(&self, mut next: Option<u64>) -> Option<u64> {
         for t in self.trains.values() {
             let at = match t.state {
                 TrainState::Moving {
