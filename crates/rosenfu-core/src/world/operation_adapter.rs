@@ -1387,25 +1387,44 @@ impl World {
         else {
             return false;
         };
-        if d.alignments.len() != 4
-            || d.alignment_connections.len() != 4
-            || !d.road_transport.bus_routes.is_empty()
-            || !d.road_transport.tram_sections.is_empty()
+        if !d.road_transport.bus_routes.is_empty() || !d.road_transport.tram_sections.is_empty() {
+            return false;
+        }
+        let main = [w, mid, e];
+        let mut sibling = None;
+        for link in &d.alignment_connections {
+            let (a, b) = (link.a.alignment_id.0, link.b.alignment_id.0);
+            let external = match (main.contains(&a), main.contains(&b)) {
+                (true, false) => b,
+                (false, true) => a,
+                _ => continue,
+            };
+            if sibling.is_some_and(|id| id != external) {
+                return false;
+            }
+            sibling = Some(external);
+        }
+        let Some(sibling) = sibling else {
+            return false;
+        };
+        let component = [w, mid, e, sibling];
+        // Exact connected component, not a subgraph of a busier junction.
+        let incident = |id: AlignmentId| component.contains(&id.0);
+        if d.alignment_connections
+            .iter()
+            .filter(|link| incident(link.a.alignment_id) || incident(link.b.alignment_id))
+            .count()
+            != 4
+            || ![mid, sibling].contains(&express_branch)
         {
             return false;
         }
         let get = |id| d.alignments.iter().find(|a| a.id.0 == id);
-        let (Some(west), Some(middle), Some(east), Some(other)) = (
-            get(w),
-            get(mid),
-            get(e),
-            d.alignments.iter().find(|a| ![w, mid, e].contains(&a.id.0)),
-        ) else {
+        let (Some(west), Some(middle), Some(east), Some(other)) =
+            (get(w), get(mid), get(e), get(sibling))
+        else {
             return false;
         };
-        if ![mid, other.id.0].contains(&express_branch) {
-            return false;
-        }
         let links = [(west, middle), (west, other), (middle, east), (other, east)];
         if links.into_iter().any(|(a, b)| {
             let from = AlignmentEndpointRef {
@@ -1454,6 +1473,51 @@ impl World {
             .chain(&east.points)
             .any(|p| p.latitude != latitude)
         {
+            return false;
+        }
+        // Only the same two proven specs can be active. Even an inactive
+        // alignment near the component is outside this proof: decline on
+        // overlapping padded boxes rather than infer grade separation, or
+        // ignore a through crossing whose endpoints happen to be far away.
+        let mut exclusion = (
+            latitude,
+            latitude,
+            west.points[0].longitude,
+            west.points[0].longitude,
+        );
+        for point in [west, middle, east, other]
+            .into_iter()
+            .flat_map(|a| &a.points)
+        {
+            exclusion.0 = exclusion.0.min(point.latitude);
+            exclusion.1 = exclusion.1.max(point.latitude);
+            exclusion.2 = exclusion.2.min(point.longitude);
+            exclusion.3 = exclusion.3.max(point.longitude);
+        }
+        // At the qualified latitude this is over 200 m even east-west;
+        // well beyond two maximum half-platform widths and turnout leads.
+        const PAD: f64 = 0.004;
+        if d.alignments.iter().filter(|a| !incident(a.id)).any(|a| {
+            if a.points
+                .windows(2)
+                .any(|p| (p[0].longitude - p[1].longitude).abs() > 180.)
+            {
+                return true;
+            }
+            let p = &a.points[0];
+            let (mut south, mut north, mut west, mut east) =
+                (p.latitude, p.latitude, p.longitude, p.longitude);
+            for q in &a.points[1..] {
+                south = south.min(q.latitude);
+                north = north.max(q.latitude);
+                west = west.min(q.longitude);
+                east = east.max(q.longitude);
+            }
+            north >= exclusion.0 - PAD
+                && south <= exclusion.1 + PAD
+                && east >= exclusion.2 - PAD
+                && west <= exclusion.3 + PAD
+        }) {
             return false;
         }
         let straight = |a: &Alignment| a.points.iter().all(|p| p.latitude == latitude);
