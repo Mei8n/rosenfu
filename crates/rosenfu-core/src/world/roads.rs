@@ -288,33 +288,39 @@ fn crosses_road_at(
     t: f64,
     a: GeoPoint,
     b: GeoPoint,
-    roads: &[RoadGeometry<'_>],
+    snapshots: &[RoadSnapshot],
 ) -> bool {
     if crosses_at(&road.points, index, t, a, b) {
         return true;
     }
     let point = mix(road.points[index], road.points[index + 1], t);
+    let surface = road_height(road) == RoadHeight::Surface;
     let mut positive = false;
     let mut negative = false;
-    for other_geometry in roads {
-        let other = other_geometry.road;
-        if !in_scope(point, Some(other_geometry.scope))
-            || !in_scope(point, other.coverage.as_deref())
-            || !((road_height(road) == RoadHeight::Surface
-                && other_geometry.height == RoadHeight::Surface)
-                || (other.layer == road.layer
-                    && other.level == road.level
-                    && other.bridge == road.bridge
-                    && other.tunnel == road.tunnel))
-        {
+    // Continuation uses the exact source-edge point, not the filtered
+    // rail-side approximation. Do not exclude valid endpoint alignment from
+    // an adjacent snapshot when narrowing the ordinary candidate scan.
+    for snapshot in snapshots {
+        if !in_scope(point, Some(&snapshot.road_coverage)) {
             continue;
         }
-        for edge in other.points.windows(2) {
-            for (p, q) in [(edge[0], edge[1]), (edge[1], edge[0])] {
-                if metres(p, point) < 0.001 {
-                    let side = cross(sub(b, a), sub(q, a));
-                    positive |= side > 1e-12;
-                    negative |= side < -1e-12;
+        for other in &snapshot.roads {
+            if !in_scope(point, other.coverage.as_deref())
+                || !((surface && road_height(other) == RoadHeight::Surface)
+                    || (other.layer == road.layer
+                        && other.level == road.level
+                        && other.bridge == road.bridge
+                        && other.tunnel == road.tunnel))
+            {
+                continue;
+            }
+            for edge in other.points.windows(2) {
+                for (p, q) in [(edge[0], edge[1]), (edge[1], edge[0])] {
+                    if metres(p, point) < 0.001 {
+                        let side = cross(sub(b, a), sub(q, a));
+                        positive |= side > 1e-12;
+                        negative |= side < -1e-12;
+                    }
                 }
             }
         }
@@ -348,6 +354,15 @@ fn overlaps(a: CoverageBounds, b: CoverageBounds) -> bool {
         && b.south <= a.north + PAD
 }
 
+fn union_bounds(a: CoverageBounds, b: CoverageBounds) -> CoverageBounds {
+    CoverageBounds {
+        west: a.west.min(b.west),
+        south: a.south.min(b.south),
+        east: a.east.max(b.east),
+        north: a.north.max(b.north),
+    }
+}
+
 struct RoadGeometry<'a> {
     road: &'a RoadWay,
     scope: &'a [CoverageBounds],
@@ -362,12 +377,14 @@ struct RoadAssessmentInputs<'a> {
     has_snapshots: bool,
     coverage: Vec<CoverageBounds>,
     roads: Vec<RoadGeometry<'a>>,
+    snapshots: &'a [RoadSnapshot],
     boundary_pairs: Vec<boundary::Pair>,
 }
 impl<'a> RoadAssessmentInputs<'a> {
-    fn new(snapshots: &'a [RoadSnapshot]) -> Self {
+    fn new(snapshots: &'a [RoadSnapshot], rail_bounds: Option<&[CoverageBounds]>) -> Self {
         Self {
             has_snapshots: !snapshots.is_empty(),
+            snapshots,
             coverage: snapshots
                 .iter()
                 .filter(|snapshot| snapshot.coverage_verified)
@@ -375,6 +392,20 @@ impl<'a> RoadAssessmentInputs<'a> {
                 .collect(),
             roads: snapshots
                 .iter()
+                .filter(|snapshot| {
+                    // A direct crossing must be inside the snapshot's stated
+                    // scope even when its source coverage is not verified.
+                    // Use a conservative union solely to exclude disjoint
+                    // data. The exact individual boxes still decide crossings.
+                    rail_bounds.is_none_or(|rail| {
+                        snapshot
+                            .road_coverage
+                            .iter()
+                            .copied()
+                            .reduce(union_bounds)
+                            .is_some_and(|scope| rail.iter().any(|r| overlaps(*r, scope)))
+                    })
+                })
                 .flat_map(|snapshot| {
                     snapshot.roads.iter().map(|road| RoadGeometry {
                         road,
@@ -392,7 +423,13 @@ impl<'a> RoadAssessmentInputs<'a> {
 /// Derive crossings from current physical height at each intersection. Never cache
 /// these records in a save: alignment edits, removals and Undo change them immediately.
 pub fn assess_road_crossings(alignment: &Alignment, snapshots: &[RoadSnapshot]) -> RoadAssessment {
-    assess_connected_road_crossings(alignment, &RoadAssessmentInputs::new(snapshots), &[], &[])
+    let bounds = [geometry_bounds(&alignment.points)];
+    assess_connected_road_crossings(
+        alignment,
+        &RoadAssessmentInputs::new(snapshots, Some(&bounds)),
+        &[],
+        &[],
+    )
 }
 
 fn assess_connected_road_crossings(
@@ -414,8 +451,8 @@ fn assess_connected_road_crossings(
         return result;
     }
     let alignment_bounds = geometry_bounds(&alignment.points);
-    // Keep the full roads list for source-way endpoint continuation. Only the
-    // expensive rail/road intersection scan uses these local candidates.
+    // Limit direct geometry intersections; continuation independently uses the
+    // exact point and original snapshots, and boundary budgets remain global.
     let candidates: Vec<_> = inputs
         .roads
         .iter()
@@ -455,7 +492,7 @@ fn assess_connected_road_crossings(
                             start_neighbors,
                             end_neighbors,
                         ))
-                    || !crosses_road_at(road, j, u, a, b, &inputs.roads)
+                    || !crosses_road_at(road, j, u, a, b, inputs.snapshots)
                 {
                     continue;
                 }
@@ -516,7 +553,17 @@ impl World {
         if self.data.alignments.is_empty() {
             return result;
         }
-        let inputs = RoadAssessmentInputs::new(&self.data.road_snapshots);
+        // Keep bounded setup cost and avoid one global bounding box bridging
+        // distant local regions. Large alignment counts retain the broad path.
+        const MAX_SCOPED_ALIGNMENTS: usize = 64;
+        let bounds = (self.data.alignments.len() <= MAX_SCOPED_ALIGNMENTS).then(|| {
+            self.data
+                .alignments
+                .iter()
+                .map(|a| geometry_bounds(&a.points))
+                .collect::<Vec<_>>()
+        });
+        let inputs = RoadAssessmentInputs::new(&self.data.road_snapshots, bounds.as_deref());
         for alignment in &self.data.alignments {
             let mut starts = vec![];
             let mut ends = vec![];
