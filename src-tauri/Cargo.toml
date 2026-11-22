@@ -19,4 +19,4 @@ reqwest = { version = "=0.13.5", default-features = false, features = ["blocking
 tempfile = "3"
 
 [features]
-dev-shimada-bus-lab = ["rosenfu-core/dev-shimada-bus-lab"]
+dev-road-lab = ["rosenfu-core/dev-road-lab"]

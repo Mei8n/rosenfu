@@ -1,10 +1,10 @@
-# Shimada–Otsu road gameplay lab
+# Debug road gameplay labs
 
 This opt-in development-only data is **not** a real route, a real stop, an
 assertion of actual traffic permission, or coverage of the surrounding region.
 The default build does not include it. A release build rejects this feature.
 
-Run a debug source build with `npm run tauri -- dev --features dev-shimada-bus-lab`.
+Run a debug source build with `npm run tauri -- dev --features dev-road-lab`.
 In a temporary new world choose 建設 → 道路交通 → 島田・大津の検証用データ.
 Select the direction, then place two game bus stops, create a route and configure
 its timetable. Do not use a valuable save: a world using this lab catalog cannot
@@ -35,3 +35,17 @@ sort the output rows by their identifiers as required by the native registry.
 The finite snapshot is not proof of any present-day road restriction or field
 condition. The approx. 228 m example uses a game stop 25% into the first edge
 and another 75% into the final edge.
+
+## Dejima single-segment tram test
+`dejima-se-tram-lab.json`, SHA-256
+`810bb68473a4f1b7b55c828ddd94b2c8f030b1395894032bce1ce479d66104c2`,
+is one southeast-directed game-only segment clipped from OSM way 128993698 v12:
+https://www.openstreetmap.org/way/128993698/history/12 .
+Like the Shimada file, it is separately licensed under ODbL 1.0, not the software
+license; attribution: © OpenStreetMap contributors. In a fresh temporary world
+select the Dejima entry, then select the two endpoints from northwest to
+southeast and build a shared-road tram segment.
+It does not establish actual vehicle access, railway rights, street coverage, or
+grade; `ground` is a simulation category here, not a surveyed gradient. The
+catalog grants no bus access, no reviewed or player-created boarding positions,
+no turns, and no reverse traversal for this region. Keep the existing lab notice.

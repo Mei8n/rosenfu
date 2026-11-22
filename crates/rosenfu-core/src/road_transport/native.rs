@@ -14,22 +14,42 @@ struct Pin<'a> {
 // Intentionally empty until a real corridor and reuse rights are explicitly reviewed.
 // Never populate this from a save, IPC, filesystem lookup, network, or test fixture.
 const PINS: &[Pin<'static>] = &[];
-const LAB_ID: &str = "shimada-otsu-chubu-261120-lab-bus";
+const SHIMADA_LAB_ID: &str = "shimada-otsu-chubu-261120-lab-bus";
+const DEJIMA_LAB_ID: &str = "dejima-osm-se-tram-lab";
 
-#[cfg(all(feature = "dev-shimada-bus-lab", not(debug_assertions)))]
-compile_error!("dev-shimada-bus-lab is only permitted in debug source builds");
+fn lab_mode(id: &str) -> Option<PilotRoadMode> {
+    match id {
+        SHIMADA_LAB_ID => Some(PilotRoadMode::Bus),
+        DEJIMA_LAB_ID => Some(PilotRoadMode::Tram),
+        _ => None,
+    }
+}
 
-#[cfg(all(feature = "dev-shimada-bus-lab", debug_assertions))]
-const LAB_PINS: &[Pin<'static>] = &[Pin {
-    id: LAB_ID,
-    sha256: [
-        0x20, 0xde, 0x06, 0x4b, 0x03, 0xe7, 0xc2, 0x2e, 0xb9, 0x25, 0x79, 0xe6, 0xd5, 0x3b, 0xde,
-        0x0d, 0x0b, 0x97, 0x87, 0x2c, 0x9f, 0x7a, 0x2b, 0xa4, 0x34, 0x6d, 0xf1, 0xeb, 0xbd, 0xd0,
-        0x5c, 0x92,
-    ],
-    bytes: include_bytes!("../../lab-data/shimada-otsu-lab-bus.json"),
-}];
-#[cfg(not(all(feature = "dev-shimada-bus-lab", debug_assertions)))]
+#[cfg(all(feature = "dev-road-lab", not(debug_assertions)))]
+compile_error!("dev-road-lab is only permitted in debug source builds");
+
+#[cfg(all(feature = "dev-road-lab", debug_assertions))]
+const LAB_PINS: &[Pin<'static>] = &[
+    Pin {
+        id: SHIMADA_LAB_ID,
+        sha256: [
+            0x20, 0xde, 0x06, 0x4b, 0x03, 0xe7, 0xc2, 0x2e, 0xb9, 0x25, 0x79, 0xe6, 0xd5, 0x3b,
+            0xde, 0x0d, 0x0b, 0x97, 0x87, 0x2c, 0x9f, 0x7a, 0x2b, 0xa4, 0x34, 0x6d, 0xf1, 0xeb,
+            0xbd, 0xd0, 0x5c, 0x92,
+        ],
+        bytes: include_bytes!("../../lab-data/shimada-otsu-lab-bus.json"),
+    },
+    Pin {
+        id: DEJIMA_LAB_ID,
+        sha256: [
+            0x81, 0x0b, 0xb6, 0x84, 0x73, 0xa4, 0xf1, 0xb7, 0xb5, 0x5c, 0x82, 0x8d, 0xdd, 0x94,
+            0xb2, 0xc8, 0xf0, 0x30, 0xb1, 0x39, 0x58, 0x94, 0x03, 0x2b, 0xce, 0x1c, 0xe4, 0x79,
+            0xd6, 0x61, 0x04, 0xc2,
+        ],
+        bytes: include_bytes!("../../lab-data/dejima-se-tram-lab.json"),
+    },
+];
+#[cfg(not(all(feature = "dev-road-lab", debug_assertions)))]
 const LAB_PINS: &[Pin<'static>] = &[];
 
 #[derive(Deserialize)]
@@ -130,22 +150,28 @@ impl Pin<'_> {
         {
             return Err(InvalidData);
         }
-        let lab_only = id == LAB_ID;
-        // Lab geometry is not permission to drive or evidence of real stops.
-        // Do not allow the lab catalog to acquire reviewed stops or tram authority.
-        if lab_only
-            && (!asset.allows_player_bus_stops
+        let lab = lab_mode(id);
+        // Pinned geometry is for one simulated mode only. Neither lab has
+        // reviewed stops or confers actual road permissions.
+        if let Some(mode) = lab {
+            let bus = mode == PilotRoadMode::Bus;
+            if asset.allows_player_bus_stops != bus
                 || !asset.bus_stop_positions.is_empty()
-                || asset
-                    .edges
-                    .iter()
-                    .any(|edge| edge.tram_access == Access::Allowed)
+                || asset.edges.iter().any(|edge| {
+                    if bus {
+                        edge.bus_access != Access::Allowed || edge.tram_access == Access::Allowed
+                    } else {
+                        edge.tram_access != Access::Allowed || edge.bus_access == Access::Allowed
+                    }
+                })
                 || asset
                     .transitions
                     .iter()
-                    .any(|movement| movement.mode != PilotRoadMode::Bus))
-        {
-            return Err(AccessForbidden);
+                    .any(|movement| movement.mode != mode)
+                || (!bus && (asset.edges.len() != 1 || !asset.transitions.is_empty()))
+            {
+                return Err(AccessForbidden);
+            }
         }
         let approved = Approved {
             graph: RoadTransport {
@@ -155,7 +181,7 @@ impl Pin<'_> {
             },
             source: format!("{SOURCE_PREFIX}{id}"),
             region: NativeRoadRegion {
-                lab_only,
+                lab_only: lab.is_some(),
                 id: asset.asset_id,
                 region: asset.region,
                 origin: asset.origin,
@@ -310,7 +336,7 @@ pub fn import_native_pilot(asset_id: &str) -> Result<RoadTransport, RoadTranspor
 
 fn approved_asset(asset_id: &str, pins: &[Pin<'_>]) -> Result<Approved, RoadTransportError> {
     pins.iter()
-        .filter(|pin| pin.id != LAB_ID)
+        .filter(|pin| lab_mode(pin.id).is_none())
         .chain(LAB_PINS)
         .find(|pin| pin.id == asset_id)
         .ok_or(StaleSnapshot)?
@@ -321,7 +347,7 @@ fn approved_asset(asset_id: &str, pins: &[Pin<'_>]) -> Result<Approved, RoadTran
 pub fn native_road_regions() -> Result<Vec<NativeRoadRegion>, RoadTransportError> {
     with_pins(|pins| {
         pins.iter()
-            .filter(|pin| pin.id != LAB_ID)
+            .filter(|pin| lab_mode(pin.id).is_none())
             .chain(LAB_PINS)
             .map(|pin| Ok(pin.authenticate()?.region))
             .collect()
@@ -1121,23 +1147,27 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(feature = "dev-shimada-bus-lab")))]
+#[cfg(all(test, not(feature = "dev-road-lab")))]
 #[test]
 fn lab_region_is_not_available_without_debug_opt_in() {
     assert!(PINS.is_empty());
     assert!(native_road_regions().unwrap().is_empty());
-    assert_eq!(import_native_pilot(LAB_ID).err(), Some(StaleSnapshot));
+    for id in [SHIMADA_LAB_ID, DEJIMA_LAB_ID] {
+        assert_eq!(import_native_pilot(id).err(), Some(StaleSnapshot));
+    }
 }
 
-#[cfg(all(test, feature = "dev-shimada-bus-lab", debug_assertions))]
+#[cfg(all(test, feature = "dev-road-lab", debug_assertions))]
 #[test]
 fn embedded_lab_is_separate_from_production_and_has_no_tram_or_reviewed_stop() {
     assert!(PINS.is_empty());
     let regions = native_road_regions().unwrap();
-    let [region] = regions.as_slice() else {
-        panic!("expected exactly one lab catalog entry");
-    };
-    assert_eq!(region.id, LAB_ID);
+    assert_eq!(regions.len(), 2);
+    let region = regions
+        .iter()
+        .find(|region| region.id == SHIMADA_LAB_ID)
+        .unwrap();
+    assert_eq!(region.id, SHIMADA_LAB_ID);
     assert!(region.lab_only && region.allows_player_bus_stops);
     assert!(region.bus_stop_positions.is_empty());
     assert_eq!(serde_json::to_value(region).unwrap()["lab_only"], true);
@@ -1145,7 +1175,7 @@ fn embedded_lab_is_separate_from_production_and_has_no_tram_or_reviewed_stop() {
         import_native_pilot("unknown-lab").err(),
         Some(StaleSnapshot)
     );
-    let graph = import_native_pilot(LAB_ID).unwrap();
+    let graph = import_native_pilot(SHIMADA_LAB_ID).unwrap();
     assert_eq!(graph.edges.len(), 15);
     assert!(graph
         .edges
@@ -1164,4 +1194,39 @@ fn embedded_lab_is_separate_from_production_and_has_no_tram_or_reviewed_stop() {
     assert!(graph
         .native_bus_path(&WorldDraft::default(), &point, &point)
         .is_err());
+}
+
+#[cfg(all(test, feature = "dev-road-lab", debug_assertions))]
+#[test]
+fn dejima_lab_allows_only_one_directed_tram_segment() {
+    let regions = native_road_regions().unwrap();
+    let region = regions
+        .iter()
+        .find(|region| region.id == DEJIMA_LAB_ID)
+        .unwrap();
+    assert!(region.lab_only && !region.allows_player_bus_stops);
+    assert!(region.bus_stop_positions.is_empty());
+    let graph = import_native_pilot(DEJIMA_LAB_ID).unwrap();
+    let [edge] = graph.edges.as_slice() else {
+        panic!("expected one directed lab tram segment");
+    };
+    let mut draft = WorldDraft::default();
+    draft.road_transport = graph.clone();
+    assert!(crate::world::World::new(draft.clone()).is_ok());
+    assert_eq!(
+        graph.native_shortest_path(&draft, &edge.from, &edge.to, PilotRoadMode::Tram),
+        Ok(vec![edge.id.clone()])
+    );
+    assert!(graph
+        .native_shortest_path(&draft, &edge.to, &edge.from, PilotRoadMode::Tram)
+        .is_err());
+    assert!(graph
+        .native_shortest_path(&draft, &edge.from, &edge.to, PilotRoadMode::Bus)
+        .is_err());
+    let mut fake_reverse = edge.clone();
+    fake_reverse.id.push_str("-unproved");
+    std::mem::swap(&mut fake_reverse.from, &mut fake_reverse.to);
+    fake_reverse.geometry.reverse();
+    draft.road_transport.edges.push(fake_reverse);
+    assert!(crate::world::World::new(draft).is_err());
 }
