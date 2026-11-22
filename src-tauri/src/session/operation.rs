@@ -1,5 +1,5 @@
 use super::*;
-use rosenfu_core::operation::{PassengerOffer, Timetable, Train, Vehicle};
+use rosenfu_core::operation::{Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::OperationServiceConfig;
 #[derive(serde::Serialize)]
@@ -14,7 +14,6 @@ pub struct OperationView {
     pub services: Vec<OperationServiceConfig>,
     pub bus_services: Vec<rosenfu_core::world::BusOperationConfig>,
     pub trains: Vec<Train>,
-    pub offers: Vec<PassengerOffer>,
 }
 pub(super) fn next_session_token() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -153,7 +152,6 @@ impl WorldEditor {
                 services: vec![],
                 bus_services: vec![],
                 trains: vec![],
-                offers: vec![],
             };
         };
         OperationView {
@@ -167,11 +165,6 @@ impl WorldEditor {
             services: o.configs.clone(),
             bus_services: o.bus_configs.clone(),
             trains: o.runtime.trains().cloned().collect(),
-            offers: if o.invalidated {
-                vec![]
-            } else {
-                o.runtime.passenger_offers()
-            },
         }
     }
     pub fn configure_operation_service(
@@ -997,8 +990,11 @@ mod tests {
         replace(&mut e).unwrap();
         assert!(e.operation_snapshot().paused && !e.operation_snapshot().invalidated);
         assert!(e
-            .operation_snapshot()
-            .offers
+            .world
+            .operation()
+            .unwrap()
+            .runtime
+            .passenger_offers()
             .iter()
             .any(|offer| offer.to == b.0.to_string()));
     }
@@ -1199,7 +1195,7 @@ mod tests {
                 headway_ms: 60000,
             },
         );
-        let offers = e.operation_snapshot().offers;
+        let offers = e.world.operation().unwrap().runtime.passenger_offers();
         let bus = offers.iter().find(|o| o.service_id == "bus:R").unwrap();
         assert_eq!(bus.from, "bus:A");
         assert_eq!(bus.to, "bus:B");
@@ -1508,6 +1504,95 @@ mod tests {
         assert_eq!(e.world.operation_save(), saved.operation_save());
         assert!(e.operation_tick.is_none());
     }
+    #[test]
+    fn operation_tick_wire_omits_passenger_offers_but_native_fixed_od_still_uses_them() {
+        #[derive(serde::Serialize)]
+        struct LegacyWire<'a> {
+            #[serde(flatten)]
+            current: &'a OperationView,
+            offers: Vec<rosenfu_core::operation::PassengerOffer>,
+        }
+
+        let mut e = editor();
+        let first = e.operation_snapshot().services[0].clone();
+        let path = e.world.snapshot().service_paths[0].clone();
+        let from = e.world.snapshot().services[0].start;
+        let segments: Vec<_> = path.legs.iter().map(|leg| leg.segment.clone()).collect();
+        let mut configs = vec![first.clone()];
+        for n in 2..=64 {
+            let service_id = e
+                .world
+                .add_service_path(
+                    e.company,
+                    format!("Timing fixture {n}"),
+                    from,
+                    segments.clone(),
+                    path.stops.clone(),
+                )
+                .unwrap();
+            configs.push(OperationServiceConfig {
+                service_id,
+                ..first.clone()
+            });
+        }
+        e.world.configure_operation(configs).unwrap();
+        let start = std::time::Instant::now();
+        e.set_operation_clock_at(false, 1, start).unwrap();
+        let before = e.world.operation_save().unwrap();
+        let view = e
+            .advance_operation_at(start + std::time::Duration::from_millis(500))
+            .unwrap();
+        assert_eq!(view.now_ms, 500);
+        assert_eq!(view.services.len(), 64);
+        assert!(!view.trains.is_empty());
+
+        let offers = e.world.operation().unwrap().runtime.passenger_offers();
+        assert_eq!(offers.len(), 128);
+        let old = serde_json::to_vec(&LegacyWire {
+            current: &view,
+            offers,
+        })
+        .unwrap();
+        let current = serde_json::to_vec(&view).unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&old).unwrap();
+        assert_eq!(
+            legacy
+                .as_object_mut()
+                .unwrap()
+                .remove("offers")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            128
+        );
+        assert_eq!(
+            legacy,
+            serde_json::from_slice::<serde_json::Value>(&current).unwrap()
+        );
+        assert!(current.len() < old.len());
+        let stations = &e.world.snapshot().stations;
+        let od = e
+            .preview_fixed_od(
+                stations[0].id.0.to_string(),
+                stations[1].id.0.to_string(),
+                Some(10.),
+                None,
+            )
+            .unwrap();
+        assert_eq!(od.potential_trips, Some(10.));
+        assert!(od.search_complete);
+        assert!((od.rail.iter().map(|path| path.trips).sum::<f64>() - 10.).abs() < 1e-9);
+        assert_ne!(e.world.operation_save().unwrap(), before);
+        let native = e.world.operation().unwrap();
+        let begin = std::time::Instant::now();
+        for _ in 0..2_000 {
+            std::hint::black_box(native.runtime.passenger_offers());
+        }
+        eprintln!("operation wire: {} -> {} bytes; {} offers not built per tick; 2000 former offers-only builds {:.3} ms",
+            old.len(),current.len(),128,begin.elapsed().as_secs_f64()*1000.);
+    }
+
     #[test]
     fn synthetic_od_uses_real_service_and_does_not_mutate() {
         let e = editor();

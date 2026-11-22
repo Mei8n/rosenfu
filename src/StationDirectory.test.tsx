@@ -20,3 +20,17 @@ test('empty directory directs creation to construction, not legacy coordinates',
 test("legacy standalone station does not invent a physical platform",()=>{
  render(<StationDirectory stations={[stations[2]]} routes={[]} selected={null} onSelect={()=>{}}/>);expect(screen.getByTitle("ホーム情報なし").textContent).toContain("—");
 });
+
+test('first matching route path and distinct platform membership stay live across snapshots',()=>{
+ const routes=[{id:'r',name:'本線',start:'3'}];
+ const placements=[{station_id:'1'},{station_id:'1'}];
+ const props={stations,routes,selected:null,onSelect:vi.fn()};
+ const {rerender}=render(<StationDirectory {...props} placements={placements} paths={[{route_id:'r',member_stations:['1']},{route_id:'r',member_stations:['3']}]}/>);
+ expect(screen.getByRole('button',{name:/中央 本線/})).toBeTruthy();
+ expect(screen.getByRole('button',{name:/東駅 路線未所属/})).toBeTruthy();
+ expect(screen.getAllByTitle('1ホーム')).toHaveLength(1);
+ rerender(<StationDirectory {...props} placements={[{station_id:'3'}]} paths={[{route_id:'r',member_stations:['3']}]}/>);
+ expect(screen.getByRole('button',{name:/東駅 本線/})).toBeTruthy();
+ expect(screen.getByRole('button',{name:/中央 路線未所属/})).toBeTruthy();
+ expect(screen.getByRole('button',{name:/東駅 本線/}).querySelector('[title="1ホーム"]')).toBeTruthy();
+});

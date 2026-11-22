@@ -2416,18 +2416,25 @@ impl WorldEditor {
             }
         }
     }
-    /// Restore atomically, retaining normal backup behavior for a healthy manual save.
+    #[cfg(test)]
     pub fn load_autosave(
         &mut self,
         autosave_path: &Path,
         manual_path: &Path,
     ) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.load(autosave_path)?;
-        let auto_version = candidate
-            .manual_version
-            .clone()
-            .ok_or("復元元が確認できません。")?;
+        self.restore_saved_autosave(autosave_path, manual_path)?;
+        Ok(self.snapshot())
+    }
+
+    /// Restore atomically, retaining normal backup behavior for a healthy
+    /// manual save. Hold only the decoded replacement, not a copy of the
+    /// previously mounted world; publish after all fallible reads/checks.
+    fn restore_saved_autosave(
+        &mut self,
+        autosave_path: &Path,
+        manual_path: &Path,
+    ) -> Result<(), String> {
+        let (world, auto_version, company) = Self::read_saved_world(autosave_path)?;
         let manual_version =
             rosenfu_storage::file_version(manual_path).map_err(|e| e.to_string())?;
         let repair_allowed = if manual_version == rosenfu_storage::FileVersion::Missing {
@@ -2456,19 +2463,22 @@ impl WorldEditor {
                 Err(error) => return Err(error.to_string()),
             }
         };
-        candidate.deleted_alignment = None;
-        candidate.loaded_path = Some(manual_path.to_owned());
-        candidate.manual_version = Some(manual_version);
-        candidate.manual_repair_allowed = repair_allowed;
-        candidate.autosave_version = Some((autosave_path.to_owned(), auto_version));
-        candidate.autosave_blocked = false;
-        candidate.autosave_replace_allowed = false;
-        candidate.edit_history = self.edit_history.clone();
-        candidate.clear_edit_history();
-        *self = candidate;
+        self.install_saved_world(world, company, manual_path, manual_version);
+        self.manual_repair_allowed = repair_allowed;
+        self.autosave_version = Some((autosave_path.to_owned(), auto_version));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn load(&mut self, path: &Path) -> Result<WorldDraft, String> {
+        let (world, version, company) = Self::read_saved_world(path)?;
+        self.install_saved_world(world, company, path, version);
         Ok(self.snapshot())
     }
-    pub fn load(&mut self, path: &Path) -> Result<WorldDraft, String> {
+
+    fn read_saved_world(
+        path: &Path,
+    ) -> Result<(World, rosenfu_storage::FileVersion, CompanyId), String> {
         let (candidate, version) =
             rosenfu_storage::load_world_with_version(path).map_err(|e| e.to_string())?;
         let data = candidate.snapshot();
@@ -2493,9 +2503,19 @@ impl WorldEditor {
             return Err("編集範囲外の路線を含むため読み込めません。".into());
         }
         let company = data.companies[0].id;
+        Ok((candidate, version, company))
+    }
+
+    fn install_saved_world(
+        &mut self,
+        world: World,
+        company: CompanyId,
+        path: &Path,
+        version: rosenfu_storage::FileVersion,
+    ) {
         self.deleted_alignment = None;
         self.clear_edit_history();
-        self.world = candidate;
+        self.world = world;
         self.operation_tick = None;
         self.fixed_od_token = operation::next_session_token();
         self.operation_edit_revision = operation::next_session_token();
@@ -2513,7 +2533,6 @@ impl WorldEditor {
         self.observed_autosave = None;
         self.autosave_blocked = false;
         self.autosave_replace_allowed = false;
-        Ok(self.snapshot())
     }
 }
 

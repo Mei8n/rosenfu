@@ -185,3 +185,18 @@ test('when invalidated but empty, a rejected stale edit preserves the input and 
  expect((screen.getByLabelText('運転間隔（分）') as HTMLInputElement).value).toBe('7');
  expect(dirty).not.toHaveBeenCalled();
 });
+
+test('clock ticks and displays real vehicle state with the lean wire and no demand rows',async()=>{
+ vi.useFakeTimers();
+ const before={...snapshot,now_ms:59500,paused:false,services:[config]};
+ const moving={key:{service_id:'12',scheduled_ms:59500},leg:0,delay_ms:0,state:{state:'moving',entered_ms:59500,arrival_ms:70000,release_ms:72000}} as const;
+ const after={...before,now_ms:60000,timetable_edit_token:'second',trains:[moving]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='advance_operation'?after:before);
+ render(operation());
+ await act(async()=>{});
+ expect(screen.getByText('1日目 00:00')).toBeTruthy();
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(invoke).toHaveBeenCalledWith('advance_operation',undefined);
+ expect(screen.getByText('1日目 00:01')).toBeTruthy();
+ expect(screen.getByText('走行中')).toBeTruthy();
+});

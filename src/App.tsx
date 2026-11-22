@@ -167,6 +167,13 @@ const previewWorld: World = {
 };
 const detail = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+function mapPath(points: GeoPoint[], camera: Camera) {
+  return points.map((point, index) => {
+    const p = project(point.latitude, point.longitude, camera);
+    return (index ? "L" : "M") + p.x + "," + p.y;
+  }).join(" ");
+}
+
 export function App() {
   type EditSnapshot={world:World;plans:ConstructionPlans};
   const editJournal=useRef(new EditHistory<EditSnapshot>());
@@ -592,7 +599,12 @@ export function App() {
     const endpoint=[points[0],points.at(-1)].filter((point):point is GeoPoint=>!!point).map(point=>{const q=project(point.latitude,point.longitude,camera);return {point,distance:Math.hypot(p.x-q.x,p.y-q.y)*viewport.scale};}).filter(item=>item.distance<=8).sort((a,b)=>a.distance-b.distance)[0]?.point;
     return focusMarker(endpoint??nearestOnAlignment(points,target).point,endpoint?"anchor":"line",className);
   };
-  const drawPath = (points: GeoPoint[]) => points.map((point, index) => { const p = project(point.latitude, point.longitude, camera); return (index ? "L" : "M") + p.x + "," + p.y; }).join(" ");
+  const drawPath = (points: GeoPoint[]) => mapPath(points, camera);
+  // Hover changes the focused point, not these immutable built centerlines.
+  const alignmentHitPaths = useMemo(
+    () => alignments.map(alignment => mapPath(alignment.points, camera)),
+    [alignments, camera],
+  );
   const drawInfrastructurePath=(points:GeoPoint[],value:SectionInfrastructure=DEFAULT_INFRASTRUCTURE)=>schematicTrackPaths(points.map(point=>project(point.latitude,point.longitude,camera)),value.track_count).join(" ");
   function changeHeight(level:SectionInfrastructure["level"]){
     if(!heightAnchor){setInfrastructure(value=>({...value,level}));return;}
@@ -1997,14 +2009,14 @@ export function App() {
                 </g>}
               <ReferenceGraphLayer edges={graphDisplay.edges} camera={camera}/>
               {automaticRailSelected&&automaticRail.view.chains.map(chain=><path key={chain.id} d={drawPath(chain.points)} className="automatic-rail-reference" stroke="#777" strokeWidth="1.5" strokeDasharray="4 4" fill="none" pointerEvents="none"/>)}
-              {alignments.map((alignment) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>
+              {alignments.map((alignment, alignmentIndex) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>
                 {!(mainTab==="construction"&&activeTool==="inactive")&&<title>{alignment.name}</title>}
 
                 {displayInfrastructureSections(alignment).map((section,index)=><g key={index} data-track-count={section.infrastructure.track_count} data-structure-level={section.infrastructure.level} pointerEvents="none">
                   {section.infrastructure.level.startsWith('elevated')&&<path d={drawPath(section.points)} fill="none" stroke="#8095a7" strokeWidth={section.infrastructure.track_count*3+6} opacity=".4"/>}
                   {!trackRender.value&&schematicTrackPaths(section.points.map(point=>project(point.latitude,point.longitude,camera)),section.infrastructure.track_count).map((path,rail)=><TrackStroke key={rail} d={path} className={(referenceCopy.active?(manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id):alignmentId)===alignment.id?"alignment-path alignment-selected":"alignment-path"} style={{strokeDasharray:section.infrastructure.level.startsWith('underground')?'5 4':undefined,opacity:1}}/>)}
                 </g>)}
-                <path d={drawPath(alignment.points)} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && activeTool!=="select" && !suppressSelectionClick.current && !roadMapPicking) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
+                <path d={alignmentHitPaths[alignmentIndex]} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && activeTool!=="select" && !suppressSelectionClick.current && !roadMapPicking) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
               </g>)}
               {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} lines={alignments} selectedId={referenceCopy.active?((manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id)??""):alignmentId}/>}
               <g className="route-assignment-overlays" pointerEvents="none">{alignments.flatMap(alignment=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
