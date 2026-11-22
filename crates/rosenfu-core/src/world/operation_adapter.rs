@@ -95,7 +95,7 @@ fn lane_join_resource(
     )
 }
 
-fn crossing(a: &Alignment, b: &Alignment) -> Option<(f64, f64)> {
+pub(super) fn crossing(a: &Alignment, b: &Alignment) -> Option<(f64, f64)> {
     let [p, q] = [a.points[0], a.points[1]];
     let [r, s] = [b.points[0], b.points[1]];
     let u = (q.longitude - p.longitude, q.latitude - p.latitude);

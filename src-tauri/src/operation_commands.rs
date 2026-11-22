@@ -15,6 +15,17 @@ pub fn operation_snapshot(editor: State<'_, Mutex<WorldEditor>>) -> Result<Opera
         .operation_snapshot())
 }
 #[tauri::command]
+pub fn preview_crossing_planning(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_configuration_token: String,
+    start_ms: String,
+) -> Result<crate::session::CrossingPlanningView, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_crossing_planning(&expected_configuration_token, &start_ms)
+}
+#[tauri::command]
 pub fn configure_operation_service(
     editor: State<'_, Mutex<WorldEditor>>,
     service_id: ServiceId,

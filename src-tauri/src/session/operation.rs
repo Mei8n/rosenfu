@@ -4,6 +4,9 @@ use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::OperationServiceConfig;
 #[path = "operation/bus_transfers.rs"]
 mod bus_transfers;
+#[path = "operation/crossing_planning.rs"]
+mod crossing_planning;
+pub use crossing_planning::CrossingPlanningView;
 /// Case-specific payload. Transfer/walking options belong only to scheduled OD.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

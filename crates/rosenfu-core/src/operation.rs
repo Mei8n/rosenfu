@@ -288,6 +288,30 @@ pub fn running_time_ms(sections: &[Section], vehicle: &Vehicle) -> Result<u64, O
     running_time_profile(sections, vehicle, None)
 }
 
+/// Nominal position time on one physical-speed section. Splitting the speed
+/// envelope at an internal marker does not stop the train at that marker.
+pub(crate) fn uniform_section_passage_ms(
+    section: &Section,
+    vehicle: &Vehicle,
+    fraction: f64,
+) -> Result<u64, OperationError> {
+    if !(fraction > 0.0 && fraction < 1.0) {
+        return Err(OperationError::InvalidPath);
+    }
+    let before = section.length_m * fraction;
+    let pieces = [before, section.length_m - before].map(|length_m| Section {
+        length_m,
+        speed_limit_kmh: section.speed_limit_kmh,
+        resources: Vec::new(),
+    });
+    let mut boundaries = Vec::with_capacity(2);
+    running_time_profile(&pieces, vehicle, Some(&mut boundaries))?;
+    boundaries
+        .first()
+        .copied()
+        .ok_or(OperationError::InvalidPath)
+}
+
 fn running_time_profile(
     sections: &[Section],
     vehicle: &Vehicle,
@@ -924,6 +948,15 @@ impl OperationRuntime {
     pub fn service_spec(&self, id: &str) -> Option<&ServiceRunSpec> {
         self.services.get(id).map(|s| &s.spec)
     }
+    pub(crate) fn unblocked_leg_timing(&self, service_id: &str, leg: usize) -> Option<(u64, u64)> {
+        let service = self.services.get(service_id)?;
+        let compiled = service.legs.get(leg)?;
+        let stationary_ms = compiled
+            .clearance_ms
+            .max(service.spec.legs.get(leg)?.dwell_ms);
+        Some((compiled.duration_ms, stationary_ms))
+    }
+
     pub fn now_ms(&self) -> u64 {
         self.now_ms
     }

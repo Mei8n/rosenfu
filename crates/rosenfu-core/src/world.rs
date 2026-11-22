@@ -802,3 +802,8 @@ mod operation_adapter;
 pub use operation_adapter::{
     BusOperationConfig, OperationServiceConfig, WorldOperation, WorldOperationSave,
 };
+
+mod planned_crossing_delay;
+pub use planned_crossing_delay::{
+    PlannedCrossingDelay, PlannedCrossingDelayError, PlannedCrossingDelayPreview,
+};

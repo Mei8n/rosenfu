@@ -2,6 +2,7 @@ import {createContext,useContext,useEffect,useRef,useState,type FormEvent,type R
 import {invoke} from '@tauri-apps/api/core';
 import './operationsPanel.css';
 import {TrainsetPlanning} from './TrainsetPlanning';
+import {CrossingPlanningInspector} from './CrossingPlanningInspector';
 
 type Timetable={first_departure_ms:number;last_departure_ms:number;headway_ms:number};
 type Vehicle={max_speed_kmh:number;acceleration_mps2:number;braking_mps2:number;length_m:number};
@@ -12,7 +13,7 @@ type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:numb
 export type OperationView={now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[]};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
 type Commands={reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
-type OperationContext={view:OperationView|null;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
+type OperationContext={view:OperationView|null;crossingPlanningToken?:string;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
 const Context=createContext<OperationContext|null>(null);
 const speeds=[1,2,4,8,16] as const;
 const minute=60_000,day=24*60*minute;
@@ -76,7 +77,7 @@ export function OperationProvider({available,blocked,epoch,worldVersion,onChange
   const id=window.setInterval(()=>{if(!flight.current&&!intent.current)void tick.current();},500);
   return()=>window.clearInterval(id);
  },[timerEnabled,epoch]);
- const state:OperationContext|null=available?{view,busy,blocked,error,refresh:()=>request('operation_snapshot'),send:request}:null;
+ const state:OperationContext|null=available?{view,busy,blocked,error,crossingPlanningToken:snapshot?.worldVersion===worldVersion?view?.configuration_token:undefined,refresh:()=>request('operation_snapshot'),send:request}:null;
  return <Context.Provider value={state}>{children}</Context.Provider>;
 }
 
@@ -104,6 +105,12 @@ export function OperationClock(){
   </>:<span>{error?'時刻を取得できません':'時刻を確認中…'}</span>}
   {error&&<><span role="alert">{error}</span><button type="button" className="secondary" disabled={disabled} onClick={()=>void refresh()}>運行状態を再取得</button></>}
  </div>;
+}
+
+export function CrossingOperations({enabled}:{enabled:boolean}){
+ const state=useContext(Context);
+ if(!state?.view)return null;
+ return <CrossingPlanningInspector enabled={enabled&&!state.blocked&&!state.busy} configurationToken={state.crossingPlanningToken} nowMs={state.view.now_ms}/>;
 }
 
 type Form={firstDay:string;firstTime:string;lastDay:string;lastTime:string;headway:string;dwell:string;maxSpeed:string;acceleration:string;length:string;assumedSpeed:string};
