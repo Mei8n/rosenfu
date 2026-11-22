@@ -1,3 +1,5 @@
+import {OrdinaryBusPanel,useOrdinaryBusDraft} from './OrdinaryBusPanel';
+import type {OrdinaryBusPath,OrdinaryBusPreview,OrdinaryBusQuery} from './ordinaryBusDraft';
 import {BusOperations,OperationClock,OperationProvider,ServiceOperations,ServicePathChangeNotice} from "./OperationsPanel";
 import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection,type RoadPlayerMapRequest,type RoadPlayerMapSelection} from "./RoadTransportPanel";
 import {RailJourneyReplayPanel} from "./RailJourneyReplayPanel";
@@ -118,13 +120,15 @@ type GeoPoint = { latitude: number; longitude: number };
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
+type EngineInfo = { ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
 type RoutePath = { route_id: string; segments: Segment[]; member_stations: string[] };
 type World = {
   road_transport?:RoadTransportData;
+  ofm_gameplay_bus?:OrdinaryBusPath|null;
+  ofm_gameplay_bus_routes?:Record<string,OrdinaryBusPath>;
   road_snapshots?:SavedRoadSnapshot[];
   road_evidence_descriptors?:readonly unknown[];
   service_route_bindings?:ServiceRouteBindingRecord[];
@@ -339,7 +343,7 @@ export function App() {
   useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch]);
   useEffect(()=>{setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);},[worldEpoch]);
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
-  const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "select" | "road-transport" | "inactive">("tracks");
+  const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "select" | "road-transport" | "ordinary-bus" | "inactive">("tracks");
   const [roadMapFrom,setRoadMapFrom]=useState<string|null>(null);
   const [roadMapSelection,setRoadMapSelection]=useState<RoadMapSelection>();
   const [roadPlayerMapPick,setRoadPlayerMapPick]=useState<{request:RoadPlayerMapRequest;graph:RoadTransportData;epoch:number;edge:RoadTransportData['edges'][number]}>();
@@ -412,7 +416,9 @@ export function App() {
   const seamMutationPending=useRef(false);
   const [frozenRoadTiles,setFrozenRoadTiles]=useState<readonly DraftTileSnapshot[]>([]);
   const [frozenRoadBundle,setFrozenRoadBundle]=useState<ReferenceGraphBundle|null>(null);
-  const automaticRoad=useAutomaticRoad(bounds,status==="ready"&&roadDrawingEnabled,worldEpoch,!!frozenRoadBundle);
+  const ordinaryBusAvailable=info?.ordinary_ofm_bus_enabled===true;
+  const ordinaryBusActive=ordinaryBusAvailable&&mainTab==="construction"&&activeTool==="ordinary-bus";
+  const automaticRoad=useAutomaticRoad(bounds,status==="ready"&&(roadDrawingEnabled||ordinaryBusActive),worldEpoch,!!frozenRoadBundle&&!ordinaryBusActive);
   const roadDrawingBundle=frozenRoadBundle??automaticRoad.snapshot?.bundle??manualGraphBundle;
   const graphBundle=roadFollowing?roadDrawingBundle:manualGraphBundle;
   const graphIndex=useMemo(()=>graphBundle?indexGraphDisplay(graphBundle.graph):[],[graphBundle]);
@@ -1233,7 +1239,7 @@ export function App() {
     if (!coordinatesFromClient(event.clientX, event.clientY, rect, cameraRef.current)) return;
     const { scale } = mapViewport(rect.width, rect.height);
     const existingEquipment = activeTool!=="stations" && event.target instanceof Element && !!event.target.closest(".station-marker, .track-connection");
-    gestureRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, camera: cameraRef.current, scale, dragged: false, mayPlace: event.button===0 && ((mapMode === "place" && activeTool === "stations") || (mapMode === "draw" && activeTool === "tracks")) && !existingEquipment };
+    gestureRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, camera: cameraRef.current, scale, dragged: false, mayPlace: event.button===0 && (ordinaryBusPicking || (((mapMode === "place" && activeTool === "stations") || (mapMode === "draw" && activeTool === "tracks")) && !existingEquipment)) };
     suppressMapClick.current = false;
     suppressSelectionClick.current = false;
   }
@@ -1684,6 +1690,7 @@ export function App() {
     const key = (event: KeyboardEvent) => {
       if(seamMutationPending.current)return;
       if(slotDialog||slotPicker||confirmLoad)return;
+      if(event.key==="Escape"&&ordinaryBusActive&&(ordinaryBus.draft||ordinaryBus.deleting)&&!ordinaryBus.mutating()&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();ordinaryBus.cancel();return;}
       if(event.key==="Escape"&&(roadMapFrom!==null||roadPlayerMapPick)&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();cancelRoadMapPick();return;}
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete||document.querySelector('[aria-label="系統削除の確認"]'))return;
@@ -1910,7 +1917,7 @@ export function App() {
   const showPlanHover=!!planHover&&!!hoveredPlan&&!referenceCopy.active&&!dragging&&(activeTool==="tracks"||activeTool==="inactive");
   const mapMetrics=mapRenderMetrics(camera.zoom,lineWidth,viewport.scale);
   const roadTransportAvailable=info?.road_transport_enabled===true;
-  const constructionTools=[["tracks","線路"],["stations","駅設置"],["delete","削除"],["select","選択"],...(roadTransportAvailable?[["road-transport","道路交通（検証）"]] as const:[])] as const;
+  const constructionTools=[["tracks","線路"],["stations","駅設置"],["delete","削除"],["select","選択"],...(ordinaryBusAvailable?[["ordinary-bus","バス"]] as const:[]),...(roadTransportAvailable?[["road-transport","道路交通（検証）"]] as const:[])] as const;
   const qaRoadEdges=useMemo(()=>{
     const edges=world?.road_transport?.edges??[];
     return edges.length<=150&&edges.every(edge=>edge.source==="synthetic-qa-not-real-roads")
@@ -1921,6 +1928,51 @@ export function App() {
     const ids=new Set(qaRoadEdges.flatMap(edge=>[edge.from,edge.to]));
     return (world?.road_transport?.nodes??[]).filter(node=>ids.has(node.id)&&Number.isFinite(node.point.latitude)&&Number.isFinite(node.point.longitude));
   },[qaRoadEdges,world?.road_transport]);
+  const ordinaryBusMultiple=info?.ordinary_ofm_bus_multiple_enabled===true;
+  const [ordinarySelection,setOrdinarySelection]=useState<{epoch:number;id:string}>();
+  const ordinaryProofs=world?.ofm_gameplay_bus_routes;
+  const ordinaryRoutes=useMemo(()=>{
+    const routes=world?.road_transport?.bus_routes??[],owner=world?.companies[0]?.id;
+    if(ordinaryBusMultiple)return routes.filter(r=>r.owner===owner&&ordinaryProofs&&Object.hasOwn(ordinaryProofs,r.id));
+    return world?.ofm_gameplay_bus?routes.filter(r=>r.owner===owner).slice(0,1):[];
+  },[world,ordinaryProofs,ordinaryBusMultiple]);
+  const ordinaryRoute=(ordinarySelection?.epoch===worldEpoch&&ordinaryRoutes.find(r=>r.id===ordinarySelection.id))||ordinaryRoutes[0];
+  const ordinaryBuiltPath=useMemo(()=>{
+    if(!ordinaryBusActive||!ordinaryRoute||!world?.road_transport)return '';
+    const edges=firstByKey(world.road_transport.edges,edge=>edge.id);
+    const selected=ordinaryRoute.edges.map(id=>edges.get(id));
+    if(selected.some(e=>!e||e.geometry.length<2))return '';
+    return selected.map(e=>mapPath(e!.geometry,camera)).join(' ');
+  },[ordinaryBusActive,ordinaryRoute,world?.road_transport,camera]);
+  const ordinaryBusBlocked=!ordinaryRoute&&!!(world?.ofm_gameplay_bus||world?.road_transport&&
+    (world.road_transport.nodes.length||world.road_transport.edges.length||world.road_transport.bus_stops.length||
+      world.road_transport.bus_routes.length||world.road_transport.evidence?.length));
+  const ordinaryBusEnabled=enabled&&!unapplied&&ordinaryBusActive;
+  async function mutateOrdinaryBus(command:'put_gameplay_ofm_bus'|'remove_gameplay_ofm_bus',args:OrdinaryBusQuery|{routeId:string}){
+    if(!ordinaryBusEnabled||busyRef.current)throw Error("別の操作を完了してからバス系統を変更してください。");
+    busyRef.current=true;setBusy(true);
+    try{
+      const expectedWorldToken='expectedWorldToken' in args?args.expectedWorldToken:await invoke<string>('ofm_world_token');
+      const snapshot=await invoke<World>(command,{...args,expectedWorldToken});
+      setWorld(snapshot);setDirty(true);setConfirmLoad(false);
+      if(command==='put_gameplay_ofm_bus')setOrdinarySelection({epoch:worldEpoch,id:args.routeId});
+    }finally{busyRef.current=false;setBusy(false);}
+  }
+  const ordinaryRoutePattern=ordinaryRoute?(ordinaryBusMultiple?ordinaryProofs?.[ordinaryRoute.id]:world?.ofm_gameplay_bus)?.pattern:undefined;
+  const ordinaryBus=useOrdinaryBusDraft({on:ordinaryBusActive,allow:ordinaryBusEnabled,scope:world,
+    snapshot:automaticRoad.snapshot,loading:automaticRoad.status==='loading',route:ordinaryRoute?{...ordinaryRoute,pattern:ordinaryRoutePattern}:undefined,multiple:ordinaryBusMultiple,roundTrip:info?.ordinary_ofm_bus_round_trip_enabled===true,conflictingGraph:ordinaryBusBlocked,
+    descriptors:world?.road_evidence_descriptors??[],read:automaticRoad.readTileEvidenceBatch,
+    observe:info?.ordinary_ofm_bus_rectangle_enabled===true?automaticRoad.observeRouteTiles:undefined,
+    token:()=>invoke<string>('ofm_world_token'),preview:query=>invoke<OrdinaryBusPreview>('preview_gameplay_ofm_bus',query),
+    commit:query=>mutateOrdinaryBus('put_gameplay_ofm_bus',query),remove:routeId=>mutateOrdinaryBus('remove_gameplay_ofm_bus',{routeId})});
+  const ordinaryBusPicking=ordinaryBusEnabled&&!!ordinaryBus.draft&&!ordinaryBus.draft.preview&&!ordinaryBus.waiting;
+  function pickOrdinaryBusPoint(event:MouseEvent<SVGSVGElement>){
+    event.stopPropagation();smoothZoom.cancel();
+    if(!ordinaryBusPicking||busyRef.current||suppressMapClick.current||suppressSelectionClick.current)return;
+    const rect=event.currentTarget.getBoundingClientRect();
+    const at=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
+    if(at)void ordinaryBus.pick(at,camera,mapViewport(rect.width,rect.height).scale);
+  }
   const roadMapScope=roadTransportAvailable&&mainTab==="construction"&&activeTool==="road-transport";
   const qaRoadMapPicking=roadMapScope&&roadMapFrom!==null;
   const playerMapTarget=roadMapScope&&roadPlayerMapPick&&roadPlayerMapPick.epoch===worldEpoch&&roadPlayerMapPick.graph===world?.road_transport?roadPlayerMapPick:undefined;
@@ -2085,7 +2137,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClickCapture={playerMapTarget?pickPlayerRoadMapPoint:undefined} onClick={mapClick} className={(enabled && (playerMapTarget||((mainTab==="routes"||mainTab==="services")&&routeMapPick)) ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
+            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClickCapture={ordinaryBusActive&&ordinaryBus.draft?pickOrdinaryBusPoint:playerMapTarget?pickPlayerRoadMapPoint:undefined} onClick={mapClick} className={(enabled && (playerMapTarget||ordinaryBusPicking||((mainTab==="routes"||mainTab==="services")&&routeMapPick)) ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
@@ -2158,6 +2210,13 @@ export function App() {
                 </g>;
               })}
               {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<RouteStationSelection stations={world?.stations??[]} ordered={routeSelectedStations} camera={camera} scale={viewport.scale} entityLabel={mainTab==="services"?"系統":"路線"} endpoint={routeMapPick==="start"||routeMapPick==="end"?routeMapPick:null}/>}
+               {ordinaryBuiltPath&&<path d={ordinaryBuiltPath} aria-label="作成済みのバス経路" fill="none" stroke="#007383" strokeOpacity={ordinaryBus.draft?.preview?0.4:1} strokeWidth="4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+               {ordinaryBusActive&&ordinaryBus.draft?.preview&&<path d={mapPath(ordinaryBus.draft.preview.points,camera)} aria-label="バス系統のプレビュー" fill="none" stroke="#006b79" strokeWidth="5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+               {ordinaryBusActive&&ordinaryBus.draft?.preview?.returnPath&&<path d={mapPath(ordinaryBus.draft.preview.returnPath.points,camera)} aria-label="バス系統の復路プレビュー" fill="none" stroke="#7f3c8d" strokeWidth="4" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+               {ordinaryBusActive&&[ordinaryBus.draft?.start,ordinaryBus.draft?.end].map((anchor,i)=>{
+                 if(!anchor)return null;const point=project(anchor.point.latitude,anchor.point.longitude,camera);
+                 return <circle key={i} aria-label={i?"バスの降車位置":"バスの乗車位置"} cx={point.x} cy={point.y} r="5" fill="#006b79" stroke="white" strokeWidth="2" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;
+               })}
                {playerMapPath&&<path d={playerMapPath} aria-label="停留所を置く道路" fill="none" stroke="#185d75" strokeWidth="5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
               {qaRoadMapPicking&&<g className="road-qa-map-selection" aria-label="検証用道路の点">
                 {qaRoadEdges.map(edge=><path key={edge.id} d={drawPath(edge.geometry)} fill="none" stroke="#185d75" strokeWidth="3" strokeDasharray="5 3" vectorEffect="non-scaling-stroke" pointerEvents="none"/>)}
@@ -2180,7 +2239,7 @@ export function App() {
             </svg>
             <div className="map-instruction">{status !== "ready" ? "ドラッグで地図を移動 / 建設はデスクトップ版" : mapMode === "draw" ? "クリックで線形点を追加 / 最後の点をもう一度クリックで計画終了" : mapMode === "place" ? "線路にカーソルを重ねてクリックで駅を配置" : "ドラッグで移動 · ホイールで拡大縮小"}</div>
           </div>
-          <MapCredits waterModelVisible={status==="ready"} openFreeMapVisible={!!world?.road_evidence_descriptors?.length||parkedPaths.some(p=>!!p.ofmPath)||!!graphBundle?.graph.dataset.id.startsWith("ofm-tiles/")||!!constructionRoad.snapshot?.tileSnapshots?.length||!!world?.road_snapshots?.some(s=>s.source_url.startsWith("https://tiles.openfreemap.org/planet/"))||!!world?.source_records?.some(s=>s.dataset_id.startsWith("ofm-tiles/"))||roadFollowing||!!draftEditedGeometry||parkedPaths.some(p=>!!p.editedGeometry)||!!world?.alignments?.length} derivedOsmVisible={!!world?.road_evidence_descriptors?.length||crossingCount>0||(roadSnapShown&&!!roadDrawingBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>(!!path.reference||!!path.ofmPath)&&path.line.length>1)||!!(referenceCopy.active&&referencePreviewPoints&&referencePreviewPoints.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
+          <MapCredits waterModelVisible={status==="ready"} openFreeMapVisible={ordinaryBusActive||!!world?.road_evidence_descriptors?.length||parkedPaths.some(p=>!!p.ofmPath)||!!graphBundle?.graph.dataset.id.startsWith("ofm-tiles/")||!!constructionRoad.snapshot?.tileSnapshots?.length||!!world?.road_snapshots?.some(s=>s.source_url.startsWith("https://tiles.openfreemap.org/planet/"))||!!world?.source_records?.some(s=>s.dataset_id.startsWith("ofm-tiles/"))||roadFollowing||!!draftEditedGeometry||parkedPaths.some(p=>!!p.editedGeometry)||!!world?.alignments?.length} derivedOsmVisible={!!world?.road_evidence_descriptors?.length||crossingCount>0||(roadSnapShown&&!!roadDrawingBundle)||alignments.some(line=>line.points.length>1&&world?.alignment_provenance?.some(origin=>origin.alignment_id===line.id))||parkedPaths.some(path=>(!!path.reference||!!path.ofmPath)&&path.line.length>1)||!!(referenceCopy.active&&referencePreviewPoints&&referencePreviewPoints.length>1)} background={background} reference={referenceVisible && referencePack ? referencePack.dataset : null} graphVisible={(!!graphBundle && graphVisible)||(automaticRailSelected&&automaticRail.view.chains.length>0)}/>
         </section>
         <aside className={panelCollapsed ? "side-panel collapsed" : "side-panel"}>
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
@@ -2188,6 +2247,14 @@ export function App() {
           <nav className="editor-tabs construction-tabs" role="tablist" aria-label="建設ツール" hidden={mainTab!=="construction"}>
             {constructionTools.map(([tool,label],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{if(seamMutationPending.current)return;setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const length=constructionTools.length;const next=constructionTools[event.key==="Home"?0:event.key==="End"?length-1:(index+(event.key==="ArrowLeft"?length-1:1))%length][0];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
           </nav>
+          {ordinaryBusActive&&world?.companies[0]&&<section id="panel-ordinary-bus" role="tabpanel" aria-labelledby="tab-ordinary-bus">
+            <OrdinaryBusPanel state={{...ordinaryBus,start:kind=>{
+              if(cameraRef.current.zoom<16)changeCamera(cameraAt(cameraRef.current.latitude,cameraRef.current.longitude,16));
+              ordinaryBus.start(kind);
+            }}} route={ordinaryRoute} routes={ordinaryRoutes} multiple={ordinaryBusMultiple}
+             onSelect={id=>setOrdinarySelection({epoch:worldEpoch,id})} blocked={ordinaryBusBlocked} enabled={ordinaryBusEnabled}/>
+            {ordinaryRoute&&info?.bus_operation_enabled===true&&<BusOperations key={`${worldEpoch}:${ordinaryRoute.id}`} routes={[ordinaryRoute]} enabled={ordinaryBusEnabled&&!ordinaryBus.draft}/>}
+          </section>}
           {roadTransportAvailable&&world?.companies[0]&&<section id="panel-road-transport" role="tabpanel" aria-labelledby="tab-road-transport" hidden={mainTab!=="construction"||activeTool!=="road-transport"}>
             <RoadTransportPanel key={worldEpoch} data={world.road_transport??{nodes:[],edges:[],bus_stops:[],bus_routes:[],tram_sections:[]}} companyId={world.companies[0].id} enabled={enabled&&!unapplied&&!roadMapPicking&&mainTab==="construction"&&activeTool==="road-transport"} tramEnabled={info?.road_tram_enabled===true} mapSelection={roadMapSelection} onPickOnMap={qaRoadNodes.length>=2?startRoadMapPick:undefined} playerMapSelection={roadPlayerMapSelection?.graph===world.road_transport&&roadPlayerMapSelection?.epoch===worldEpoch?roadPlayerMapSelection.selection:undefined} onPickPlayerOnMap={startPlayerRoadMapPick} run={runRoadTransport}/>
             {info?.bus_operation_enabled===true&&activeTool==="road-transport"&&mainTab==="construction"&&<BusOperations key={worldEpoch} routes={world.road_transport?.bus_routes.filter(route=>route.owner===world.companies[0].id)??[]} enabled={enabled&&!unapplied&&!roadMapPicking}/> }

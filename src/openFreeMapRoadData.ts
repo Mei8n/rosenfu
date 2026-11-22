@@ -132,25 +132,48 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
    return {bindings,rawTiles:[...raws].map(([sha256,bytes])=>({sha256,bytes}))};
   }finally{controller.abort();clearTimeout(timer);signal?.removeEventListener('abort',abort);evidencePending--;}
  }
- return {readTileEvidenceBatch,async load(bounds:GraphBounds,signal?:AbortSignal):Promise<OpenFreeMapRoadSnapshot>{
-  const tiles=roadTilesOf(bounds),user=Symbol('road-consumer'),owned=new Set<Task>(),controller=new AbortController();
+ async function withObservedTiles<T>(
+  tiles:readonly (readonly [number,number])[], signal:AbortSignal|undefined, requiredRevision:string|undefined,
+  finish:(snapshots:OpenFreeMapTileSnapshot[],signal:AbortSignal)=>Promise<T>|T,
+ ):Promise<T>{
+  if(tiles.length<1||tiles.length>OFM_LIMITS.tilesPerLoad||
+      tiles.some(p=>p.length!==2||p.some(n=>!Number.isInteger(n)||n<0||n>=16384))||
+      new Set(tiles.map(p=>p.join('/'))).size!==tiles.length)throw Error('道路タイル取得範囲が不正です。');
+  const user=Symbol('road-consumer'),owned=new Set<Task>(),controller=new AbortController();
   const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
   const timer=setTimeout(()=>controller.abort(new DOMException('道路取得が25秒で完了しませんでした。','TimeoutError')),25000);activeLoads++;
   try{
    check(controller.signal);const meta=await wait(metadata(),controller.signal);check(controller.signal);
+   if(requiredRevision!==undefined&&meta.revision!==requiredRevision)throw Error('道路の版が変わりました。位置を選び直してください。');
    const snapshots=await wait(Promise.all(tiles.map(([x,y])=>acquire(x,y,meta,user,owned))),controller.signal);check(controller.signal);
+   return await finish(snapshots,controller.signal);
+  }finally{
+   activeLoads--;if(activeLoads===0&&!metadataReady)metadataController?.abort();
+   clearTimeout(timer);signal?.removeEventListener('abort',abort);
+   for(const task of owned){task.users.delete(user);if(task.users.size===0)task.controller.abort();}
+  }
+ }
+ return {readTileEvidenceBatch,
+  /** Read the complete coordinate scope using the shared observed-tile cache.
+   * Geometry is not rebuilt or filtered by a viewport here. */
+  observeTiles(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal):Promise<OpenFreeMapEvidenceRequest[]>{
+   if(!/^[A-Za-z0-9_]{1,64}$/.test(revision))return Promise.reject(Error('道路の版が不正です。'));
+   const requested=cells.map(([x,y])=>[x,y] as const);
+   return withObservedTiles(requested,signal,revision,snapshots=>snapshots.map((s,i)=>({
+    x:requested[i][0],y:requested[i][1],z:14,revision,rawSha256:s.bundle.sourceSha256,decoderRule:OFM_EVIDENCE_RULE,
+   })));
+  },
+  async load(bounds:GraphBounds,signal?:AbortSignal):Promise<OpenFreeMapRoadSnapshot>{
+   return withObservedTiles(roadTilesOf(bounds),signal,undefined,async(snapshots,loadSignal)=>{
    const wanted=new Set(snapshots.flatMap(s=>s.roads.filter(r=>roadFragmentIntersects(r.points,bounds)).map(r=>r.id)));
    const edges=snapshots.flatMap(s=>s.bundle.graph.edges.filter(e=>wanted.has(e.osmWayId))),nodeIds=new Set(edges.flatMap(e=>[e.from,e.to]));
    const nodes=snapshots.flatMap(s=>s.bundle.graph.nodes.filter(n=>nodeIds.has(n.osmId)));
    const extent=snapshots.reduce((b,s)=>({west:Math.min(b.west,s.bundle.graph.dataset.bounds.west),east:Math.max(b.east,s.bundle.graph.dataset.bounds.east),south:Math.min(b.south,s.bundle.graph.dataset.bounds.south),north:Math.max(b.north,s.bundle.graph.dataset.bounds.north)}),{...bounds});
    const revision=snapshots[0].bundle.graph.dataset.revision;
    const graph=validateReferenceGraph({format:'rosenfu-reference-graph',version:1,dataset:{id:`ofm-tiles/${revision}`,revision,source:OFM_METADATA,license:'ODbL-1.0',bounds:extent},nodes,edges});
-   const graphSha256=await hash(new TextEncoder().encode(JSON.stringify(graph))),sourceSha256=await hash(new TextEncoder().encode(snapshots.map(s=>s.bundle.sourceSha256).join(',')));check(controller.signal);
+   const graphSha256=await hash(new TextEncoder().encode(JSON.stringify(graph))),sourceSha256=await hash(new TextEncoder().encode(snapshots.map(s=>s.bundle.sourceSha256).join(',')));check(loadSignal);
    return {bounds:{...bounds},fetchedAt:now(),coverageVerified:false,tileSnapshots:snapshots,tileLines:snapshots.flatMap(s=>s.tileLines),roads:snapshots.flatMap(s=>s.roads),bundle:{graph,roadWays:Object.fromEntries(snapshots.flatMap(s=>Object.entries(s.bundle.roadWays??{}).filter(([id])=>wanted.has(id)))),graphSha256,sourceSha256,source:{source:OFM_METADATA,sourceDate:null,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION}}};
-  }finally{
-   activeLoads--;if(activeLoads===0&&!metadataReady)metadataController?.abort();
-   clearTimeout(timer);signal?.removeEventListener('abort',abort);
-   for(const task of owned){task.users.delete(user);if(task.users.size===0)task.controller.abort();}
+   });
   }
- }};
+ };
 }

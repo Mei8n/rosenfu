@@ -5,6 +5,7 @@ use crate::world::{AlignmentId, CompanyId, GeoPoint, TrackType, WorldDraft};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod native;
+mod ofm;
 mod pilot;
 pub use native::{
     import_native_pilot, native_road_regions, NativeRoadRegion, PilotBusEdit, PilotBusWaypoint,
@@ -120,6 +121,7 @@ pub enum RoadTransportError {
     DuplicateId,
     MissingReference,
     DisconnectedPath,
+    MissingReturnPath,
     AccessUnknown,
     AccessForbidden,
     WrongOwner,

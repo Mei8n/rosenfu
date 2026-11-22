@@ -1,6 +1,11 @@
 //! Immutable raw evidence can be shared by SHA, but decoding is bound to tile coordinates
 //! and a pinned rule. Hashes prove byte consistency, not supplier authenticity or coverage.
 //! No network, decompression, world mutation, or implicit repair is performed here.
+mod bus;
+pub use bus::{
+    find_gameplay_bus_path, reconstruct_gameplay_bus_path, BusPath, BusPathBinding, BusPattern,
+    BusTileProof, BusVertex, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
+};
 mod candidates;
 mod path;
 pub use path::{

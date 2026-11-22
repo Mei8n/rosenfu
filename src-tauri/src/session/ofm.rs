@@ -24,7 +24,7 @@ pub struct OfmBindingInput {
     pub attribution: String,
 }
 
-fn inputs(
+pub(super) fn inputs(
     raw: Vec<OfmRawInput>,
     bindings: Vec<OfmBindingInput>,
 ) -> Result<
@@ -189,6 +189,733 @@ mod tests {
             )
             .unwrap();
     }
+    #[test]
+    fn ordinary_open_bus_returns_on_a_different_directed_path_without_minting_stops() {
+        use rosenfu_core::ofm_evidence::{BusPathBinding, BusPattern, BusVertex, BUS_GRAPH_RULE};
+        use rosenfu_core::operation::{Timetable, Vehicle};
+        let mut editor = WorldEditor::new();
+        editor.rename_company("往復のバス会社".into()).unwrap();
+        let two_way = "GowBCg50cmFuc3BvcnRhdGlvbngCKIAgEhMSBAAAAQEYAiIJCcgByAEK6AcAEhMSBAAAAQEYAiIJCbAJyAEKAKAGEhQSBAAAAQEYAiIKCbAJ6AcK5wefBhIWEgQAAAEBGAIiDAmAGYgOEpADANgEABoFY2xhc3MaBm9uZXdheSIHCgVtaW5vciIFCgN5ZXM=";
+        let no_return = "GkkKDnRyYW5zcG9ydGF0aW9ueAIogCASExIEAAABARgCIgkJyAHIAQroBwAaBWNsYXNzGgZvbmV3YXkiBwoFbWlub3IiBQoDeWVz";
+        let tile = fixture()["tileBindings"][0].clone();
+        let key = tile["canonical_url"].as_str().unwrap().to_string();
+        let setup = |raw: &str| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(raw)
+                .unwrap();
+            let sha = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+            let cached = (
+                OfmRawInput {
+                    sha256: sha.clone(),
+                    byte_length: bytes.len(),
+                    base64: raw.into(),
+                },
+                OfmBindingInput {
+                    key: key.clone(),
+                    url: key.clone(),
+                    raw_sha256: sha.clone(),
+                    revision: tile["revision"].as_str().unwrap().into(),
+                    z: 14,
+                    x: tile["x"].as_u64().unwrap() as u32,
+                    y: tile["y"].as_u64().unwrap() as u32,
+                    decoder_rule: tile["decoder_rule"].as_str().unwrap().into(),
+                    license: "ODbL-1.0".into(),
+                    attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                },
+            );
+            let binding = BusPathBinding {
+                rule: BUS_GRAPH_RULE.into(),
+                tile_key: key.clone(),
+                tile_raw_sha256: sha,
+                respect_oneway: true,
+                start: BusVertex {
+                    feature: 0,
+                    line: 0,
+                    vertex: 0,
+                },
+                end: BusVertex {
+                    feature: 0,
+                    line: 0,
+                    vertex: 1,
+                },
+                additional_tiles: vec![],
+                end_tile_key: None,
+                pattern: Some(BusPattern::OpenRoundTrip),
+            };
+            (binding, cached)
+        };
+        let before = editor.snapshot();
+        let history = editor.world_edit_history();
+        let token = editor.ofm_world_token().unwrap();
+        let (out, cached) = setup(no_return);
+        let preview = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "B2".into(),
+                "往復".into(),
+                out.clone(),
+                vec![setup(no_return).1],
+            )
+            .unwrap();
+        assert_eq!(preview.points.len(), 2);
+        assert!(preview.return_path.is_none());
+        assert!(preview
+            .return_unavailable_reason
+            .unwrap()
+            .contains("復路がありません"));
+        let error = editor
+            .put_gameplay_ofm_bus(&token, "B2".into(), "往復".into(), out, vec![cached])
+            .err()
+            .unwrap();
+        assert!(error.contains("復路がありません"));
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.world_edit_history().revision, history.revision);
+        assert_eq!(editor.ofm_world_token().unwrap(), token);
+
+        let (binding, cached) = setup(two_way);
+        let preview = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "B2".into(),
+                "往復".into(),
+                binding.clone(),
+                vec![setup(two_way).1],
+            )
+            .unwrap();
+        assert!(preview.return_unavailable_reason.is_none());
+        let returned = preview.return_path.unwrap();
+        assert_eq!(returned.points.len(), 3);
+        assert_eq!(returned.points.first(), preview.points.last());
+        assert_eq!(returned.points.last(), preview.points.first());
+        assert!(returned.length_m > preview.length_m);
+        assert_eq!(editor.snapshot(), before);
+        let accepted = editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "B2".into(),
+                "往復".into(),
+                binding.clone(),
+                vec![cached],
+            )
+            .unwrap();
+        assert_eq!(accepted.road_transport.bus_routes[0].edges.len(), 1);
+        assert_eq!(accepted.road_transport.bus_stops.len(), 2);
+        let ids: Vec<_> = accepted.road_transport.bus_routes[0]
+            .stops
+            .iter()
+            .map(|s| format!("bus:{}", s.stop_id))
+            .collect();
+        editor
+            .configure_bus_operation(
+                "B2".into(),
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 60.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.2,
+                    length_m: 12.,
+                },
+                30.,
+                1_000,
+                &editor.operation_snapshot().timetable_edit_token,
+            )
+            .unwrap();
+        let runtime = &mut editor.world.operation_mut().unwrap().runtime;
+        let spec = runtime.service_spec("bus:B2").unwrap();
+        assert_eq!(spec.legs.len(), 2);
+        assert_eq!((&spec.legs[0].from, &spec.legs[0].to), (&ids[0], &ids[1]));
+        assert_eq!((&spec.legs[1].from, &spec.legs[1].to), (&ids[1], &ids[0]));
+        assert_eq!(spec.legs[0].sections[0].resources.len(), 1);
+        assert_eq!(spec.legs[1].sections[0].resources.len(), 2);
+        assert!(spec.legs[1].sections[0]
+            .resources
+            .iter()
+            .all(|key| key.starts_with("road:edge:ofm-bus:edge:")));
+        assert!(spec.legs[1].sections[0].length_m > spec.legs[0].sections[0].length_m);
+        assert!((spec.legs[1].sections[0].length_m - returned.length_m).abs() < 0.1);
+        runtime.advance_to(1000, 100).unwrap();
+        let active = editor.world.operation_save().unwrap();
+        let selected = |feature, vertex| BusVertex {
+            feature,
+            line: 0,
+            vertex,
+        };
+
+        // A separate live edit can grow an unrelated route without changing
+        // this active round trip's compiled specs, train key, or clock.
+        let mut other_proof = binding.clone();
+        other_proof.pattern = None;
+        other_proof.start = selected(3, 0);
+        other_proof.end = selected(3, 1);
+        let token = editor.ofm_world_token().unwrap();
+        let one = editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "independent".into(),
+                "別区間".into(),
+                other_proof.clone(),
+                vec![],
+            )
+            .unwrap();
+        other_proof.end = selected(3, 2);
+        let token = editor.ofm_world_token().unwrap();
+        let with_other = editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "independent".into(),
+                "別区間".into(),
+                other_proof,
+                vec![],
+            )
+            .unwrap();
+        assert_ne!(one.road_transport.edges, with_other.road_transport.edges);
+        assert!(!editor.operation_snapshot().invalidated);
+        assert_eq!(editor.world.operation_save().unwrap(), active);
+        assert_eq!(
+            with_other.road_transport.bus_routes[0],
+            accepted.road_transport.bus_routes[0]
+        );
+
+        // A separately authored outbound path along the return streets must
+        // wait, not use duplicate route-local road reservations.
+        let mut shadow = editor.clone();
+        let mut same_streets = binding.clone();
+        same_streets.pattern = None;
+        same_streets.start = selected(1, 0);
+        same_streets.end = selected(2, 1);
+        let shadow_token = shadow.ofm_world_token().unwrap();
+        shadow
+            .put_gameplay_ofm_bus(
+                &shadow_token,
+                "compete".into(),
+                "同じ復路".into(),
+                same_streets,
+                vec![],
+            )
+            .unwrap();
+        let primary = active.bus_configs[0].clone();
+        let mut contender = primary.clone();
+        contender.route_id = "compete".into();
+        let [moving] = active.runtime.trains.as_slice() else {
+            panic!()
+        };
+        let rosenfu_core::operation::TrainState::Moving {
+            arrival_ms,
+            release_ms,
+            ..
+        } = moving.state
+        else {
+            panic!()
+        };
+        let ready = release_ms.max(arrival_ms + primary.dwell_ms);
+        contender.timetable.first_departure_ms = ready;
+        contender.timetable.last_departure_ms = ready;
+        assert_eq!(
+            shadow.world.compile_bus_operation(&contender).unwrap().legs[0].sections[0].resources,
+            active.runtime.services[0].legs[1].sections[0].resources,
+        );
+        shadow
+            .world
+            .configure_all_operation(vec![], vec![primary, contender])
+            .unwrap();
+        let runtime = &mut shadow.world.operation_mut().unwrap().runtime;
+        runtime.advance_to(ready, 100).unwrap();
+        use rosenfu_core::operation::TrainState;
+        assert!(runtime
+            .trains()
+            .any(|train| train.key.service_id == "bus:B2"
+                && train.leg == 1
+                && matches!(train.state, TrainState::Moving { .. })));
+        assert!(runtime
+            .trains()
+            .any(|train| train.key.service_id == "bus:compete"
+                && matches!(train.state, TrainState::Waiting { .. })));
+        let finished = runtime.advance_to(400_000, 100).unwrap();
+        assert!(finished
+            .arrivals
+            .iter()
+            .any(|arrival| arrival.train.service_id == "bus:compete" && arrival.delay_ms > 0));
+
+        for (from, to) in [(&ids[0], &ids[1]), (&ids[1], &ids[0])] {
+            let od = editor
+                .preview_fixed_od(from.clone(), to.clone(), Some(50.), None)
+                .unwrap();
+            assert!(od.search_complete);
+            assert!((od.rail.iter().map(|path| path.trips).sum::<f64>() - 50.).abs() < 1e-9);
+        }
+        let saved = editor.world.operation_save().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("ordinary-open-ofm-bus.rosenfu");
+        editor.save(&file).unwrap();
+        editor.create_new_world("Other".into()).unwrap();
+        editor.load(&file).unwrap();
+        assert_eq!(editor.snapshot(), with_other);
+        assert_eq!(editor.world.operation_save().unwrap(), saved);
+        let finished = editor
+            .world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(400_000, 100)
+            .unwrap();
+        assert_eq!(
+            finished
+                .arrivals
+                .iter()
+                .map(|x| &x.station_id)
+                .collect::<Vec<_>>(),
+            [&ids[1], &ids[0]]
+        );
+        assert_eq!(finished.arrivals[0].train, finished.arrivals[1].train);
+    }
+
+    #[test]
+    fn ordinary_ofm_bus_commits_routes_operates_and_reopens_without_pilot() {
+        use rosenfu_core::ofm_evidence::{BusPathBinding, BusVertex, BUS_GRAPH_RULE};
+        use rosenfu_core::operation::{Timetable, Vehicle};
+        let mut editor = WorldEditor::new();
+        editor.rename_company("普通のバス会社".into()).unwrap();
+        // Generated MVT: two class=minor ground roads, with a shared endpoint
+        // on the first road's interior vertex. No regional pilot or QA fixture.
+        let raw = "GlEKDnRyYW5zcG9ydGF0aW9ueAIogCASFBICAAAYAiIMCcgByAESyAEAyAEAEhQSAgAAGAIiDAmQA8gBEgDIAQDIARoFY2xhc3MiBwoFbWlub3I=";
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .unwrap();
+        let sha = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+        let tile = fixture()["tileBindings"][0].clone();
+        let key = tile["canonical_url"].as_str().unwrap().to_string();
+        let cached = || {
+            (
+                OfmRawInput {
+                    sha256: sha.clone(),
+                    byte_length: bytes.len(),
+                    base64: raw.into(),
+                },
+                OfmBindingInput {
+                    key: key.clone(),
+                    url: key.clone(),
+                    raw_sha256: sha.clone(),
+                    revision: tile["revision"].as_str().unwrap().into(),
+                    z: 14,
+                    x: tile["x"].as_u64().unwrap() as u32,
+                    y: tile["y"].as_u64().unwrap() as u32,
+                    decoder_rule: tile["decoder_rule"].as_str().unwrap().into(),
+                    license: "ODbL-1.0".into(),
+                    attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                },
+            )
+        };
+        let from = BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: 0,
+        };
+        let to = BusVertex {
+            feature: 1,
+            line: 0,
+            vertex: 2,
+        };
+        let request = BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            tile_key: key.clone(),
+            tile_raw_sha256: sha.clone(),
+            respect_oneway: false,
+            start: from,
+            end: to,
+            additional_tiles: vec![],
+            end_tile_key: None,
+            pattern: None,
+        };
+        let before = editor.snapshot();
+        let mut forged = request.clone();
+        forged.tile_raw_sha256 = "0".repeat(64);
+        let token = editor.ofm_world_token().unwrap();
+        for (expected, proposed) in [("stale", request.clone()), (&token, forged)] {
+            assert!(editor
+                .put_gameplay_ofm_bus(
+                    expected,
+                    "B1".into(),
+                    "普通のバス".into(),
+                    proposed,
+                    vec![cached()]
+                )
+                .is_err());
+            assert_eq!(editor.snapshot(), before);
+        }
+        let mut no_path = request.clone();
+        no_path.end.vertex = 500;
+        assert!(editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "B1".into(),
+                "普通のバス".into(),
+                no_path,
+                vec![cached()],
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert!(before.road_evidence_descriptors.is_empty());
+        let preview = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "B1".into(),
+                "普通のバス".into(),
+                request.clone(),
+                vec![cached()],
+            )
+            .unwrap();
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.ofm_world_token().unwrap(), token);
+        let accepted = editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "B1".into(),
+                "普通のバス".into(),
+                request,
+                vec![cached()],
+            )
+            .unwrap();
+        assert!(accepted.construction_plans.is_none());
+        assert_eq!(accepted.road_evidence_descriptors.len(), 1);
+        assert_eq!(accepted.road_transport.bus_routes[0].stops.len(), 2);
+        let leg = accepted.road_transport.bus_legs(&accepted, "B1").unwrap();
+        assert_eq!(leg.len(), 1);
+        assert_eq!(leg[0].traversed_edges.len(), 3);
+        assert!(leg[0].length_m > 50.);
+        assert_eq!(preview.length_m, leg[0].length_m);
+        assert_eq!(preview.points.len(), 4);
+        let first_edge = &accepted.road_transport.bus_routes[0].edges[0];
+        let first_edge = accepted
+            .road_transport
+            .edges
+            .iter()
+            .find(|e| &e.id == first_edge)
+            .unwrap();
+        assert_eq!(preview.points[0], first_edge.geometry[0]);
+        assert_eq!(editor.undo_world_edit(accepted.clone()).unwrap(), before);
+        assert_eq!(editor.redo_world_edit(before.clone()).unwrap(), accepted);
+        editor
+            .configure_bus_operation(
+                "B1".into(),
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 60000,
+                    headway_ms: 60000,
+                },
+                Vehicle {
+                    max_speed_kmh: 60.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.2,
+                    length_m: 12.,
+                },
+                30.,
+                10000,
+                &editor.operation_snapshot().timetable_edit_token,
+            )
+            .unwrap();
+        editor.set_operation_clock(false, 1).unwrap();
+        let runtime = &mut editor.world.operation_mut().unwrap().runtime;
+        let moving = runtime.advance_to(1000, 1000).unwrap();
+        assert!(moving.arrivals.is_empty());
+        assert_eq!(editor.operation_snapshot().trains.len(), 1);
+        let folder = tempfile::tempdir().unwrap();
+        // B2 overlaps both of B1's vertical atoms. Adding it must not
+        // invalidate B1's already moving run or re-key its stops/resources.
+        let primary = editor.operation_snapshot().trains[0].clone();
+        let mut second = accepted.ofm_gameplay_bus_routes["B1"].clone();
+        second.start = BusVertex {
+            feature: 1,
+            line: 0,
+            vertex: 0,
+        };
+        let token = editor.ofm_world_token().unwrap();
+        let second_preview = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "B2".into(),
+                "重なる普通バス".into(),
+                second.clone(),
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(second_preview.points, preview.points[1..]);
+        let two = editor
+            .put_gameplay_ofm_bus(&token, "B2".into(), "重なる普通バス".into(), second, vec![])
+            .unwrap();
+        assert_eq!(two.ofm_gameplay_bus_routes.len(), 2);
+        assert_eq!(two.road_transport.edges.len(), 3);
+        let [major, minor] = two.road_transport.bus_routes.as_slice() else {
+            panic!()
+        };
+        assert_eq!(major, &accepted.road_transport.bus_routes[0]);
+        assert_eq!(minor.edges, major.edges[1..]);
+        assert_ne!(minor.stops[1].stop_id, major.stops[1].stop_id);
+        assert!(!editor.operation_snapshot().invalidated);
+        assert_eq!(editor.operation_snapshot().trains, [primary]);
+
+        // Simulate a valid save from a slightly different inverse Mercator
+        // implementation. Adding another route keeps already stored coordinates.
+        let mut drifted = accepted.clone();
+        for node in &mut drifted.road_transport.nodes {
+            node.point.latitude += 1e-11;
+        }
+        for edge in &mut drifted.road_transport.edges {
+            for point in &mut edge.geometry {
+                point.latitude += 1e-11;
+            }
+        }
+        let drifted_world = World::new(drifted.clone()).unwrap();
+        let extended = drifted_world
+            .candidate_with_gameplay_ofm_bus(
+                editor.company,
+                "B2".into(),
+                "別の系統".into(),
+                two.ofm_gameplay_bus_routes["B2"].clone(),
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(
+            extended.snapshot().road_transport.edges,
+            drifted.road_transport.edges
+        );
+
+        let multi_path = folder.path().join("shared-two-buses.rosenfu");
+        editor.clone().save(&multi_path).unwrap();
+        let mut two_reopened = WorldEditor::new();
+        two_reopened.load(&multi_path).unwrap();
+        assert_eq!(two_reopened.snapshot(), two);
+        assert_eq!(two_reopened.operation_snapshot().trains.len(), 1);
+
+        // A separately initialized timetable instantiates both simultaneous
+        // departures. It must reserve the actual same edge, not route-local IDs.
+        use rosenfu_core::operation::TrainState;
+        let mut two_running = two_reopened.world.clone();
+        let one = two_running.operation().unwrap().bus_configs[0].clone();
+        let mut other = one.clone();
+        other.route_id = "B2".into();
+        two_running
+            .configure_all_operation(vec![], vec![one, other])
+            .unwrap();
+        let runtime = &mut two_running.operation_mut().unwrap().runtime;
+        runtime.set_paused(false);
+        runtime.advance_to(1000, 1000).unwrap();
+        assert_eq!(
+            runtime
+                .trains()
+                .filter(|t| matches!(t.state, TrainState::Moving { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            runtime
+                .trains()
+                .filter(|t| matches!(t.state, TrainState::Waiting { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(runtime.advance_to(59999, 1000).unwrap().arrivals.len(), 2);
+
+        let mut forged: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&multi_path).unwrap()).unwrap();
+        forged["world"]["road_transport"]["bus_routes"][1]["edges"][0] =
+            major.edges[0].clone().into();
+        let bytes = serde_json::to_vec(&forged).unwrap();
+        std::fs::write(&multi_path, &bytes).unwrap();
+        assert!(two_reopened.load(&multi_path).is_err());
+        assert_eq!(two_reopened.snapshot(), two);
+        assert_eq!(std::fs::read(&multi_path).unwrap(), bytes);
+
+        // Removing B1 prunes only its unique approach; B2's stops and shared
+        // track segments survive. Undo reconstitutes the exact graph/evidence.
+        let remainder = two_reopened
+            .remove_gameplay_ofm_bus(&two_reopened.ofm_world_token().unwrap(), "B1")
+            .unwrap();
+        assert_eq!(remainder.road_transport.edges.len(), 2);
+        assert_eq!(
+            &remainder.road_transport.bus_routes,
+            [minor.clone()].as_slice()
+        );
+        assert_eq!(
+            remainder.road_evidence_descriptors,
+            two.road_evidence_descriptors
+        );
+        assert_eq!(two_reopened.undo_world_edit(remainder).unwrap(), two);
+        let clean_for_first = editor
+            .remove_gameplay_ofm_bus(&editor.ofm_world_token().unwrap(), "B2")
+            .unwrap();
+        assert_eq!(clean_for_first, accepted);
+        assert!(!editor.operation_snapshot().invalidated);
+        let file = folder.path().join("ordinary-ofm-bus.rosenfu");
+        editor.save(&file).unwrap();
+        let good = std::fs::read(&file).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&file).unwrap();
+        assert_eq!(reopened.snapshot(), accepted);
+        assert_eq!(reopened.operation_snapshot().trains.len(), 1);
+        let runtime = &mut reopened.world.operation_mut().unwrap().runtime;
+        runtime.set_paused(false);
+        let finished = runtime.advance_to(59999, 1000).unwrap();
+        assert_eq!(finished.arrivals.len(), 1);
+        let mut tampered: serde_json::Value = serde_json::from_slice(&good).unwrap();
+        tampered["world"]["ofm_gameplay_bus_routes"]["B1"]["tileRawSha256"] = "0".repeat(64).into();
+        let bad = serde_json::to_vec(&tampered).unwrap();
+        std::fs::write(&file, &bad).unwrap();
+        assert!(reopened.load(&file).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), bad);
+        assert_eq!(reopened.snapshot(), accepted);
+        let cleared = reopened
+            .remove_gameplay_ofm_bus(&reopened.ofm_world_token().unwrap(), "B1")
+            .unwrap();
+        assert!(cleared.ofm_gameplay_bus_routes.is_empty());
+        assert!(cleared.road_transport.edges.is_empty());
+        assert_eq!(
+            cleared.road_evidence_descriptors,
+            accepted.road_evidence_descriptors
+        );
+    }
+
+    #[test]
+    fn ordinary_ofm_bus_rectangle_atomic_cache_roundtrip_preserves_all_three_tiles() {
+        use rosenfu_core::ofm_evidence::{
+            BusPathBinding, BusTileProof, BusVertex, BUS_RECTANGLE_RULE,
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("広域バス会社".into()).unwrap();
+        let fixture = fixture();
+        let template = &fixture["tileBindings"][0];
+        let rev = template["revision"].as_str().unwrap();
+        let decoder = template["decoder_rule"].as_str().unwrap();
+        let y = template["y"].as_u64().unwrap() as u32;
+        // Generated raw MVT fixture: the middle road has only two buffered
+        // points, yet both independently proven border joins are traversable.
+        let input = [
+            "GjgKDnRyYW5zcG9ydGF0aW9ueAIogCASERICAAAYAiIJCYAytB8K0A8AGgVjbGFzcyIHCgVtaW5vcg==",
+            "GjgKDnRyYW5zcG9ydGF0aW9ueAIogCASERICAAAYAiIJCc8BtB8KoEMAGgVjbGFzcyIHCgVtaW5vcg==",
+            "GjgKDnRyYW5zcG9ydGF0aW9ueAIogCASERICAAAYAiIJCc8BtB8K0A8AGgVjbGFzcyIHCgVtaW5vcg==",
+        ];
+        let cached = || {
+            input
+                .iter()
+                .enumerate()
+                .map(|(i, &raw)| {
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(raw)
+                        .unwrap();
+                    let sha = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+                    let x = 14552 + i as u32;
+                    let key = format!("https://tiles.openfreemap.org/planet/{rev}/14/{x}/{y}.pbf");
+                    (
+                        OfmRawInput {
+                            sha256: sha.clone(),
+                            byte_length: bytes.len(),
+                            base64: raw.into(),
+                        },
+                        OfmBindingInput {
+                            key: key.clone(),
+                            url: key,
+                            raw_sha256: sha,
+                            revision: rev.into(),
+                            z: 14,
+                            x,
+                            y,
+                            decoder_rule: decoder.into(),
+                            license: "ODbL-1.0".into(),
+                            attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let all = cached();
+        let request = BusPathBinding {
+            rule: BUS_RECTANGLE_RULE.into(),
+            tile_key: all[0].1.key.clone(),
+            tile_raw_sha256: all[0].0.sha256.clone(),
+            end_tile_key: Some(all[2].1.key.clone()),
+            pattern: None,
+            additional_tiles: all[1..]
+                .iter()
+                .map(|(raw, b)| BusTileProof {
+                    tile_key: b.key.clone(),
+                    tile_raw_sha256: raw.sha256.clone(),
+                })
+                .collect(),
+            respect_oneway: false,
+            start: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: 0,
+            },
+            end: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: 1,
+            },
+        };
+        let before = editor.snapshot();
+        let token = editor.ofm_world_token().unwrap();
+        let mut incomplete = cached();
+        incomplete.remove(1);
+        assert!(editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "R3".into(),
+                "3セル系統".into(),
+                request.clone(),
+                incomplete
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let preview = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "R3".into(),
+                "3セル系統".into(),
+                request.clone(),
+                cached(),
+            )
+            .unwrap();
+        assert_eq!(preview.points.len(), 4);
+        assert_eq!(editor.snapshot(), before);
+        let created = editor
+            .put_gameplay_ofm_bus(&token, "R3".into(), "3セル系統".into(), request, cached())
+            .unwrap();
+        assert_eq!(created.road_evidence_descriptors.len(), 3);
+        assert_eq!(created.road_transport.edges.len(), 3);
+        for (id, (raw, _)) in created.road_transport.bus_routes[0].edges.iter().zip(all) {
+            assert_eq!(
+                created
+                    .road_transport
+                    .edges
+                    .iter()
+                    .find(|e| &e.id == id)
+                    .unwrap()
+                    .revision,
+                raw.sha256
+            );
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("rectangle.rosenfu");
+        editor.save(&p).unwrap();
+        let mut reopen = WorldEditor::new();
+        reopen.load(&p).unwrap();
+        assert_eq!(reopen.snapshot(), created);
+        let replay = reopen
+            .preview_gameplay_ofm_bus(
+                &reopen.ofm_world_token().unwrap(),
+                "R3".into(),
+                "3セル系統".into(),
+                created.ofm_gameplay_bus_routes["R3"].clone(),
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(replay, preview);
+    }
+
     fn request() -> PlannedAlignment {
         serde_json::from_value(serde_json::json!({
             "name":"境界道路", "points":[{"latitude":0.,"longitude":0.},{"latitude":0.,"longitude":1.}],

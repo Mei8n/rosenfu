@@ -101,3 +101,75 @@ pub fn edit_native_pilot_bus(
     }
     editor.edit_native_pilot_bus(edit)
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CachedOfmBusTile {
+    raw_evidence: crate::session::OfmRawInput,
+    tile_binding: crate::session::OfmBindingInput,
+}
+
+fn cached_tiles(
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+    context_tiles: Option<Vec<CachedOfmBusTile>>,
+) -> Result<Vec<(crate::session::OfmRawInput, crate::session::OfmBindingInput)>, String> {
+    let tiles = context_tiles.unwrap_or_default();
+    if tiles.len() > rosenfu_core::ofm_evidence::MAX_TILES {
+        return Err("道路の参照範囲が広すぎます。".into());
+    }
+    let mut cached: Vec<_> = tiles
+        .into_iter()
+        .map(|t| (t.raw_evidence, t.tile_binding))
+        .collect();
+    match (raw_evidence, tile_binding) {
+        (None, None) => {}
+        (Some(raw), Some(binding)) => cached.push((raw, binding)),
+        _ => return Err("道路のキャッシュ情報が揃っていません。".into()),
+    }
+    Ok(cached)
+}
+
+#[tauri::command]
+pub fn preview_gameplay_ofm_bus(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    route_id: String,
+    name: String,
+    path: rosenfu_core::ofm_evidence::BusPathBinding,
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+    context_tiles: Option<Vec<CachedOfmBusTile>>,
+) -> Result<crate::session::GameplayBusPathPreview, String> {
+    let cached = cached_tiles(raw_evidence, tile_binding, context_tiles)?;
+    let editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.preview_gameplay_ofm_bus(&expected_world_token, route_id, name, path, cached)
+}
+
+/// Use the normal OFM cache data (or already retained world evidence) to stage
+/// and commit an ordinary Bus route. This does not claim legal road permission.
+#[tauri::command]
+pub fn put_gameplay_ofm_bus(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    route_id: String,
+    name: String,
+    path: rosenfu_core::ofm_evidence::BusPathBinding,
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+    context_tiles: Option<Vec<CachedOfmBusTile>>,
+) -> Result<WorldDraft, String> {
+    let cached = cached_tiles(raw_evidence, tile_binding, context_tiles)?;
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.put_gameplay_ofm_bus(&expected_world_token, route_id, name, path, cached)
+}
+
+#[tauri::command]
+pub fn remove_gameplay_ofm_bus(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    route_id: String,
+) -> Result<WorldDraft, String> {
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.remove_gameplay_ofm_bus(&expected_world_token, &route_id)
+}

@@ -1,6 +1,6 @@
 #[path = "session/road_transport.rs"]
 mod road_transport;
-pub use road_transport::RoadTramEdit;
+pub use road_transport::{GameplayBusPathPreview, RoadTramEdit};
 // Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;

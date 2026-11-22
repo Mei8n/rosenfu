@@ -1,6 +1,6 @@
 //! Validated, renderer-independent construction data. Not a stable save format yet.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! id_type {
     ($($name:ident),+) => { $(
@@ -101,6 +101,9 @@ impl ViewState {
 pub struct WorldDraft {
     #[serde(default)]
     pub road_transport: crate::road_transport::RoadTransport,
+    /// Exact immutable OFM path proof for each independently authored ordinary Bus route.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ofm_gameplay_bus_routes: BTreeMap<String, crate::ofm_evidence::BusPathBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
     /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
@@ -164,6 +167,7 @@ impl Default for WorldDraft {
     fn default() -> Self {
         Self {
             road_transport: crate::road_transport::RoadTransport::default(),
+            ofm_gameplay_bus_routes: BTreeMap::new(),
             road_path_provenance: vec![],
             runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
             road_evidence_descriptors: vec![],

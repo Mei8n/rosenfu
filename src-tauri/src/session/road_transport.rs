@@ -9,6 +9,9 @@ fn road_path_help(error: rosenfu_core::road_transport::RoadTransportError) -> St
         DisconnectedPath => {
             "選んだ向きでつながる経路がありません。道路の向きと起点・終点を選び直してください。"
         }
+        MissingReturnPath => {
+            "選んだ範囲の道路に復路がありません。終点か一方通行の設定を見直してください。"
+        }
         InvalidStopOrder => "進行方向に沿って、乗車位置より先に降車位置を置いてください。",
         AccessUnknown | AccessForbidden => {
             "この区間は選んだ交通手段に対応していません。対象の道路を選び直してください。"
@@ -19,6 +22,28 @@ fn road_path_help(error: rosenfu_core::road_transport::RoadTransportError) -> St
         _ => "道路経路を確認できませんでした。道路と位置を選び直してください。",
     }
     .into()
+}
+
+#[derive(Debug, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GameplayBusPathPreview {
+    pub points: Vec<GeoPoint>,
+    pub length_m: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_path: Option<GameplayBusReturnPreview>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GameplayBusReturnPreview {
+    pub points: Vec<GeoPoint>,
+    pub length_m: f64,
+}
+
+fn return_in_edit_extent(path: &rosenfu_core::ofm_evidence::BusPath) -> bool {
+    path.points.iter().all(|p| in_edit_extent(p[1], p[0]))
 }
 
 impl WorldEditor {
@@ -98,6 +123,166 @@ impl WorldEditor {
         let result = candidate.snapshot();
         self.commit_edit(candidate, false);
         Ok(result)
+    }
+    /// A player action over immutable OFM evidence, independent of the regional
+    /// catalog selector. An optional already fetched tile is admitted and used
+    /// in the same transaction, without creating or changing a rail plan.
+    pub fn put_gameplay_ofm_bus(
+        &mut self,
+        expected_world_token: &str,
+        route_id: String,
+        name: String,
+        path: rosenfu_core::ofm_evidence::BusPathBinding,
+        cached: Vec<(OfmRawInput, OfmBindingInput)>,
+    ) -> Result<WorldDraft, String> {
+        let world =
+            self.gameplay_ofm_bus_candidate(expected_world_token, route_id, name, path, cached)?;
+        rosenfu_storage::ensure_world_saveable(&world).map_err(|e| e.to_string())?;
+        let mut candidate = self.clone();
+        candidate.world = world;
+        self.commit_edit(candidate, false);
+        Ok(self.snapshot())
+    }
+
+    pub fn preview_gameplay_ofm_bus(
+        &self,
+        expected_world_token: &str,
+        route_id: String,
+        name: String,
+        path: rosenfu_core::ofm_evidence::BusPathBinding,
+        cached: Vec<(OfmRawInput, OfmBindingInput)>,
+    ) -> Result<GameplayBusPathPreview, String> {
+        // A partial outward preview must not permit a partial round-trip commit.
+        let mut outward = path.clone();
+        outward.pattern = None;
+        let world = self.gameplay_ofm_bus_candidate(
+            expected_world_token,
+            route_id.clone(),
+            name,
+            outward.clone(),
+            cached,
+        )?;
+        let draft = world.snapshot();
+        let bus = &draft.road_transport;
+        let legs = bus.bus_legs(draft, &route_id).map_err(road_path_help)?;
+        let route = bus
+            .bus_routes
+            .iter()
+            .find(|r| r.id == route_id)
+            .ok_or("バス路線が見つかりません。")?;
+        let edges: std::collections::BTreeMap<_, _> = bus
+            .edges
+            .iter()
+            .map(|edge| (edge.id.as_str(), edge))
+            .collect();
+        let mut points = Vec::new();
+        for id in &route.edges {
+            let edge = edges
+                .get(id.as_str())
+                .ok_or("バス路線の道路が見つかりません。")?;
+            points.extend(edge.geometry.iter().copied());
+        }
+        points.dedup();
+        let (return_path, return_unavailable_reason) = if path.pattern.is_some() {
+            match draft
+                .gameplay_bus_return_path(&outward)
+                .map_err(road_path_help)?
+            {
+                Some(back) if return_in_edit_extent(&back) => (
+                    Some(GameplayBusReturnPreview {
+                        points: back
+                            .points
+                            .iter()
+                            .map(|p| GeoPoint {
+                                latitude: p[1],
+                                longitude: p[0],
+                            })
+                            .collect(),
+                        length_m: back.length_m,
+                    }),
+                    None,
+                ),
+                Some(_) => (
+                    None,
+                    Some("復路が編集範囲の外へ出るため確定できません。".into()),
+                ),
+                None => (
+                    None,
+                    Some(road_path_help(
+                        rosenfu_core::road_transport::RoadTransportError::MissingReturnPath,
+                    )),
+                ),
+            }
+        } else {
+            (None, None)
+        };
+        Ok(GameplayBusPathPreview {
+            points,
+            length_m: legs.iter().map(|leg| leg.length_m).sum(),
+            return_path,
+            return_unavailable_reason,
+        })
+    }
+
+    fn gameplay_ofm_bus_candidate(
+        &self,
+        expected_world_token: &str,
+        route_id: String,
+        name: String,
+        path: rosenfu_core::ofm_evidence::BusPathBinding,
+        cached: Vec<(OfmRawInput, OfmBindingInput)>,
+    ) -> Result<World, String> {
+        if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
+            return Err("ワールドが変更されました。道路を選び直してください。".into());
+        }
+        let (raw, bindings): (Vec<_>, Vec<_>) = cached.into_iter().unzip();
+        let (raw, bindings) = super::ofm::inputs(raw, bindings)?;
+        let cached = raw.into_iter().zip(bindings).collect();
+        let world = self
+            .world
+            .candidate_with_gameplay_ofm_bus(self.company, route_id.clone(), name, path, cached)
+            .map_err(road_path_help)?;
+        if world
+            .snapshot()
+            .road_transport
+            .edges
+            .iter()
+            .flat_map(|e| &e.geometry)
+            .any(|p| !in_edit_extent(p.latitude, p.longitude))
+        {
+            return Err("バス路線は編集範囲内に作成してください。".into());
+        }
+        if let Some(path) = world
+            .snapshot()
+            .ofm_gameplay_bus_routes
+            .get(&route_id)
+            .filter(|p| p.pattern.is_some())
+        {
+            if world
+                .snapshot()
+                .gameplay_bus_return_path(path)
+                .map_err(road_path_help)?
+                .is_some_and(|back| !return_in_edit_extent(&back))
+            {
+                return Err("復路が編集範囲の外へ出るため確定できません。".into());
+            }
+        }
+        Ok(world)
+    }
+
+    pub fn remove_gameplay_ofm_bus(
+        &mut self,
+        expected_world_token: &str,
+        route_id: &str,
+    ) -> Result<WorldDraft, String> {
+        if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
+            return Err("ワールドが変更されました。対象のバス路線を開き直してください。".into());
+        }
+        let draft = self
+            .snapshot()
+            .remove_ofm_gameplay_bus(self.company, route_id)
+            .map_err(road_path_help)?;
+        self.commit_road_transport(draft)
     }
     /// Explicit opt-in QA fixture: it is never attributed to a real map provider.
     pub fn enable_road_qa_fixture(

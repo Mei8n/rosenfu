@@ -187,6 +187,30 @@ impl WorldDraft {
     }
 }
 impl World {
+    /// An ordinary OFM Bus edit owns only its addressed raw tiles and the
+    /// route reconstructed from it. Never permits arbitrary draft replacement.
+    pub fn candidate_with_gameplay_ofm_bus(
+        &self,
+        owner: CompanyId,
+        route_id: String,
+        name: String,
+        path: crate::ofm_evidence::BusPathBinding,
+        cached: Vec<(RawEvidence, TileBinding)>,
+    ) -> Result<Self, crate::road_transport::RoadTransportError> {
+        let mut candidate = self.clone();
+        candidate.data = candidate.data.admit_gameplay_ofm_bus_tiles(&path, cached)?;
+        candidate.data = candidate
+            .data
+            .put_ofm_gameplay_bus(owner, route_id, name, path)?;
+        candidate
+            .data
+            .validate()
+            .map_err(|_| crate::road_transport::RoadTransportError::InvalidData)?;
+        Ok(candidate)
+    }
+}
+
+impl World {
     /// Park light plans and raw evidence in one candidate. Supplied preview points
     /// are replaced by regenerated backend points, not promoted to trusted geometry.
     pub fn stage_ofm_construction_plans(

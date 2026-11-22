@@ -1911,7 +1911,7 @@ impl World {
         let legs = roads
             .bus_legs(&self.data, &config.route_id)
             .map_err(|_| OperationError::InvalidPath)?;
-        let runs = legs
+        let mut runs: Vec<_> = legs
             .into_iter()
             .map(|leg| RunLeg {
                 from: format!("bus:{}", leg.from_stop_id),
@@ -1928,6 +1928,50 @@ impl World {
                 }],
             })
             .collect();
+        if let Some(binding) = self
+            .data
+            .ofm_gameplay_bus_routes
+            .get(&config.route_id)
+            .filter(|b| b.pattern == Some(crate::ofm_evidence::BusPattern::OpenRoundTrip))
+        {
+            // The saved forward BusRoute owns both real stop IDs. The return
+            // uses the same endpoints but derives geometry/resources itself.
+            let [forward] = runs.as_mut_slice() else {
+                return Err(OperationError::InvalidPath);
+            };
+            let outward = self
+                .data
+                .runtime_road_evidence
+                .stored_gameplay_bus_path(binding)
+                .map_err(|_| OperationError::InvalidPath)?
+                .ok_or(OperationError::InvalidPath)?;
+            let returned = self
+                .data
+                .gameplay_bus_return_path(binding)
+                .map_err(|_| OperationError::InvalidPath)?
+                .ok_or(OperationError::InvalidPath)?;
+            let resources = (0..returned.steps.len())
+                .map(|i| {
+                    returned
+                        .source_atom_id(i)
+                        .map(|id| format!("road:edge:{id}"))
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or(OperationError::InvalidPath)?;
+            let back = RunLeg {
+                from: forward.to.clone(),
+                to: forward.from.clone(),
+                dwell_ms: config.dwell_ms,
+                sections: vec![Section {
+                    length_m: returned.operation_length_mm as f64 / 1000.0,
+                    speed_limit_kmh: config.assumed_speed_kmh,
+                    resources,
+                }],
+            };
+            // Preserve the exact union resources of the saved outward path.
+            forward.sections[0].length_m = outward.operation_length_mm as f64 / 1000.0;
+            runs.push(back);
+        }
         Ok(ServiceRunSpec {
             service_id: format!("bus:{}", config.route_id),
             vehicle: config.vehicle.clone(),

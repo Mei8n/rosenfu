@@ -360,6 +360,9 @@ fn restore_document<W: Into<WorldDraft>>(
         return Err(StorageError::InvalidHeader);
     }
     let draft = document.world.into();
+    if version == 26 && !draft.ofm_gameplay_bus_routes.is_empty() {
+        return Err(StorageError::InvalidHeader);
+    }
     if version == 26
         && draft.road_transport.bus_stops.iter().any(|stop| {
             stop.location_kind == rosenfu_core::road_transport::BusStopLocationKind::PlayerCreated

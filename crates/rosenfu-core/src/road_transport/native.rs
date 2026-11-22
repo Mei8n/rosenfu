@@ -417,6 +417,9 @@ impl RoadTransport {
     /// Game-world boundary: non-routable map evidence remains inspectable, but
     /// a graph may assert permission only through an approved asset or the exact QA seed.
     pub(crate) fn validate_world(&self, world: &WorldDraft) -> Result<(), RoadTransportError> {
+        if !world.ofm_gameplay_bus_routes.is_empty() {
+            return self.validate_ofm_gameplay_bus(world);
+        }
         if let Some(pinned) = with_pins(|pins| approved_for(self, pins))? {
             pinned.gate(self, world)?;
             return Ok(());
