@@ -4,7 +4,7 @@
 mod bus;
 pub use bus::{
     find_gameplay_bus_path, reconstruct_gameplay_bus_path, BusPath, BusPathBinding, BusPattern,
-    BusTileProof, BusVertex, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
+    BusTileProof, BusVertex, BusVia, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
 };
 mod candidates;
 mod path;
@@ -40,6 +40,7 @@ pub enum Error {
     MissingTransportation,
     Unsupported,
     InvalidAttribute,
+    NoBusLeg(usize),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

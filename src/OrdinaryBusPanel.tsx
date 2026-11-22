@@ -1,16 +1,17 @@
 import {useEffect,useRef,useState} from 'react';
+import {useOrdinaryBusInteraction} from './useOrdinaryBusInteraction';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
-import {prepareOrdinaryBusQuery,snapOrdinaryBusVertex,verifyOrdinaryBusPreview,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
+import {prepareOrdinaryBusQuery,snapOrdinaryBusVertex,verifyOrdinaryBusPreview,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
 
-type Route={id:string;name:string;pattern?:OrdinaryBusPattern};
+type Route={id:string;name:string;pattern?:OrdinaryBusPattern;path?:OrdinaryBusPath};
 type Draft={id:string;pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
 type Input={
  on:boolean;allow:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;
- route?:Route;multiple:boolean;roundTrip:boolean;conflictingGraph:boolean;descriptors:readonly unknown[];
+ route?:Route;multiple:boolean;roundTrip:boolean;waypoints?:boolean;conflictingGraph:boolean;descriptors:readonly unknown[];
  observe?:RouteTileObserver;read:BusEvidenceReader;token:()=>Promise<string>;
- preview:(query:OrdinaryBusQuery)=>Promise<OrdinaryBusPreview>;
+ preview:(query:OrdinaryBusQuery)=>Promise<OrdinaryBusPreviewReply>;
  commit:(query:OrdinaryBusQuery)=>Promise<unknown>;
  remove:(routeId:string)=>Promise<unknown>;
 };
@@ -25,7 +26,9 @@ export function useOrdinaryBusDraft(input:Input){
  const mutation=useRef(false);
  const current=useRef({on:input.on,scope:input.scope,allow:input.allow});
  current.current={on:input.on,scope:input.scope,allow:input.allow};
+ const waypoints=useOrdinaryBusInteraction({...input,active:input.on&&!!input.waypoints},name,()=>cancel());
  function cancel(){
+  waypoints.reset();
   job.current?.abort();job.current=undefined;setWaiting(false);setDraft(undefined);setError('');setDeleting(false);
  }
  useEffect(()=>{
@@ -37,10 +40,12 @@ export function useOrdinaryBusDraft(input:Input){
   const editing=kind==='edit'?input.route:undefined;
   if((kind==='edit'&&!editing)||(kind==='new'&&input.route&&!input.multiple))return;
   const pattern=editing?editing.pattern:input.roundTrip?'openRoundTrip':undefined;
-  cancel();setDraft({id:editing?.id??`bus:${crypto.randomUUID()}`,pattern});
+  cancel();const spec={id:editing?.id??`bus:${crypto.randomUUID()}`,pattern};setDraft(spec);
+  if(input.waypoints)waypoints.start({...spec,savedPath:editing?.path});
   setName(editing?.name??'バス系統');
  }
- async function pick(at:GeoPoint,camera:Camera,scale:number){
+ async function pick(at:GeoPoint,camera:Camera,scale:number,detail=1,handleId?:string,moveId?:string,afterId?:string){
+  if(input.waypoints){waypoints.point(at,camera,scale,detail,handleId,moveId,afterId);return;}
   if(!input.on||!input.allow||!draft||draft.preview||job.current||mutation.current)return;
   setError('');
   if(!input.snapshot){
@@ -62,7 +67,9 @@ export function useOrdinaryBusDraft(input:Input){
    if(!alive())return;
    const query=await prepareOrdinaryBusQuery(start,end,title,draft.id,token,input.read,input.descriptors,controller.signal,input.observe,draft.pattern);
    if(!alive())return;
-   const preview=verifyOrdinaryBusPreview(await input.preview(query),start,end,draft.pattern);
+   const result=await input.preview(query);
+   if('failedLegIndex' in result)throw Error('この区間を道路でつなげません。');
+   const preview=verifyOrdinaryBusPreview(result,start,end,draft.pattern);
    if(alive())setDraft({...draft,end,preview,query});
   }catch(e){
    if(alive())setError(displayError(e));
@@ -71,6 +78,7 @@ export function useOrdinaryBusDraft(input:Input){
   }
  }
  async function commit(){
+  if(input.waypoints){waypoints.confirm();return;}
   if(!input.on||!input.allow||!draft?.query||draft.pattern==="openRoundTrip"&&!draft.preview?.returnPath||waiting||mutation.current||!name.trim())return;
   mutation.current=true;setWaiting(true);setError('');
   try{await input.commit({...draft.query,name:name.trim()});cancel();}
@@ -85,7 +93,13 @@ export function useOrdinaryBusDraft(input:Input){
   finally{mutation.current=false;setWaiting(false);}
  }
  function selectDeleting(value:boolean){setError('');setDeleting(value);}
- return {draft,name,setName,error,waiting,deleting,selectDeleting,start,cancel,pick,commit,remove,mutating:()=>mutation.current,rectangle:!!input.observe};
+ const visible=input.waypoints&&draft?{...draft,start:waypoints.controls[0]?.anchor,end:waypoints.controls.length>1?waypoints.controls.at(-1)?.anchor:undefined,preview:waypoints.preview}:draft;
+ return {draft:visible,name,setName,error:error||waypoints.error,waiting:waiting||waypoints.checking||waypoints.committing,deleting,selectDeleting,start,cancel,pick,commit,remove,
+  mutating:()=>mutation.current||waypoints.committing,rectangle:!!input.observe,waypoints:!!input.waypoints,
+  extending:waypoints.extending,exitExtension:waypoints.exitExtension,offerHover:waypoints.offerHover,clearHover:waypoints.clearHover,hoverPreview:waypoints.hoverPreview,allowFinish:waypoints.ready,controls:waypoints.controls,activeControl:waypoints.active==='start'?waypoints.controls[0]?.id:waypoints.controls.at(-1)?.id,
+  failedLeg:waypoints.failedLeg,refusedControls:waypoints.frame?.refusal?.attempt.controls,
+  history:waypoints.history,canUndo:!!(waypoints.frame?.past.length||waypoints.frame?.check||waypoints.frame?.refusal),canRedo:!!waypoints.frame?.future.length,
+  canPlace:!waypoints.committing};
 }
 
 export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,enabled}:{
@@ -106,11 +120,14 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
    </>}
    {draft&&<>
     <label>バス系統名<input maxLength={120} autoComplete="off" value={state.name} disabled={disabled} onChange={e=>state.setName(e.target.value)}/></label>
-    <p role="status">{waiting?'道路経路を確認中':draft.preview?`道路経路 ${Math.round(draft.preview.lengthM)} m・停留所2か所`:draft.start?'道路上の終点を選択':'道路上の起点を選択'}</p>
+    <p role="status">{waiting?'道路経路を確認中':draft.preview?`道路経路 ${Math.round(draft.preview.lengthM)} m・停留所2か所`:draft.start?(state.waypoints?'道路上の次の点を選択':'道路上の終点を選択'):'道路上の起点を選択'}</p>
     {draft.preview?.returnPath&&<p>復路 {Math.round(draft.preview.returnPath.lengthM)} m</p>}
     {draft.preview?.returnUnavailableReason&&<p role="alert">復路を作れません。{draft.preview.returnUnavailableReason}</p>}
     <p>{state.rectangle?"近い範囲の道路を経由します。遠い場合や範囲内に確認できない道路がある場合は選び直してください。":"この版では同じ取得範囲で起点と終点を選びます。"}停留所は両端に作られます。</p>
-    {draft.preview&&<button type="button" onClick={()=>void state.commit()} disabled={disabled||!state.name.trim()||draft.pattern==="openRoundTrip"&&!draft.preview.returnPath}>バス系統を確定</button>}
+    {state.waypoints&&<><p>{state.extending?'道路を順にクリック。現在の端点をもう一度クリックするか、Enterで確定。':'線や点をドラッグして編集。端点をクリックすると延長できます。'}</p>
+     <button type="button" onClick={()=>state.history('undo')} disabled={!state.canUndo||state.mutating()}>点の変更を取り消す</button>
+     <button type="button" onClick={()=>state.history('redo')} disabled={!state.canRedo||state.mutating()}>点の変更をやり直す</button></>}
+    {draft.preview&&<button type="button" onClick={()=>void state.commit()} disabled={disabled||state.waypoints&&!state.allowFinish||!state.name.trim()||draft.pattern==="openRoundTrip"&&!draft.preview.returnPath}>バス系統を確定</button>}
     <button type="button" disabled={state.mutating()} onClick={state.cancel}>下書きを取り消す</button>
    </>}
    {state.deleting&&<div>

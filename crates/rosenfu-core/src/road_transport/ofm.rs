@@ -110,6 +110,12 @@ fn project_route(
     })
 }
 
+fn outward_evidence_error(error: crate::ofm_evidence::Error) -> RoadTransportError {
+    match error {
+        crate::ofm_evidence::Error::NoBusLeg(index) => UnreachableBusLeg(index),
+        _ => StaleSnapshot,
+    }
+}
 fn project_world_routes(
     world: &WorldDraft,
     metadata: BTreeMap<&str, &BusRoute>,
@@ -138,7 +144,7 @@ fn project_world_routes(
         let path = world
             .runtime_road_evidence
             .stored_gameplay_bus_path(binding)
-            .map_err(|_| StaleSnapshot)?
+            .map_err(outward_evidence_error)?
             .ok_or(DisconnectedPath)?;
         total_edges += path.steps.len();
         if binding.pattern == Some(BusPattern::OpenRoundTrip) {
@@ -237,7 +243,7 @@ impl WorldDraft {
         let outbound = self
             .runtime_road_evidence
             .stored_gameplay_bus_path(request)
-            .map_err(|_| StaleSnapshot)?
+            .map_err(outward_evidence_error)?
             .ok_or(DisconnectedPath)?;
         self.checked_gameplay_bus_return(&outbound)
     }
@@ -246,17 +252,28 @@ impl WorldDraft {
         &self,
         outbound: &BusPath,
     ) -> Result<Option<std::sync::Arc<BusPath>>, RoadTransportError> {
-        let reversed = outbound
+        let mut reversed = outbound
             .binding
             .swapped_endpoints()
             .map_err(|_| StaleSnapshot)?;
-        let returned = if reversed.pattern.is_some() {
+        // Strict direction: geometry controls author the outbound shape only.
+        // Requiring them again could send an otherwise simple return around
+        // an entire extra loop to reach a one-way waypoint in reverse order.
+        // There are not yet intermediate passenger stop obligations on return.
+        if reversed.respect_oneway {
+            reversed.via.clear();
+        }
+        let result = if reversed.pattern.is_some() {
             self.runtime_road_evidence
                 .stored_gameplay_bus_path(&reversed)
         } else {
             self.runtime_road_evidence.gameplay_bus_path(&reversed)
-        }
-        .map_err(|_| StaleSnapshot)?;
+        };
+        let returned = match result {
+            Err(crate::ofm_evidence::Error::NoBusLeg(_)) => None,
+            Err(_) => return Err(StaleSnapshot),
+            Ok(found) => found,
+        };
         if returned.as_ref().is_some_and(|path| {
             outbound.points_grid.first() != path.points_grid.last()
                 || outbound.points_grid.last() != path.points_grid.first()

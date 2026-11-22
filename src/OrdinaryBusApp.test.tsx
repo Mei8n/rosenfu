@@ -4,11 +4,13 @@ import {afterEach,expect,test,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {invoke} from '@tauri-apps/api/core';
 import {App} from './App';
+import {project} from './map';
 
 const {read,observe}=vi.hoisted(()=>({read:vi.fn(),observe:vi.fn()}));
 vi.mock('@tauri-apps/api/core',()=>({isTauri:()=>true,invoke:vi.fn()}));
 const a={latitude:35.67504,longitude:139.748},b={latitude:35.67504,longitude:139.752};
 const bend={latitude:35.67532,longitude:139.75};
+const waypoint={latitude:35.67482,longitude:139.75},waypointMoved={latitude:35.67452,longitude:139.7508};
 const raw='2'.repeat(64),key='https://tiles.openfreemap.org/planet/r1/14/14552/6452.pbf';
 const tile={bundle:{sourceSha256:raw,source:{source:key}},tileLines:[{
  id:'ofm:r1:14:14552:6452:0:0',z:14,x:14552,y:6452,revision:'r1',class:'minor',coordinates:[[a.longitude,a.latitude],[b.longitude,b.latitude]]
@@ -30,8 +32,11 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean}){
- snapshots=config.rectangle?[adjacent,tile]:[tile];
+async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean}){
+ const candidate=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
+  ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
+ ]}]}:tile;
+ snapshots=config.rectangle?[adjacent,candidate]:[candidate];
  const bind=(x:number,sha:string,url:string)=>({key:url,url,x,y:6452,z:14,revision:'r1',rawSha256:sha,decoderRule:'ofm_transportation_z14_v1',license:'ODbL-1.0',attribution:'© OpenMapTiles © OpenStreetMap contributors'});
  const bindings=config.rectangle?[bind(14551,leftRaw,leftKey),bind(14552,raw,key)]:[bind(14552,raw,key)];
  observe.mockResolvedValue(bindings);
@@ -43,12 +48,15 @@ async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rect
  const foreign={...first,id:'foreign',owner:'3',name:'他社 C'};
  const nonordinary={...first,id:'pilot',name:'対象外 D'};
  const baseline=config.multiple?{
-  ...world,ofm_gameplay_bus_routes:{[first.id]:{},[second.id]:{},[foreign.id]:{}},
+  ...world,ofm_gameplay_bus_routes:{[first.id]:config.savedProof?{
+   rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,respectOneway:false,
+   start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:1},
+  }:{},[second.id]:{},[foreign.id]:{}},
   road_transport:{nodes:[],edges:[{id:'native-edge',geometry:[a,bend,b]}],bus_stops:[],tram_sections:[],
    bus_routes:[first,second,foreign,nonordinary]},
  }:undefined;
  vi.mocked(invoke).mockImplementation(async (command,args)=>{
-  if(command==='engine_info')return {version:'ordinary-test',road_transport_enabled:true,ordinary_ofm_bus_enabled:config.ordinary!==false,ordinary_ofm_bus_rectangle_enabled:config.rectangle===true,ordinary_ofm_bus_multiple_enabled:config.multiple===true,ordinary_ofm_bus_round_trip_enabled:config.roundTrip===true,operation_enabled:config.operation===true,bus_operation_enabled:config.operation===true};
+  if(command==='engine_info')return {version:'ordinary-test',road_transport_enabled:true,ordinary_ofm_bus_enabled:config.ordinary!==false,ordinary_ofm_bus_rectangle_enabled:config.rectangle===true,ordinary_ofm_bus_multiple_enabled:config.multiple===true,ordinary_ofm_bus_round_trip_enabled:config.roundTrip===true,ordinary_ofm_bus_waypoints_enabled:config.waypoints===true,operation_enabled:config.operation===true,bus_operation_enabled:config.operation===true};
   if(command==='ofm_world_token')return 'world-exact';
   if(command==='operation_snapshot')return {now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,
     timetable_edit_token:'fixture-operation-token',services:[],trains:[],bus_services:[]};
@@ -82,7 +90,12 @@ async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rect
   const pointer=pointerAt(x);
   fireEvent.pointerDown(map,pointer);fireEvent.pointerUp(map,pointer);fireEvent.click(map,pointer);
  }
- return {from:()=>press(config.rectangle?220.38:406.8),to:()=>press(593.2),map,pointerAt};
+ function pressPoint(point:{latitude:number;longitude:number},detail=1,target:Element=map){
+  const {x,y}=project(point.latitude,point.longitude,{latitude:a.latitude,longitude:139.75,zoom:16});
+  const pointer={...pointerAt(x),clientY:y,detail};
+  fireEvent.pointerDown(target,pointer);fireEvent.pointerUp(target,pointer);fireEvent.click(target,pointer);
+ }
+ return {from:()=>press(config.rectangle?220.38:406.8),to:()=>press(593.2),map,pointerAt,pressPoint};
 }
 test('a normal bus tool uses observed geometry and a native route before explicit save, without a debug import',async()=>{
  const map=(await setup({preview:async()=>({points:[a,bend,b],lengthM:400.5})}))!;
@@ -248,4 +261,139 @@ test('transport operation capability cannot bypass an incomplete provider eviden
  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
  expect(invoke).not.toHaveBeenCalledWith('configure_bus_operation',expect.anything());
  expect(screen.queryByRole('button',{name:'バス系統を確定'})).toBeNull();
+});
+
+
+test('waypoint-capable ordinary Bus appends, moves, removes and locally undoes controls without mutating',async()=>{
+ const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {map,pressPoint}=(await setup({waypoints:true,preview:async()=>{
+  const req=requests().at(-1)![1] as {path:{end:{vertex:number};via?:{vertex:{vertex:number}}[]}};
+  const vertices=[a,b,waypoint,waypointMoved];
+  const via=req.path.via?.map(c=>vertices[c.vertex.vertex])??[];
+  return {points:[a,...via,vertices[req.path.end.vertex]],lengthM:400+via.length,...(via.length?{viaPointIndices:[1]}:{})};
+ }}))!;
+ pressPoint(a);pressPoint(waypoint);await screen.findByText('道路経路 400 m・停留所2か所');
+ pressPoint(b);await screen.findByText('道路経路 401 m・停留所2か所');
+ const handle=screen.getByLabelText('バスの経由点 1');
+ const p=project(waypoint.latitude,waypoint.longitude,{latitude:a.latitude,longitude:139.75,zoom:16});
+ const q=project(waypointMoved.latitude,waypointMoved.longitude,{latitude:a.latitude,longitude:139.75,zoom:16});
+ const ptr=(x:number,y:number)=>({pointerId:7,isPrimary:true,button:0,clientX:x,clientY:y});
+ fireEvent.pointerDown(handle,ptr(p.x,p.y));fireEvent.pointerMove(map,ptr(q.x,q.y));fireEvent.pointerUp(map,ptr(q.x,q.y));
+ await waitFor(()=>expect(requests().at(-1)?.[1]).toMatchObject({path:{via:[{vertex:{vertex:3}}]}}));
+ await screen.findByText('道路経路 401 m・停留所2か所');
+ fireEvent.keyDown(window,{key:'z',ctrlKey:true});
+ expect(Number(screen.getByLabelText('バスの経由点 1').getAttribute('cx'))).toBeCloseTo(p.x);
+ fireEvent.keyDown(window,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(Number(screen.getByLabelText('バスの経由点 1').getAttribute('cx'))).toBeCloseTo(q.x);
+ pressPoint(waypointMoved,1,screen.getByLabelText('バスの経由点 1'));
+ await screen.findByText('道路経路 400 m・停留所2か所');
+ expect(screen.queryByLabelText('バスの経由点 1')).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ expect(vi.mocked(invoke).mock.calls.some(([cmd])=>cmd.includes('undo'))).toBe(false);
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.getByRole('button',{name:'新しいバス系統'})).toBeTruthy();
+});
+
+test('double-click binds completion to the new verified proof, not the old two-control preview',async()=>{
+ let latest!: (value:unknown)=>void;
+ let previews=0;
+ const {pressPoint}=(await setup({waypoints:true,preview:async()=>{
+  if(++previews===1)return {points:[a,waypoint],lengthM:235};
+  return new Promise(resolve=>{latest=resolve;});
+ }}))!;
+ pressPoint(a);pressPoint(waypoint);await screen.findByText('道路経路 235 m・停留所2か所');
+ pressPoint(b,1);pressPoint(b,2);
+ await waitFor(()=>expect(previews).toBe(2));
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ latest({points:[a,waypoint,b],lengthM:470,viaPointIndices:[1]});
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({path:expect.objectContaining({
+   start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:1},
+   via:[{id:expect.any(String),tileKey:key,vertex:{feature:0,line:0,vertex:2}}],
+ })})));
+ expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='put_gameplay_ofm_bus')).toHaveLength(1);
+});
+
+test.each([1,2])('fails closed on a refused/malformed native leg index %d and never saves previous path',async failedLegIndex=>{
+ let previews=0;
+ const {pressPoint}=(await setup({waypoints:true,preview:async()=>++previews===1?
+   {points:[a,waypoint],lengthM:235}:{points:[],lengthM:0,failedLegIndex}}))!;
+ pressPoint(a);pressPoint(waypoint);await screen.findByText('道路経路 235 m・停留所2か所');
+ pressPoint(b);fireEvent.keyDown(window,{key:'Enter'});
+ await screen.findByText(failedLegIndex===1?'この区間を道路でつなげません。':'経路の確認結果が一致しません。位置を選び直してください。');
+ expect(screen.queryAllByLabelText('接続できないバス区間の端')).toHaveLength(failedLegIndex===1?2:0);
+ expect(screen.queryByLabelText('バス系統のプレビュー')).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+});
+
+
+test('existing bus opens edit without extending; deliberate endpoint click extends and first Escape exits extension only',async()=>{
+ const name='既存 A',request=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {map,pressPoint}=(await setup({waypoints:true,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
+  const req=request().at(-1)![1] as {path:{end:{vertex:number};via?:{vertex:{vertex:number}}[]}};
+  const vertices=[a,b,waypoint,waypointMoved],v=req.path.via?.map(w=>vertices[w.vertex.vertex])??[];
+  if(v.includes(waypointMoved))return {points:[],lengthM:0,failedLegIndex:1};
+  return {points:[a,...v,vertices[req.path.end.vertex]],lengthM:400+v.length,...(v.length?{viaPointIndices:v.map((_,n)=>n+1)}:{})};
+ }}))!;
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を引き直す'}));
+ await screen.findByText('道路経路 400 m・停留所2か所');
+ expect(request()[0][1]).toMatchObject({routeId:'owned-a',rawEvidence:null,tileBinding:null});
+ pressPoint(waypoint);
+ expect(request()).toHaveLength(1);
+ const drag=(target:Element,to:typeof a)=>{
+  const cam={latitude:a.latitude,longitude:139.75,zoom:16};
+  const from=project(bend.latitude,bend.longitude,cam),dest=project(to.latitude,to.longitude,cam);
+  const ptr=(x:number,y:number)=>({pointerId:11,isPrimary:true,button:0,clientX:x,clientY:y});
+  fireEvent.pointerDown(target,ptr(from.x,from.y));fireEvent.pointerMove(map,ptr(dest.x,dest.y));fireEvent.pointerUp(map,ptr(dest.x,dest.y));
+ };
+ drag(screen.getByLabelText('バス経路の編集区間 1'),waypointMoved);
+ await screen.findByText('この区間を道路でつなげません。');
+ expect(screen.getByLabelText('バス系統のプレビュー')).toBeTruthy();
+ expect((screen.getByRole('button',{name:'バス系統を確定'}) as HTMLButtonElement).disabled).toBe(true);
+ drag(screen.getByLabelText('バス経路の編集区間 1'),waypoint);
+ await screen.findByText('道路経路 401 m・停留所2か所');
+ pressPoint(b,1,screen.getByLabelText('バスの終点'));
+ await screen.findByText(/道路を順にクリック/);
+ pressPoint(waypointMoved);
+ await waitFor(()=>expect(request().at(-1)?.[1]).toMatchObject({path:{end:{vertex:3},via:[{vertex:{vertex:2}},{vertex:{vertex:1}}]}}));
+ await screen.findByText('道路経路 402 m・停留所2か所');
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.getByText(/線や点をドラッグして編集/)).toBeTruthy();
+ expect((screen.getByRole('textbox',{name:'バス系統名'}) as HTMLInputElement).value).toBe(name);
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.queryByRole('textbox',{name:'バス系統名'})).toBeNull();
+ expect(screen.getByRole('button',{name:'バス系統を引き直す'})).toBeTruthy();
+});
+
+test('Escape and tool change retire an outstanding waypoint proof even after double-click finish intent',async()=>{
+ let resolve!:(value:unknown)=>void;
+ const {pressPoint}=(await setup({waypoints:true,preview:()=>new Promise(r=>{resolve=r;})}))!;
+ pressPoint(a);pressPoint(b);pressPoint(b,2);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_gameplay_ofm_bus',expect.anything()));
+ fireEvent.keyDown(window,{key:'Escape'});
+ resolve({points:[a,b],lengthM:390});
+ await screen.findByRole('button',{name:'新しいバス系統'});
+ expect(screen.queryByLabelText('バス系統のプレビュー')).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+});
+
+test('hover previews already cached roadway after coalescing without requesting evidence or saving',async()=>{
+ const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {map,pressPoint}=(await setup({waypoints:true,preview:async()=>{
+  const req=requests().at(-1)![1] as {path:{end:{vertex:number};via?:{vertex:{vertex:number}}[]}};
+  const vertices=[a,b,waypoint,waypointMoved];
+  const via=req.path.via?.map(c=>vertices[c.vertex.vertex])??[];
+  return {points:[a,...via,vertices[req.path.end.vertex]],lengthM:402,...(via.length?{viaPointIndices:[1]}:{})};
+ }}))!;
+ const cam={latitude:a.latitude,longitude:139.75,zoom:16};
+ pressPoint(a);pressPoint(waypoint);await screen.findByText('道路経路 402 m・停留所2か所');
+ const point=project(b.latitude,b.longitude,cam);
+ for(let i=0;i<15;i++)fireEvent.pointerMove(map,{clientX:point.x+i/2,clientY:point.y,buttons:0});
+ await screen.findByLabelText('カーソル位置までのバス経路');
+ expect(requests()).toHaveLength(2);
+ expect(read).toHaveBeenCalledTimes(1);
+ expect(observe).not.toHaveBeenCalled();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.pointerLeave(map);
+ expect(screen.queryByLabelText('カーソル位置までのバス経路')).toBeNull();
 });

@@ -122,6 +122,7 @@ pub enum RoadTransportError {
     MissingReference,
     DisconnectedPath,
     MissingReturnPath,
+    UnreachableBusLeg(usize),
     AccessUnknown,
     AccessForbidden,
     WrongOwner,

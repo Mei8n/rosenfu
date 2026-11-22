@@ -1,5 +1,5 @@
 import {OrdinaryBusPanel,useOrdinaryBusDraft} from './OrdinaryBusPanel';
-import type {OrdinaryBusPath,OrdinaryBusPreview,OrdinaryBusQuery} from './ordinaryBusDraft';
+import type {OrdinaryBusPath,OrdinaryBusPreviewReply,OrdinaryBusQuery} from './ordinaryBusDraft';
 import {BusOperations,OperationClock,OperationProvider,ServiceOperations,ServicePathChangeNotice} from "./OperationsPanel";
 import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection,type RoadPlayerMapRequest,type RoadPlayerMapSelection} from "./RoadTransportPanel";
 import {RailJourneyReplayPanel} from "./RailJourneyReplayPanel";
@@ -120,7 +120,7 @@ type GeoPoint = { latitude: number; longitude: number };
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
+type EngineInfo = { ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
@@ -198,7 +198,7 @@ export function App() {
   const cameraRef = useRef<Camera>(DEFAULT_CAMERA);
   const [pixelRatio, setPixelRatio] = useState(() => window.devicePixelRatio || 1);
   const [mapSize, setMapSize] = useState<{width:number;height:number}>(MAP_VIEWBOX);
-  const gestureRef = useRef<{ pointerId: number; startX: number; startY: number; camera: Camera; scale: number; dragged: boolean; mayPlace: boolean } | null>(null);
+  const gestureRef = useRef<{ pointerId: number; startX: number; startY: number; camera: Camera; scale: number; dragged: boolean; mayPlace: boolean; busControlId?:string; busLegAfter?:string } | null>(null);
   const boxGesture=useRef<{pointerId:number;startX:number;startY:number;box:SelectionBox;camera:Camera;additive:boolean}|null>(null);
   const [selectionBox,setSelectionBox]=useState<SelectionBox|null>(null);
   const [rangeSelection,setRangeSelection]=useState<SectionSelection[]>([]);
@@ -1225,6 +1225,7 @@ export function App() {
   }
   function pointerDown(event: ReactPointerEvent<SVGSVGElement>) {
     smoothZoom.cancel();
+    ordinaryBus.clearHover();
     setPlanHover(null);setBuiltHover(null);referenceCopy.clearHover();
     if (![0,1].includes(event.button) || event.isPrimary === false || gestureRef.current || boxGesture.current) return;
     if(event.button===1)event.preventDefault();
@@ -1239,7 +1240,10 @@ export function App() {
     if (!coordinatesFromClient(event.clientX, event.clientY, rect, cameraRef.current)) return;
     const { scale } = mapViewport(rect.width, rect.height);
     const existingEquipment = activeTool!=="stations" && event.target instanceof Element && !!event.target.closest(".station-marker, .track-connection");
-    gestureRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, camera: cameraRef.current, scale, dragged: false, mayPlace: event.button===0 && (ordinaryBusPicking || (((mapMode === "place" && activeTool === "stations") || (mapMode === "draw" && activeTool === "tracks")) && !existingEquipment)) };
+    const busTarget=event.button===0&&ordinaryBusPicking&&ordinaryBus.waypoints&&event.target instanceof Element?event.target:undefined;
+    const busControlId=busTarget?.closest('[data-bus-control]')?.getAttribute('data-bus-control')??undefined;
+    const busLegAfter=busTarget?.closest('[data-bus-leg-after]')?.getAttribute('data-bus-leg-after')??undefined;
+    gestureRef.current = { busControlId,busLegAfter, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, camera: cameraRef.current, scale, dragged: false, mayPlace: event.button===0 && (ordinaryBusPicking || (((mapMode === "place" && activeTool === "stations") || (mapMode === "draw" && activeTool === "tracks")) && !existingEquipment)) };
     suppressMapClick.current = false;
     suppressSelectionClick.current = false;
   }
@@ -1250,6 +1254,11 @@ export function App() {
       const p=coordinatesFromClient(x,y,rect,selecting.camera);if(p){selecting.box={...selecting.box,end:project(p.latitude,p.longitude,selecting.camera)};setSelectionBox(selecting.box);}return;
     }
     if(anchorGesture.current){moveAnchorGesture(event);return;}
+    if(ordinaryBusPicking&&ordinaryBus.waypoints&&ordinaryBus.extending&&!gestureRef.current&&!event.buttons){
+      const rect=event.currentTarget.getBoundingClientRect(),point=coordinatesFromClient(event.clientX,event.clientY,rect,cameraRef.current);
+      if(point)ordinaryBus.offerHover(point,cameraRef.current,mapViewport(rect.width,rect.height).scale);
+      else ordinaryBus.clearHover();
+    }
     if(enabled&&referenceCopy.active&&referenceCopy.roadFollow&&mapMode==="draw"&&!gestureRef.current){const p=coordinatesFromClient(event.clientX,event.clientY,event.currentTarget.getBoundingClientRect(),camera);if(p)void referenceCopy.hover(p);}
 
     if(enabled&&activeTool==="stations"&&mapMode==="place"&&!gestureRef.current){const rect=event.currentTarget.getBoundingClientRect();setStationCursor(coordinatesFromClient(event.clientX,event.clientY,rect,camera));setCursorPosition({x:event.clientX-rect.left,y:event.clientY-rect.top,width:rect.width,height:rect.height});}
@@ -1269,7 +1278,7 @@ export function App() {
     if (!gesture.dragged && Math.hypot(dx, dy) < 5) return;
     if (!gesture.dragged && event.type === "pointermove") event.currentTarget.setPointerCapture?.(event.pointerId);
     gesture.dragged = true; suppressMapClick.current = true; suppressSelectionClick.current = true; setDragging(true);
-    changeCamera(panCamera(gesture.camera, -dx / gesture.scale, -dy / gesture.scale));
+    if(!gesture.busControlId&&!gesture.busLegAfter)changeCamera(panCamera(gesture.camera, -dx / gesture.scale, -dy / gesture.scale));
   }
   function pointerEnd(event: ReactPointerEvent<SVGSVGElement>, canceled = false) {
     const selecting=boxGesture.current;
@@ -1286,6 +1295,11 @@ export function App() {
     suppressMapClick.current = canceled || gesture.dragged || !gesture.mayPlace;
     suppressSelectionClick.current = canceled || gesture.dragged;
     gestureRef.current = null; setDragging(false);
+    if(!canceled&&gesture.dragged&&(gesture.busControlId||gesture.busLegAfter)&&ordinaryBusPicking){
+      const rect=event.currentTarget.getBoundingClientRect();
+      const at=coordinatesFromClient(event.clientX,event.clientY,rect,cameraRef.current);
+      if(at)void ordinaryBus.pick(at,cameraRef.current,gesture.scale,1,undefined,gesture.busControlId,gesture.busLegAfter);
+    }
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
   async function stageSeamPlan(){
@@ -1690,11 +1704,20 @@ export function App() {
     const key = (event: KeyboardEvent) => {
       if(seamMutationPending.current)return;
       if(slotDialog||slotPicker||confirmLoad)return;
-      if(event.key==="Escape"&&ordinaryBusActive&&(ordinaryBus.draft||ordinaryBus.deleting)&&!ordinaryBus.mutating()&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();ordinaryBus.cancel();return;}
+      if(event.key==="Escape"&&ordinaryBusActive&&(ordinaryBus.draft||ordinaryBus.deleting)&&!ordinaryBus.mutating()&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();if(!ordinaryBus.exitExtension())ordinaryBus.cancel();return;}
       if(event.key==="Escape"&&(roadMapFrom!==null||roadPlayerMapPick)&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();cancelRoadMapPick();return;}
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete||document.querySelector('[aria-label="系統削除の確認"]'))return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
+      if(ordinaryBusActive&&ordinaryBus.draft&&ordinaryBus.waypoints&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented&&!event.altKey){
+        const key=event.key.toLowerCase(),ctrl=event.ctrlKey||event.metaKey;
+        if(ctrl&&(key==="z"||key==="y")){
+          event.preventDefault();if(!event.repeat)ordinaryBus.history(key==="y"||event.shiftKey?'redo':'undo');return;
+        }
+        if(!ctrl&&!event.shiftKey&&key==="enter"&&!(event.target instanceof HTMLElement&&event.target.closest('button, a, [role="button"]'))){
+          event.preventDefault();if(!event.repeat)void ordinaryBus.commit();return;
+        }
+      }
       if (event.key === "Delete" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && !event.repeat && !event.defaultPrevented) {
         if (mainTab === "construction" && activeTool === "select" && enabled && !busyRef.current && !unapplied && rangeCount > 0 && !boxGesture.current && !gestureRef.current && !anchorGesture.current && !document.querySelector('dialog[open], [role="dialog"]')) {
           event.preventDefault();setError("");setConfirmRangeDelete(true);
@@ -1958,20 +1981,22 @@ export function App() {
       if(command==='put_gameplay_ofm_bus')setOrdinarySelection({epoch:worldEpoch,id:args.routeId});
     }finally{busyRef.current=false;setBusy(false);}
   }
-  const ordinaryRoutePattern=ordinaryRoute?(ordinaryBusMultiple?ordinaryProofs?.[ordinaryRoute.id]:world?.ofm_gameplay_bus)?.pattern:undefined;
+  const ordinaryRouteProof=ordinaryRoute?(ordinaryBusMultiple?ordinaryProofs?.[ordinaryRoute.id]:world?.ofm_gameplay_bus)??undefined:undefined;
+  const ordinaryRoutePattern=ordinaryRouteProof?.pattern;
   const ordinaryBus=useOrdinaryBusDraft({on:ordinaryBusActive,allow:ordinaryBusEnabled,scope:world,
-    snapshot:automaticRoad.snapshot,loading:automaticRoad.status==='loading',route:ordinaryRoute?{...ordinaryRoute,pattern:ordinaryRoutePattern}:undefined,multiple:ordinaryBusMultiple,roundTrip:info?.ordinary_ofm_bus_round_trip_enabled===true,conflictingGraph:ordinaryBusBlocked,
+    snapshot:automaticRoad.snapshot,loading:automaticRoad.status==='loading',route:ordinaryRoute?{...ordinaryRoute,pattern:ordinaryRoutePattern,path:ordinaryRouteProof}:undefined,multiple:ordinaryBusMultiple,roundTrip:info?.ordinary_ofm_bus_round_trip_enabled===true,waypoints:info?.ordinary_ofm_bus_waypoints_enabled===true,conflictingGraph:ordinaryBusBlocked,
     descriptors:world?.road_evidence_descriptors??[],read:automaticRoad.readTileEvidenceBatch,
     observe:info?.ordinary_ofm_bus_rectangle_enabled===true?automaticRoad.observeRouteTiles:undefined,
-    token:()=>invoke<string>('ofm_world_token'),preview:query=>invoke<OrdinaryBusPreview>('preview_gameplay_ofm_bus',query),
+    token:()=>invoke<string>('ofm_world_token'),preview:query=>invoke<OrdinaryBusPreviewReply>('preview_gameplay_ofm_bus',query),
     commit:query=>mutateOrdinaryBus('put_gameplay_ofm_bus',query),remove:routeId=>mutateOrdinaryBus('remove_gameplay_ofm_bus',{routeId})});
-  const ordinaryBusPicking=ordinaryBusEnabled&&!!ordinaryBus.draft&&!ordinaryBus.draft.preview&&!ordinaryBus.waiting;
+  const ordinaryBusPicking=ordinaryBusEnabled&&!!ordinaryBus.draft&&(ordinaryBus.waypoints?ordinaryBus.canPlace:!ordinaryBus.draft.preview&&!ordinaryBus.waiting);
   function pickOrdinaryBusPoint(event:MouseEvent<SVGSVGElement>){
     event.stopPropagation();smoothZoom.cancel();
     if(!ordinaryBusPicking||busyRef.current||suppressMapClick.current||suppressSelectionClick.current)return;
     const rect=event.currentTarget.getBoundingClientRect();
     const at=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
-    if(at)void ordinaryBus.pick(at,camera,mapViewport(rect.width,rect.height).scale);
+    const handle=event.target instanceof Element?event.target.closest('[data-bus-control]')?.getAttribute('data-bus-control')??undefined:undefined;
+    if(at)void ordinaryBus.pick(at,camera,mapViewport(rect.width,rect.height).scale,event.detail,handle);
   }
   const roadMapScope=roadTransportAvailable&&mainTab==="construction"&&activeTool==="road-transport";
   const qaRoadMapPicking=roadMapScope&&roadMapFrom!==null;
@@ -2137,7 +2162,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClickCapture={ordinaryBusActive&&ordinaryBus.draft?pickOrdinaryBusPoint:playerMapTarget?pickPlayerRoadMapPoint:undefined} onClick={mapClick} className={(enabled && (playerMapTarget||ordinaryBusPicking||((mainTab==="routes"||mainTab==="services")&&routeMapPick)) ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
+            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;ordinaryBus.clearHover();if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClickCapture={ordinaryBusActive&&ordinaryBus.draft?pickOrdinaryBusPoint:playerMapTarget?pickPlayerRoadMapPoint:undefined} onClick={mapClick} className={(enabled && (playerMapTarget||ordinaryBusPicking||((mainTab==="routes"||mainTab==="services")&&routeMapPick)) ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
@@ -2211,11 +2236,32 @@ export function App() {
               })}
               {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<RouteStationSelection stations={world?.stations??[]} ordered={routeSelectedStations} camera={camera} scale={viewport.scale} entityLabel={mainTab==="services"?"系統":"路線"} endpoint={routeMapPick==="start"||routeMapPick==="end"?routeMapPick:null}/>}
                {ordinaryBuiltPath&&<path d={ordinaryBuiltPath} aria-label="作成済みのバス経路" fill="none" stroke="#007383" strokeOpacity={ordinaryBus.draft?.preview?0.4:1} strokeWidth="4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+               {ordinaryBusActive&&ordinaryBus.hoverPreview&&<path d={mapPath(ordinaryBus.hoverPreview.points,camera)} aria-label="カーソル位置までのバス経路" fill="none"
+                stroke="#006b79" strokeOpacity="0.7" strokeDasharray="6 5" strokeWidth="5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
                {ordinaryBusActive&&ordinaryBus.draft?.preview&&<path d={mapPath(ordinaryBus.draft.preview.points,camera)} aria-label="バス系統のプレビュー" fill="none" stroke="#006b79" strokeWidth="5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
                {ordinaryBusActive&&ordinaryBus.draft?.preview?.returnPath&&<path d={mapPath(ordinaryBus.draft.preview.returnPath.points,camera)} aria-label="バス系統の復路プレビュー" fill="none" stroke="#7f3c8d" strokeWidth="4" strokeDasharray="7 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
-               {ordinaryBusActive&&[ordinaryBus.draft?.start,ordinaryBus.draft?.end].map((anchor,i)=>{
+               {ordinaryBusActive&&!ordinaryBus.waypoints&&[ordinaryBus.draft?.start,ordinaryBus.draft?.end].map((anchor,i)=>{
                  if(!anchor)return null;const point=project(anchor.point.latitude,anchor.point.longitude,camera);
                  return <circle key={i} aria-label={i?"バスの降車位置":"バスの乗車位置"} cx={point.x} cy={point.y} r="5" fill="#006b79" stroke="white" strokeWidth="2" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;
+               })}
+               {ordinaryBusActive&&ordinaryBus.waypoints&&!ordinaryBus.extending&&ordinaryBus.draft?.preview&&ordinaryBus.controls.slice(0,-1).map((control,i)=>{
+                 const {points,viaPointIndices}=ordinaryBus.draft!.preview!;
+                 const start=i===0?0:viaPointIndices?.[i-1],end=i===ordinaryBus.controls.length-2?points.length-1:viaPointIndices?.[i];
+                 if(start===undefined||end===undefined||end<=start)return null;
+                 return <path key={control.id} data-bus-leg-after={control.id} aria-label={`バス経路の編集区間 ${i+1}`}
+                  d={mapPath(points.slice(start,end+1),camera)} stroke="transparent" strokeWidth="18" fill="none"
+                  vectorEffect="non-scaling-stroke" pointerEvents="stroke" style={{cursor:"move"}}/>;
+               })}
+               {ordinaryBusActive&&ordinaryBus.waypoints&&ordinaryBus.controls.map(({id,anchor},i)=>{
+                 const p=project(anchor.point.latitude,anchor.point.longitude,camera);
+                 const position=i===0?"起点":i===ordinaryBus.controls.length-1?"終点":`経由点 ${i}`;
+                 return <circle key={id} data-bus-control={id} aria-label={`バスの${position}`} cx={p.x} cy={p.y} r={7/viewport.scale}
+                  fill={ordinaryBus.activeControl===id?"#cb751c":"#006b79"} stroke="white" strokeWidth="2" vectorEffect="non-scaling-stroke" style={{cursor:"move"}}/>;
+               })}
+               {ordinaryBusActive&&ordinaryBus.failedLeg!==undefined&&ordinaryBus.refusedControls?.slice(ordinaryBus.failedLeg,ordinaryBus.failedLeg+2).map(({id,anchor})=>{
+                 const p=project(anchor.point.latitude,anchor.point.longitude,camera);
+                 return <circle key={id} aria-label="接続できないバス区間の端" cx={p.x} cy={p.y} r={11/viewport.scale}
+                  fill="none" stroke="#b42318" strokeWidth="3" vectorEffect="non-scaling-stroke" pointerEvents="none"/>;
                })}
                {playerMapPath&&<path d={playerMapPath} aria-label="停留所を置く道路" fill="none" stroke="#185d75" strokeWidth="5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
               {qaRoadMapPicking&&<g className="road-qa-map-selection" aria-label="検証用道路の点">

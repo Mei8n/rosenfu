@@ -12,6 +12,12 @@ fn road_path_help(error: rosenfu_core::road_transport::RoadTransportError) -> St
         MissingReturnPath => {
             "選んだ範囲の道路に復路がありません。終点か一方通行の設定を見直してください。"
         }
+        UnreachableBusLeg(index) => {
+            return format!(
+                "第{}区間がつながりません。経由点を選び直してください。",
+                index + 1
+            )
+        }
         InvalidStopOrder => "進行方向に沿って、乗車位置より先に降車位置を置いてください。",
         AccessUnknown | AccessForbidden => {
             "この区間は選んだ交通手段に対応していません。対象の道路を選び直してください。"
@@ -30,6 +36,10 @@ pub struct GameplayBusPathPreview {
     pub points: Vec<GeoPoint>,
     pub length_m: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_leg_index: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub via_point_indices: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub return_path: Option<GameplayBusReturnPreview>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_unavailable_reason: Option<String>,
@@ -42,6 +52,30 @@ pub struct GameplayBusReturnPreview {
     pub length_m: f64,
 }
 
+enum GameplayBusCandidateError {
+    Message(String),
+    UnreachableLeg(usize),
+}
+impl From<String> for GameplayBusCandidateError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+impl From<&str> for GameplayBusCandidateError {
+    fn from(message: &str) -> Self {
+        Self::Message(message.into())
+    }
+}
+impl GameplayBusCandidateError {
+    fn message(self) -> String {
+        match self {
+            Self::Message(m) => m,
+            Self::UnreachableLeg(i) => road_path_help(
+                rosenfu_core::road_transport::RoadTransportError::UnreachableBusLeg(i),
+            ),
+        }
+    }
+}
 fn return_in_edit_extent(path: &rosenfu_core::ofm_evidence::BusPath) -> bool {
     path.points.iter().all(|p| in_edit_extent(p[1], p[0]))
 }
@@ -135,8 +169,9 @@ impl WorldEditor {
         path: rosenfu_core::ofm_evidence::BusPathBinding,
         cached: Vec<(OfmRawInput, OfmBindingInput)>,
     ) -> Result<WorldDraft, String> {
-        let world =
-            self.gameplay_ofm_bus_candidate(expected_world_token, route_id, name, path, cached)?;
+        let world = self
+            .gameplay_ofm_bus_candidate(expected_world_token, route_id, name, path, cached)
+            .map_err(GameplayBusCandidateError::message)?;
         rosenfu_storage::ensure_world_saveable(&world).map_err(|e| e.to_string())?;
         let mut candidate = self.clone();
         candidate.world = world;
@@ -155,13 +190,26 @@ impl WorldEditor {
         // A partial outward preview must not permit a partial round-trip commit.
         let mut outward = path.clone();
         outward.pattern = None;
-        let world = self.gameplay_ofm_bus_candidate(
+        let world = match self.gameplay_ofm_bus_candidate(
             expected_world_token,
             route_id.clone(),
             name,
             outward.clone(),
             cached,
-        )?;
+        ) {
+            Ok(world) => world,
+            Err(GameplayBusCandidateError::UnreachableLeg(index)) => {
+                return Ok(GameplayBusPathPreview {
+                    points: vec![],
+                    length_m: 0.,
+                    failed_leg_index: Some(index),
+                    via_point_indices: vec![],
+                    return_path: None,
+                    return_unavailable_reason: None,
+                })
+            }
+            Err(other) => return Err(other.message()),
+        };
         let draft = world.snapshot();
         let bus = &draft.road_transport;
         let legs = bus.bus_legs(draft, &route_id).map_err(road_path_help)?;
@@ -216,9 +264,22 @@ impl WorldEditor {
         } else {
             (None, None)
         };
+        let via_point_indices = if outward.via.is_empty() {
+            vec![]
+        } else {
+            rosenfu_core::ofm_evidence::reconstruct_gameplay_bus_path(
+                &draft.runtime_road_evidence,
+                &outward,
+            )
+            .map_err(|_| "経由点の位置を取得できません。")?
+            .ok_or("経由点の位置を取得できません。")?
+            .via_point_indices
+        };
         Ok(GameplayBusPathPreview {
             points,
             length_m: legs.iter().map(|leg| leg.length_m).sum(),
+            failed_leg_index: None,
+            via_point_indices,
             return_path,
             return_unavailable_reason,
         })
@@ -231,7 +292,7 @@ impl WorldEditor {
         name: String,
         path: rosenfu_core::ofm_evidence::BusPathBinding,
         cached: Vec<(OfmRawInput, OfmBindingInput)>,
-    ) -> Result<World, String> {
+    ) -> Result<World, GameplayBusCandidateError> {
         if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
             return Err("ワールドが変更されました。道路を選び直してください。".into());
         }
@@ -241,7 +302,12 @@ impl WorldEditor {
         let world = self
             .world
             .candidate_with_gameplay_ofm_bus(self.company, route_id.clone(), name, path, cached)
-            .map_err(road_path_help)?;
+            .map_err(|err| match err {
+                rosenfu_core::road_transport::RoadTransportError::UnreachableBusLeg(i) => {
+                    GameplayBusCandidateError::UnreachableLeg(i)
+                }
+                other => GameplayBusCandidateError::Message(road_path_help(other)),
+            })?;
         if world
             .snapshot()
             .road_transport

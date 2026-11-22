@@ -433,3 +433,21 @@ to the existing tile and world-save byte budgets. A bounded proof memo retains
 the hot cohort plus a candidate (up to 36,864 atom occurrences); first restore
 rebuilds verified paths as required and warm world validations do not rescan the
 whole geography. The existing provider cache remains the only raw source.
+
+### Ordered authored via vertices
+
+Optional `via` holds up to 30 stable, unique control IDs with exact raw
+tile/feature/line/vertex pointers in the same source rectangle as the
+endpoints. Via points constrain the chosen geometry; they are not passenger
+stops. Search builds or reuses a compiled graph keyed only by complete immutable
+scope and direction policy, then runs ordered directed searches with shared
+scratch space. A multi-anchor route has a cumulative 1,000,000 relaxation and
+4,096 atom limit. A failed leg prevents the full edit, and native preview can
+return a zero-based failure index without any partial route geometry.
+
+The default bidirectional open mode solves return via points in reverse order,
+rather than reversing rendered points. With explicit strict one-way enabled,
+outbound shape controls stay outbound-only and the return independently finds
+a legal route between endpoints, avoiding a detour merely to revisit an
+outbound control. Intermediate passenger stop editing and fractional picks
+are follow-on, not part of this waypoint feature.

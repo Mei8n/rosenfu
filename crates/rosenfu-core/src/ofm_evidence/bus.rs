@@ -10,6 +10,9 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 pub const BUS_GRAPH_RULE: &str = "ofm_ground_bus_z14_v1";
 pub const BUS_RECTANGLE_RULE: &str = "ofm_ground_bus_rectangle_z14_v2";
 const MAX_GRAPH_POINTS: usize = 100_000;
+const MAX_VIAS: usize = 30;
+const MAX_MULTI_RELAXATIONS: usize = 1_000_000;
+const MAX_MULTI_ATOMS: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -32,6 +35,16 @@ pub enum BusPattern {
     OpenRoundTrip,
 }
 
+/// Authored geometry control. An intermediate path vertex is not a passenger
+/// stop unless separately selected against its approved route occurrence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BusVia {
+    pub id: String,
+    pub tile_key: String,
+    pub vertex: BusVertex,
+}
+
 /// A reproducible request, not a proof or an independently trusted saved route.
 /// Call the solver again against the matching verified tile to reconstruct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +62,8 @@ pub struct BusPathBinding {
     pub end_tile_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<BusPattern>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub via: Vec<BusVia>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +74,8 @@ pub struct BusPath {
     pub points: Vec<[f64; 2]>,
     pub length_m: f64,
     pub(crate) operation_length_mm: u64,
+    /// Derived point indices in exact authored via order, not a stop decision.
+    pub via_point_indices: Vec<usize>,
     pub(crate) steps: Vec<BusSourceStep>,
     pub(crate) points_grid: Vec<BusGridPoint>,
 }
@@ -193,7 +210,7 @@ fn eligible(line: &TileLine, respect_oneway: bool) -> Option<Direction> {
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Arc {
     to: usize,
     line: usize,
@@ -363,6 +380,7 @@ impl BusPathBinding {
                 .additional_tiles
                 .sort_by(|a, b| a.tile_key.cmp(&b.tile_key));
         }
+        reverse.via.reverse();
         Ok(reverse)
     }
 
@@ -384,6 +402,23 @@ impl BusPathBinding {
         keys.sort_unstable();
         if keys.windows(2).any(|k| k[0] == k[1]) {
             return Err(Error::Binding);
+        }
+        if self.via.len() > MAX_VIAS {
+            return Err(Error::Limit);
+        }
+        let mut ids = BTreeSet::new();
+        for via in &self.via {
+            if via.id.is_empty()
+                || via.id.len() > 80
+                || !via
+                    .id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+                || !ids.insert(via.id.as_str())
+                || keys.binary_search(&via.tile_key).is_err()
+            {
+                return Err(Error::Binding);
+            }
         }
         Ok(keys)
     }
@@ -409,16 +444,67 @@ pub fn find_gameplay_bus_path(
         additional_tiles: vec![],
         end_tile_key: None,
         pattern: None,
+        via: vec![],
     };
     solve_gameplay_bus_scope(store, &request)
 }
 
-/// Scope contains every requested tile, already checked against its exact
-/// digest. Other archive tiles cannot add candidate seams or change the result.
-pub(super) fn solve_gameplay_bus_scope(
+#[derive(Debug)]
+struct BusGraphLine {
+    tile_key: String,
+    fragment_id: String,
+    extent: u32,
+    metric_scale: u128,
+}
+#[derive(Debug)]
+pub(super) struct GameplayBusGraph {
+    lines: Vec<BusGraphLine>,
+    offsets: BTreeMap<String, BTreeMap<(u32, u32), (usize, usize)>>,
+    representative: Vec<usize>,
+    geometry: Vec<BusGridPoint>,
+    adj: Vec<Vec<Arc>>,
+}
+impl GameplayBusGraph {
+    fn node_at(&self, key: &str, v: BusVertex) -> Option<usize> {
+        let &(base, n) = self.offsets.get(key)?.get(&(v.feature, v.line))?;
+        let i = v.vertex as usize;
+        (i < n).then(|| self.representative[base + i])
+    }
+    pub(super) fn fits_cache(&self) -> bool {
+        // Bound the one retained compiled graph independently from tile/path
+        // caches. Candidate graph buffers are still subject to the graph cap.
+        let bound = self.adj.capacity() * std::mem::size_of::<Vec<Arc>>()
+            + self
+                .adj
+                .iter()
+                .map(|a| a.capacity() * std::mem::size_of::<Arc>())
+                .sum::<usize>()
+            + self.geometry.capacity() * std::mem::size_of::<BusGridPoint>()
+            + self.representative.capacity() * std::mem::size_of::<usize>()
+            + self
+                .offsets
+                .iter()
+                .map(|(key, map)| key.capacity() + 128 + map.len() * 64)
+                .sum::<usize>()
+            + self
+                .lines
+                .iter()
+                .map(|line| {
+                    line.tile_key.capacity()
+                        + line.fragment_id.capacity()
+                        + std::mem::size_of::<BusGraphLine>()
+                })
+                .sum::<usize>();
+        bound <= 24 * 1024 * 1024
+    }
+}
+
+/// Scope contains every requested tile checked against its exact digest.
+/// Build once from the scoped evidence, independent of leg count.
+pub(super) fn build_gameplay_bus_graph(
     store: &EvidenceStore,
     query: &BusPathBinding,
-) -> Result<Option<BusPath>> {
+) -> Result<GameplayBusGraph> {
     let keys = query.tile_keys()?;
     let mut tiles = keys
         .iter()
@@ -458,7 +544,7 @@ pub(super) fn solve_gameplay_bus_scope(
     };
     let mut groups: Groups = BTreeMap::new();
     let mut lines = Vec::<Line<'_>>::new();
-    let mut offsets = BTreeMap::new();
+    let mut offsets: BTreeMap<String, BTreeMap<(u32, u32), (usize, usize)>> = BTreeMap::new();
     let mut geometry = Vec::new();
     let mut ids = BTreeMap::new();
     for tile in tiles {
@@ -488,14 +574,10 @@ pub(super) fn solve_gameplay_bus_scope(
                 ));
             }
             ids.insert(fragment(&tile.binding, raw), lines.len());
-            offsets.insert(
-                (
-                    tile.binding.canonical_url.as_str(),
-                    raw.feature_index,
-                    raw.line_index,
-                ),
-                (base, n),
-            );
+            offsets
+                .entry(tile.binding.canonical_url.clone())
+                .or_default()
+                .insert((raw.feature_index, raw.line_index), (base, n));
             lines.push(Line {
                 tile: &tile.binding,
                 raw,
@@ -582,24 +664,6 @@ pub(super) fn solve_gameplay_bus_scope(
         }
     }
 
-    let node_at = |key: &str, v: BusVertex| -> Option<usize> {
-        let &(base, n) = offsets.get(&(key, v.feature, v.line))?;
-        let i = v.vertex as usize;
-        (i < n).then(|| representative[base + i])
-    };
-    let (Some(source), Some(target)) = (
-        node_at(&query.tile_key, query.start),
-        node_at(
-            query.end_tile_key.as_deref().unwrap_or(&query.tile_key),
-            query.end,
-        ),
-    ) else {
-        return Ok(None);
-    };
-    if source == target {
-        return Ok(None);
-    }
-
     let mut adj = vec![Vec::new(); geometry.len()];
     for (line_index, line) in lines.iter().enumerate() {
         for i in 0..line.raw.coordinates.len() - 1 {
@@ -657,73 +721,183 @@ pub(super) fn solve_gameplay_bus_scope(
             }
         }
     }
-    let mut d = vec![u64::MAX; geometry.len()];
-    let mut parent = vec![None; geometry.len()];
-    let mut queue = BinaryHeap::from([Step(0, source)]);
-    d[source] = 0;
-    while let Some(Step(cost, u)) = queue.pop() {
-        if cost > d[u] {
-            continue;
+    let scales: BTreeMap<_, _> = cells.iter().map(|c| (c.1, bus_metric_scale(c.1))).collect();
+    let lines = lines
+        .into_iter()
+        .map(|line| BusGraphLine {
+            tile_key: line.tile.canonical_url.clone(),
+            fragment_id: fragment(line.tile, line.raw),
+            extent: line.raw.extent,
+            metric_scale: scales[&line.tile.y],
+        })
+        .collect();
+    Ok(GameplayBusGraph {
+        lines,
+        offsets,
+        representative,
+        geometry,
+        adj,
+    })
+}
+
+struct SearchScratch {
+    distances: Vec<u64>,
+    generation: Vec<u32>,
+    active: u32,
+    parent: Vec<Option<(usize, Arc)>>,
+    queue: BinaryHeap<Step>,
+}
+impl SearchScratch {
+    fn new(n: usize) -> Self {
+        Self {
+            distances: vec![0; n],
+            generation: vec![0; n],
+            active: 0,
+            parent: vec![None; n],
+            queue: BinaryHeap::new(),
         }
-        if u == target {
-            break;
+    }
+    fn distance(&self, node: usize) -> u64 {
+        if self.generation[node] == self.active {
+            self.distances[node]
+        } else {
+            u64::MAX
         }
-        for &arc in &adj[u] {
-            let next = cost.checked_add(arc.weight).ok_or(Error::Limit)?;
-            if next < d[arc.to] {
-                d[arc.to] = next;
-                parent[arc.to] = Some((u, arc));
-                queue.push(Step(next, arc.to));
+    }
+    fn update(&mut self, node: usize, value: u64) {
+        self.generation[node] = self.active;
+        self.distances[node] = value;
+        self.queue.push(Step(value, node));
+    }
+    fn leg(
+        &mut self,
+        graph: &GameplayBusGraph,
+        source: usize,
+        target: usize,
+        budget: &mut usize,
+        reversed_atoms: &mut Vec<Arc>,
+    ) -> Result<bool> {
+        if source == target {
+            return Ok(false);
+        }
+        self.active = self.active.checked_add(1).ok_or(Error::Limit)?;
+        self.queue.clear();
+        self.update(source, 0);
+        while let Some(Step(cost, u)) = self.queue.pop() {
+            if cost > self.distance(u) {
+                continue;
+            }
+            if u == target {
+                break;
+            }
+            for &arc in &graph.adj[u] {
+                *budget = budget.checked_sub(1).ok_or(Error::Limit)?;
+                let next = cost.checked_add(arc.weight).ok_or(Error::Limit)?;
+                if next < self.distance(arc.to) {
+                    self.parent[arc.to] = Some((u, arc));
+                    self.update(arc.to, next);
+                }
             }
         }
+        if self.distance(target) == u64::MAX {
+            return Ok(false);
+        }
+        let begin = reversed_atoms.len();
+        let mut u = target;
+        while u != source {
+            let (p, arc) = self.parent[u].ok_or(Error::Malformed)?;
+            reversed_atoms.push(arc);
+            u = p;
+        }
+        reversed_atoms[begin..].reverse();
+        Ok(true)
     }
-    if d[target] == u64::MAX {
-        return Ok(None);
+}
+
+pub(super) fn solve_gameplay_bus_scope(
+    store: &EvidenceStore,
+    query: &BusPathBinding,
+) -> Result<Option<BusPath>> {
+    solve_gameplay_bus_graph(&build_gameplay_bus_graph(store, query)?, query)
+}
+
+pub(super) fn solve_gameplay_bus_graph(
+    graph: &GameplayBusGraph,
+    query: &BusPathBinding,
+) -> Result<Option<BusPath>> {
+    let failed = |i| {
+        if query.via.is_empty() {
+            Ok(None)
+        } else {
+            Err(Error::NoBusLeg(i))
+        }
+    };
+    let Some(source) = graph.node_at(&query.tile_key, query.start) else {
+        return failed(0);
+    };
+    let end_key = query.end_tile_key.as_deref().unwrap_or(&query.tile_key);
+    let mut nodes = Vec::with_capacity(query.via.len() + 2);
+    nodes.push(source);
+    for (i, via) in query.via.iter().enumerate() {
+        let Some(node) = graph.node_at(&via.tile_key, via.vertex) else {
+            return failed(i);
+        };
+        nodes.push(node);
     }
+    let Some(target) = graph.node_at(end_key, query.end) else {
+        return failed(query.via.len());
+    };
+    nodes.push(target);
+    let mut via_point_indices = Vec::with_capacity(query.via.len());
+    let mut scratch = SearchScratch::new(graph.geometry.len());
     let mut edges = Vec::new();
-    let mut u = target;
-    while u != source {
-        let (p, arc) = parent[u].ok_or(Error::Malformed)?;
-        edges.push(arc);
-        u = p;
+    let mut budget = if query.via.is_empty() {
+        usize::MAX
+    } else {
+        MAX_MULTI_RELAXATIONS
+    };
+    for (i, leg) in nodes.windows(2).enumerate() {
+        if !scratch.leg(graph, leg[0], leg[1], &mut budget, &mut edges)? {
+            return failed(i);
+        }
+        if !query.via.is_empty() && edges.len() > MAX_MULTI_ATOMS {
+            return Err(Error::Limit);
+        }
+        if i < query.via.len() {
+            via_point_indices.push(edges.len());
+        }
     }
-    edges.reverse();
     let mut spans: Vec<SourceSpan> = Vec::new();
     let mut steps = Vec::with_capacity(edges.len());
-    let mut points_grid = vec![geometry[source]];
+    let mut points_grid = vec![graph.geometry[source]];
     let mut length_um = 0u128;
     let round_trip = query.pattern == Some(BusPattern::OpenRoundTrip);
     if round_trip && edges.len() > 4096 {
         return Err(Error::Limit);
     }
-    let scales: BTreeMap<_, _> = if round_trip {
-        cells.iter().map(|c| (c.1, bus_metric_scale(c.1))).collect()
-    } else {
-        BTreeMap::new()
-    };
     for arc in edges {
-        let line = &lines[arc.line];
+        let line = &graph.lines[arc.line];
         let (from, to) = (arc.from_pos, arc.to_pos);
-        let fragment_id = fragment(line.tile, line.raw);
+        let fragment_id = &line.fragment_id;
         if round_trip {
             length_um = length_um
                 .checked_add(bus_arc_micrometres(
                     arc.weight,
-                    line.raw.extent,
-                    scales[&line.tile.y],
+                    line.extent,
+                    line.metric_scale,
                 ))
                 .ok_or(Error::Limit)?;
         }
         if let Some(tail) = spans.last_mut().filter(|s| {
-            s.fragment_id == fragment_id
+            &s.fragment_id == fragment_id
                 && s.to == from
                 && (s.to - s.from).signum() == (to - from).signum()
         }) {
             tail.to = to;
         } else {
             spans.push(SourceSpan {
-                binding_key: line.tile.canonical_url.clone(),
-                fragment_id,
+                binding_key: line.tile_key.clone(),
+                fragment_id: fragment_id.clone(),
                 from,
                 to,
             });
@@ -734,7 +908,7 @@ pub(super) fn solve_gameplay_bus_scope(
             from,
             to,
         });
-        points_grid.push(geometry[arc.to]);
+        points_grid.push(graph.geometry[arc.to]);
     }
     let points: Vec<_> = points_grid.iter().map(|p| p.point()).collect();
     let length_m = points.windows(2).map(|p| distance(p[0], p[1])).sum();
@@ -746,6 +920,7 @@ pub(super) fn solve_gameplay_bus_scope(
         points,
         length_m,
         operation_length_mm: u64::try_from((length_um + 500) / 1000).map_err(|_| Error::Limit)?,
+        via_point_indices,
     }))
 }
 
@@ -780,7 +955,8 @@ pub fn reconstruct_gameplay_bus_path(
     store: &EvidenceStore,
     proposed: &BusPathBinding,
 ) -> Result<Option<BusPath>> {
-    store
-        .gameplay_bus_path(proposed)
-        .map(|path| path.as_deref().cloned())
+    match store.gameplay_bus_path(proposed) {
+        Err(Error::NoBusLeg(_)) => Ok(None),
+        result => result.map(|path| path.as_deref().cloned()),
+    }
 }

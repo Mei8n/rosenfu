@@ -241,6 +241,7 @@ mod tests {
                 additional_tiles: vec![],
                 end_tile_key: None,
                 pattern: Some(BusPattern::OpenRoundTrip),
+                via: vec![],
             };
             (binding, cached)
         };
@@ -529,6 +530,7 @@ mod tests {
             additional_tiles: vec![],
             end_tile_key: None,
             pattern: None,
+            via: vec![],
         };
         let before = editor.snapshot();
         let mut forged = request.clone();
@@ -781,7 +783,7 @@ mod tests {
     #[test]
     fn ordinary_ofm_bus_rectangle_atomic_cache_roundtrip_preserves_all_three_tiles() {
         use rosenfu_core::ofm_evidence::{
-            BusPathBinding, BusTileProof, BusVertex, BUS_RECTANGLE_RULE,
+            BusPathBinding, BusPattern, BusTileProof, BusVertex, BusVia, BUS_RECTANGLE_RULE,
         };
         let mut editor = WorldEditor::new();
         editor.rename_company("広域バス会社".into()).unwrap();
@@ -790,11 +792,11 @@ mod tests {
         let rev = template["revision"].as_str().unwrap();
         let decoder = template["decoder_rule"].as_str().unwrap();
         let y = template["y"].as_u64().unwrap() as u32;
-        // Generated raw MVT fixture: the middle road has only two buffered
-        // points, yet both independently proven border joins are traversable.
+        // Generated raw MVT fixture: the middle feature has an authored point
+        // at its center and both independently verified border joins.
         let input = [
             "GjgKDnRyYW5zcG9ydGF0aW9ueAIogCASERICAAAYAiIJCYAytB8K0A8AGgVjbGFzcyIHCgVtaW5vcg==",
-            "GjgKDnRyYW5zcG9ydGF0aW9ueAIogCASERICAAAYAiIJCc8BtB8KoEMAGgVjbGFzcyIHCgVtaW5vcg==",
+            "GjsKDnRyYW5zcG9ydGF0aW9ueAIogCASFBICAAAYAiIMCc8BtB8S0CEA0CEAGgVjbGFzcyIHCgVtaW5vcg==",
             "GjgKDnRyYW5zcG9ydGF0aW9ueAIogCASERICAAAYAiIJCc8BtB8K0A8AGgVjbGFzcyIHCgVtaW5vcg==",
         ];
         let cached = || {
@@ -836,7 +838,16 @@ mod tests {
             tile_key: all[0].1.key.clone(),
             tile_raw_sha256: all[0].0.sha256.clone(),
             end_tile_key: Some(all[2].1.key.clone()),
-            pattern: None,
+            pattern: Some(BusPattern::OpenRoundTrip),
+            via: vec![BusVia {
+                id: "city-centre".into(),
+                tile_key: all[1].1.key.clone(),
+                vertex: BusVertex {
+                    feature: 0,
+                    line: 0,
+                    vertex: 1,
+                },
+            }],
             additional_tiles: all[1..]
                 .iter()
                 .map(|(raw, b)| BusTileProof {
@@ -870,6 +881,29 @@ mod tests {
             )
             .is_err());
         assert_eq!(editor.snapshot(), before);
+        let mut blocked_leg = request.clone();
+        blocked_leg.end.vertex = 999;
+        let failed = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "R3".into(),
+                "3セル系統".into(),
+                blocked_leg.clone(),
+                cached(),
+            )
+            .unwrap();
+        assert_eq!(failed.failed_leg_index, Some(1));
+        assert!(failed.points.is_empty());
+        assert!(editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "R3".into(),
+                "3セル系統".into(),
+                blocked_leg,
+                cached(),
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
         let preview = editor
             .preview_gameplay_ofm_bus(
                 &token,
@@ -879,23 +913,38 @@ mod tests {
                 cached(),
             )
             .unwrap();
-        assert_eq!(preview.points.len(), 4);
+        assert_eq!(preview.points.len(), 5);
+        assert_eq!(preview.via_point_indices, [2]);
+        assert_eq!(
+            preview.return_path.as_ref().unwrap().points,
+            preview.points.iter().copied().rev().collect::<Vec<_>>()
+        );
         assert_eq!(editor.snapshot(), before);
         let created = editor
             .put_gameplay_ofm_bus(&token, "R3".into(), "3セル系統".into(), request, cached())
             .unwrap();
         assert_eq!(created.road_evidence_descriptors.len(), 3);
-        assert_eq!(created.road_transport.edges.len(), 3);
-        for (id, (raw, _)) in created.road_transport.bus_routes[0].edges.iter().zip(all) {
+        assert_eq!(created.road_transport.edges.len(), 4);
+        let expected = [
+            &all[0].0.sha256,
+            &all[1].0.sha256,
+            &all[1].0.sha256,
+            &all[2].0.sha256,
+        ];
+        for (id, digest) in created.road_transport.bus_routes[0]
+            .edges
+            .iter()
+            .zip(expected)
+        {
             assert_eq!(
-                created
+                &created
                     .road_transport
                     .edges
                     .iter()
                     .find(|e| &e.id == id)
                     .unwrap()
                     .revision,
-                raw.sha256
+                digest
             );
         }
         let tmp = tempfile::tempdir().unwrap();
@@ -914,6 +963,88 @@ mod tests {
             )
             .unwrap();
         assert_eq!(replay, preview);
+    }
+
+    #[test]
+    fn ordinary_bus_strict_return_does_not_force_outbound_control_round_the_loop() {
+        use rosenfu_core::ofm_evidence::{
+            BusPathBinding, BusPattern, BusVertex, BusVia, BUS_GRAPH_RULE,
+        };
+        let bytes: [u8; 103] = [
+            26, 101, 10, 14, 116, 114, 97, 110, 115, 112, 111, 114, 116, 97, 116, 105, 111, 110,
+            120, 2, 40, 128, 32, 18, 22, 18, 4, 0, 0, 1, 1, 24, 2, 34, 12, 9, 200, 1, 200, 1, 18,
+            216, 4, 0, 144, 3, 0, 18, 23, 18, 4, 0, 0, 1, 1, 24, 2, 34, 13, 9, 176, 9, 200, 1, 18,
+            0, 216, 4, 231, 7, 215, 4, 26, 5, 99, 108, 97, 115, 115, 26, 6, 111, 110, 101, 119, 97,
+            121, 34, 7, 10, 5, 109, 105, 110, 111, 114, 34, 5, 10, 3, 121, 101, 115,
+        ];
+        let raw = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let tile = fixture()["tileBindings"][0].clone();
+        let key = tile["canonical_url"].as_str().unwrap();
+        let digest = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+        let cache = || {
+            vec![(
+                OfmRawInput {
+                    sha256: digest.clone(),
+                    byte_length: bytes.len(),
+                    base64: raw.clone(),
+                },
+                OfmBindingInput {
+                    key: key.into(),
+                    url: key.into(),
+                    raw_sha256: digest.clone(),
+                    revision: tile["revision"].as_str().unwrap().into(),
+                    z: 14,
+                    x: tile["x"].as_u64().unwrap() as u32,
+                    y: tile["y"].as_u64().unwrap() as u32,
+                    decoder_rule: tile["decoder_rule"].as_str().unwrap().into(),
+                    license: "ODbL-1.0".into(),
+                    attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                },
+            )]
+        };
+        let v = |n| BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: n,
+        };
+        let proof = BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            tile_key: key.into(),
+            tile_raw_sha256: digest.clone(),
+            respect_oneway: true,
+            start: v(0),
+            end: v(2),
+            additional_tiles: vec![],
+            end_tile_key: None,
+            pattern: Some(BusPattern::OpenRoundTrip),
+            via: vec![BusVia {
+                id: "shape".into(),
+                tile_key: key.into(),
+                vertex: v(1),
+            }],
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("循環バス".into()).unwrap();
+        let token = editor.ofm_world_token().unwrap();
+        let preview = |p| {
+            editor
+                .preview_gameplay_ofm_bus(&token, "B1".into(), "折り返し".into(), p, cache())
+                .unwrap()
+        };
+        let strict = preview(proof.clone());
+        let home = strict.return_path.unwrap();
+        assert_eq!(strict.via_point_indices, [1]);
+        assert_eq!(home.points.len(), 3);
+        assert_eq!(home.points[0], strict.points[2]);
+        assert_eq!(home.points[2], strict.points[0]);
+        assert_ne!(home.points[1], strict.points[1]);
+        let mut default = proof;
+        default.respect_oneway = false;
+        let relaxed = preview(default);
+        assert_eq!(
+            relaxed.return_path.unwrap().points,
+            relaxed.points.into_iter().rev().collect::<Vec<_>>()
+        );
     }
 
     fn request() -> PlannedAlignment {

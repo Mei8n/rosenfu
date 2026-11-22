@@ -1590,6 +1590,7 @@ fn bus_rectangle_query(tiles: &[TileBinding], end: BusVertex, oneway: bool) -> B
             .collect(),
         end_tile_key: Some(tiles.last().unwrap().canonical_url.clone()),
         pattern: None,
+        via: vec![],
         respect_oneway: oneway,
         start: bus_vertex(0, 0),
         end,
@@ -1765,4 +1766,129 @@ fn dense_bus_seam_budget_counts_crossing_candidates_not_unrelated_interiors() {
             pass
         );
     }
+}
+
+#[test]
+fn ordinary_bus_vias_share_one_scope_and_keep_ordered_occurrences_across_tiles() {
+    let (tiles, store) = bus_rectangle(&[
+        (14552, 6451, &[(&[[3200, 2010], [4200, 2010]], None)]),
+        (
+            14553,
+            6451,
+            &[(
+                &[[-104, 2010], [1000, 2010], [3000, 2010], [4200, 2010]],
+                None,
+            )],
+        ),
+        (14554, 6451, &[(&[[-104, 2010], [896, 2010]], None)]),
+    ]);
+    let mut request = bus_rectangle_query(&tiles, bus_vertex(0, 1), false);
+    let direct = reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .unwrap();
+    assert!(!serde_json::to_string(&request).unwrap().contains("\"via\""));
+    request.via = vec![
+        BusVia {
+            id: "v-a".into(),
+            tile_key: tiles[1].canonical_url.clone(),
+            vertex: bus_vertex(0, 1),
+        },
+        BusVia {
+            id: "v-b".into(),
+            tile_key: tiles[1].canonical_url.clone(),
+            vertex: bus_vertex(0, 2),
+        },
+    ];
+    let straight = reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(straight.points, direct.points);
+    assert_eq!(straight.via_point_indices, [2, 3]);
+    assert_eq!(straight.length_m, direct.length_m);
+    for i in 0..direct.points.len() - 1 {
+        assert_eq!(straight.source_atom_id(i), direct.source_atom_id(i));
+    }
+
+    // Click order is authoritative even when shortest endpoints would ignore
+    // the backwards excursion at the valid bidirectional neighbor.
+    request.via.swap(0, 1);
+    let detour = reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(detour.via_point_indices, [3, 4]);
+    assert!(detour.length_m > straight.length_m);
+    assert_eq!(
+        detour.points[detour.via_point_indices[0]],
+        straight.points[3]
+    );
+    assert_eq!(
+        detour.points[detour.via_point_indices[1]],
+        straight.points[2]
+    );
+    let archived = serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &archived).unwrap(),
+        Some(detour)
+    );
+
+    let mut duplicate = request.clone();
+    duplicate.via[1].id = duplicate.via[0].id.clone();
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &duplicate),
+        Err(Error::Binding)
+    );
+    let mut wrong = request.clone();
+    wrong.via[1].vertex = bus_vertex(0, 99);
+    assert!(reconstruct_gameplay_bus_path(&store, &wrong)
+        .unwrap()
+        .is_none());
+    let mut over = request;
+    over.via = (0..31)
+        .map(|i| BusVia {
+            id: format!("x{i}"),
+            tile_key: tiles[1].canonical_url.clone(),
+            vertex: bus_vertex(0, 1),
+        })
+        .collect();
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &over),
+        Err(Error::Limit)
+    );
+}
+
+#[test]
+fn ordinary_bus_via_that_requires_wrong_way_refuses_whole_draft() {
+    let (tile, store) = bus_fixture(&[(
+        &[[100, 100], [200, 100], [300, 100], [400, 100]],
+        Some(("oneway", "yes")),
+    )]);
+    let mut request = find_gameplay_bus_path(
+        &store,
+        &tile.canonical_url,
+        bus_vertex(0, 0),
+        bus_vertex(0, 3),
+        true,
+    )
+    .unwrap()
+    .unwrap()
+    .binding;
+    request.via = vec![
+        BusVia {
+            id: "first".into(),
+            tile_key: tile.canonical_url.clone(),
+            vertex: bus_vertex(0, 2),
+        },
+        BusVia {
+            id: "second".into(),
+            tile_key: tile.canonical_url.clone(),
+            vertex: bus_vertex(0, 1),
+        },
+    ];
+    assert!(reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .is_none());
+    request.respect_oneway = false;
+    assert!(reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .is_some());
 }

@@ -131,7 +131,7 @@ fn cached_tiles(
 }
 
 #[tauri::command]
-pub fn preview_gameplay_ofm_bus(
+pub async fn preview_gameplay_ofm_bus(
     editor: State<'_, Mutex<WorldEditor>>,
     expected_world_token: String,
     route_id: String,
@@ -142,8 +142,17 @@ pub fn preview_gameplay_ofm_bus(
     context_tiles: Option<Vec<CachedOfmBusTile>>,
 ) -> Result<crate::session::GameplayBusPathPreview, String> {
     let cached = cached_tiles(raw_evidence, tile_binding, context_tiles)?;
-    let editor = editor.lock().map_err(|_| "world state unavailable")?;
-    editor.preview_gameplay_ofm_bus(&expected_world_token, route_id, name, path, cached)
+    // Clone the immutable draft inputs/cache under the lock only. Geometry
+    // search never holds up live edits or runs on the WebView command thread.
+    let snapshot = editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshot.preview_gameplay_ofm_bus(&expected_world_token, route_id, name, path, cached)
+    })
+    .await
+    .map_err(|_| "バス経路のプレビューを取得できません。".to_owned())?
 }
 
 /// Use the normal OFM cache data (or already retained world evidence) to stage
