@@ -4,9 +4,14 @@ use std::sync::Arc;
 
 #[derive(Clone, Default)]
 pub(super) struct EditHistory {
-    undo: Vec<Arc<(WorldDraft, WorldDraft)>>,
-    redo: Vec<Arc<(WorldDraft, WorldDraft)>>,
+    undo: Vec<Arc<EditEntry>>,
+    redo: Vec<Arc<EditEntry>>,
     revision: u64,
+}
+struct EditEntry {
+    before: WorldDraft,
+    after: WorldDraft,
+    guarded_service_path: Option<ServiceId>,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +46,15 @@ impl WorldEditor {
     }
     /// Publish a validated candidate whose runtime and fixed OD were reconciled
     /// to this same live baseline. Does not perform any fallible work.
-    pub(super) fn publish_reconciled_edit(&mut self, mut candidate: Self, final_edit: bool) {
+    pub(super) fn publish_reconciled_edit(&mut self, candidate: Self, final_edit: bool) {
+        self.publish_reconciled_edit_with_service_path(candidate, final_edit, None);
+    }
+    pub(super) fn publish_reconciled_edit_with_service_path(
+        &mut self,
+        mut candidate: Self,
+        final_edit: bool,
+        guarded_service_path: Option<ServiceId>,
+    ) {
         let before = editable(self.snapshot());
         let after = editable(candidate.snapshot());
         candidate.edit_history = self.edit_history.clone();
@@ -50,7 +63,11 @@ impl WorldEditor {
                 candidate.clear_edit_history();
                 candidate.deleted_alignment = None;
             } else {
-                candidate.edit_history.undo.push(Arc::new((before, after)));
+                candidate.edit_history.undo.push(Arc::new(EditEntry {
+                    before,
+                    after,
+                    guarded_service_path,
+                }));
                 if candidate.edit_history.undo.len() > 50 {
                     candidate.edit_history.undo.remove(0);
                 }
@@ -89,9 +106,9 @@ impl WorldEditor {
         .ok_or("元に戻せる／やり直せる操作がありません。")?
         .clone();
         let (target, baseline) = if redo {
-            (&entry.1, &entry.0)
+            (&entry.after, &entry.before)
         } else {
-            (&entry.0, &entry.1)
+            (&entry.before, &entry.after)
         };
         if &current != baseline {
             return Err("履歴の対象外でワールドが変更されたため復元できません。".into());
@@ -102,10 +119,18 @@ impl WorldEditor {
         draft.construction_plans = expected.construction_plans;
         draft.view_state = expected.view_state;
         let mut restored = World::new(draft).map_err(|e| e.to_string())?;
-        restored.retain_operation_from(&self.world);
-        restored.retain_fixed_od_scenario_from(&self.world);
+        let rebuilt_operation = if let Some(service_id) = entry.guarded_service_path {
+            self.reconcile_service_path_edit(&mut restored, service_id)?
+        } else {
+            restored.retain_operation_from(&self.world);
+            restored.retain_fixed_od_scenario_from(&self.world);
+            false
+        };
         rosenfu_storage::ensure_world_saveable(&restored).map_err(|e| e.to_string())?;
         self.world = restored;
+        if rebuilt_operation {
+            self.operation_tick = None;
+        }
         self.deleted_alignment = None;
         if redo {
             self.edit_history.redo.pop();

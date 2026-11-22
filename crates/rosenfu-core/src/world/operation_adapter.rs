@@ -1,8 +1,8 @@
 //! Authoritative physical service path adapter. Never uses screen coordinates.
 use super::*;
 use crate::operation::{
-    inline_lane_key, inline_platform_handoff, OperationError, OperationRuntime, RailAdmissionModel,
-    RunLeg, Section, ServiceRunSpec, Timetable, Vehicle,
+    fixed_refuge_resources, inline_lane_key, inline_platform_handoff, OperationError,
+    OperationRuntime, RailAdmissionModel, RunLeg, Section, ServiceRunSpec, Timetable, Vehicle,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -880,6 +880,37 @@ impl World {
         bus_configs: Vec<BusOperationConfig>,
         edited_service: &str,
     ) -> Result<(), OperationError> {
+        self.reconfigure_idle_operation_with_policy(configs, bus_configs, edited_service, false)
+    }
+
+    /// Revalidate an idle service-path edit without selecting a different
+    /// admission model, even if the currently configured world has yet to run.
+    /// Only use this on an isolated candidate whose path edit invalidated the
+    /// old run. The caller must guard its still-live clock before publication.
+    pub fn reconcile_idle_service_path_operation(
+        &mut self,
+        edited_service: ServiceId,
+    ) -> Result<(), OperationError> {
+        let previous = self
+            .operation
+            .as_ref()
+            .filter(|op| op.invalidated)
+            .ok_or(OperationError::InvalidPath)?;
+        self.reconfigure_idle_operation_with_policy(
+            previous.configs.clone(),
+            previous.bus_configs.clone(),
+            &edited_service.0.to_string(),
+            true,
+        )
+    }
+
+    fn reconfigure_idle_operation_with_policy(
+        &mut self,
+        configs: Vec<OperationServiceConfig>,
+        bus_configs: Vec<BusOperationConfig>,
+        edited_service: &str,
+        preserve_unstarted_admission: bool,
+    ) -> Result<(), OperationError> {
         let old = self.operation.as_ref();
         if old.is_some_and(|op| {
             !op.runtime.paused()
@@ -888,10 +919,10 @@ impl World {
         }) {
             return Err(OperationError::InvalidClock);
         }
-        let started = old.filter(|old| old.runtime.has_started());
-        let previous_admission = started.map(|old| old.runtime.admission_model());
+        let preserved = old.filter(|old| preserve_unstarted_admission || old.runtime.has_started());
+        let previous_admission = preserved.map(|old| old.runtime.admission_model());
         let mut candidate = self.compile_all_operation(configs, bus_configs, previous_admission)?;
-        if let Some(old) = started {
+        if let Some(old) = preserved {
             if !candidate
                 .runtime
                 .retains_admission(&old.runtime, edited_service, old.invalidated)
@@ -938,6 +969,7 @@ impl World {
             Fixed => true,
             _ if !bus_configs.is_empty() => false,
             TurnbackHold => self.terminal_hold_eligible(&configs, &specs),
+            FixedRefuge => self.fixed_refuge_eligible(&configs, &specs),
             InlinePlatformHandoff => self.inline_handoff_eligible(&configs, &specs),
             InlineTerminalDwell => self.inline_terminal_dwell_eligible(&configs, &specs),
             Progressive => self.following_eligible(&configs, &specs),
@@ -949,6 +981,7 @@ impl World {
             Some(_) => return Err(OperationError::ReservationScopeChanged),
             None => [
                 TurnbackHold,
+                FixedRefuge,
                 InlinePlatformHandoff,
                 InlineTerminalDwell,
                 Progressive,
@@ -961,6 +994,7 @@ impl World {
             Fixed => OperationRuntime::new(specs)?,
             Progressive => OperationRuntime::new_with_progressive_rail(specs)?,
             TurnbackHold => OperationRuntime::new_with_terminal_hold(specs)?,
+            FixedRefuge => OperationRuntime::new_with_fixed_refuge(specs)?,
             InlineTerminalDwell => OperationRuntime::new_with_inline_terminal_dwell(specs)?,
             InlinePlatformHandoff => OperationRuntime::new_with_inline_platform_handoff(specs)?,
         };
@@ -1015,6 +1049,17 @@ impl World {
         }
         let progressive = saved.runtime.format == 3;
         let holding = saved.runtime.format == 4;
+        let refuge = saved.runtime.format == 7;
+        let refuge_qualified = refuge
+            && saved.bus_configs.is_empty()
+            && !saved.parallel_join_lanes
+            && !saved.crossing_reservations
+            && if saved.invalidated {
+                saved.runtime.paused
+                    && Self::fixed_refuge_specs(&saved.configs, &saved.runtime.services).is_some()
+            } else {
+                self.fixed_refuge_eligible(&saved.configs, &saved.runtime.services)
+            };
         let handoff = saved.runtime.format == 6;
         let handoff_qualified = handoff
             && saved.bus_configs.is_empty()
@@ -1053,6 +1098,7 @@ impl World {
             && !progressive_qualified
             && !platform_qualified
             && !handoff_qualified
+            && !refuge_qualified
         {
             return Err(OperationError::InvalidClock);
         }
@@ -1127,7 +1173,7 @@ impl World {
                         },
                     )
                     .is_ok_and(|current| current == *spec)
-                } else if progressive || holding || platform || handoff {
+                } else if progressive || holding || platform || handoff || refuge {
                     self.compile_operation(config)
                         .is_ok_and(|current| current == *spec)
                 } else {
@@ -1152,6 +1198,8 @@ impl World {
         }
         let mut runtime = if holding {
             crate::operation::OperationRuntime::restore_with_terminal_hold(saved.runtime)?
+        } else if refuge_qualified {
+            crate::operation::OperationRuntime::restore_with_fixed_refuge(saved.runtime)?
         } else if handoff_qualified {
             crate::operation::OperationRuntime::restore_with_inline_platform_handoff(saved.runtime)?
         } else if platform_qualified {
@@ -1240,6 +1288,205 @@ impl World {
                         })
                 })
             })
+    }
+
+    /// Frozen runtimes no longer have the original geometry, but still must
+    /// obey the same two-service, shared-stems, one-parked-owner proof.
+    fn fixed_refuge_specs<'a>(
+        configs: &[OperationServiceConfig],
+        specs: &'a [ServiceRunSpec],
+    ) -> Option<(&'a ServiceRunSpec, &'a ServiceRunSpec, [u64; 3], u64)> {
+        let [a, b] = configs else {
+            return None;
+        };
+        if a.service_id == b.service_id || specs.len() != 2 {
+            return None;
+        }
+        let matched = |c: &OperationServiceConfig| {
+            specs.iter().find(|s| {
+                s.service_id == c.service_id.0.to_string()
+                    && s.timetable == c.timetable
+                    && s.vehicle == c.vehicle
+                    && s.vehicle.length_m <= 80.
+                    && s.legs.iter().all(|l| l.dwell_ms == c.dwell_ms)
+            })
+        };
+        let (sa, sb) = (matched(a)?, matched(b)?);
+        let (local, express) = match (sa.legs.len(), sb.legs.len()) {
+            (2, 1) => (sa, sb),
+            (1, 2) => (sb, sa),
+            _ => return None,
+        };
+        if local.legs[0].from != express.legs[0].from
+            || local.legs[1].to != express.legs[0].to
+            || local.legs[0].to == local.legs[0].from
+            || local.legs[0].to == local.legs[1].to
+        {
+            return None;
+        }
+        let local_ids @ [west, _, east] = fixed_refuge_resources(local)?;
+        let [w, express_branch, e] = fixed_refuge_resources(express)?;
+        (west == w && east == e).then_some((local, express, local_ids, express_branch))
+    }
+
+    fn fixed_refuge_eligible(
+        &self,
+        configs: &[OperationServiceConfig],
+        specs: &[ServiceRunSpec],
+    ) -> bool {
+        use AlignmentEndpoint::{End, Start};
+        let d = &self.data;
+        let Some((local, express, [w, mid, e], express_branch)) =
+            Self::fixed_refuge_specs(configs, specs)
+        else {
+            return false;
+        };
+        if d.alignments.len() != 4
+            || d.alignment_connections.len() != 4
+            || !d.road_transport.bus_routes.is_empty()
+            || !d.road_transport.tram_sections.is_empty()
+        {
+            return false;
+        }
+        let get = |id| d.alignments.iter().find(|a| a.id.0 == id);
+        let (Some(west), Some(middle), Some(east), Some(other)) = (
+            get(w),
+            get(mid),
+            get(e),
+            d.alignments.iter().find(|a| ![w, mid, e].contains(&a.id.0)),
+        ) else {
+            return false;
+        };
+        if ![mid, other.id.0].contains(&express_branch) {
+            return false;
+        }
+        let links = [(west, middle), (west, other), (middle, east), (other, east)];
+        if links.into_iter().any(|(a, b)| {
+            let from = AlignmentEndpointRef {
+                alignment_id: a.id,
+                endpoint: End,
+            };
+            let to = AlignmentEndpointRef {
+                alignment_id: b.id,
+                endpoint: Start,
+            };
+            !d.alignment_connections
+                .iter()
+                .any(|link| (link.a == from && link.b == to) || (link.a == to && link.b == from))
+        }) {
+            return false;
+        }
+        let latitude = west.points[0].latitude;
+        if latitude.abs() > 60.0 || west.points[0].longitude.abs() > 179.0 {
+            return false;
+        }
+        for (a, count) in [(west, 2), (east, 2), (middle, 1), (other, 1)] {
+            if a.track_type != TrackType::Normal
+                || a.vertical_profile.is_some()
+                || !a.section_profiles.is_empty()
+                || a.section_count() != 1
+                || a.points.len() > 16
+                || a.section_infrastructure(0)
+                    != Some(SectionInfrastructure {
+                        track_count: count,
+                        level: InfrastructureLevel::Ground,
+                    })
+                || a.points
+                    .windows(2)
+                    .any(|p| p[0].longitude >= p[1].longitude)
+                || a.points
+                    .iter()
+                    .any(|p| (p.latitude - latitude).abs() > 0.002)
+                || a.points.last().unwrap().longitude - a.points[0].longitude > 0.05
+            {
+                return false;
+            }
+        }
+        if west
+            .points
+            .iter()
+            .chain(&east.points)
+            .any(|p| p.latitude != latitude)
+        {
+            return false;
+        }
+        let straight = |a: &Alignment| a.points.iter().all(|p| p.latitude == latitude);
+        let curved = match (straight(middle), straight(other)) {
+            (true, false) => other,
+            (false, true) => middle,
+            _ => return false,
+        };
+        let interior = &curved.points[1..curved.points.len() - 1];
+        let side = interior
+            .first()
+            .map_or(0., |p| (p.latitude - latitude).signum());
+        if interior
+            .iter()
+            .any(|p| (p.latitude - latitude) * side <= 0.)
+            || side == 0.
+        {
+            return false;
+        }
+        let placement = |id: &str, a: &Alignment| {
+            let id = StationId(id.parse().ok()?);
+            d.station_placements
+                .iter()
+                .find(|p| p.station_id == id && p.alignment_id == a.id)
+        };
+        let (Some(a), Some(b), Some(c)) = (
+            placement(&local.legs[0].from, west),
+            placement(&local.legs[0].to, middle),
+            placement(&local.legs[1].to, east),
+        ) else {
+            return false;
+        };
+        if express.legs[0].to != local.legs[1].to {
+            return false;
+        }
+        let train = local.vehicle.length_m.max(express.vehicle.length_m);
+        let fits = |p: &StationPlacement, line: &Alignment, train: f64| {
+            // Curved turnout geometry leads are capped at 30 m. Keep the
+            // entire parked envelope at least 35 m away from either throat.
+            let margin = train.max(p.length_m / 2.) + 35.;
+            p.length_m >= train + 4.
+                && p.width_m >= 4.1
+                && p.position * line.length_m() >= margin
+                && (1. - p.position) * line.length_m() >= margin
+        };
+        if !fits(a, west, train)
+            || !fits(b, middle, local.vehicle.length_m)
+            || !fits(c, east, train)
+        {
+            return false;
+        }
+        // Prove the sibling track is laterally separate across the *whole*
+        // parked envelope, not merely from the other track's centre at B.
+        // The sibling curve is monotone in longitude, so the minimum on a
+        // clipped interval occurs at a true polyline vertex or an endpoint.
+        let margin = (local.vehicle.length_m.max(b.length_m / 2.) + 4.) / middle.length_m();
+        let left = middle.point_at(b.position - margin).longitude;
+        let right = middle.point_at(b.position + margin).longitude;
+        let minimum_m = b.width_m / 2. + 4.;
+        let mut covered = left;
+        for p in curved.points.windows(2) {
+            let a = p[0].longitude.max(left);
+            let b = p[1].longitude.min(right);
+            if a > b {
+                continue;
+            }
+            if a > covered {
+                return false;
+            }
+            for x in [a, b] {
+                let t = (x - p[0].longitude) / (p[1].longitude - p[0].longitude);
+                let delta = (p[0].latitude - latitude) * (1. - t) + (p[1].latitude - latitude) * t;
+                if side * delta.to_radians() * 6_371_000. < minimum_m {
+                    return false;
+                }
+            }
+            covered = b;
+        }
+        right > left && covered >= right
     }
 
     fn inline_handoff_specs(configs: &[OperationServiceConfig], specs: &[ServiceRunSpec]) -> bool {
@@ -1537,7 +1784,9 @@ impl World {
                     .collect::<Result<Vec<_>, _>>();
                 return match active {
                     Ok(specs) => {
-                        !(if o.runtime.inline_platform_handoff() {
+                        !(if o.runtime.fixed_refuge() {
+                            self.fixed_refuge_eligible(&o.configs, &specs)
+                        } else if o.runtime.inline_platform_handoff() {
                             self.inline_handoff_eligible(&o.configs, &specs)
                         } else if o.runtime.inline_terminal_dwell() {
                             self.inline_terminal_dwell_eligible(&o.configs, &specs)

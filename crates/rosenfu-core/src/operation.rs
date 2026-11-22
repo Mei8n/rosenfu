@@ -140,13 +140,17 @@ pub(crate) enum RailAdmissionModel {
     TurnbackHold = 4,
     InlineTerminalDwell = 5,
     InlinePlatformHandoff = 6,
+    FixedRefuge = 7,
 }
 
 impl RailAdmissionModel {
     fn progressive(self) -> bool {
         matches!(
             self,
-            Self::Progressive | Self::InlineTerminalDwell | Self::InlinePlatformHandoff
+            Self::Progressive
+                | Self::InlineTerminalDwell
+                | Self::InlinePlatformHandoff
+                | Self::FixedRefuge
         )
     }
 }
@@ -375,6 +379,77 @@ pub(crate) fn inline_platform_handoff(spec: &ServiceRunSpec) -> bool {
     true
 }
 
+/// Validate the persisted resource skeleton even when construction changed:
+/// west approach -> explicit middle branch -> east approach. A local keeps
+/// only its middle block; its only cross-service waits can be on the eastern
+/// throat or stem, neither of which can be held by a parked train.
+pub(crate) fn fixed_refuge_resources(spec: &ServiceRunSpec) -> Option<[u64; 3]> {
+    fn groups(leg: &RunLeg) -> Option<(Vec<u64>, BTreeSet<&str>)> {
+        let mut ids = Vec::new();
+        let mut joins = BTreeSet::new();
+        for section in &leg.sections {
+            let mut lane = None;
+            for r in &section.resources {
+                if let Some((id, 0, 0)) = inline_lane_key(r) {
+                    if lane.replace(id).is_some() {
+                        return None;
+                    }
+                } else {
+                    joins.insert(r.as_str());
+                }
+            }
+            let id = lane?;
+            if ids.last() != Some(&id) {
+                ids.push(id);
+            }
+            if ids.len() > 3 {
+                return None;
+            }
+        }
+        Some((ids, joins))
+    }
+    let expect = |joins: &BTreeSet<&str>, pairs: &[(u64, &str)]| {
+        joins.len() == pairs.len()
+            && pairs
+                .iter()
+                .all(|(id, end)| joins.contains(format!("rail:join:{id}:{end}").as_str()))
+    };
+    let [west, middle, east] = match spec.legs.as_slice() {
+        [through] => {
+            let (route, joins) = groups(through)?;
+            let [w, m, e] = route.as_slice() else {
+                return None;
+            };
+            if !expect(
+                &joins,
+                &[(*w, "End"), (*m, "Start"), (*m, "End"), (*e, "Start")],
+            ) {
+                return None;
+            }
+            [*w, *m, *e]
+        }
+        [incoming, outgoing] => {
+            let (into, joins_in) = groups(incoming)?;
+            let (out, joins_out) = groups(outgoing)?;
+            let ([w, m], [same, e]) = (into.as_slice(), out.as_slice()) else {
+                return None;
+            };
+            if m != same
+                || !expect(
+                    &joins_in,
+                    &[(*w, "End"), (*m, "Start"), (*m, "End"), (*e, "Start")],
+                )
+                || !expect(&joins_out, &[(*m, "End"), (*e, "Start")])
+            {
+                return None;
+            }
+            [*w, *m, *e]
+        }
+        _ => return None,
+    };
+    (west != middle && west != east && middle != east).then_some([west, middle, east])
+}
+
 fn progressive_release_offsets(
     sections: &[Section],
     times: &[u64],
@@ -444,6 +519,12 @@ impl OperationRuntime {
         Self::compile(specs, RailAdmissionModel::InlinePlatformHandoff)
     }
 
+    pub(crate) fn new_with_fixed_refuge(
+        specs: Vec<ServiceRunSpec>,
+    ) -> Result<Self, OperationError> {
+        Self::compile(specs, RailAdmissionModel::FixedRefuge)
+    }
+
     fn compile(
         specs: Vec<ServiceRunSpec>,
         rail_admission: RailAdmissionModel,
@@ -471,8 +552,16 @@ impl OperationRuntime {
             let mut journey = 0u64;
             let mut nominal_entry_ms = 0u64;
             let platform = rail_admission == RailAdmissionModel::InlineTerminalDwell;
-            let handoff = rail_admission == RailAdmissionModel::InlinePlatformHandoff;
-            if handoff
+            let inline = rail_admission == RailAdmissionModel::InlinePlatformHandoff;
+            let refuge = rail_admission == RailAdmissionModel::FixedRefuge;
+            let handoff = inline || refuge;
+            if refuge
+                && (spec.service_id.parse::<u64>().is_err()
+                    || fixed_refuge_resources(&spec).is_none())
+            {
+                return Err(OperationError::InvalidPath);
+            }
+            if inline
                 && (spec.service_id.parse::<u64>().is_err() || !inline_platform_handoff(&spec))
             {
                 return Err(OperationError::InvalidPath);
@@ -538,9 +627,22 @@ impl OperationRuntime {
                     early_releases,
                     release_events,
                     nominal_entry_ms,
-                    through_lane: (handoff && index + 1 < spec.legs.len()).then(|| {
-                        l.sections.last().expect("proved nonempty leg").resources[0].clone()
-                    }),
+                    through_lane: if handoff && index + 1 < spec.legs.len() {
+                        Some(
+                            l.sections
+                                .last()
+                                .and_then(|section| {
+                                    section
+                                        .resources
+                                        .iter()
+                                        .find(|r| inline_lane_key(r).is_some())
+                                })
+                                .ok_or(OperationError::InvalidPath)?
+                                .clone(),
+                        )
+                    } else {
+                        None
+                    },
                 });
                 if handoff {
                     nominal_entry_ms = nominal_entry_ms
@@ -602,8 +704,16 @@ impl OperationRuntime {
         self.rail_admission == RailAdmissionModel::InlinePlatformHandoff
     }
 
+    pub(crate) fn fixed_refuge(&self) -> bool {
+        self.rail_admission == RailAdmissionModel::FixedRefuge
+    }
+
+    fn parked_platform_handoff(&self) -> bool {
+        self.inline_platform_handoff() || self.fixed_refuge()
+    }
+
     fn own_lease_allows_admission(&self) -> bool {
-        self.terminal_hold() || self.inline_platform_handoff()
+        self.terminal_hold() || self.parked_platform_handoff()
     }
 
     /// Transfer only an idle clock to a freshly compiled timetable. Departures
@@ -1070,6 +1180,10 @@ impl OperationRuntime {
         Self::restore_checked(saved, Some(RailAdmissionModel::InlinePlatformHandoff))
     }
 
+    pub(crate) fn restore_with_fixed_refuge(saved: OperationSave) -> Result<Self, OperationError> {
+        Self::restore_checked(saved, Some(RailAdmissionModel::FixedRefuge))
+    }
+
     fn restore_checked(
         saved: OperationSave,
         admitted: Option<RailAdmissionModel>,
@@ -1087,6 +1201,9 @@ impl OperationRuntime {
             }
             6 if admitted == Some(RailAdmissionModel::InlinePlatformHandoff) => {
                 RailAdmissionModel::InlinePlatformHandoff
+            }
+            7 if admitted == Some(RailAdmissionModel::FixedRefuge) => {
+                RailAdmissionModel::FixedRefuge
             }
             _ => return Err(OperationError::InvalidClock),
         };
@@ -1160,7 +1277,7 @@ impl OperationRuntime {
                     return Err(OperationError::InvalidClock);
                 }
             }
-            if runtime.inline_platform_handoff() {
+            if runtime.parked_platform_handoff() {
                 let scheduled = train
                     .key
                     .scheduled_ms
@@ -1252,7 +1369,7 @@ impl OperationRuntime {
                 if ready_ms <= saved.now_ms
                     && !resources.iter().any(|r| {
                         runtime.occupied.get(r).is_some_and(|owner| {
-                            !runtime.inline_platform_handoff() || *owner != train.key
+                            !runtime.parked_platform_handoff() || *owner != train.key
                         })
                     })
                 {

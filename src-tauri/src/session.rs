@@ -398,9 +398,7 @@ impl WorldEditor {
             .world
             .update_service_path(candidate.company, service_id, name, stops)
             .map_err(|e| e.to_string())?;
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
-        Ok(self.snapshot())
+        self.apply_reconciled_service_path_edit(candidate, service_id)
     }
     pub fn preview_service_path_replacement(
         &self,
@@ -503,9 +501,7 @@ impl WorldEditor {
                 .set_service_route_binding(candidate.company, id, binding)
                 .map_err(|e| e.to_string())?;
         }
-        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
-        Ok(self.snapshot())
+        self.apply_reconciled_service_path_edit(candidate, service_id)
     }
     fn create_service_path_unchecked(
         &mut self,
