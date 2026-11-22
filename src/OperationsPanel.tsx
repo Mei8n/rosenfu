@@ -142,6 +142,12 @@ function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToke
  </fieldset></form>;
 }
 
+export function ServicePathChangeNotice({serviceId}:{serviceId:string}){
+ const state=useContext(Context);
+ if(!state?.view?.services.some(row=>row.service_id===serviceId))return null;
+ return <p className="muted">運行に影響する経路・停車駅の変更は、全車両の運行が終わってから一時停止して適用してください。元に戻す・やり直すときも同じ条件です。名前だけの変更は運行中でもできます。</p>;
+}
+
 export function ServiceOperations({serviceId,enabled}:{serviceId:string;enabled:boolean}){
  const state=useContext(Context);if(!state||!state.view)return null;
  const {view,busy,blocked,send,error}=state;

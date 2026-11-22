@@ -86,6 +86,60 @@ impl WorldEditor {
         self.operation_edit_revision = next_session_token();
     }
 
+    /// Reconcile a selected service path on a disposable candidate. Used by
+    /// Apply and only the history entries authored by that operation.
+    pub(super) fn reconcile_service_path_edit(
+        &self,
+        candidate: &mut World,
+        service_id: ServiceId,
+    ) -> Result<bool, String> {
+        candidate.retain_operation_from(&self.world);
+        candidate.retain_fixed_od_scenario_from(&self.world);
+        let invalidates_operation = self.world.operation().is_some_and(|op| !op.invalidated)
+            && candidate.operation().is_some_and(|op| op.invalidated);
+        if !invalidates_operation {
+            return Ok(false);
+        }
+        if let Some(reason) = self.timetable_edit_blocker() {
+            return Err(format!(
+                "運行に影響する経路・停車駅の変更は適用していません。{reason}"
+            ));
+        }
+        candidate
+            .reconcile_idle_service_path_operation(service_id)
+            .map_err(|_| {
+                "現在のダイヤと運行ルールを維持できないため、経路・停車駅の変更は適用していません。別の経路や停車駅を選んでください。運行ルールも変える場合は、別名で保存したコピーで運行を再設定してください。"
+                    .to_owned()
+            })?;
+        Ok(true)
+    }
+
+    pub(super) fn apply_reconciled_service_path_edit(
+        &mut self,
+        mut candidate: Self,
+        service_id: ServiceId,
+    ) -> Result<WorldDraft, String> {
+        let before = self
+            .world
+            .snapshot()
+            .service_paths
+            .iter()
+            .find(|p| p.service_id == service_id);
+        let after = candidate
+            .world
+            .snapshot()
+            .service_paths
+            .iter()
+            .find(|p| p.service_id == service_id);
+        let history_service = (before != after).then_some(service_id);
+        if self.reconcile_service_path_edit(&mut candidate.world, service_id)? {
+            candidate.operation_tick = None;
+        }
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        self.publish_reconciled_edit_with_service_path(candidate, false, history_service);
+        Ok(self.snapshot())
+    }
+
     pub fn operation_snapshot(&self) -> OperationView {
         let Some(o) = self.world.operation() else {
             return OperationView {
@@ -696,6 +750,388 @@ mod tests {
         .unwrap();
         e
     }
+    // Non-qualifying ordinary rail geometry keeps the fixed reservation
+    // model when the previously skipped middle station is added as a stop.
+    fn stop_edit_editor(
+        curved: bool,
+    ) -> (
+        WorldEditor,
+        ServiceId,
+        Vec<rosenfu_core::world::StationOccurrenceRef>,
+    ) {
+        let mut e = WorldEditor::new();
+        e.company_setup_required = false;
+        let point = |latitude, longitude| GeoPoint {
+            latitude,
+            longitude,
+        };
+        let mut points = vec![point(35., 139.)];
+        if curved {
+            points.push(point(35.001, 139.012));
+        }
+        points.push(point(35., 139.024));
+        let line = e
+            .world
+            .build_alignment(e.company, "Test line".into(), points)
+            .unwrap();
+        let a = e
+            .world
+            .place_station_on_alignment(e.company, "A".into(), line, 0.10, 70., 10.)
+            .unwrap();
+        e.world
+            .place_station_on_alignment(e.company, "B".into(), line, 0.37, 70., 10.)
+            .unwrap();
+        let c = e
+            .world
+            .place_station_on_alignment(e.company, "C".into(), line, 0.90, 70., 10.)
+            .unwrap();
+        let segments = vec![rosenfu_core::world::RouteSegment::Alignment {
+            alignment_id: line,
+            from: a,
+            to: c,
+        }];
+        let all: Vec<_> = e
+            .world
+            .preview_service_path(a, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|occ| occ.reference)
+            .collect();
+        assert_eq!(all.len(), 3);
+        let service = e
+            .world
+            .add_service_path(
+                e.company,
+                "Express".into(),
+                a,
+                segments,
+                vec![all[0].clone(), all[2].clone()],
+            )
+            .unwrap();
+        e.configure_operation_service(
+            service,
+            Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 600_000,
+                headway_ms: 120_000,
+            },
+            Vehicle {
+                max_speed_kmh: 90.,
+                acceleration_mps2: 1.,
+                braking_mps2: 1.,
+                length_m: 45.,
+            },
+            30_000,
+            &e.operation_edit_token(),
+        )
+        .unwrap();
+        assert_eq!(
+            e.world.operation_save().unwrap().runtime.format,
+            if curved { 2 } else { 4 }
+        );
+        (e, service, all)
+    }
+
+    #[test]
+    fn stop_apply_cannot_freeze_live_vehicles_or_publish_any_change() {
+        let (mut e, service, all) = stop_edit_editor(true);
+        e.world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1_000, 100)
+            .unwrap();
+        assert!(!e.operation_snapshot().trains.is_empty());
+        let dest = tempfile::tempdir().unwrap();
+        let file = dest.path().join("baseline.json");
+        e.save(&file).unwrap();
+        let before = rosenfu_storage::encode(&e.world).unwrap();
+        let history = e.world_edit_history().revision;
+        let rejected = e.update_service_path(service, "Including B".into(), all);
+        assert!(
+            rejected.is_err(),
+            "busy stop Apply published/froze live trains"
+        );
+        assert_eq!(e.world_edit_history().revision, history);
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), before);
+        assert_eq!(std::fs::read(file).unwrap(), before);
+        assert!(!e.operation_snapshot().invalidated);
+    }
+
+    #[test]
+    fn scoped_stop_apply_reopens_same_clock_and_demand_without_reconfiguration_command() {
+        let (mut e, id, all) = stop_edit_editor(true);
+        let saved_timetable = e.operation_snapshot().services;
+        let from = e.world.snapshot().stations[0].id.0.to_string();
+        let to = e.world.snapshot().stations[1].id.0.to_string();
+        let scenario = FixedOdScenario {
+            origin_station_id: from.clone(),
+            destination_station_id: to.clone(),
+            trips: Some(100.),
+            alternative_seconds: None,
+        };
+        e.set_fixed_od_scenario(&e.fixed_od_scenario().token, Some(scenario.clone()))
+            .unwrap();
+        {
+            let op = e.world.operation_mut().unwrap();
+            op.runtime.advance_to(2_000_000, 100).unwrap();
+            op.runtime.set_speed(4).unwrap();
+            assert!(op.runtime.trains().next().is_none());
+        }
+        let test_od = |e: &WorldEditor| {
+            e.preview_fixed_od(from.clone(), to.clone(), Some(100.), None)
+                .unwrap()
+        };
+        assert_eq!(test_od(&e).unserved_trips, 100.);
+        e.world.operation_mut().unwrap().pending_target = Some(2_001_000);
+        let before_debt = e.world.clone();
+        assert!(e
+            .update_service_path(id, "All stops".into(), all.clone())
+            .err()
+            .unwrap()
+            .contains("未処理"));
+        assert_eq!(e.world, before_debt);
+        e.world.operation_mut().unwrap().pending_target = None;
+        let token = e.operation_edit_token();
+        e.update_service_path(id, "All stops".into(), all).unwrap();
+        assert_ne!(e.operation_edit_token(), token);
+        let edited = e.operation_snapshot();
+        assert_eq!(edited.now_ms, 2_000_000);
+        assert_eq!(edited.speed, 4);
+        assert!(edited.paused && !edited.invalidated && edited.trains.is_empty());
+        assert_eq!(edited.services, saved_timetable);
+        assert_eq!(e.world.fixed_od_scenario(), Some(&scenario));
+        assert_eq!(
+            test_od(&e).rail.iter().map(|row| row.trips).sum::<f64>(),
+            100.
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let save = dir.path().join("guarded.json");
+        e.save(&save).unwrap();
+        let saved = e.world.clone();
+        e.load(&save).unwrap();
+        assert_eq!(e.world, saved);
+        assert_eq!(
+            test_od(&e).rail.iter().map(|row| row.trips).sum::<f64>(),
+            100.
+        );
+    }
+
+    #[test]
+    fn path_replacement_protects_running_clock_but_allows_noop_rename_and_unrelated_edits() {
+        let (mut e, id, all) = stop_edit_editor(true);
+        let [a, b, _] = e
+            .world
+            .snapshot()
+            .stations
+            .iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>()[..]
+        else {
+            panic!("fixture")
+        };
+        let segments = vec![rosenfu_core::world::RouteSegment::Alignment {
+            alignment_id: e.world.snapshot().alignments[0].id,
+            from: a,
+            to: b,
+        }];
+        let nearby = e
+            .preview_service_path_replacement(id, a, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect::<Vec<_>>();
+        let old_path = e
+            .world
+            .snapshot()
+            .service_paths
+            .iter()
+            .find(|path| path.service_id == id)
+            .unwrap()
+            .clone();
+        let unrelated = e
+            .world
+            .add_service_path(
+                e.company,
+                "Unconfigured".into(),
+                a,
+                old_path
+                    .legs
+                    .iter()
+                    .map(|leg| leg.segment.clone())
+                    .collect(),
+                vec![all[0].clone(), all[2].clone()],
+            )
+            .unwrap();
+        e.set_operation_clock_at(false, 1, std::time::Instant::now())
+            .unwrap();
+        // Even a newly started clock with no dispatched vehicle isn't a safe boundary.
+        assert!(e.operation_snapshot().trains.is_empty());
+        let before = e.world.clone();
+        let revision = e.world_edit_history().revision;
+        let replace = |e: &mut WorldEditor| {
+            e.replace_service_path_with_source_routes(
+                id,
+                old_path.clone(),
+                "Shorter".into(),
+                a,
+                segments.clone(),
+                nearby.clone(),
+                None,
+                None,
+            )
+        };
+        let error = replace(&mut e).err().unwrap();
+        assert!(error.contains("一時停止"), "{error}");
+        assert_eq!(e.world, before);
+        assert_eq!(e.world_edit_history().revision, revision);
+        e.update_service_path(id, "Renamed".into(), vec![all[0].clone(), all[2].clone()])
+            .unwrap();
+        e.update_service_path(unrelated, "Unconfigured changed".into(), all)
+            .unwrap();
+        assert_eq!(e.world.operation_save(), before.operation_save());
+        e.world.operation_mut().unwrap().runtime.set_paused(true);
+        // The expected original path survives rename. This edit is valid before dispatch.
+        replace(&mut e).unwrap();
+        assert!(e.operation_snapshot().paused && !e.operation_snapshot().invalidated);
+        assert!(e
+            .operation_snapshot()
+            .offers
+            .iter()
+            .any(|offer| offer.to == b.0.to_string()));
+    }
+
+    #[test]
+    fn idle_stop_change_that_would_change_legacy_mode_is_rejected_without_reset() {
+        for started in [false, true] {
+            let (mut e, id, all) = stop_edit_editor(false);
+            if started {
+                let op = e.world.operation_mut().unwrap();
+                op.runtime.advance_to(2_000_000, 100).unwrap();
+                assert!(op.runtime.trains().next().is_none());
+            }
+            let before = e.world.clone();
+            let history = e.world_edit_history().revision;
+            let error = e
+                .update_service_path(id, "All stops".into(), all)
+                .err()
+                .unwrap();
+            assert!(error.contains("別の経路や停車駅"));
+            assert_eq!(e.world, before);
+            assert_eq!(e.world_edit_history().revision, history);
+        }
+    }
+
+    #[test]
+    fn guarded_service_undo_redo_preserves_trains_and_history_and_allows_idle_retry() {
+        let (mut e, id, all) = stop_edit_editor(true);
+        let advance = |e: &mut WorldEditor, time| {
+            e.world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(time, 100)
+                .unwrap();
+        };
+        let active = |e: &WorldEditor| e.operation_snapshot().trains.len();
+        let depths = |e: &WorldEditor| {
+            let h = e.world_edit_history();
+            (h.revision, h.undo_depth, h.redo_depth)
+        };
+        let has_b = |e: &WorldEditor| {
+            e.world
+                .snapshot()
+                .service_paths
+                .iter()
+                .find(|path| path.service_id == id)
+                .unwrap()
+                .stops
+                .len()
+                == 3
+        };
+        let dispatch = |e: &mut WorldEditor, departure| {
+            let config = e.operation_snapshot().services[0].clone();
+            e.configure_operation_service(
+                id,
+                Timetable {
+                    first_departure_ms: departure,
+                    last_departure_ms: departure,
+                    ..config.timetable
+                },
+                config.vehicle,
+                config.dwell_ms,
+                &e.operation_edit_token(),
+            )
+            .unwrap();
+            advance(e, departure + 1);
+            assert_eq!(active(e), 1);
+        };
+        advance(&mut e, 2_000_000);
+        e.update_service_path(id, "Stop at B".into(), all).unwrap();
+        assert!(has_b(&e));
+
+        // A normal untagged entry is still undoable during running operation
+        // and does not consume the preceding protected service-path entry.
+        let mut ordinary = e.clone();
+        ordinary
+            .world
+            .add_station(e.company, "Unrelated".into(), 35.05, 139.05)
+            .unwrap();
+        e.commit_edit(ordinary, false);
+        dispatch(&mut e, 2_001_000);
+        e.undo_world_edit(e.snapshot()).unwrap();
+        assert!(has_b(&e));
+        assert_eq!(active(&e), 1);
+        let before = e.world.clone();
+        let h = depths(&e);
+        let token = e.operation_edit_token();
+        let error = e
+            .undo_world_edit(e.snapshot())
+            .err()
+            .expect("Undo must not publish over an active train");
+        assert!(error.contains("適用していません"));
+        assert_eq!(e.world, before);
+        assert_eq!(depths(&e), h);
+        assert_eq!(e.operation_edit_token(), token);
+
+        advance(&mut e, 3_000_000);
+        assert_eq!(active(&e), 0);
+        e.undo_world_edit(e.snapshot()).unwrap();
+        assert!(!has_b(&e));
+        let state = e.operation_snapshot();
+        assert!(state.paused && !state.invalidated);
+        assert_eq!(state.now_ms, 3_000_000);
+        assert_eq!(state.services, before.operation().unwrap().configs);
+        assert_eq!(depths(&e).2, 2);
+
+        dispatch(&mut e, 3_001_000);
+        let before = e.world.clone();
+        let h = depths(&e);
+        let error = e.redo_world_edit(e.snapshot()).err().unwrap();
+        assert!(error.contains("適用していません"));
+        assert_eq!(e.world, before);
+        assert_eq!(depths(&e), h);
+        advance(&mut e, 4_000_000);
+        assert_eq!(active(&e), 0);
+        e.redo_world_edit(e.snapshot()).unwrap();
+        assert!(has_b(&e));
+        let state = e.operation_snapshot();
+        assert!(state.paused && !state.invalidated);
+        assert_eq!(state.now_ms, 4_000_000);
+        assert_eq!(state.services, before.operation().unwrap().configs);
+        e.redo_world_edit(e.snapshot()).unwrap();
+        assert!(e
+            .world
+            .snapshot()
+            .stations
+            .iter()
+            .any(|s| s.name == "Unrelated"));
+        assert_eq!(e.operation_snapshot().now_ms, 4_000_000);
+        assert_eq!(depths(&e).2, 0);
+    }
+
     fn add_test_bus(e: &mut WorldEditor, timetable: Timetable) {
         use rosenfu_core::road_transport::*;
         let mut d = e.snapshot();

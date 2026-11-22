@@ -880,6 +880,37 @@ impl World {
         bus_configs: Vec<BusOperationConfig>,
         edited_service: &str,
     ) -> Result<(), OperationError> {
+        self.reconfigure_idle_operation_with_policy(configs, bus_configs, edited_service, false)
+    }
+
+    /// Revalidate an idle service-path edit without selecting a different
+    /// admission model, even if the currently configured world has yet to run.
+    /// Only use this on an isolated candidate whose path edit invalidated the
+    /// old run. The caller must guard its still-live clock before publication.
+    pub fn reconcile_idle_service_path_operation(
+        &mut self,
+        edited_service: ServiceId,
+    ) -> Result<(), OperationError> {
+        let previous = self
+            .operation
+            .as_ref()
+            .filter(|op| op.invalidated)
+            .ok_or(OperationError::InvalidPath)?;
+        self.reconfigure_idle_operation_with_policy(
+            previous.configs.clone(),
+            previous.bus_configs.clone(),
+            &edited_service.0.to_string(),
+            true,
+        )
+    }
+
+    fn reconfigure_idle_operation_with_policy(
+        &mut self,
+        configs: Vec<OperationServiceConfig>,
+        bus_configs: Vec<BusOperationConfig>,
+        edited_service: &str,
+        preserve_unstarted_admission: bool,
+    ) -> Result<(), OperationError> {
         let old = self.operation.as_ref();
         if old.is_some_and(|op| {
             !op.runtime.paused()
@@ -888,10 +919,10 @@ impl World {
         }) {
             return Err(OperationError::InvalidClock);
         }
-        let started = old.filter(|old| old.runtime.has_started());
-        let previous_admission = started.map(|old| old.runtime.admission_model());
+        let preserved = old.filter(|old| preserve_unstarted_admission || old.runtime.has_started());
+        let previous_admission = preserved.map(|old| old.runtime.admission_model());
         let mut candidate = self.compile_all_operation(configs, bus_configs, previous_admission)?;
-        if let Some(old) = started {
+        if let Some(old) = preserved {
             if !candidate
                 .runtime
                 .retains_admission(&old.runtime, edited_service, old.invalidated)

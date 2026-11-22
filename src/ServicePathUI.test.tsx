@@ -98,3 +98,56 @@ test('selected saved service toggles off and protects an unsaved edit',async()=>
  fireEvent.click(screen.getByRole('button',{name:'系統下書きを破棄して切替'}));
  expect(screen.queryByRole('region',{name:'保存済み新形式系統'})).toBeNull();
 });
+
+test('saved operating path gives idle-before-apply guidance and retains a refused stop draft',async()=>{
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'path-guard-test',operation_enabled:true};
+  if(command==='operation_snapshot')return {now_ms:3000,paused:true,speed:1,invalidated:false,catching_up:false,timetable_edit_token:'current',timetable_edit_blocker:'車両が残っています。',trains:[],services:[{service_id:'10',timetable:{first_departure_ms:0,last_departure_ms:60000,headway_ms:60000},vehicle:{max_speed_kmh:90,acceleration_mps2:1,braking_mps2:1,length_m:40},dwell_ms:30000}]};
+  if(command==='update_service_path')throw Error('運行に影響する経路・停車駅の変更は適用していません。車両が残っています。');
+  return saved;
+ });
+ render(<App/>);await screen.findByText(/path-guard-test/);
+ fireEvent.click(screen.getByRole('tab',{name:'系統'}));
+ fireEvent.click(screen.getByRole('button',{name:'系統編集: 独立系統'}));
+ expect(await screen.findByText(/全車両の運行が終わってから一時停止/)).toBeTruthy();
+ const form=within(screen.getByRole('region',{name:'保存済み新形式系統'}));
+ fireEvent.change(form.getByLabelText('保存済み系統名'),{target:{value:'保持する下書き'}});
+ fireEvent.click(form.getByLabelText('保存済み停車 2'));
+ fireEvent.click(form.getByRole('button',{name:'保存済み系統の変更を適用'}));
+ await form.findByText(/経路・停車駅の変更は適用していません/);
+ expect((form.getByLabelText('保存済み系統名') as HTMLInputElement).value).toBe('保持する下書き');
+ expect((form.getByLabelText('保存済み停車 2') as HTMLInputElement).checked).toBe(true);
+ expect(screen.getByText('未適用の下書きあり')).toBeTruthy();
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='reset_operation'||command==='save_world')).toBe(false);
+});
+
+test('protected stop Undo retries the same entry and remains redoable after the native boundary opens',async()=>{
+ await start(saved);
+ fireEvent.click(screen.getByRole('button',{name:'系統編集: 独立系統'}));
+ const form=within(screen.getByRole('region',{name:'保存済み新形式系統'}));
+ const applied={...saved,service_paths:[{...saved.service_paths[0],stops:preview.occurrences.map(o=>o.reference)}]};
+ let blocked=true;
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='update_service_path'||command==='redo_world_edit')return applied;
+  if(command==='undo_world_edit'){
+   if(blocked)throw Error('車両が残っているため、この停車駅変更は適用していません。');
+   return saved;
+  }
+  return saved;
+ });
+ fireEvent.click(form.getByLabelText('保存済み停車 2'));
+ fireEvent.click(form.getByRole('button',{name:'保存済み系統の変更を適用'}));
+ await screen.findByText(/系統名と停車設定を適用しました/);
+ const undo=()=>fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ undo();
+ await screen.findByText(/この停車駅変更は適用していません/);
+ expect((form.getByLabelText('保存済み停車 2') as HTMLInputElement).checked).toBe(true);
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='undo_world_edit')).toHaveLength(1);
+ blocked=false;
+ undo();await screen.findByText('操作を元に戻しました。');
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ await screen.findByText('操作をやり直しました。');
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='undo_world_edit')).toHaveLength(2);
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='redo_world_edit')).toHaveLength(1);
+});
