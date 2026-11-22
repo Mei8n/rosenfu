@@ -114,8 +114,8 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
    })();
    return ()=>{current=false;};
  },[]);
- const qa=data.edges.length>0&&data.edges.every(edge=>edge.source==='synthetic-qa-not-real-roads');
- const pilot=regions?.find(region=>data.edges.length>0&&data.edges.every(edge=>edge.source===`native-pilot:${region.id}`&&edge.revision===region.revision));
+ const qa=useMemo(()=>data.edges.length>0&&data.edges.every(edge=>edge.source==='synthetic-qa-not-real-roads'),[data.edges]);
+ const pilot=useMemo(()=>regions?.find(region=>data.edges.length>0&&data.edges.every(edge=>edge.source===`native-pilot:${region.id}`&&edge.revision===region.revision)),[regions,data.edges]);
  const hasGraph=data.edges.length>0||data.nodes.length>0||Boolean(data.evidence?.length);
  const stopKey=(point:StopPosition)=>JSON.stringify([point.edge_id,point.position]);
  const boardingChoices=pilot?.bus_stop_positions??[];
@@ -125,7 +125,10 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
  const fromPosition=playerChoice(playerFrom)??boardingChoices.find(point=>stopKey(point)===pilotFrom);
  const toPosition=playerChoice(playerTo)??boardingChoices.find(point=>stopKey(point)===pilotTo);
  const pilotEndpointsValid=!!fromPosition&&!!toPosition&&(fromPosition.edge_id!==toPosition.edge_id||fromPosition.position<toPosition.position);
- const ownRoutes=data.bus_routes.filter(route=>route.owner===companyId);
+ const ownRoutes=useMemo(()=>data.bus_routes.filter(route=>route.owner===companyId),[data.bus_routes,companyId]);
+ const canCreateBus=qa||boardingChoices.length>0||playerEdges.length>0;
+ const canBuildRoadTram=useMemo(()=>tramEnabled&&data.edges.some(edge=>edge.tram_access==='allowed'&&(qa||edge.level==='ground')),[tramEnabled,data.edges,qa]);
+ const showEndpointPicker=qa||canBuildRoadTram;
  useEffect(()=>{if(mapSelection){setFrom(mapSelection.from);setTo(mapSelection.to);}},[mapSelection]);
  useEffect(()=>{
    if(!playerMapSelection)return;
@@ -135,7 +138,7 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
    setPosition(current=>current?.edge_id===edgeId?{...current,position}:current);
  },[playerMapSelection,playerEdges]);
  function pickInset(id:string){if(!from||to){setFrom(id);setTo('');}else if(id!==from){setTo(id);}}
- const endpointValid=from!==to && data.nodes.some(n=>n.id===from) && data.nodes.some(n=>n.id===to);
+ const endpointValid=showEndpointPicker && from!==to && data.nodes.some(n=>n.id===from) && data.nodes.some(n=>n.id===to);
  const editTram=(edit:RoadTramEdit)=>mutate('edit_road_tram',{edit});
  async function run(job:()=>Promise<unknown>){if(busy||!enabled)return;setBusy(true);setError('');try{await job();}catch(e){setError(String(e));}finally{setBusy(false);}}
  async function save(replacement:RoadTransportData){return mutate('replace_road_transport',{expected:data,replacement});}
@@ -177,10 +180,13 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
  </section>
  {!hasGraph?<><label><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>実在道路ではない検証用データを使用する</label><button disabled={!enabled||!confirmed||busy} onClick={()=>void run(()=>mutate('enable_road_qa_fixture',{confirmedSynthetic:true}))}>検証用道路を追加</button></>:<p role="status">{qa?'検証専用の架空道路。実在の地図・通行可能範囲ではありません。':pilot?(pilot.lab_only?labNotice:allowsPlayer?'確認済み道路の通行方向を使います。ゲーム内停留所は実在の停留所ではありません。':'承認された方向・経路・停留所だけを使用します。'):'この道路データは参照のみで、経路を作成できません。'}</p>}
  {(qa||pilot)&&<>
+ {showEndpointPicker&&<>
  {!onPickOnMap&&<RoadPathPicker data={data} from={from} to={to} disabled={!enabled||busy} pick={pickInset}/>}
  {onPickOnMap&&<button type="button" disabled={!enabled||busy} onClick={onPickOnMap}>地図で起点・終点を選ぶ</button>}
  <label>起点<select value={from} onChange={e=>setFrom(e.target.value)}><option value="">選択</option>{data.nodes.map(n=><option key={n.id}>{n.id}</option>)}</select></label>
  <label>終点<select value={to} onChange={e=>setTo(e.target.value)}><option value="">選択</option>{data.nodes.map(n=><option key={n.id}>{n.id}</option>)}</select></label>
+ </>}
+ {pilot&&!canCreateBus&&<p>この道路データではバス系統を作成できません。</p>}
  {pilot&&boardingChoices.length>0&&<fieldset disabled={!enabled||busy}><legend>承認済みバス停位置</legend>
    <label>乗車<select value={pilotFrom} onChange={e=>{setPilotFrom(e.target.value);setPlayerFrom(undefined);}}><option value="">選択</option>{boardingChoices.map(point=><option key={stopKey(point)} value={stopKey(point)}>{point.edge_id} / {point.position*100}%</option>)}</select></label>
    <label>降車<select value={pilotTo} onChange={e=>{setPilotTo(e.target.value);setPlayerTo(undefined);}}><option value="">選択</option>{boardingChoices.map(point=><option key={stopKey(point)} value={stopKey(point)}>{point.edge_id} / {point.position*100}%</option>)}</select></label>
@@ -190,21 +196,23 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
    <FictionalStopPicker label="乗車" edges={playerEdges} disabled={!enabled||busy} onPickOnMap={onPickPlayerOnMap?(edgeId,position)=>onPickPlayerOnMap({end:'from',edgeId,position}):undefined} value={playerFrom} pick={point=>{setPlayerFrom(point);if(point)setPilotFrom('');}}/>
    <FictionalStopPicker label="降車" edges={playerEdges} disabled={!enabled||busy} onPickOnMap={onPickPlayerOnMap?(edgeId,position)=>onPickPlayerOnMap({end:'to',edgeId,position}):undefined} value={playerTo} pick={point=>{setPlayerTo(point);if(point)setPilotTo('');}}/>
  </fieldset>}
- <label>名称<input autoComplete="off" value={name} onChange={e=>setName(e.target.value)}/></label>
- {pilot?<><button disabled={!enabled||busy||!pilotEndpointsValid||!name.trim()} onClick={()=>void run(savePilot)}>{editing?'バス系統の変更を適用':allowsPlayer?'停留所とバス系統を作成':'承認済み停留所でバス系統を作成'}</button>{editing&&<button disabled={!enabled||busy} onClick={clearPilot}>編集をやめる</button>}</>:<button disabled={!enabled||busy||!endpointValid||!name.trim()} onClick={()=>void run(add)}>停留所とバス系統を作成</button>}
+ {canCreateBus&&<><label>名称<input autoComplete="off" value={name} onChange={e=>setName(e.target.value)}/></label>
+ {pilot?<><button disabled={!enabled||busy||!pilotEndpointsValid||!name.trim()} onClick={()=>void run(savePilot)}>{editing?'バス系統の変更を適用':allowsPlayer?'停留所とバス系統を作成':'承認済み停留所でバス系統を作成'}</button>{editing&&<button disabled={!enabled||busy} onClick={clearPilot}>編集をやめる</button>}</>:<button disabled={!enabled||busy||!endpointValid||!name.trim()} onClick={()=>void run(add)}>停留所とバス系統を作成</button>}</>}
  {ownRoutes.map(route=><div key={route.id}><span>{route.name}（{route.stops.length}停留所）</span>
    {pilot&&route.stops.length===2&&<button disabled={!enabled||busy} onClick={()=>editPilot(route)}>系統を編集</button>}
    <button disabled={!enabled||busy} onClick={()=>void run(async()=>{await save({...data,bus_routes:data.bus_routes.filter(r=>r.id!==route.id)});if(editing?.id===route.id)setEditing(undefined);})}>系統を削除</button></div>)}
  {pilot&&data.bus_stops.filter(s=>s.owner===companyId&&!data.bus_routes.some(route=>route.stops.some(o=>o.stop_id===s.id))).map(s=><button key={s.id} disabled={!enabled||busy} onClick={()=>void run(()=>save({...data,bus_stops:data.bus_stops.filter(stop=>stop.id!==s.id)}))}>未使用停留所 {s.id} を削除</button>)}
- <p>系統削除時は停留所を残します。現在の道路操作はワールドのUndo/Redo・保存の対象です。</p>
- {tramEnabled&&<fieldset disabled={!enabled||busy}><legend>軌道</legend>
-   <label>軌道名<input autoComplete="off" value={tramName} onChange={e=>setTramName(e.target.value)}/></label>
+ {(canCreateBus||ownRoutes.length>0)&&<p>系統削除時は停留所を残します。</p>}
+ <p>道路交通の変更はワールドのUndo/Redo・保存の対象です。</p>
+ {pilot&&tramEnabled&&!canBuildRoadTram&&<p>この道路データには敷設できる軌道区間がありません。</p>}
+ {tramEnabled&&(canBuildRoadTram||data.tram_sections.length>0)&&<fieldset disabled={!enabled||busy}><legend>軌道</legend>
+   {canBuildRoadTram&&<><label>軌道名<input autoComplete="off" value={tramName} onChange={e=>setTramName(e.target.value)}/></label>
    <label><input type="checkbox" checked={shared} onChange={e=>setShared(e.target.checked)}/>道路と関連付ける（併用軌道）</label>
-   <p>選択した道路の形を使用します。関連なしの場合も軌道の位置はずらしません。道路運行や踏切扱いは未対応です。</p>
-   <button type="button" disabled={!endpointValid||!tramName.trim()} onClick={()=>void run(()=>editTram({kind:'build',from,to,name:tramName.trim(),shared}))}>軌道を着工</button>
+   <p>選択した道路の形を使用します。関連なしの場合も軌道の位置はずらしません。自動車との混在や踏切の扱いは未対応です。</p>
+   <button type="button" disabled={!endpointValid||!tramName.trim()} onClick={()=>void run(()=>editTram({kind:'build',from,to,name:tramName.trim(),shared}))}>軌道を着工</button></>}
    {data.tram_sections.map(t=><div key={t.alignment_id}>
     <span>{t.placement.kind==='shared_road'?'併用軌道':'道路関連なし'} #{t.alignment_id}</span>
-    <button type="button" disabled={t.placement.kind==='dedicated'&&!endpointValid} onClick={()=>void run(()=>editTram({kind:'change_placement',alignment_id:t.alignment_id,from,to,shared:t.placement.kind==='dedicated'}))}>{t.placement.kind==='dedicated'?'選択道路を関連付ける':'道路との関連を外す'}</button>
+    <button type="button" disabled={t.placement.kind==='dedicated'&&(!canBuildRoadTram||!endpointValid)} onClick={()=>void run(()=>editTram({kind:'change_placement',alignment_id:t.alignment_id,from,to,shared:t.placement.kind==='dedicated'}))}>{t.placement.kind==='dedicated'?'選択道路を関連付ける':'道路との関連を外す'}</button>
     <button type="button" onClick={()=>{if(window.confirm('この軌道を撤去しますか？'))void run(()=>editTram({kind:'remove',alignment_id:t.alignment_id}));}}>軌道を撤去</button>
    </div>)}
  </fieldset>}</>}{error&&<p role="alert">{error}</p>}</section>;

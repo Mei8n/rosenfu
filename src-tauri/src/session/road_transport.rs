@@ -3,6 +3,24 @@ use rosenfu_core::road_transport::{
     import_native_pilot, PilotBusEdit, PilotRoadMode, RoadTransport,
 };
 
+fn road_path_help(error: rosenfu_core::road_transport::RoadTransportError) -> String {
+    use rosenfu_core::road_transport::RoadTransportError::*;
+    match error {
+        DisconnectedPath => {
+            "選んだ向きでつながる経路がありません。道路の向きと起点・終点を選び直してください。"
+        }
+        InvalidStopOrder => "進行方向に沿って、乗車位置より先に降車位置を置いてください。",
+        AccessUnknown | AccessForbidden => {
+            "この区間は選んだ交通手段に対応していません。対象の道路を選び直してください。"
+        }
+        MissingReference | StaleSnapshot => {
+            "選んだ位置はこのワールドの道路データにありません。道路と位置を選び直してください。"
+        }
+        _ => "道路経路を確認できませんでした。道路と位置を選び直してください。",
+    }
+    .into()
+}
+
 impl WorldEditor {
     pub fn replace_road_transport(
         &mut self,
@@ -125,9 +143,7 @@ impl WorldEditor {
         }
         let edges = graph
             .native_bus_path(&before, &edit.from, &edit.to)
-            .map_err(|error| {
-                format!("指定した停車位置をつなぐ通行可能な経路がありません: {error:?}")
-            })?;
+            .map_err(road_path_help)?;
         let last = edges.len() - 1;
         let mut stops = vec![];
         for (point, label, edge_index) in [(edit.from, "起点", 0), (edit.to, "終点", last)] {
@@ -210,7 +226,7 @@ impl WorldEditor {
             let ids = before
                 .road_transport
                 .native_shortest_path(&before, from, to, PilotRoadMode::Tram)
-                .map_err(|e| format!("検証済みの道路経路がありません: {e:?}"))?;
+                .map_err(road_path_help)?;
             let mut points: Vec<_> = ids
                 .iter()
                 .flat_map(|id| {

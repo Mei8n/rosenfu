@@ -171,3 +171,17 @@ it('labels a developer lab corridor before import and after selection',async()=>
  expect(screen.queryByRole('button',{name:'開発ラボを追加'})).toBeNull();
  expect(screen.queryByText('承認済みバス停位置')).toBeNull();
 });
+
+it.each([
+ ['バスだけ',true,'unknown',true,false],
+ ['軌道だけ',false,'allowed',false,true],
+] as const)('shows only supported construction tools for a %s catalog',async(_,allowsPlayer,tramAccess,busVisible,tramVisible)=>{
+ const run=vi.fn();
+ vi.mocked(invoke).mockResolvedValue([{...region,lab_only:true,bus_stop_positions:[],allows_player_bus_stops:allowsPlayer}]);
+ const road:RoadTransportData={...native,edges:native.edges.map(edge=>({...edge,level:'ground',bus_access:allowsPlayer?'allowed':'unknown',tram_access:tramAccess}))};
+ render(<RoadTransportPanel data={road} companyId="1" run={run} tramEnabled/>);
+ await screen.findByText('このワールドで使用中');
+ expect(Boolean(screen.queryByRole('button',{name:'停留所とバス系統を作成'}))).toBe(busVisible);
+ expect(Boolean(screen.queryByRole('button',{name:'軌道を着工'}))).toBe(tramVisible);
+ expect(run).not.toHaveBeenCalled();
+});
