@@ -21,13 +21,18 @@ class RoadWorker {
 afterEach(()=>{cleanup();vi.clearAllMocks();vi.unstubAllGlobals();localStorage.clear();});
 const longitude=139.76806640625,latitude=35.684,camera={latitude,longitude,zoom:16};
 const world={view_state:camera,next_id:'3',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
-async function start(snapshot:any=world,vertices?:{longitude:number;latitude:number}[]){
+async function start(snapshot:any=world,vertices?:{longitude:number;latitude:number}[],openRoad=true,includeIneligible=false){
  RoadWorker.delay=false;RoadWorker.queued=[];vi.stubGlobal('Worker',RoadWorker);
  const bundle={graph:{format:'rosenfu-reference-graph',version:1,dataset:{id:'t',revision:'r',source:'t',license:'t',bounds:{west:139,east:140,south:35,north:36}},nodes:[{osmId:'1',longitude:longitude-.002,latitude},{osmId:'2',longitude:longitude+.002,latitude}],edges:[{id:'1',osmWayId:'1',segmentIndex:0,from:'1',to:'2',mode:'road',layer:0,level:null,bridge:false,tunnel:false}]},roadWays:{'1':{highway:'residential',access:null,motorVehicle:null,structureUnsupported:false}},graphSha256:'a'.repeat(64),sourceSha256:'b'.repeat(64),source:{source:'t',sourceDate:null,license:'t',attribution:'t'}};
  if(vertices){bundle.graph.nodes=vertices.map((p,i)=>({...p,osmId:String(i+1)}));bundle.graph.edges=vertices.slice(1).map((_,i)=>({id:String(i+1),osmWayId:'1',segmentIndex:i,from:String(i+1),to:String(i+2),mode:'road',layer:0,level:null,bridge:false,tunnel:false}));}
+ if(includeIneligible){
+  bundle.graph.nodes.push({osmId:'90',longitude:longitude-.002,latitude:latitude+.0003},{osmId:'91',longitude:longitude+.002,latitude:latitude+.0003});
+  for(const id of ['90','91'])bundle.graph.edges.push({id,osmWayId:id,segmentIndex:0,from:'90',to:'91',mode:id==='90'?'road':'rail',layer:0,level:null,bridge:false,tunnel:false});
+  Object.assign(bundle.roadWays,{'90':{highway:'residential',access:'private',motorVehicle:null,structureUnsupported:false}});
+ }
  mock.snapshot={bundle,roads:[]};
  vi.mocked(invoke).mockImplementation(async(command)=>{if(command==='engine_info')return {name:'Rosenfu',version:'road-app'};if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};if(command==='autosave_status')return {available:false};if(command==='save_world')return {saved:true};if(command==='preview_construction_plan')return {validationError:null,newCrossingCount:0};return snapshot;});
- render(<App/>);await screen.findByText(/road-app/);fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
+ render(<App/>);await screen.findByText(/road-app/);if(openRoad)fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
  const map=document.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
  const click=async(offset:number,ctrlKey=false,detail=1)=>{const p=project(latitude,longitude+offset,camera);await act(async()=>{fireEvent.click(map,{clientX:p.x,clientY:p.y,ctrlKey,detail});await new Promise(r=>setTimeout(r,0));});};return {map,click};
 }
@@ -96,7 +101,7 @@ test('legacy OFM sources keep provider attribution even without drawn alignments
 test('road preview suppresses the unrelated free chord and Ctrl restores ordinary preview',async()=>{
  vi.stubGlobal('PointerEvent',MouseEvent);const {map,click}=await start();await click(-.0008);const p=project(latitude,longitude+.0008,camera);
  await act(async()=>{fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y});await new Promise(r=>setTimeout(r,0));});
- await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());expect(document.querySelector('.candidate-draft')).toBeNull();expect(document.querySelector('.curve-circle-guide')).toBeNull();
+ await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());expect(document.querySelector('.tram-road-guide-overlay,.tram-road-guide-preview,.tram-road-guide-marker')).toBeNull();expect(document.querySelector('.reference-graph-road')?.getAttribute('d')).toMatch(/^M/);expect(document.querySelector('.candidate-draft')).toBeNull();expect(document.querySelector('.curve-circle-guide')).toBeNull();
  await act(async()=>{fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y,ctrlKey:true});});expect(document.querySelector('.road-drawing-preview')).toBeNull();expect(document.querySelector('.candidate-draft')).toBeTruthy();
 });
 
@@ -151,25 +156,54 @@ test('tram Ctrl inverts snap at a stationary cursor, and clicking commits the sh
  expect(toggle.getAttribute('aria-pressed')).toBe('false');
 });
 
-test('tram snap on falls back to normal track during Ctrl and reverts on release or blur',async()=>{
+test('ordinary Tram starts with a green guide; road off or temporary Ctrl leaves free drawing uncoloured',async()=>{
  vi.stubGlobal('PointerEvent',MouseEvent);
- const {map,click}=await start();
+ const {map,click}=await start(world,undefined,false,true);
+ const toggle=screen.getByRole('button',{name:'道路に合わせる'});
+ const overlay=()=>document.querySelector('.tram-road-guide-overlay');
+ const trace=()=>document.querySelector('.road-drawing-preview');
+ const marker=()=>document.querySelector('.road-snap-point');
+ expect(toggle.getAttribute('aria-pressed')).toBe('false');
+ expect(overlay()).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ expect(toggle.getAttribute('aria-pressed')).toBe('true');
+ const geometry=(offset:number)=>{
+  const a=project(latitude+offset,longitude-.002,camera),b=project(latitude+offset,longitude+.002,camera);
+  return `M${a.x},${a.y}L${b.x},${b.y}`;
+ };
+ expect(overlay()?.getAttribute('d')).toBe(geometry(0));
+ expect(document.querySelector('.reference-graph-road:not(.tram-road-guide-overlay)')?.getAttribute('d')).toBe(geometry(.0003));
+ expect(document.querySelector('.reference-graph-rail')?.getAttribute('d')).toBe(geometry(.0003));
  await click(-.0008);
  const p=project(latitude,longitude+.0008,camera);
  await act(async()=>fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y}));
- await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());
+ await waitFor(()=>expect(trace()?.classList.contains('tram-road-guide-preview')).toBe(true));
+ expect(marker()?.classList.contains('tram-road-guide-marker')).toBe(true);
  fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
- expect(document.querySelector('.road-drawing-preview')).toBeNull();
+ expect(overlay()).toBeNull();
+ expect(trace()).toBeNull();
+ expect(marker()).toBeNull();
  expect(document.querySelector('.candidate-draft')).toBeTruthy();
  fireEvent.keyUp(window,{key:'Control',ctrlKey:false});
- await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());
+ await waitFor(()=>expect(trace()?.classList.contains('tram-road-guide-preview')).toBe(true));
+ expect(overlay()).toBeTruthy();
  fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
+ expect(overlay()).toBeNull();
  fireEvent.blur(window);
- expect(document.querySelector('.road-drawing-preview')).toBeNull();
+ expect(trace()).toBeNull();
  await act(async()=>fireEvent.pointerMove(map,{clientX:p.x,clientY:p.y}));
- await waitFor(()=>expect(document.querySelector('.road-drawing-preview')).toBeTruthy());
- expect(screen.getByRole('button',{name:'道路に合わせる'}).getAttribute('aria-pressed')).toBe('true');
+ await waitFor(()=>expect(trace()?.classList.contains('tram-road-guide-preview')).toBe(true));
+ fireEvent.click(toggle);
+ expect(toggle.getAttribute('aria-pressed')).toBe('false');
+ expect(overlay()).toBeNull();
+ expect(trace()).toBeNull();
+ expect(marker()).toBeNull();
+ fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
+ await waitFor(()=>expect(overlay()?.getAttribute('d')).toMatch(/^M/));
+ await waitFor(()=>expect(trace()?.classList.contains('tram-road-guide-preview')).toBe(true));
+ fireEvent.keyUp(window,{key:'Control',ctrlKey:false});
+ expect(overlay()).toBeNull();
+ expect(trace()).toBeNull();
 });
 
 test('a same-position double click finishes temporary tram road snap during native validation',async()=>{

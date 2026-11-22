@@ -2,6 +2,7 @@ import {OrdinaryBusPanel,useOrdinaryBusDraft} from './OrdinaryBusPanel';
 import {OrdinaryBusStopsPanel,useOrdinaryBusStops} from './OrdinaryBusStopsPanel';
 import {prepareOrdinaryBusQuery,observedTramRoadAnchor,type OrdinaryBusPath,type OrdinaryBusPreviewReply,type OrdinaryBusQuery} from './ordinaryBusDraft';
 import {fitRoadFollow} from './roadFollowFit';
+import {isRoadFollowEdgeEligible} from './roadFollowing';
 import type {RoadDrawingResult} from './roadDrawingEngine';
 import {BusOperations,OperationClock,OperationProvider,ServiceOperations,ServicePathChangeNotice} from "./OperationsPanel";
 import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection,type RoadPlayerMapRequest,type RoadPlayerMapSelection} from "./RoadTransportPanel";
@@ -412,6 +413,8 @@ export function App() {
   const [legacyRoadDraft,setLegacyRoadDraft]=useState(false);
   const [referencePanel,setReferencePanel]=useState(false);
   const [parallelMode,setParallelMode]=useState(false);
+  const tramRoadGuide=tramDrawing&&roadSnapShown&&!parallelMode;
+  const roadSnapMarkerClass=tramRoadGuide?"road-snap-point tram-road-guide-marker":"road-snap-point";
   const [parallelStart,setParallelStart]=useState<{sourceId:string;offset:number;point:GeoPoint}|null>(null);
   function cancelParallel(){setParallelStart(null);}
   useEffect(()=>{cancelParallel();},[activeTool,activePlanId,world]);
@@ -425,7 +428,9 @@ export function App() {
   const automaticRoad=useAutomaticRoad(bounds,status==="ready"&&(roadDrawingEnabled||ordinaryBusActive),worldEpoch,!!frozenRoadBundle&&!ordinaryBusActive);
   const roadDrawingBundle=frozenRoadBundle??automaticRoad.snapshot?.bundle??manualGraphBundle;
   const graphBundle=roadFollowing?roadDrawingBundle:manualGraphBundle;
-  const graphIndex=useMemo(()=>graphBundle?indexGraphDisplay(graphBundle.graph):[],[graphBundle]);
+  const graphDisplayBundle=tramDrawing?(tramRoadGuide?roadDrawingBundle:manualGraphBundle):graphBundle;
+  const graphIndex=useMemo(()=>graphDisplayBundle?indexGraphDisplay(graphDisplayBundle.graph):[],[graphDisplayBundle]);
+  const tramRoadGuideIds=useMemo(()=>tramRoadGuide&&roadDrawingBundle?new Set(roadDrawingBundle.graph.edges.filter(edge=>isRoadFollowEdgeEligible(roadDrawingBundle,edge)).map(edge=>edge.id)):undefined,[tramRoadGuide,roadDrawingBundle]);
   const graphDisplay=useMemo(()=>queryGraphDisplay(graphIndex,viewBounds(camera,mapSize),camera.zoom,graphVisible),[graphIndex,camera,mapSize,graphVisible]);
 
   function chooseTrackType(value:TrackType){selectedTrackType.current=value;cancelParallel();setParallelMode(false);setTrackType(value);setDesignSpeedKmh(defaultDesignSpeed(value));setRoadFollowing(value==="tram");setReferencePanel(value==="tram");setHoverPoint(null);}
@@ -2266,7 +2271,7 @@ export function App() {
                   <rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} fill="url(#sample-scene)" />
                   <rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} fill="url(#sample-grid)" />
                 </g>}
-              <ReferenceGraphLayer edges={graphDisplay.edges} camera={camera}/>
+              <ReferenceGraphLayer edges={graphDisplay.edges} camera={camera} tramRoadGuideIds={tramRoadGuideIds}/>
               {automaticRailSelected&&automaticRail.view.chains.map(chain=><path key={chain.id} d={drawPath(chain.points)} className="automatic-rail-reference" stroke="#777" strokeWidth="1.5" strokeDasharray="4 4" fill="none" pointerEvents="none"/>)}
               {alignments.map((alignment, alignmentIndex) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>
                 {!(mainTab==="construction"&&activeTool==="inactive")&&<title>{alignment.name}</title>}
@@ -2286,9 +2291,9 @@ export function App() {
               </g>)}
               {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<g className="route-candidate-selection" pointerEvents="none" aria-label="選択した経路">{[...selectedRouteSections].flatMap(([id,sections])=>sections.map((points:GeoPoint[],index:number)=><path key={id+":"+index} d={drawPath(points)} fill="none" stroke="#18a6a6" strokeWidth={7/viewport.scale} strokeOpacity=".65" strokeLinecap="round" strokeLinejoin="round"/>))}</g>}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
-              {roadSnapShown&&roadDrawing.preview?.kind==='junction'&&focusMarker(roadDrawing.preview.to.point,'anchor','road-snap-point')}
-              {roadSnapShown&&(roadDrawing.preview?.kind==='point'||roadDrawing.preview?.kind==='route'||roadDrawing.preview?.kind==='seam')&&focusMarker(roadDrawing.preview.point,'anchor','road-snap-point')}
-              {roadSnapShown&&roadDrawing.preview?.kind==='route'&&<TrackStroke d={drawInfrastructurePath(roadDrawing.preview.line,infrastructure)} className={'draft-path road-drawing-preview'+(constructionValidationError(nativeConstructionPreview?.value)?' invalid-candidate':'')} pointerEvents="none"/>}
+              {roadSnapShown&&roadDrawing.preview?.kind==='junction'&&focusMarker(roadDrawing.preview.to.point,'anchor',roadSnapMarkerClass)}
+              {roadSnapShown&&(roadDrawing.preview?.kind==='point'||roadDrawing.preview?.kind==='route'||roadDrawing.preview?.kind==='seam')&&focusMarker(roadDrawing.preview.point,'anchor',roadSnapMarkerClass)}
+              {roadSnapShown&&roadDrawing.preview?.kind==='route'&&<TrackStroke d={drawInfrastructurePath(roadDrawing.preview.line,infrastructure)} className={'draft-path road-drawing-preview'+(tramRoadGuide?' tram-road-guide-preview':'')+(constructionValidationError(nativeConstructionPreview?.value)?' invalid-candidate':'')} pointerEvents="none"/>}
               {referenceCopy.active&&referencePreviewPoints&&<TrackStroke d={drawInfrastructurePath(referencePreviewPoints,referenceExtension?endpointInfrastructure(referenceExtension.alignment,referenceExtension.endpoint):infrastructure)} data-track-count={(referenceExtension?endpointInfrastructure(referenceExtension.alignment,referenceExtension.endpoint):infrastructure).track_count} className="draft-path reference-copy-preview" style={referenceCopy.roadFollow?{stroke:"#298746"}:undefined} pointerEvents="none"/>}
               {parallelMode&&activeTool==="tracks"&&parallelSources.map(source=>{const p=source.points[0],a=project(p.latitude,p.longitude,camera),b=project(p.latitude+PARALLEL_RANGE_M/111195,p.longitude,camera);return <path key={source.id} d={drawPath(source.points)} fill="none" stroke="#61afcf" strokeOpacity=".28" strokeWidth={2*Math.abs(a.y-b.y)} strokeLinecap="round" pointerEvents="none"/>;})}
               {parallelMode&&parallelStart&&(()=>{const q=project(parallelStart.point.latitude,parallelStart.point.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}

@@ -5,7 +5,7 @@ import {extractReferenceWayPath,type ReferenceGraphPick} from './referenceGraphP
  * tram suitability, road width, legal access, level, or real-world passability. */
 const ROAD_CLASSES=new Set(['primary','secondary','tertiary','unclassified','residential','living_street','service']);
 const ALLOWED_ACCESS=new Set(['yes','permissive','designated']);
-function eligible(bundle:ReferenceGraphBundle,edge:GraphEdge):boolean{
+export function isRoadFollowEdgeEligible(bundle:ReferenceGraphBundle,edge:GraphEdge):boolean{
  const m=bundle.roadWays?.[edge.osmWayId];
  return !!m && edge.mode==='road' && m.highway!==null && ROAD_CLASSES.has(m.highway)
   && (m.access===null||ALLOWED_ACCESS.has(m.access))
@@ -17,7 +17,7 @@ function eligible(bundle:ReferenceGraphBundle,edge:GraphEdge):boolean{
  * an eligible result. Nodes and source segment indices remain unchanged. */
 export function eligibleRoadGraph(bundle:ReferenceGraphBundle):ReferenceGraphPack{
  const graph=validateReferenceGraph(bundle.graph);
- return {...graph,edges:graph.edges.filter(edge=>eligible(bundle,edge))};
+ return {...graph,edges:graph.edges.filter(edge=>isRoadFollowEdgeEligible(bundle,edge))};
 }
 /** Revalidate at selection/build time, including intervening segments. A missing
  * or prohibited middle segment is never bridged or silently straightened. */
