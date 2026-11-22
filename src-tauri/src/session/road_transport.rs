@@ -180,6 +180,39 @@ impl WorldEditor {
         self.commit_edit(candidate, false);
         Ok(result)
     }
+    pub fn preview_authored_tram_road_guide(
+        &self,
+        expected_world_token: &str,
+        guide: &rosenfu_core::ofm_evidence::AuthoredTramGuide,
+        cached: Option<(OfmRawInput, OfmBindingInput)>,
+    ) -> Result<Vec<GeoPoint>, String> {
+        if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
+            return Err("ワールドが変更されました。道路を選び直してください。".into());
+        }
+        let (raw, bindings): (Vec<_>, Vec<_>) = cached.into_iter().unzip();
+        let (raw, bindings) = super::ofm::inputs(raw, bindings)?;
+        let route = self
+            .snapshot()
+            .authored_tram_road_guide(guide, raw.into_iter().zip(bindings).collect())
+            .map_err(road_path_help)?
+            .filter(|points| (2..=4096).contains(&points.len()))
+            .ok_or(
+                "この道路の接続を確認できません。短い区間を選ぶか、道路追従をオフにしてください。",
+            )?;
+        route
+            .into_iter()
+            .map(|[longitude, latitude]| {
+                if !in_edit_extent(latitude, longitude) {
+                    return Err("線路は編集範囲内に敷設してください。".into());
+                }
+                Ok(GeoPoint {
+                    longitude,
+                    latitude,
+                })
+            })
+            .collect()
+    }
+
     /// A player action over immutable OFM evidence, independent of the regional
     /// catalog selector. An optional already fetched tile is admitted and used
     /// in the same transaction, without creating or changing a rail plan.

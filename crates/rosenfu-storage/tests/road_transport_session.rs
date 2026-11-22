@@ -103,3 +103,110 @@ fn unknown_native_pilot_and_altered_save_never_authorize_graph() {
         assert!(rosenfu_storage::decode(tampered.as_bytes()).is_err());
     }
 }
+
+#[test]
+fn ordinary_tram_intersection_preview_uses_cached_proof_without_mutating_the_world() {
+    use base64::Engine;
+    use rosenfu_core::ofm_evidence::{AuthoredTramGuide, BusVertex};
+    let mut editor = session::WorldEditor::new();
+    editor.rename_company("合成道路交差テスト".into()).unwrap();
+    let original = editor.snapshot();
+    let undo_depth = editor.world_edit_history().undo_depth;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../rosenfu-core/tests/fixtures/ofm_authored_tram_synthetic.json"
+    ))
+    .unwrap();
+    let tile_key = fixture["tileKey"].as_str().unwrap();
+    let digest = fixture["tileRawSha256"].as_str().unwrap();
+    let guide = AuthoredTramGuide {
+        start_fraction_q: None,
+        end_fraction_q: None,
+        tile_key: tile_key.into(),
+        tile_raw_sha256: digest.into(),
+        start: BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: 0,
+        },
+        end: BusVertex {
+            feature: 1,
+            line: 0,
+            vertex: 1,
+        },
+    };
+    let cached = || {
+        let bytes: Vec<u8> = serde_json::from_value(fixture["raw"].clone()).unwrap();
+        (
+            session::OfmRawInput {
+                sha256: digest.into(),
+                byte_length: bytes.len(),
+                base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            },
+            session::OfmBindingInput {
+                key: tile_key.into(),
+                url: tile_key.into(),
+                raw_sha256: digest.into(),
+                revision: fixture["revision"].as_str().unwrap().into(),
+                z: 14,
+                x: 14552,
+                y: 6451,
+                decoder_rule: "ofm_transportation_z14_v1".into(),
+                license: "ODbL-1.0".into(),
+                attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+            },
+        )
+    };
+    let token = editor.ofm_world_token().unwrap();
+    assert!(editor
+        .preview_authored_tram_road_guide("bad-token", &guide, Some(cached()))
+        .is_err());
+    assert!(editor
+        .preview_authored_tram_road_guide(&token, &guide, None)
+        .is_err());
+    let points = editor
+        .preview_authored_tram_road_guide(&token, &guide, Some(cached()))
+        .unwrap();
+    assert_eq!(points.len(), 3);
+    let reverse = AuthoredTramGuide {
+        start: guide.end,
+        end: guide.start,
+        ..guide
+    };
+    let opposite = editor
+        .preview_authored_tram_road_guide(&token, &reverse, Some(cached()))
+        .unwrap();
+    assert!(points.iter().rev().eq(&opposite));
+    assert_eq!(editor.snapshot(), original);
+    assert_eq!(editor.ofm_world_token().unwrap(), token);
+    assert_eq!(editor.world_edit_history().undo_depth, undo_depth);
+
+    let alignment = |levels| {
+        serde_json::from_value::<session::PlannedAlignment>(serde_json::json!({
+            "name": "編集した架空軌道", "trackType": "tram", "points": points,
+            "anchorIndices": [0, 2], "anchorLevels": levels, "stations": []
+        }))
+        .unwrap()
+    };
+    // The road evidence is horizontal only: game height/gradient still runs
+    // through the normal construction gate, not a measured real rail grade.
+    assert!(editor
+        .build_construction_plan(vec![alignment(["ground", "elevated"])], vec![])
+        .is_err());
+    assert_eq!(editor.snapshot(), original);
+    let built = editor
+        .build_construction_plan(vec![alignment(["ground", "ground"])], vec![])
+        .unwrap();
+    assert_eq!(
+        built.alignments[0].track_type,
+        rosenfu_core::world::TrackType::Tram
+    );
+    assert!(built.road_path_provenance.is_empty() && built.road_evidence_descriptors.is_empty());
+    let world = rosenfu_core::world::World::new(built.clone()).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("player-authored-tram.json");
+    rosenfu_storage::save_world(&path, &world).unwrap();
+    assert_eq!(
+        rosenfu_storage::load_world_with_version(&path).unwrap().0,
+        world
+    );
+}

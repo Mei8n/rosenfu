@@ -258,6 +258,24 @@ fn oneway(value: Option<&RawValue>) -> Option<Direction> {
     }
 }
 
+fn supports_ground_road_geometry(line: &TileLine) -> bool {
+    let attrs = &line.attributes;
+    matches!(attrs.get("class"), Some(RawValue::String(s)) if matches!(
+        s.as_str(), "primary" | "secondary" | "tertiary" | "minor" | "service" |
+            "busway" | "bus_guideway"
+    )) && !attrs.contains_key("brunnel")
+        && match attrs.get("layer") {
+            None => true,
+            Some(RawValue::String(s)) => s.parse::<f64>() == Ok(0.),
+            Some(v) => number(v) == Some(0.),
+        }
+        && match attrs.get("access") {
+            None => true, // simulated eligibility of a supported street class
+            Some(RawValue::String(s)) => matches!(s.as_str(), "yes" | "permissive" | "designated"),
+            _ => false,
+        }
+}
+
 fn eligible(line: &TileLine, respect_oneway: bool, structured: bool) -> Option<(Direction, Grade)> {
     if structured {
         if !bus_grade::supported_class(line) || !bus_grade::allowed_access(line) {
@@ -274,25 +292,10 @@ fn eligible(line: &TileLine, respect_oneway: bool, structured: bool) -> Option<(
             grade,
         ));
     }
-    let attrs = &line.attributes;
-    if !matches!(attrs.get("class"), Some(RawValue::String(s)) if matches!(
-        s.as_str(), "primary" | "secondary" | "tertiary" | "minor" | "service" |
-            "busway" | "bus_guideway"
-    )) || attrs.contains_key("brunnel")
-        || !match attrs.get("layer") {
-            None => true,
-            Some(RawValue::String(s)) => s.parse::<f64>() == Ok(0.),
-            Some(v) => number(v) == Some(0.),
-        }
-        || !match attrs.get("access") {
-            None => true, // simulated eligibility of a supported street class
-            Some(RawValue::String(s)) => matches!(s.as_str(), "yes" | "permissive" | "designated"),
-            _ => false,
-        }
-    {
+    if !supports_ground_road_geometry(line) {
         return None;
     }
-    let tagged = oneway(attrs.get("oneway"))?;
+    let tagged = oneway(line.attributes.get("oneway"))?;
     Some((
         if respect_oneway {
             tagged
@@ -644,6 +647,14 @@ pub(super) fn build_gameplay_bus_graph(
     store: &EvidenceStore,
     query: &BusPathBinding,
 ) -> Result<GameplayBusGraph> {
+    build_observed_road_graph(store, query, false)
+}
+
+fn build_observed_road_graph(
+    store: &EvidenceStore,
+    query: &BusPathBinding,
+    authored_tram_guide: bool,
+) -> Result<GameplayBusGraph> {
     let keys = query.tile_keys()?;
     let mut tiles = keys
         .iter()
@@ -691,7 +702,7 @@ pub(super) fn build_gameplay_bus_graph(
     let mut ids = BTreeMap::new();
     for tile in tiles {
         for raw in &tile.lines {
-            if structured {
+            if structured || authored_tram_guide {
                 for &p in &raw.coordinates {
                     if owned(&tile.binding, raw.extent as i32, p) {
                         *observed_counts
@@ -700,7 +711,17 @@ pub(super) fn build_gameplay_bus_graph(
                     }
                 }
             }
-            let Some((direction, grade)) = eligible(raw, query.respect_oneway, structured) else {
+            let accepted = if authored_tram_guide {
+                // Source motor direction is not an in-game rail design rule.
+                // Do not enter explicit bus-only, unavailable or non-ground
+                // roads, and do not grant the graph any transport authority.
+                (supports_ground_road_geometry(raw)
+                    && !matches!(raw.attributes.get("class"), Some(RawValue::String(s)) if s == "busway" || s == "bus_guideway"))
+                .then_some((Direction::Both, Grade::Ground))
+            } else {
+                eligible(raw, query.respect_oneway, structured)
+            };
+            let Some((direction, grade)) = accepted else {
                 continue;
             };
             if raw.coordinates.windows(2).any(|p| p[0] == p[1]) {
@@ -768,7 +789,11 @@ pub(super) fn build_gameplay_bus_graph(
     };
     for (coordinate, group) in &groups {
         if !structured {
-            join_surface(group, &mut representative);
+            // An ineligible/unknown arm at the exact source vertex makes
+            // an authored Tram junction unresolved. Bank no new authority.
+            if !authored_tram_guide || observed_counts.get(coordinate) == Some(&group.len()) {
+                join_surface(group, &mut representative);
+            }
             continue;
         }
         let ground: Vec<_> = group
@@ -1180,6 +1205,156 @@ fn bus_arc_micrometres(weight: u64, extent: u32, cosh: u128) -> u128 {
     // the maximum accepted input extent leaves ample headroom in u128.
     u128::from(weight) * EARTH_CIRCUMFERENCE_MM * 1_000_000_000
         / (16_384 * u128::from(extent) * cosh)
+}
+
+/// Same-cell reproducible geometry query for a game-authored track. It has
+/// no flags for Bus direction, grades, stop placement or real rail operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthoredTramGuide {
+    pub tile_key: String,
+    pub tile_raw_sha256: String,
+    pub start: BusVertex,
+    pub end: BusVertex,
+    /// Measured along the verified segment starting at the given vertex. A
+    /// missing fraction means the original vertex, not guessed geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_fraction_q: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_fraction_q: Option<u32>,
+}
+
+impl AuthoredTramGuide {
+    pub(crate) fn evidence_request(&self) -> BusPathBinding {
+        BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
+            tile_key: self.tile_key.clone(),
+            tile_raw_sha256: self.tile_raw_sha256.clone(),
+            respect_oneway: false,
+            start: self.start,
+            end: self.end,
+            additional_tiles: vec![],
+            end_tile_key: None,
+            pattern: None,
+            interior_stops: vec![],
+            via: vec![],
+        }
+    }
+}
+
+pub fn reconstruct_authored_tram_guide(
+    store: &EvidenceStore,
+    proposed: &AuthoredTramGuide,
+) -> Result<Option<Vec<[f64; 2]>>> {
+    let query = proposed.evidence_request();
+    let scope = store.scope(&query.tile_keys()?)?;
+    if scope.decoded(&query.tile_key)?.binding.raw_sha256 != query.tile_raw_sha256 {
+        return Err(Error::Hash);
+    }
+    let graph = build_observed_road_graph(&scope, &query, true)?;
+    if proposed.start_fraction_q.is_none() && proposed.end_fraction_q.is_none() {
+        return Ok(solve_gameplay_bus_graph(&graph, &query)?.map(|p| p.points));
+    }
+    let Some((start, from)) = authored_anchor(
+        &graph,
+        &query.tile_key,
+        query.start,
+        proposed.start_fraction_q,
+    ) else {
+        return Ok(None);
+    };
+    let Some((end, to)) =
+        authored_anchor(&graph, &query.tile_key, query.end, proposed.end_fraction_q)
+    else {
+        return Ok(None);
+    };
+    // Both fractional picks attach only to a verified ordinary raw atom.
+    // At most four bounded searches share one graph and one work allowance.
+    let mut scratch = SearchScratch::new(graph.geometry.len());
+    let mut budget = MAX_MULTI_RELAXATIONS;
+    let mut best: Option<(f64, Vec<[f64; 2]>)> = None;
+    for &f in &from {
+        for &t in &to {
+            let mut legs = vec![];
+            if f != t && !scratch.leg(&graph, f, t, &mut budget, &mut legs)? {
+                continue;
+            }
+            if legs.len() > MAX_MULTI_ATOMS - 3 {
+                return Err(Error::Limit);
+            }
+            let mut points = Vec::with_capacity(legs.len() + 3);
+            points.extend([start, graph.geometry[f].point()]);
+            points.extend(legs.iter().map(|arc| graph.geometry[arc.to].point()));
+            points.push(end);
+            points.dedup();
+            if points.len() < 2 {
+                continue;
+            }
+            let length = points.windows(2).map(|p| distance(p[0], p[1])).sum();
+            if best.as_ref().is_none_or(|(shortest, _)| length < *shortest) {
+                best = Some((length, points));
+            }
+        }
+    }
+    Ok(best.map(|(_, points)| points))
+}
+
+fn authored_anchor(
+    graph: &GameplayBusGraph,
+    tile_key: &str,
+    v: BusVertex,
+    fraction_q: Option<u32>,
+) -> Option<([f64; 2], Vec<usize>)> {
+    const FRACTION_DENOMINATOR: u32 = 1_000_000;
+    let a = graph.node_at(tile_key, v)?;
+    let Some(q) = fraction_q.filter(|q| *q != 0) else {
+        return Some((graph.geometry[a].point(), vec![a]));
+    };
+    if q > FRACTION_DENOMINATOR {
+        return None;
+    }
+    let b = graph.node_at(
+        tile_key,
+        BusVertex {
+            vertex: v.vertex.checked_add(1)?,
+            ..v
+        },
+    )?;
+    let fragment = format!(
+        "ofm:{}:{}:{}",
+        tile_key
+            .split("/planet/")
+            .nth(1)?
+            .strip_suffix(".pbf")?
+            .replace('/', ":"),
+        v.feature,
+        v.line
+    );
+    // An exact point on a clipped/denied/unowned atom cannot be forged from
+    // nearby nodes or a common XY. The whole original segment must be linked.
+    if !graph.adj[a].iter().any(|arc| {
+        arc.to == b
+            && arc.ordinal == v.vertex as usize
+            && graph.lines[arc.line].fragment_id == fragment
+            && arc.from_pos == f64::from(v.vertex)
+            && arc.to_pos == f64::from(v.vertex) + 1.
+    }) {
+        return None;
+    }
+    let [p, z] = [graph.geometry[a].point(), graph.geometry[b].point()];
+    let fraction = f64::from(q) / f64::from(FRACTION_DENOMINATOR);
+    Some(if q == FRACTION_DENOMINATOR {
+        (z, vec![b])
+    } else {
+        (
+            [
+                p[0] + (z[0] - p[0]) * fraction,
+                p[1] + (z[1] - p[1]) * fraction,
+            ],
+            vec![a, b],
+        )
+    })
 }
 
 /// Reconstruct only from evidence in the world archive, never from caller paths.

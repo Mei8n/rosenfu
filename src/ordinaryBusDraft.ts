@@ -90,6 +90,22 @@ export function snapOrdinaryBusVertex(snapshot:RoadSnapshot|undefined,at:GeoPoin
  if(related.some(c=>!sameTile(c.anchor.tile,anchor.tile)||!samePlace(c.anchor.point,anchor.point)))throw Error('位置が重なっています。地図を拡大して選び直してください。');
  return anchor;
 }
+/** Bridge a worker's 20m ray pick to the observed tile digest. This is a
+ * bounded source anchor, not a second projection or asserted native topology. */
+export function observedTramRoadAnchor(
+ snapshot:RoadSnapshot|undefined,pick:{fragmentId:string;segmentIndex:number;fraction:number;point:GeoPoint},
+):{anchor:BusAnchor;fractionQ:number}{
+ const matches=tilesOf(snapshot).flatMap(({binding,lines})=>lines.filter(l=>l.id===pick.fragmentId).map(line=>({binding,line})));
+ const seen=matches[0],index=pick.segmentIndex;
+ if(matches.length!==1||!seen||!Number.isSafeInteger(index)||index<0||index>=seen.line.coordinates.length-1
+    ||!Number.isFinite(pick.fraction)||pick.fraction<0||pick.fraction>1)throw Error('道路上の点を選び直してください。');
+ const {binding,line}=seen;
+ const prefix=`ofm:${binding.revision}:14:${binding.x}:${binding.y}:`;
+ const m=line.id.startsWith(prefix)?line.id.slice(prefix.length).match(/^(0|[1-9]\d*):(0|[1-9]\d*)$/):null;
+ if(!m||line.x!==binding.x||line.y!==binding.y||line.revision!==binding.revision||!m.slice(1).every(n=>Number.isSafeInteger(Number(n))&&Number(n)<=0xffffffff))
+    throw Error('選択した道路の元データが変わりました。');
+ return {anchor:{tile:binding,point:pick.point,raw:{feature:Number(m[1]),line:Number(m[2]),vertex:index}},fractionQ:Math.round(pick.fraction*1_000_000)};
+}
 const sameRawAnchor=(a:BusAnchor,b:BusAnchor)=>sameTile(a.tile,b.tile)&&a.raw.feature===b.raw.feature&&a.raw.line===b.raw.line&&a.raw.vertex===b.raw.vertex;
 const samePlace=(a:GeoPoint,b:GeoPoint)=>Math.abs(a.latitude-b.latitude)<1e-12&&Math.abs(a.longitude-b.longitude)<1e-12;
 

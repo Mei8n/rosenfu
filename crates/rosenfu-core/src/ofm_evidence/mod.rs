@@ -5,9 +5,9 @@ mod bus;
 mod bus_grade;
 pub(crate) use bus::BUS_STOP_DENOMINATOR;
 pub use bus::{
-    find_gameplay_bus_path, reconstruct_gameplay_bus_path, BusGradePolicy, BusInteriorStop,
-    BusPath, BusPathBinding, BusPattern, BusTileProof, BusVertex, BusVia, BUS_GRAPH_RULE,
-    BUS_RECTANGLE_RULE,
+    find_gameplay_bus_path, reconstruct_authored_tram_guide, reconstruct_gameplay_bus_path,
+    AuthoredTramGuide, BusGradePolicy, BusInteriorStop, BusPath, BusPathBinding, BusPattern,
+    BusTileProof, BusVertex, BusVia, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
 };
 mod candidates;
 mod path;

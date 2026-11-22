@@ -857,6 +857,22 @@ impl WorldDraft {
         Ok(self)
     }
 
+    /// One local authoring preview from the existing immutable road-tile input.
+    /// This consumes a detached draft: the real world does not gain a Bus
+    /// route, new authority or retained data merely by looking at a guide.
+    pub fn authored_tram_road_guide(
+        self,
+        request: &crate::ofm_evidence::AuthoredTramGuide,
+        cached: Vec<(
+            crate::ofm_evidence::RawEvidence,
+            crate::ofm_evidence::TileBinding,
+        )>,
+    ) -> Result<Option<Vec<[f64; 2]>>, RoadTransportError> {
+        let staged = self.admit_gameplay_ofm_bus_tiles(&request.evidence_request(), cached)?;
+        crate::ofm_evidence::reconstruct_authored_tram_guide(&staged.runtime_road_evidence, request)
+            .map_err(outward_evidence_error)
+    }
+
     /// Admit one independent route without replacing another route's metadata.
     pub(crate) fn put_ofm_gameplay_bus(
         mut self,

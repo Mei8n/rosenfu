@@ -7,8 +7,10 @@ import {createRoadDrawingEngine} from './roadDrawingEngine';
 import {alignmentLength} from './alignment';
 import {sampledGeometry} from './editedGeometry';
 import {provisionalCurveSpeed} from './circularAlignment';
-const mock=vi.hoisted(()=>({snapshot:null as any}));
-vi.mock('./useAutomaticRoad',()=>({useAutomaticRoad:()=>({status:'ready',snapshot:mock.snapshot,message:'fixture',retry:vi.fn(),ensureCurrent:vi.fn(async()=>({status:'unavailable',reason:'fixture'}))})}));
+import {decodeOpenFreeMapRoadTile,OFM_ATTRIBUTION,OFM_EVIDENCE_RULE} from './openFreeMapRoadData';
+import tramFixture from '../crates/rosenfu-core/tests/fixtures/ofm_authored_tram_synthetic.json';
+const mock=vi.hoisted(()=>({snapshot:null as any,read:vi.fn()}));
+vi.mock('./useAutomaticRoad',()=>({useAutomaticRoad:()=>({status:'ready',snapshot:mock.snapshot,message:'fixture',retry:vi.fn(),ensureCurrent:vi.fn(async()=>({status:'unavailable',reason:'fixture'})),readTileEvidenceBatch:mock.read})}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
 class RoadWorker {
  static delay=false;static queued:(()=>void)[]=[];
@@ -196,4 +198,84 @@ test('a same-position double click finishes temporary tram road snap during nati
  await click(.0008);
  expect(document.querySelector('.parked-plan')).toBeTruthy();
  expect(document.querySelector('.confirmed-draft')).toBeNull();
+});
+
+test('ordinary authored tram follows a cached raw T junction on click without invoking native on hover',async()=>{
+ vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
+ const f=tramFixture,bytes=Uint8Array.from(f.raw),tile=await decodeOpenFreeMapRoadTile(bytes,f.x,f.y,f.revision,1);
+ mock.snapshot={...tile,tileSnapshots:[tile]};
+ const [[startLon,startLat],[jointLon,jointLat]]=tile.tileLines[0].coordinates;
+ const [endLon,endLat]=tile.tileLines[1].coordinates[1];
+ const start={latitude:startLat+(jointLat-startLat)*.25,longitude:startLon+(jointLon-startLon)*.25};
+ const end={latitude:jointLat+(endLat-jointLat)*.75,longitude:jointLon+(endLon-jointLon)*.75};
+ const junction={latitude:jointLat,longitude:jointLon};
+ const mapCamera={...junction,zoom:16},loaded={...world,view_state:mapCamera};
+ const binding={z:14,x:f.x,y:f.y,revision:f.revision,rawSha256:f.tileRawSha256,decoderRule:OFM_EVIDENCE_RULE,
+     key:f.tileKey,url:f.tileKey,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION};
+ mock.read.mockResolvedValue({status:'ready',evidence:{rawTiles:[{sha256:f.tileRawSha256,bytes}],bindings:[binding]}});
+ let allowReply!:(points:typeof start[])=>void,denyReply!:(error:Error)=>void;
+ vi.mocked(invoke).mockImplementation(async(command)=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'tram-junction',authored_tram_road_guide_enabled:true};
+  if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='ofm_world_token')return 'tram-junction-test';
+  if(command==='preview_authored_tram_road_guide')return new Promise((resolve,reject)=>{allowReply=resolve;denyReply=reject;});
+  if(command==='preview_construction_plan')return {validationError:null,newCrossingCount:0};
+  return loaded;
+ });
+ const {rerender}=render(<App/>);await screen.findByText(/tram-junction/);
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ expect(screen.getByRole('button',{name:'道路に合わせる'}).getAttribute('aria-pressed')).toBe('true');
+ const map=document.querySelector('svg[role=img]')!;map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ const gesture=(p:typeof start)=>{const xy=project(p.latitude,p.longitude,mapCamera);return {clientX:xy.x,clientY:xy.y,detail:1};};
+ await act(async()=>{fireEvent.click(map,gesture(start));await new Promise(r=>setTimeout(r,0));});
+ await act(async()=>{fireEvent.pointerMove(map,gesture(end));await new Promise(r=>setTimeout(r,0));});
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='preview_authored_tram_road_guide')).toBe(false);
+ expect(mock.read).not.toHaveBeenCalled();
+ await waitFor(()=>expect(document.querySelector('.road-snap-point')).toBeTruthy());
+ expect(document.querySelector('.candidate-draft')).toBeNull();
+ await act(async()=>{fireEvent.click(map,gesture(end));await new Promise(r=>setTimeout(r,0));});
+ await waitFor(()=>expect(allowReply).toBeTruthy());
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ const call=vi.mocked(invoke).mock.calls.find(([c])=>c==='preview_authored_tram_road_guide')![1] as any;
+ expect(call.guide).toEqual({tileKey:f.tileKey,tileRawSha256:f.tileRawSha256,start:{feature:0,line:0,vertex:0},end:{feature:1,line:0,vertex:0},startFractionQ:250000,endFractionQ:750000});
+ expect(call.expectedWorldToken).toBe('tram-junction-test');
+ expect(call.rawEvidence.sha256).toBe(f.tileRawSha256);
+ // A late result after toggling the mode must never place the road leg.
+ const firstReply=allowReply;
+ const toggle=screen.getByRole('button',{name:'道路に合わせる'});
+ fireEvent.click(toggle);
+ await act(async()=>firstReply([start,junction,end]));
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ fireEvent.click(toggle);
+ await act(async()=>{fireEvent.click(map,gesture(end));await new Promise(r=>setTimeout(r,0));});
+ await waitFor(()=>expect(allowReply).not.toBe(firstReply));
+ const staleSourceReply=allowReply;
+ const oldSnapshot=mock.snapshot;
+ mock.snapshot={...oldSnapshot};rerender(<App/>);
+ await act(async()=>staleSourceReply([start,junction,end]));
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ await act(async()=>{fireEvent.click(map,gesture(end));await new Promise(r=>setTimeout(r,0));});
+ await waitFor(()=>expect(allowReply).not.toBe(staleSourceReply));
+ const refusedReply=allowReply;
+ await act(async()=>{fireEvent.click(map,{...gesture(end),detail:2});denyReply(Error('接続が証明できません'));});
+ await screen.findByText(/接続が証明できません/);
+ expect(document.querySelector('.confirmed-draft')).toBeNull(); // hard denial: no fallback
+ await act(async()=>{fireEvent.click(map,gesture(end));await new Promise(r=>setTimeout(r,0));});
+ await waitFor(()=>expect(allowReply).not.toBe(refusedReply));
+ await act(async()=>allowReply([start,junction,end]));
+ await waitFor(()=>expect(document.querySelector('.confirmed-draft')).toBeTruthy());
+ const reqs=vi.mocked(invoke).mock.calls.filter(([c,args])=>c==='preview_construction_plan'&&(args as any)?.validationOnly);
+ const built=(reqs.at(-1)![1] as any).alignments[0];
+ expect(built.trackType).toBe('tram');
+ expect(built.points.length).toBeGreaterThan(3);
+ expect(built.points[0].longitude).toBeCloseTo(start.longitude,8);
+ expect(built.points[0].latitude).toBeCloseTo(start.latitude,8);
+ expect(built.points.at(-1).longitude).toBeCloseTo(end.longitude,8);
+ expect(built.points.at(-1).latitude).toBeCloseTo(end.latitude,8);
+ expect(built.ofmPath).toBeUndefined();
+ // The rejected double click didn't leave an old 'finish' request.
+ const fresh={latitude:jointLat+(endLat-jointLat)*.95,longitude:endLon};
+ await act(async()=>{fireEvent.click(map,gesture(fresh));await new Promise(r=>setTimeout(r,0));});
+ expect(document.querySelector('.parked-plan')).toBeNull();
 });

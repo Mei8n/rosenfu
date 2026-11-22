@@ -130,6 +130,31 @@ fn cached_tiles(
     Ok(cached)
 }
 
+/// Geometry for the game track guide, not permission to operate a real tram.
+#[tauri::command]
+pub async fn preview_authored_tram_road_guide(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    guide: rosenfu_core::ofm_evidence::AuthoredTramGuide,
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+) -> Result<Vec<rosenfu_core::world::GeoPoint>, String> {
+    let cached = match (raw_evidence, tile_binding) {
+        (Some(raw), Some(binding)) => Some((raw, binding)),
+        (None, None) => None,
+        _ => return Err("道路のキャッシュ情報が揃っていません。".into()),
+    };
+    let snapshot = editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshot.preview_authored_tram_road_guide(&expected_world_token, &guide, cached)
+    })
+    .await
+    .map_err(|_| "道路に沿う軌道の経路を確認できません。".to_owned())?
+}
+
 #[tauri::command]
 pub async fn preview_gameplay_ofm_bus(
     editor: State<'_, Mutex<WorldEditor>>,

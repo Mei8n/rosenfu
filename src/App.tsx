@@ -1,6 +1,8 @@
 import {OrdinaryBusPanel,useOrdinaryBusDraft} from './OrdinaryBusPanel';
 import {OrdinaryBusStopsPanel,useOrdinaryBusStops} from './OrdinaryBusStopsPanel';
-import type {OrdinaryBusPath,OrdinaryBusPreviewReply,OrdinaryBusQuery} from './ordinaryBusDraft';
+import {prepareOrdinaryBusQuery,observedTramRoadAnchor,type OrdinaryBusPath,type OrdinaryBusPreviewReply,type OrdinaryBusQuery} from './ordinaryBusDraft';
+import {fitRoadFollow} from './roadFollowFit';
+import type {RoadDrawingResult} from './roadDrawingEngine';
 import {BusOperations,OperationClock,OperationProvider,ServiceOperations,ServicePathChangeNotice} from "./OperationsPanel";
 import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection,type RoadPlayerMapRequest,type RoadPlayerMapSelection} from "./RoadTransportPanel";
 import {RailJourneyReplayPanel} from "./RailJourneyReplayPanel";
@@ -121,7 +123,7 @@ type GeoPoint = { latitude: number; longitude: number };
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; ordinary_ofm_bus_interior_stops_enabled?: boolean; ordinary_ofm_bus_auto_stops_enabled?: boolean; ordinary_ofm_bus_closed_loop_enabled?: boolean; ordinary_ofm_bus_observed_grade_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
+type EngineInfo = { authored_tram_road_guide_enabled?: boolean; ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; ordinary_ofm_bus_interior_stops_enabled?: boolean; ordinary_ofm_bus_auto_stops_enabled?: boolean; ordinary_ofm_bus_closed_loop_enabled?: boolean; ordinary_ofm_bus_observed_grade_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
@@ -396,6 +398,7 @@ export function App() {
   const [tramCtrl,setTramCtrl]=useState(false);
   const [tramOverridePrepared,setTramOverridePrepared]=useState(false);
   const tramDrawing=trackType==="tram"&&activeTool==="tracks"&&mapMode==="draw";
+  const nativeTramGuide=tramDrawing&&info?.authored_tram_road_guide_enabled===true;
   const usesRoadSnap=(ctrl:boolean)=>trackType==="tram"?roadFollowing!==ctrl:roadFollowing&&!ctrl;
   const roadSnapShown=tramDrawing?usesRoadSnap(tramCtrl):roadFollowing;
   const roadDrawingEnabled=roadFollowing||(tramDrawing&&(tramCtrl||tramOverridePrepared));
@@ -1268,10 +1271,10 @@ export function App() {
       setCursorPosition(point?{x:event.clientX-rect.left,y:event.clientY-rect.top,width:rect.width,height:rect.height}:null);
       drawingCursor.current=point?{point,width:rect.width,height:rect.height}:null;
       if(tramDrawing&&tramCtrl!==event.ctrlKey)updateTramCtrl(event.ctrlKey);
-      if(usesRoadSnap(event.ctrlKey)&&point&&!parallelMode){roadDrawing.hover({point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20});}
+      if(usesRoadSnap(event.ctrlKey)&&point&&!parallelMode){roadDrawing.hover({point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20,authoredTramCue:nativeTramGuide});}
       else if(tramDrawing)roadDrawing.clearHover();
       else roadDrawing.cancel();
-      setHoverPoint(parallelMode?point:point && !snappedEndpoint(point,rect.width,rect.height)?drawingPoint(point,rect.width,rect.height,event.ctrlKey):null);
+      setHoverPoint(parallelMode?point:nativeTramGuide&&usesRoadSnap(event.ctrlKey)?null:point && !snappedEndpoint(point,rect.width,rect.height)?drawingPoint(point,rect.width,rect.height,event.ctrlKey):null);
     }
     const gesture = gestureRef.current;
     if (!gesture || gesture.pointerId !== event.pointerId) return;
@@ -1509,7 +1512,14 @@ export function App() {
   }
   async function placeRoadDrawing(point:GeoPoint,rect:{width:number;height:number},event:{detail:number;ctrlKey:boolean;clientX?:number;clientY?:number}) {
     if(legacyRoadDraft){setError('以前の道路追従下書きです。新しい計画から敷設してください');return;}
-    if(event.detail>=2){if(roadDrawing.clickPending()){roadFinishAfterPlacement.current=true;return;}if(draftPoints.length>1)setDraftFinished(true);roadDrawing.cancel();return;}
+    if(event.detail>=2){
+      if(roadDrawing.clickPending()){
+        const at=pendingPlacementPoint.current;
+        if(at&&Math.hypot((event.clientX??0)-at.x,(event.clientY??0)-at.y)<=8)roadFinishAfterPlacement.current=true;
+        return;
+      }
+      if(draftPoints.length>1)setDraftFinished(true);roadDrawing.cancel();return;
+    }
     if(roadDrawing.clickPending())return;roadFinishAfterPlacement.current=false;
     // Existing endpoints, planned endpoints, junction selection and finishing are
     // owned by normal construction, not inferred from road geometry.
@@ -1517,24 +1527,66 @@ export function App() {
     const captured=anchorPlacementContext.current;
     const nearEnd=(!draftFinished&&draftPoints.length)?startTarget(point,rect.width,rect.height):null;
     const destination=nearEnd?.kind==='built'?nearEnd:(!draftFinished&&draftPoints.length)?destinationTarget(point,rect.width,rect.height):null;
-    const result=await roadDrawing.click({point:destination?.point??point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20});
-    const now=anchorPlacementContext.current;
-    if(!result||captured.world!==now.world||captured.key!==now.key)return;
-    if(result.kind==='error'){setError(result.error);return;}
-    if(result.kind==='free'){placeTrackPoint(point,rect,{...event,ctrlKey:true});return;}
+    pendingPlacementPoint.current={x:event.clientX??0,y:event.clientY??0};
+    let result:RoadDrawingResult|null=await roadDrawing.click({
+      point:destination?.point??point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20,authoredTramCue:nativeTramGuide,resolveAuthoredSeam:nativeTramGuide
+    });
+    const stillCurrent=()=>captured.world===anchorPlacementContext.current.world&&captured.key===anchorPlacementContext.current.key;
+    const reject=(message:string)=>{
+      finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;setError(message);
+    };
+    if(!stillCurrent())return;
+    if(!result){finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;return;}
+    if(result.kind==="junction"){
+      const task=++anchorPlacementToken.current;
+      anchorPlacementPending.current=true;setAnchorPlacementInProgress(true);
+      pendingPlacementPoint.current={x:event.clientX??0,y:event.clientY??0};
+      const waiting=setTimeout(()=>{if(anchorPlacementToken.current===task)setAnchorPlacementWaiting(true);},300);
+      const currentTask=()=>anchorPlacementToken.current===task&&stillCurrent();
+      try{
+        const snapshot=automaticRoad.snapshot;
+        const from=observedTramRoadAnchor(snapshot,result.from),to=observedTramRoadAnchor(snapshot,result.to);
+        const start=draftPoints.at(-1);
+        if(!start||distanceM(from.anchor.point,start)>.01)throw Error("起点を道路上の点に置き直すか、Ctrlで自由に敷設してください。");
+        if(distanceM(destination?.point??point,to.anchor.point)>20.01||(destination&&distanceM(destination.point,to.anchor.point)>.01))throw Error("道路上の点を選び直してください。");
+        const expected=await invoke<string>("ofm_world_token");
+        if(!currentTask())return;
+        const q=await prepareOrdinaryBusQuery(from.anchor,to.anchor,"軌道の参考経路","authored-tram-guide",expected,automaticRoad.readTileEvidenceBatch,world?.road_evidence_descriptors??[]);
+        if(!currentTask())return;
+        const points=await invoke<GeoPoint[]>("preview_authored_tram_road_guide",{expectedWorldToken:expected,guide:{
+          tileKey:q.path.tileKey,tileRawSha256:q.path.tileRawSha256,start:q.path.start,end:q.path.end,startFractionQ:from.fractionQ,endFractionQ:to.fractionQ
+        },rawEvidence:q.rawEvidence,tileBinding:q.tileBinding});
+        if(!currentTask())return;
+        if(points.length<2||points.length>4096||points.some(p=>!Number.isFinite(p.latitude)||!Number.isFinite(p.longitude))
+           ||distanceM(points[0],from.anchor.point)>.01||distanceM(points[points.length-1],to.anchor.point)>.01)throw Error("道路に沿う軌道の経路を確認できません。");
+        // Preserve the same approved displayed endpoints across quantization.
+        points[0]=start;points[points.length-1]=to.anchor.point;
+        result={kind:"route",point:to.anchor.point,line:fitRoadFollow(points)};
+      }catch(e){if(!currentTask())return;result={kind:"error",error:String(e)};}
+      finally{clearTimeout(waiting);if(anchorPlacementToken.current===task){anchorPlacementPending.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);}}
+    }
+    if(!stillCurrent())return;
+    if(result.kind==='error'){reject(result.error);return;}
+    if(result.kind==='seam'){reject('道路のつながりを確認できません。');return;}
+    if(result.kind==='free'){
+      if(nativeTramGuide){reject("道路の位置を確認できません。Ctrlで自由に敷設するか、道路に合わせる設定をオフにしてください。");return;}
+      placeTrackPoint(point,rect,{...event,ctrlKey:true});return;
+    }
     if(result.kind==='point'){placeTrackPoint(result.point,rect,{...event,ctrlKey:true});return;}
     const end=destination?.point??result.point,line=[...draftLine,...result.line.slice(1)];line[line.length-1]=end;
     const points=[...draftPoints,end],geometry:EditedGeometry={version:1,anchors:points,line};
     const targetRef=destination?{alignmentId:destination.alignment.id,endpoint:destination.endpoint}:undefined;
     const invalid=plannedGeometry(points,geometry,previousPoint).error??joinError(line,draftExtension,targetRef);
-    if(invalid){setError(invalid);return;}
-    if(points.length>128){setError('アンカーが多いため区間を分けてください');return;}
+    if(invalid){reject(invalid);return;}
+    if(points.length>128){reject('アンカーが多いため区間を分けてください');return;}
     const levels=anchorHeights(draftPoints.length,draftAnchorLevels,startLevel,infrastructure.level),nextLevel=destination?endpointInfrastructure(destination.alignment,destination.endpoint).level:infrastructure.level;
     const activeRequest=requests.find((_request,index)=>buildPaths[index].id===activePathId);
-    if(!activeRequest)return;
+    if(!activeRequest){reject('敷設する計画を選び直してください。');return;}
     const request={...activeRequest,points:line,anchorIndices:anchorIndices(points,line),anchorLevels:[...levels,nextLevel],destination:targetRef,junctionSource:draftJunctionSource&&draftPoints[0]?junctionDirection(draftJunctionSource,draftPoints[0],draftPoints[1]??end):undefined,stations:plannedPlatforms.filter(item=>item.station.pathId===activePathId).map(item=>({name:stationDisplayGroup(item.station.id)?.name??item.station.name,position:nearestOnAlignment(line,item.station.point).position,lengthM:item.station.lengthM,widthM:12}))};
     pendingPlacementPoint.current={x:event.clientX??0,y:event.clientY??0};
-    if(!await validatePlannedPlacement(request))return;
+    const accepted=await validatePlannedPlacement(request,finishPendingPlacement.current);
+    if(!stillCurrent())return;
+    if(!accepted){finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;return;}
     const before={points:draftPoints,geometry:draftEditedGeometry,redo:redoPoints,anchorLevels:draftAnchorLevels,redoAnchorLevels,extension:draftExtension,destination:draftDestination,redoDestination:draftRedoDestination};
     const after={points,geometry,redo:[],anchorLevels:[...levels,nextLevel],redoAnchorLevels:[],extension:draftExtension,destination:targetRef,redoDestination:undefined};
     applyAnchorEdit(activePathId,after);setAnchorUndo(history=>[...history,{kind:'point' as const,id:activePathId,before,after}].slice(-50));setAnchorRedo([]);setDraftFinished(!!targetRef||roadFinishAfterPlacement.current||finishPendingPlacement.current);roadFinishAfterPlacement.current=false;finishPendingPlacement.current=false;setHoverPoint(null);setError('');roadDrawing.cancel();
@@ -1607,10 +1659,10 @@ export function App() {
   const finishPendingPlacement=useRef(false);
   const pendingPlacementPoint=useRef<{x:number;y:number}|null>(null);
   // Preserve intent by reference, without serializing full geometry on every hover.
-  const placementContextKey=useMemo(()=>({}),[enabled,activePlanId,activePathId,activeTool,mapMode,draftPoints,draftEditedGeometry,draftAnchorLevels,draftFinished,draftExtension,draftDestination,infrastructure,trackType,designSpeedKmh,roadFollowing,parallelMode,parallelStart,referenceCopy.active,plannedStations,alignmentName]);
+  const placementContextKey=useMemo(()=>({}),[enabled,activePlanId,activePathId,activeTool,mapMode,draftPoints,draftEditedGeometry,draftAnchorLevels,draftFinished,draftExtension,draftDestination,infrastructure,trackType,designSpeedKmh,roadFollowing,parallelMode,parallelStart,referenceCopy.active,plannedStations,alignmentName,nativeTramGuide?automaticRoad.snapshot:null,nativeTramGuide?roadDrawingBundle:null]);
   const anchorPlacementContext=useRef<{world:unknown;key:unknown}>({world,key:placementContextKey});
   anchorPlacementContext.current={world,key:placementContextKey};
-  useEffect(()=>{anchorPlacementPending.current=false;anchorPlacementToken.current++;finishPendingPlacement.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);},[world,placementContextKey]);
+  useEffect(()=>{anchorPlacementPending.current=false;anchorPlacementToken.current++;finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);},[world,placementContextKey]);
   useEffect(()=>()=>{anchorPlacementContext.current={world:null,key:'unmounted'};},[]);
 
   function commitAlignment() {
@@ -1754,7 +1806,7 @@ export function App() {
       const cursor=drawingCursor.current;
       if(!cursor||!enabled||referenceCopy.active||mapMode!=="draw"||activeTool!=="tracks"||gestureRef.current||anchorGesture.current)return;
       const {point,width,height}=cursor;
-      setHoverPoint(!snappedEndpoint(point,width,height)?drawingPoint(point,width,height,disableStraightSnap):null);
+      setHoverPoint(nativeTramGuide&&usesRoadSnap(disableStraightSnap)?null:!snappedEndpoint(point,width,height)?drawingPoint(point,width,height,disableStraightSnap):null);
     };
     const modifier=(event:KeyboardEvent)=>{
       if(event.key!=="Control"||event.repeat)return;
@@ -1764,7 +1816,7 @@ export function App() {
       if(tramDrawing)updateTramCtrl(held);
       else{
         if(roadFollowing&&held)roadDrawing.cancel();
-        if(roadFollowing&&!held&&drawingCursor.current)roadDrawing.hover({point:drawingCursor.current.point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20});
+        if(roadFollowing&&!held&&drawingCursor.current)roadDrawing.hover({point:drawingCursor.current.point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20,authoredTramCue:nativeTramGuide});
       }
       refresh(held);
     };
@@ -1780,7 +1832,7 @@ export function App() {
     }
     // Overlay and worker may only become available after pressing Ctrl with
     // the mouse motionless. Re-run the current pick as soon as the source is ready.
-    roadDrawing.hover({point:cursor.point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20});
+    roadDrawing.hover({point:cursor.point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20,authoredTramCue:nativeTramGuide});
   },[tramDrawing,roadSnapShown,roadDrawingBundle,roadDrawingTiles,enabled,parallelMode,referenceCopy.active]);
   function resetRoute(route?: Route) {
     setRouteId(route?.id ?? null); setRouteName(route?.name ?? "新路線");
@@ -2178,6 +2230,7 @@ export function App() {
 </div>}
             {activeTool === "tracks" && mapMode==="draw" && !parallelMode && !referenceCopy.active && !dragging && !anchorPreview && cursorPosition && !endpointCandidate && !draftFinished && !showPlanHover && (draftPoints.length>0 || (roadSnapShown&&!roadDrawingBundle) || (roadSnapShown&&roadDrawing.preview?.kind==='error') || !!drawingPreviewError) && <div className="construction-tooltip drawing-tooltip drawing-metrics" role="status" style={{left:Math.max(8,Math.min(mapSize.width-210,cursorPosition.x+18)),top:Math.max(8,Math.min(mapSize.height-90,cursorPosition.y+18))}}>
               {((roadSnapShown&&!roadDrawingBundle) || (roadSnapShown&&roadDrawing.preview?.kind==='error') || drawingPreviewError || nativeValidationError)&&<strong>{roadSnapShown&&!roadDrawingBundle?automaticRoad.message:roadSnapShown&&roadDrawing.preview?.kind==='error'?roadDrawing.preview.error:`敷設不可：${drawingPreviewError??nativeValidationError}`}</strong>}
+              {roadSnapShown&&(roadDrawing.preview?.kind==='junction'||roadDrawing.preview?.kind==='seam')&&<small>{roadDrawing.preview.kind==='junction'?'交差点を含む区間はクリック時に確認します':'道路のつながりはクリック時に確認します'}</small>}
               {draftPoints.length>0&&!roadSnapShown&&constructionRoadReason&&<small>{constructionRoadReason}</small>}
               {draftPoints.length>0&&!roadSnapShown&&!drawingPreviewError&&!nativeConstructionPreview?.error&&<CrossingEstimate value={nativeConstructionPreview?.value} pending={!nativeConstructionPreview||constructionRoad.status==="loading"}/>}
               {draftPoints.length>0&&<><div>長さ {Math.round(alignmentLength(draftLine))} m{candidateLine.length>1&&!drawingPreviewError?` ＋ ${Math.round(alignmentLength(roadCursorPreview?.line??candidateLine))} m`:""}</div>{!drawingPreviewError&&<div>速度上限 <span className="drawing-speed">{drawingPreviewSpeed} km/h</span>{(circleGuide||!!roadPreviewGeometry?.arcs.length)&&<small>（暫定）</small>}</div>}</>}
@@ -2233,7 +2286,8 @@ export function App() {
               </g>)}
               {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<g className="route-candidate-selection" pointerEvents="none" aria-label="選択した経路">{[...selectedRouteSections].flatMap(([id,sections])=>sections.map((points:GeoPoint[],index:number)=><path key={id+":"+index} d={drawPath(points)} fill="none" stroke="#18a6a6" strokeWidth={7/viewport.scale} strokeOpacity=".65" strokeLinecap="round" strokeLinejoin="round"/>))}</g>}
               {referenceCopy.active&&referenceCopy.roadFollow&&(referenceCopy.candidates.length?referenceCopy.candidates:referenceCopy.hoverCandidates).map(candidate=>{const a=graphNodesById.get(candidate.edge.from),b=graphNodesById.get(candidate.edge.to);return a&&b?<path key={candidate.edge.id} d={drawPath([a,b])} className="road-follow-candidate" stroke="#298746" strokeWidth="4" opacity=".7" fill="none" pointerEvents="none"/>:null;})}
-              {roadSnapShown&&(roadDrawing.preview?.kind==='point'||roadDrawing.preview?.kind==='route')&&focusMarker(roadDrawing.preview.point,'anchor','road-snap-point')}
+              {roadSnapShown&&roadDrawing.preview?.kind==='junction'&&focusMarker(roadDrawing.preview.to.point,'anchor','road-snap-point')}
+              {roadSnapShown&&(roadDrawing.preview?.kind==='point'||roadDrawing.preview?.kind==='route'||roadDrawing.preview?.kind==='seam')&&focusMarker(roadDrawing.preview.point,'anchor','road-snap-point')}
               {roadSnapShown&&roadDrawing.preview?.kind==='route'&&<TrackStroke d={drawInfrastructurePath(roadDrawing.preview.line,infrastructure)} className={'draft-path road-drawing-preview'+(constructionValidationError(nativeConstructionPreview?.value)?' invalid-candidate':'')} pointerEvents="none"/>}
               {referenceCopy.active&&referencePreviewPoints&&<TrackStroke d={drawInfrastructurePath(referencePreviewPoints,referenceExtension?endpointInfrastructure(referenceExtension.alignment,referenceExtension.endpoint):infrastructure)} data-track-count={(referenceExtension?endpointInfrastructure(referenceExtension.alignment,referenceExtension.endpoint):infrastructure).track_count} className="draft-path reference-copy-preview" style={referenceCopy.roadFollow?{stroke:"#298746"}:undefined} pointerEvents="none"/>}
               {parallelMode&&activeTool==="tracks"&&parallelSources.map(source=>{const p=source.points[0],a=project(p.latitude,p.longitude,camera),b=project(p.latitude+PARALLEL_RANGE_M/111195,p.longitude,camera);return <path key={source.id} d={drawPath(source.points)} fill="none" stroke="#61afcf" strokeOpacity=".28" strokeWidth={2*Math.abs(a.y-b.y)} strokeLinecap="round" pointerEvents="none"/>;})}

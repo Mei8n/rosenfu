@@ -2048,3 +2048,97 @@ fn ordinary_bus_same_grade_motorway_seam_carries_connected_approaches_only() {
         assert!(reconstruct_gameplay_bus_path(&store, &q).unwrap().is_none());
     }
 }
+
+#[test]
+fn authored_tram_uses_exact_ground_junction_without_treating_motor_direction_as_rail_authority() {
+    let t = |road: Option<(&str, &str)>| {
+        bus_fixture(&[
+            (
+                &[[100, 100], [200, 100], [300, 100]],
+                Some(("oneway", "yes")),
+            ),
+            (&[[200, 100], [200, 200]], road),
+        ])
+    };
+    let (b, store) = t(None);
+    let guide = |binding: &TileBinding, start, end| AuthoredTramGuide {
+        start_fraction_q: None,
+        end_fraction_q: None,
+        tile_key: binding.canonical_url.clone(),
+        tile_raw_sha256: binding.raw_sha256.clone(),
+        start,
+        end,
+    };
+    let start = bus_vertex(0, 0);
+    let finish = bus_vertex(1, 1);
+    let a = reconstruct_authored_tram_guide(&store, &guide(&b, start, finish))
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.len(), 3);
+    let back = reconstruct_authored_tram_guide(&store, &guide(&b, finish, start))
+        .unwrap()
+        .unwrap();
+    assert!(a.iter().rev().eq(&back));
+    let fractional = AuthoredTramGuide {
+        start_fraction_q: Some(250_000),
+        end_fraction_q: Some(750_000),
+        ..guide(&b, start, bus_vertex(1, 0))
+    };
+    let partial = reconstruct_authored_tram_guide(&store, &fractional)
+        .unwrap()
+        .unwrap();
+    assert_eq!(partial.len(), 3);
+    assert_eq!(partial[0][0], a[0][0] + (a[1][0] - a[0][0]) * 0.25);
+    assert_eq!(partial[1], a[1]);
+    assert_eq!(partial[2][1], a[1][1] + (a[2][1] - a[1][1]) * 0.75);
+    let refused = AuthoredTramGuide {
+        start_fraction_q: Some(1_000_001),
+        ..fractional
+    };
+    assert!(reconstruct_authored_tram_guide(&store, &refused)
+        .unwrap()
+        .is_none());
+    assert!(
+        find_gameplay_bus_path(&store, &b.canonical_url, finish, start, true)
+            .unwrap()
+            .is_none()
+    );
+    let mut tamper = guide(&b, start, finish);
+    tamper.tile_raw_sha256 = "0".repeat(64);
+    assert_eq!(
+        reconstruct_authored_tram_guide(&store, &tamper),
+        Err(Error::Hash)
+    );
+    for attr in [
+        ("access", "private"),
+        ("access", "unknown"),
+        ("brunnel", "bridge"),
+        ("layer", "1"),
+    ] {
+        let (b, scoped) = t(Some(attr));
+        assert!(
+            reconstruct_authored_tram_guide(&scoped, &guide(&b, start, finish))
+                .unwrap()
+                .is_none()
+        );
+    }
+    let (b, scoped) = bus_fixture(&[
+        (&[[100, 100], [200, 100], [300, 100]], None),
+        (&[[200, 50], [200, 100], [200, 150]], None),
+    ]);
+    assert!(
+        reconstruct_authored_tram_guide(&scoped, &guide(&b, start, bus_vertex(1, 2)))
+            .unwrap()
+            .is_none()
+    ); // overlapping interior-only vertices do not join
+    let (b, scoped) = bus_fixture(&[
+        (&[[100, 100], [200, 100], [300, 100]], None),
+        (&[[200, 100], [200, 200]], None),
+        (&[[200, 100], [220, 25]], Some(("access", "private"))),
+    ]);
+    assert!(
+        reconstruct_authored_tram_guide(&scoped, &guide(&b, start, finish))
+            .unwrap()
+            .is_none()
+    ); // unknown/denied third arm is not ignored
+}
