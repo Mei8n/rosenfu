@@ -377,6 +377,7 @@ mod tests {
                 },
                 30.,
                 1_000,
+                None,
                 &editor.operation_snapshot().timetable_edit_token,
             )
             .unwrap();
@@ -551,6 +552,7 @@ mod tests {
                 },
                 30.,
                 1_000,
+                None,
                 &editor.operation_snapshot().timetable_edit_token,
             )
             .unwrap();
@@ -846,6 +848,7 @@ mod tests {
                 },
                 30.,
                 10000,
+                None,
                 &editor.operation_snapshot().timetable_edit_token,
             )
             .unwrap();
@@ -1359,6 +1362,129 @@ mod tests {
         );
     }
 
+    fn verify_ordinary_bus_turnaround(
+        source: &WorldEditor,
+        mut cfg: rosenfu_core::world::BusOperationConfig,
+    ) {
+        use rosenfu_core::operation::TrainState;
+        let mut editor = source.clone();
+        cfg.timetable.last_departure_ms = 0;
+        let configure = |editor: &mut WorldEditor, turnaround_ms| {
+            editor.configure_bus_operation(
+                cfg.route_id.clone(),
+                cfg.timetable.clone(),
+                cfg.vehicle.clone(),
+                cfg.assumed_speed_kmh,
+                cfg.dwell_ms,
+                turnaround_ms,
+                &editor.operation_snapshot().timetable_edit_token,
+            )
+        };
+        configure(&mut editor, None).unwrap();
+        let old_spec = editor.world.compile_bus_operation(&cfg).unwrap();
+        let expected_leg = 1; // A -> mid -> B, B -> mid -> A.
+        let b = old_spec.legs[expected_leg].to.clone();
+        assert_eq!(b, "bus:ofm-bus:B1:終点");
+        let mut probe = editor.world.operation().unwrap().runtime.clone();
+        probe.set_paused(false);
+        let terminal_arrival = probe
+            .advance_to(120_000, 100)
+            .unwrap()
+            .arrivals
+            .into_iter()
+            .find(|arrival| arrival.station_id == b)
+            .unwrap();
+        let key = terminal_arrival.train;
+        let arrival_ms = terminal_arrival.at_ms;
+        let folder = tempfile::tempdir().unwrap();
+        let reopen = |instance: &mut WorldEditor, filename| {
+            let check_file = folder.path().join(filename);
+            instance.save(&check_file).unwrap();
+            let mut reopened = WorldEditor::new();
+            reopened.load(&check_file).unwrap();
+            reopened
+        };
+        {
+            let mut legacy = editor.clone();
+            let runtime = &mut legacy.world.operation_mut().unwrap().runtime;
+            runtime.set_paused(false);
+            runtime.advance_to(arrival_ms + 2_000, 100).unwrap();
+            runtime.set_paused(true);
+            let old_save = legacy.world.operation_save().unwrap();
+            assert_eq!(old_save.bus_configs[0].turnaround_ms, None);
+            let serialized = serde_json::to_value(&old_save).unwrap();
+            assert!(serialized["bus_configs"][0].get("turnaround_ms").is_none());
+            assert_eq!(
+                old_save.runtime.trains[0].state,
+                TrainState::Waiting {
+                    ready_ms: arrival_ms + cfg.dwell_ms
+                },
+            );
+            let reopened = reopen(&mut legacy, "legacy.rosenfu");
+            assert_eq!(reopened.world.operation_save().unwrap(), old_save);
+            assert_eq!(
+                rosenfu_storage::encode(&reopened.world).unwrap(),
+                rosenfu_storage::encode(&legacy.world).unwrap(),
+            );
+        }
+
+        assert!(configure(&mut editor, Some(3_600_001)).is_err());
+        configure(&mut editor, Some(120_000)).unwrap();
+        // An ordinary client/config edit omitting the new field neither clears
+        // nor upgrades any already configured round trip.
+        configure(&mut editor, None).unwrap();
+        let current = editor.world.operation().unwrap();
+        assert_eq!(current.bus_configs[0].turnaround_ms, Some(120_000));
+        let mut expected = old_spec.clone();
+        expected.legs[expected_leg].dwell_ms = 120_000;
+        assert_eq!(
+            editor
+                .world
+                .compile_bus_operation(&current.bus_configs[0])
+                .unwrap(),
+            expected,
+        );
+        let offers = current.runtime.passenger_offers();
+        assert_eq!(offers[2].from, b);
+        assert_eq!(offers[2].through_seconds, 120.);
+        assert_eq!(offers[3].through_seconds, 3.);
+        let new_board = editor
+            .preview_fixed_od(b, expected.legs[2].to.clone(), Some(10.), None)
+            .unwrap();
+        assert_eq!(new_board.rail.len(), 1);
+        assert_eq!(new_board.rail[0].time.ride_seconds, offers[2].ride_seconds);
+        assert!((new_board.rail[0].trips - 10.).abs() < 1e-9);
+        let runtime = &mut editor.world.operation_mut().unwrap().runtime;
+        runtime.set_paused(false);
+        runtime.advance_to(arrival_ms + 119_999, 100).unwrap();
+        let waiting = runtime.trains().next().unwrap();
+        assert_eq!(waiting.key, key);
+        assert_eq!(waiting.leg, expected_leg + 1);
+        assert_eq!(
+            waiting.state,
+            TrainState::Waiting {
+                ready_ms: arrival_ms + 120_000
+            }
+        );
+        assert_eq!(waiting.delay_ms, 0);
+        runtime.set_paused(true);
+        let saved = editor.world.operation_save().unwrap();
+        let mut reopened = reopen(&mut editor, "new.rosenfu");
+        assert_eq!(reopened.world.operation_save().unwrap(), saved);
+        let runtime = &mut reopened.world.operation_mut().unwrap().runtime;
+        runtime.set_paused(false);
+        assert!(runtime
+            .advance_to(arrival_ms + 120_000, 100)
+            .unwrap()
+            .arrivals
+            .is_empty());
+        let moving = runtime.trains().next().unwrap();
+        assert_eq!(moving.key, key);
+        assert!(matches!(moving.state, TrainState::Moving { entered_ms, .. }
+            if entered_ms == arrival_ms + 120_000));
+        assert_eq!(moving.delay_ms, 0);
+    }
+
     #[test]
     fn manual_stop_uses_exact_occurrence_preserves_geometry_and_serves_both_or_one() {
         use rosenfu_core::ofm_evidence::{
@@ -1495,6 +1621,7 @@ mod tests {
                 },
                 30.,
                 3000,
+                None,
                 &token,
             )
             .unwrap();
@@ -1528,6 +1655,7 @@ mod tests {
         loaded.load(&file).unwrap();
         assert_eq!(loaded.snapshot(), sw);
         assert_eq!(loaded.world.compile_bus_operation(&cfg).unwrap(), full);
+        verify_ordinary_bus_turnaround(&loaded, cfg);
 
         // Two distinct visits to the same outward atom and physical offset.
         // Strict endpoint return traverses that location once and must not

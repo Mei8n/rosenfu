@@ -117,6 +117,7 @@ pub fn preview_fixed_od(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn configure_bus_operation(
     editor: State<'_, Mutex<WorldEditor>>,
     route_id: String,
@@ -124,6 +125,7 @@ pub fn configure_bus_operation(
     vehicle: Vehicle,
     assumed_speed_kmh: f64,
     dwell_ms: u64,
+    turnaround_ms: Option<u64>,
     expected_operation_token: String,
 ) -> Result<OperationView, String> {
     editor
@@ -135,6 +137,7 @@ pub fn configure_bus_operation(
             vehicle,
             assumed_speed_kmh,
             dwell_ms,
+            turnaround_ms,
             &expected_operation_token,
         )
 }

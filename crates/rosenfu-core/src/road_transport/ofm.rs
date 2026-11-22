@@ -733,7 +733,7 @@ impl WorldDraft {
         &self,
         route_id: &str,
         binding: &BusPathBinding,
-    ) -> Result<Vec<BusLeg>, RoadTransportError> {
+    ) -> Result<(Vec<BusLeg>, usize), RoadTransportError> {
         let outward = self
             .runtime_road_evidence
             .stored_gameplay_bus_path(binding)
@@ -755,8 +755,9 @@ impl WorldDraft {
             .map(|s| (s.outward, interior_stop_id(route_id, &s.data.id)))
             .collect();
         let mut legs = metric_legs(&outward, &a, &z, forward)?;
+        let terminal_arrival = legs.len() - 1;
         legs.extend(metric_legs(&returned, &z, &a, back)?);
-        Ok(legs)
+        Ok((legs, terminal_arrival))
     }
 
     pub fn gameplay_bus_return_path(

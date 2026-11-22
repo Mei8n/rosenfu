@@ -6,15 +6,16 @@ type Timetable={first_departure_ms:number;last_departure_ms:number;headway_ms:nu
 type Vehicle={max_speed_kmh:number;acceleration_mps2:number;braking_mps2:number;length_m:number};
 type Config={timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type ServiceConfig=Config&{service_id:string};
-type BusConfig=Config&{route_id:string;assumed_speed_kmh:number};
+type BusConfig=Config&{route_id:string;assumed_speed_kmh:number;turnaround_ms?:number};
 type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
 export type OperationView={now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[]};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
-type Commands={reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number}};
+type Commands={reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
 type OperationContext={view:OperationView|null;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
 const Context=createContext<OperationContext|null>(null);
 const speeds=[1,2,4,8,16] as const;
 const minute=60_000,day=24*60*minute;
+const defaultOpenBusTurnaroundMs=120_000;
 
 export function OperationProvider({available,blocked,epoch,worldVersion,onChange,onRunningChange,acquireMutation,children}:{available:boolean;blocked:boolean;epoch:number;worldVersion?:unknown;onChange:()=>void;onRunningChange?:(running:boolean)=>void;acquireMutation?:()=>null|(()=>void);children:ReactNode}){
  const [snapshot,setSnapshot]=useState<{epoch:number;view:OperationView;worldVersion:unknown}|null>(null);
@@ -120,9 +121,11 @@ function departure(dayValue:string,time:string){
  return (d-1)*day+parts[0]*60*minute+parts[1]*minute+(parts[2]??0)*1000;
 }
 
-function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToken,bus=false}:{serviceId:string;expectedOperationToken:string;config?:Config|BusConfig;now:number;disabled:boolean;send:OperationContext['send'];bus?:boolean}){
+function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToken,bus=false,ordinaryRoundTrip=false}:{serviceId:string;expectedOperationToken:string;config?:Config|BusConfig;now:number;disabled:boolean;send:OperationContext['send'];bus?:boolean;ordinaryRoundTrip?:boolean}){
  const [form,setForm]=useState(()=>initialForm(config,now,bus));
  const [validation,setValidation]=useState('');
+ const newTurnaround=ordinaryRoundTrip&&!config?defaultOpenBusTurnaroundMs:undefined;
+ const turnaround=config&&'turnaround_ms' in config?config.turnaround_ms:newTurnaround;
  const update=(key:keyof Form,value:string)=>{setForm(f=>({...f,[key]:value}));setValidation('');};
  function save(event:FormEvent<HTMLFormElement>){
   event.preventDefault();if(disabled)return;
@@ -136,7 +139,7 @@ function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToke
   if(bus){
    const assumedSpeedKmh=Number(form.assumedSpeed);
    if(!Number.isFinite(assumedSpeedKmh)||assumedSpeedKmh<1||assumedSpeedKmh>120){setValidation('シミュレーション用の走行速度は1〜120 km/hで入力してください。');return;}
-   void send('configure_bus_operation',{routeId:serviceId,expectedOperationToken,timetable,vehicle,dwellMs,assumedSpeedKmh});
+   void send('configure_bus_operation',{routeId:serviceId,expectedOperationToken,timetable,vehicle,dwellMs,assumedSpeedKmh,...(newTurnaround===undefined?{}:{turnaroundMs:newTurnaround})});
   }else void send('configure_operation_service',{serviceId,expectedOperationToken,timetable,vehicle,dwellMs});
  }
  const number=(key:keyof Form,label:string,min:number,step:string|number='any',max?:number)=><label>{label}<input type="number" required min={min} max={max} step={step} value={form[key]} onChange={e=>update(key,e.target.value)}/></label>;
@@ -144,6 +147,7 @@ function TimetableForm({serviceId,config,now,disabled,send,expectedOperationToke
   <div className="operation-times">{number('firstDay','初発の日（何日目）',1,1)}<label>初発時刻<input type="time" required step="1" value={form.firstTime} onChange={e=>update('firstTime',e.target.value)}/></label>
   {number('lastDay','終発の日（何日目）',1,1)}<label>終発時刻<input type="time" required step="1" value={form.lastTime} onChange={e=>update('lastTime',e.target.value)}/></label></div>
   <div className="operation-times">{number('headway','運転間隔（分）',0.01)}{number('dwell',bus?'停留所の停車時間（秒）':'駅の停車時間（秒）',0)}</div>
+  {turnaround!==undefined&&<p>終点の折り返し時間：{turnaround/1000}秒</p>}
   {bus&&<>{number('assumedSpeed','想定走行速度（km/h）',1,'any',120)}<p>ゲーム内の仮定値です。実際の道路の制限速度ではありません。</p></>}
   <details><summary>使用車両の性能</summary><div className="operation-times">{number('maxSpeed','最高速度（km/h）',1)}{number('acceleration','加速度（m/s²）',0.01)}{number('length',bus?'車両長（m）':'編成長（m）',1)}</div></details>
   {now>0&&departure(form.lastDay,form.lastTime)<=now&&<p>指定した終発時刻はすでに過ぎています。</p>}
@@ -194,7 +198,7 @@ function ActiveVehicles({trains,configured,now,invalidated,bus=false}:{trains:Tr
  </div>;
 }
 
-export function BusOperations({routes,enabled}:{routes:{id:string;name:string}[];enabled:boolean}){
+export function BusOperations({routes,enabled}:{routes:{id:string;name:string;pattern?:string|null}[];enabled:boolean}){
  const state=useContext(Context),[routeId,setRouteId]=useState('');
  if(!state||!state.view||!routes.length)return null;
  const {view,busy,blocked,send,error}=state;
@@ -206,7 +210,7 @@ export function BusOperations({routes,enabled}:{routes:{id:string;name:string}[]
  return <section className="service-operations" aria-label="バスの運行">
   <h4>バスの運行</h4>
   <label>運行するバス系統<select value={route.id} disabled={disabled} onChange={e=>setRouteId(e.target.value)}>{routes.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
-  <TimetableForm key={route.id+':'+JSON.stringify(config??null)} bus serviceId={route.id} config={config} now={view.now_ms} disabled={disabled||!!blocker} send={send} expectedOperationToken={view.timetable_edit_token}/>
+  <TimetableForm key={route.id+':'+JSON.stringify(config??null)} bus ordinaryRoundTrip={route.pattern==='openRoundTrip'} serviceId={route.id} config={config} now={view.now_ms} disabled={disabled||!!blocker} send={send} expectedOperationToken={view.timetable_edit_token}/>
   {blocker?<p>{blocker}</p>:view.now_ms>0&&<p>現在の時刻と他のダイヤはそのままです。変更後の過去の便は走りません。</p>}
   <ActiveVehicles trains={trains} configured={!!config} now={view.now_ms} invalidated={view.invalidated} bus/>
   {error&&<p role="status">時刻欄の運行エラーを確認してください。</p>}

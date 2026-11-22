@@ -263,6 +263,7 @@ impl WorldEditor {
         self.update_operation_revision();
         Ok(self.operation_snapshot())
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn configure_bus_operation(
         &mut self,
         route_id: String,
@@ -270,6 +271,7 @@ impl WorldEditor {
         vehicle: Vehicle,
         assumed_speed_kmh: f64,
         dwell_ms: u64,
+        turnaround_ms: Option<u64>,
         expected_operation_token: &str,
     ) -> Result<OperationView, String> {
         if self.company_setup_required
@@ -294,12 +296,22 @@ impl WorldEditor {
             .operation()
             .map(|o| o.bus_configs.clone())
             .unwrap_or_default();
+        // New ordinary open lines pass an explicit default; omitted inputs preserve history.
+        let turnaround_ms = turnaround_ms.or_else(|| {
+            bus.iter()
+                .find(|c| c.route_id == route_id)
+                .and_then(|c| c.turnaround_ms)
+        });
+        if turnaround_ms.is_some_and(|ms| ms > 3_600_000) {
+            return Err("折り返し時間は0〜3600秒で設定してください。".into());
+        }
         let request = rosenfu_core::world::BusOperationConfig {
             route_id: route_id.clone(),
             timetable,
             vehicle,
             assumed_speed_kmh,
             dwell_ms,
+            turnaround_ms,
         };
         if let Some(prior) = bus.iter_mut().find(|c| c.route_id == request.route_id) {
             *prior = request;
@@ -1242,6 +1254,7 @@ mod tests {
             },
             30.,
             10000,
+            None,
             &e.operation_edit_token(),
         )
         .unwrap();
@@ -1379,6 +1392,7 @@ mod tests {
                 bus.vehicle,
                 bus.assumed_speed_kmh,
                 bus.dwell_ms,
+                None,
                 &edited.timetable_edit_token,
             )
             .unwrap();
@@ -1526,6 +1540,7 @@ mod tests {
                 bus.vehicle.clone(),
                 bus.assumed_speed_kmh,
                 bus.dwell_ms,
+                None,
                 &token
             )
             .err()
@@ -1539,6 +1554,7 @@ mod tests {
                 bus.vehicle,
                 bus.assumed_speed_kmh,
                 bus.dwell_ms,
+                None,
                 &view.timetable_edit_token,
             )
             .unwrap();
@@ -1953,6 +1969,7 @@ mod tests {
                 vehicle,
                 30.,
                 10000,
+                None,
                 &e.operation_edit_token(),
             )
             .unwrap();

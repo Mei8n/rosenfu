@@ -203,6 +203,9 @@ pub struct BusOperationConfig {
     /// Explicit game assumption, not an observed legal road speed.
     pub assumed_speed_kmh: f64,
     pub dwell_ms: u64,
+    /// Optional explicit pause on the outward terminal arrival. Absence preserves legacy run specs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turnaround_ms: Option<u64>,
 }
 #[derive(Clone)]
 struct Span {
@@ -1907,8 +1910,11 @@ impl World {
         {
             return Err(OperationError::InvalidVehicle);
         }
+        if config.turnaround_ms.is_some_and(|ms| ms > 3_600_000) {
+            return Err(OperationError::InvalidClock);
+        }
         let roads = &self.data.road_transport;
-        let legs = if let Some(binding) = self
+        let (legs, terminal_arrival) = if let Some(binding) = self
             .data
             .ofm_gameplay_bus_routes
             .get(&config.route_id)
@@ -1916,16 +1922,27 @@ impl World {
         {
             self.data
                 .gameplay_bus_roundtrip_legs(&config.route_id, binding)
+                .map(|(legs, terminal)| (legs, Some(terminal)))
         } else {
-            roads.bus_legs(&self.data, &config.route_id)
+            if config.turnaround_ms.is_some() {
+                return Err(OperationError::InvalidPath);
+            }
+            roads
+                .bus_legs(&self.data, &config.route_id)
+                .map(|legs| (legs, None))
         }
         .map_err(|_| OperationError::InvalidPath)?;
         let runs = legs
             .into_iter()
-            .map(|leg| RunLeg {
+            .enumerate()
+            .map(|(i, leg)| RunLeg {
                 from: format!("bus:{}", leg.from_stop_id),
                 to: format!("bus:{}", leg.to_stop_id),
-                dwell_ms: config.dwell_ms,
+                dwell_ms: if Some(i) == terminal_arrival {
+                    config.turnaround_ms.unwrap_or(config.dwell_ms)
+                } else {
+                    config.dwell_ms
+                },
                 sections: vec![Section {
                     length_m: leg.length_m,
                     speed_limit_kmh: config.assumed_speed_kmh,

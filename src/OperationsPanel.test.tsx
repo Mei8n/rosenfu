@@ -86,6 +86,26 @@ test('an owned bus route uses the separate native IPC and alone can start the sh
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='configure_operation_service')).toBe(false);
 });
 
+test.each([
+ ['first ordinary open configuration','openRoundTrip',false,undefined,true],
+ ['existing unversioned open configuration','openRoundTrip',true,undefined,false],
+ ['existing explicit open configuration','openRoundTrip',true,120000,false],
+ ['closed route','closedOneWay',false,undefined,false],
+ ['forward route',undefined,false,undefined,false],
+] as const)('only a new ordinary open line gets the turnaround default: %s',async (_name,pattern,existing,turnaround,sendsDefault)=>{
+ const route={id:'R1',name:'市内線',pattern};
+ const prior={route_id:route.id,timetable:config.timetable,vehicle:config.vehicle,dwell_ms:30000,assumed_speed_kmh:30,turnaround_ms:turnaround};
+ vi.mocked(invoke).mockResolvedValue({...snapshot,bus_services:existing?[prior]:[]});
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}><BusOperations routes={[route]} enabled/></OperationProvider>);
+ const save=await screen.findByRole('button',{name:existing?'ダイヤの変更を適用':'運行を設定'});
+ expect(!!screen.queryByText('終点の折り返し時間：120秒')).toBe(sendsDefault||turnaround!==undefined);
+ fireEvent.click(save);
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='configure_bus_operation')).toBe(true));
+ const [,payload]=vi.mocked(invoke).mock.calls.find(([command])=>command==='configure_bus_operation')!;
+ if(sendsDefault)expect(payload).toHaveProperty('turnaroundMs',120000);
+ else expect(payload).not.toHaveProperty('turnaroundMs');
+});
+
 test('rail shows scheduled dwell, live path wait, and rear clearance separately',async()=>{
  const trains:OperationView['trains']=[
   {key:{service_id:'12',scheduled_ms:0},leg:1,delay_ms:0,state:{state:'waiting',ready_ms:7000}},
