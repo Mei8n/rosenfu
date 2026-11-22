@@ -543,7 +543,7 @@ impl World {
         let mut candidate = self.data.road_snapshots.clone();
         candidate.push(snapshot);
         validate_road_snapshots(&candidate)?;
-        self.data.road_snapshots = candidate;
+        self.data_mut().road_snapshots = candidate;
         Ok(())
     }
     /// Derive all road assets against explicit topology. A shared endpoint asset

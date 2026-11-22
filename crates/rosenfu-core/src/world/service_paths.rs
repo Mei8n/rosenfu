@@ -361,7 +361,7 @@ impl World {
         if name.is_empty() || name.chars().count() > 80 {
             return Err(WorldError::EmptyName("service (1–80 characters)"));
         }
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         let service = candidate
             .services
             .iter_mut()
@@ -375,7 +375,7 @@ impl World {
         service.name = name.to_owned();
         path.stops = stops;
         candidate.validate()?;
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
     /// Preview a replacement with fresh keys. Retired leg identities are never reused.
@@ -448,7 +448,7 @@ impl World {
             .next_leg_key
             .checked_add(preview.legs.len() as u64)
             .ok_or(WorldError::InvalidServicePath)?;
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         let service = candidate
             .services
             .iter_mut()
@@ -468,7 +468,7 @@ impl World {
             stops,
         };
         candidate.validate()?;
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
     pub fn service_path_occurrences(

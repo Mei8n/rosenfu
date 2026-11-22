@@ -165,13 +165,13 @@ impl World {
         }) {
             return Err(WorldError::InvalidAlignmentConnection);
         }
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         candidate
             .alignment_connections
             .push(AlignmentConnection { a, b });
         candidate.validate()?;
         // No geometry, placements, routes, service keys or source records change.
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
 }

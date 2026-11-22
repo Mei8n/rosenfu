@@ -2181,7 +2181,7 @@ mod tests {
             .advance_to(0, 100)
             .unwrap();
         let mut edited = legacy.clone();
-        edited.data.companies[0].name = "renamed".into();
+        edited.data_mut().companies[0].name = "renamed".into();
         edited.retain_operation_with_crossing_limit(&legacy, 0);
         assert_eq!(edited.operation_save(), legacy.operation_save());
         assert!(!edited.operation().unwrap().invalidated);
@@ -2192,7 +2192,7 @@ mod tests {
         // Fault injection: a real previously successful unchanged case cannot
         // exceed the same fixed budget without a relevant geometry change.
         let mut locked = world.clone();
-        locked.data.companies[0].name = "renamed".into();
+        locked.data_mut().companies[0].name = "renamed".into();
         locked.retain_operation_with_crossing_limit(&world, 0);
         assert!(locked.operation().unwrap().invalidated);
         assert!(locked.operation().unwrap().runtime.paused());
@@ -2364,7 +2364,7 @@ mod tests {
         let (mut w, c) = fixture();
         let id = c.service_id;
         let path = w
-            .data
+            .data_mut()
             .service_paths
             .iter_mut()
             .find(|p| p.service_id == id)

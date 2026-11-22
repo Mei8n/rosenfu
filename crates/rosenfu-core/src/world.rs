@@ -270,7 +270,7 @@ impl std::error::Error for WorldError {}
 /// Only valid snapshots can enter the running world.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct World {
-    data: WorldDraft,
+    data: std::sync::Arc<WorldDraft>,
     operation: Option<WorldOperation>,
     fixed_od_scenario: Option<FixedOdScenario>,
 }
@@ -278,7 +278,7 @@ impl World {
     pub fn new(data: WorldDraft) -> Result<Self, WorldError> {
         data.validate()?;
         Ok(Self {
-            data,
+            data: data.into(),
             operation: None,
             fixed_od_scenario: None,
         })
@@ -311,11 +311,11 @@ impl World {
     }
     fn insert(&mut self, insert: impl FnOnce(&mut WorldDraft, u64)) -> Result<u64, WorldError> {
         let id = self.data.next_id;
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         candidate.next_id = id.checked_add(1).ok_or(WorldError::IdExhausted)?;
         insert(&mut candidate, id);
         candidate.validate()?;
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(id)
     }
     pub fn add_player(&mut self, name: String) -> Result<PlayerId, WorldError> {
@@ -358,6 +358,15 @@ impl World {
     pub fn snapshot(&self) -> &WorldDraft {
         &self.data
     }
+    /// Retain exactly this immutable snapshot without deep-copying map assets.
+    /// Validated replacements publish a new allocation; scoped mutations are
+    /// copy-on-write. Operation clock and scenario state are held separately.
+    pub fn shared_snapshot(&self) -> std::sync::Arc<WorldDraft> {
+        self.data.clone()
+    }
+    fn data_mut(&mut self) -> &mut WorldDraft {
+        std::sync::Arc::make_mut(&mut self.data)
+    }
     /// Atomic candidate replacement: failures leave the live state unchanged.
     pub fn replace(&mut self, mut candidate: WorldDraft) -> Result<(), WorldError> {
         // Explicit alignment removal drops only its derived range records; source
@@ -389,7 +398,7 @@ impl World {
         existing_only!(routes);
         existing_only!(services);
         existing_only!(alignments);
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
 }
@@ -511,7 +520,7 @@ impl WorldDraft {
         // All references and platform footprints are valid by this point. Check
         // derived turnout geometry before any candidate snapshot is committed.
         let geometry_world = World {
-            data: self.clone(),
+            data: self.clone().into(),
             operation: None,
             fixed_od_scenario: None,
         };

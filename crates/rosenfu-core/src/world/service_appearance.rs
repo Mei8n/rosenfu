@@ -70,7 +70,7 @@ impl World {
             .iter()
             .find(|row| row.service_id == service_id)
             .cloned();
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         candidate
             .service_appearances
             .retain(|row| row.service_id != service_id);
@@ -93,7 +93,7 @@ impl World {
         let mut candidate = self.clone();
         candidate.set_service_color(owner, service_id, color)?;
         let row = candidate
-            .data
+            .data_mut()
             .service_appearances
             .iter_mut()
             .find(|row| row.service_id == service_id)
