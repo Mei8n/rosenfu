@@ -300,11 +300,9 @@ async fn preview_construction_plan(
     let validation_only = validation_only.unwrap_or(false);
     let snapshot = {
         let editor = editor.lock().map_err(|_| "world state unavailable")?;
-        if validation_only {
-            editor.construction_validation_snapshot()
-        } else {
-            editor.clone()
-        }
+        // Both modes only read the captured world, water model and company.
+        // Do not clone unrelated interactive history or save bookkeeping.
+        editor.construction_validation_snapshot()
     };
     // Validation can be expensive: never run it on the UI event-loop thread.
     tauri::async_runtime::spawn_blocking(move || {

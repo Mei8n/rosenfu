@@ -2,6 +2,8 @@ use super::*;
 use rosenfu_core::operation::{Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::OperationServiceConfig;
+#[path = "operation/bus_transfers.rs"]
+mod bus_transfers;
 #[derive(serde::Serialize)]
 pub struct OperationLiveView {
     pub now_ms: u64,
@@ -550,7 +552,7 @@ impl WorldEditor {
         if !scenario.endpoints_exist(self.world.snapshot()) {
             return Err("異なる既存の駅・停留所を選択してください。".into());
         }
-        let walks = if let Some(transfer) = transfer {
+        let mut walks = if let Some(transfer) = transfer {
             let rail = transfer.station_id;
             let bus = transfer.bus_stop_id;
             let seconds = f64::from(transfer.walk_seconds);
@@ -610,6 +612,10 @@ impl WorldEditor {
                 headway_seconds: l.headway_seconds,
             })
             .collect::<Vec<_>>();
+        walks.extend(bus_transfers::coincident_ordinary_bus_walks(
+            self.world.snapshot(),
+            &legs,
+        )?);
         let od = FixedOd {
             id: "synthetic-station-od".into(),
             origin_region: "synthetic".into(),

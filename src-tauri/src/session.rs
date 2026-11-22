@@ -961,22 +961,30 @@ impl WorldEditor {
                 .add_road_snapshot(snapshot)
                 .map_err(|e| e.to_string())?;
         }
-        let before = self.snapshot();
+        // Refusals include no crossing metrics. Validate first so a rejected
+        // hover never scans the current world's road assets. A successful
+        // preview keeps the exact before/after topology and separate scans.
+        let candidate = match self.prepared_construction_clone(alignments, stations) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                return Ok(ConstructionPreview {
+                    new_crossing_count: None,
+                    roads_unverified: None,
+                    validation_error: Some(error),
+                })
+            }
+        };
+        let before = self.world.snapshot();
         let prior_crossings: Vec<_> = self
             .road_assessments()
             .into_iter()
             .flat_map(|(_, assessment)| assessment.crossings)
             .collect();
-        if let Err(error) = self.build_construction_plan(alignments, stations) {
-            return Ok(ConstructionPreview {
-                new_crossing_count: None,
-                roads_unverified: None,
-                validation_error: Some(error),
-            });
-        }
-        let after = self.snapshot();
+        let after = candidate.world.snapshot();
         let changed = changed_summary_alignment_ids(&before.alignments, &after.alignments);
-        let assessments = self.road_assessments();
+        // This isolated preview does not publish history, operation or OD; none
+        // of that metadata is an input to per-world physical road assessment.
+        let assessments = candidate.road_assessments();
         let roads_unverified = assessments
             .iter()
             .any(|(id, a)| changed.contains(id) && (!a.roads_ready || a.unknown_road_height));
@@ -1043,12 +1051,23 @@ impl WorldEditor {
         alignments: Vec<PlannedAlignment>,
         stations: Vec<PlannedBuiltStation>,
     ) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.prepare_construction_candidate(self.world.snapshot(), alignments, stations)?;
+        let mut candidate = self.prepared_construction_clone(alignments, stations)?;
         // Construction is final. Only a successful atomic commit ends prior history.
         candidate.deleted_alignment = None;
         self.commit_edit(candidate, true);
         Ok(self.snapshot())
+    }
+
+    /// Shared by actual construction and full summary. All geometry, water,
+    /// topology, and save-size checks happen before either caller can proceed.
+    fn prepared_construction_clone(
+        &self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+    ) -> Result<Self, String> {
+        let mut candidate = self.clone();
+        candidate.prepare_construction_candidate(self.world.snapshot(), alignments, stations)?;
+        Ok(candidate)
     }
 
     /// Mutate only the isolated candidate. Both full commit and compact click
@@ -6829,14 +6848,33 @@ mod road_snapshot_transaction_tests {
             .unwrap();
         assert_eq!(preview.new_crossing_count, Some(0));
         assert_eq!(preview.roads_unverified, Some(true));
-        let mut invalid = plan();
-        invalid.points.clear();
-        assert!(editor
-            .clone()
-            .preview_construction_summary(vec![invalid], vec![], vec![roads()])
-            .unwrap()
-            .validation_error
-            .is_some());
+        let invalid = || {
+            let mut plan = plan();
+            plan.points.clear();
+            plan
+        };
+        let refused = editor
+            .construction_validation_snapshot()
+            .preview_construction_summary(vec![invalid()], vec![], vec![roads()])
+            .unwrap();
+        assert!(refused.validation_error.is_some());
+        assert_eq!(refused.new_crossing_count, None);
+        assert_eq!(refused.roads_unverified, None);
+
+        // An invalid staged source is still rejected before plan validation.
+        let mut invalid_source = roads();
+        invalid_source.source_sha256 = "invalid".into();
+        let error = editor
+            .construction_validation_snapshot()
+            .preview_construction_summary(vec![invalid()], vec![], vec![invalid_source.clone()])
+            .err()
+            .expect("invalid road source must fail");
+        let expected = editor
+            .construction_validation_snapshot()
+            .preview_construction_summary(vec![plan()], vec![], vec![invalid_source])
+            .err()
+            .expect("invalid road source must fail");
+        assert_eq!(error, expected);
         assert_eq!(editor.snapshot(), old);
     }
     #[test]

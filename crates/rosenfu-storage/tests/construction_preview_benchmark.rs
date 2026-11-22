@@ -101,7 +101,7 @@ fn construction_summary_timings() {
             let plan = serde_json::from_slice::<PlannedAlignment>(&request).unwrap();
             let decode_us = decode.elapsed().as_secs_f64() * 1e6;
             let clone = Instant::now();
-            let isolated = editor.lock().unwrap().clone();
+            let isolated = editor.lock().unwrap().construction_validation_snapshot();
             let lock_clone_ms = clone.elapsed().as_secs_f64() * 1000.;
             let worker = Instant::now();
             let result = isolated
