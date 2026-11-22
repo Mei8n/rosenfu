@@ -1,6 +1,9 @@
 //! Authoritative physical service path adapter. Never uses screen coordinates.
 use super::*;
-use crate::operation::{OperationError, RunLeg, Section, ServiceRunSpec, Timetable, Vehicle};
+use crate::operation::{
+    inline_lane_key, inline_platform_handoff, OperationError, OperationRuntime, RailAdmissionModel,
+    RunLeg, Section, ServiceRunSpec, Timetable, Vehicle,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 type RailCrossings = BTreeMap<AlignmentId, Vec<(f64, String)>>;
@@ -865,6 +868,50 @@ impl World {
         configs: Vec<OperationServiceConfig>,
         bus_configs: Vec<BusOperationConfig>,
     ) -> Result<(), OperationError> {
+        self.operation = Some(self.compile_all_operation(configs, bus_configs, None)?);
+        Ok(())
+    }
+
+    /// Update configurations without replacing or replaying any active train.
+    /// A caller may not silently discard a pending catch-up target.
+    pub fn reconfigure_idle_operation(
+        &mut self,
+        configs: Vec<OperationServiceConfig>,
+        bus_configs: Vec<BusOperationConfig>,
+        edited_service: &str,
+    ) -> Result<(), OperationError> {
+        let old = self.operation.as_ref();
+        if old.is_some_and(|op| {
+            !op.runtime.paused()
+                || op.runtime.trains().next().is_some()
+                || op.pending_target.is_some()
+        }) {
+            return Err(OperationError::InvalidClock);
+        }
+        let started = old.filter(|old| old.runtime.has_started());
+        let previous_admission = started.map(|old| old.runtime.admission_model());
+        let mut candidate = self.compile_all_operation(configs, bus_configs, previous_admission)?;
+        if let Some(old) = started {
+            if !candidate
+                .runtime
+                .retains_admission(&old.runtime, edited_service, old.invalidated)
+            {
+                return Err(OperationError::ReservationScopeChanged);
+            }
+        }
+        if let Some(old) = old {
+            candidate.runtime.retain_idle_clock(&old.runtime)?;
+        }
+        self.operation = Some(candidate);
+        Ok(())
+    }
+
+    fn compile_all_operation(
+        &self,
+        configs: Vec<OperationServiceConfig>,
+        bus_configs: Vec<BusOperationConfig>,
+        previous_admission: Option<RailAdmissionModel>,
+    ) -> Result<WorldOperation, OperationError> {
         let crossings = self.active_flat_crossings(&configs, MAX_CROSSING_PAIR_CHECKS)?;
         let mut specs = Vec::with_capacity(configs.len() + bus_configs.len());
         let mut crossing_refs = 0usize;
@@ -886,23 +933,44 @@ impl World {
         for config in &bus_configs {
             specs.push(self.compile_bus_operation(config)?);
         }
-        let runtime = if bus_configs.is_empty() && self.terminal_hold_eligible(&configs, &specs) {
-            crate::operation::OperationRuntime::new_with_terminal_hold(specs)?
-        } else if bus_configs.is_empty() && self.inline_terminal_dwell_eligible(&configs, &specs) {
-            crate::operation::OperationRuntime::new_with_inline_terminal_dwell(specs)?
-        } else if bus_configs.is_empty() && self.following_eligible(&configs, &specs) {
-            crate::operation::OperationRuntime::new_with_progressive_rail(specs)?
-        } else {
-            crate::operation::OperationRuntime::new(specs)?
+        use RailAdmissionModel::*;
+        let qualifies = |mode| match mode {
+            Fixed => true,
+            _ if !bus_configs.is_empty() => false,
+            TurnbackHold => self.terminal_hold_eligible(&configs, &specs),
+            InlinePlatformHandoff => self.inline_handoff_eligible(&configs, &specs),
+            InlineTerminalDwell => self.inline_terminal_dwell_eligible(&configs, &specs),
+            Progressive => self.following_eligible(&configs, &specs),
         };
-        self.operation = Some(WorldOperation {
+        // Fresh setup can choose a current supported model. A local edit of
+        // an existing simulation must not choose a newer one for the world.
+        let admission = match previous_admission {
+            Some(mode) if qualifies(mode) => mode,
+            Some(_) => return Err(OperationError::ReservationScopeChanged),
+            None => [
+                TurnbackHold,
+                InlinePlatformHandoff,
+                InlineTerminalDwell,
+                Progressive,
+            ]
+            .into_iter()
+            .find(|mode| qualifies(*mode))
+            .unwrap_or(Fixed),
+        };
+        let runtime = match admission {
+            Fixed => OperationRuntime::new(specs)?,
+            Progressive => OperationRuntime::new_with_progressive_rail(specs)?,
+            TurnbackHold => OperationRuntime::new_with_terminal_hold(specs)?,
+            InlineTerminalDwell => OperationRuntime::new_with_inline_terminal_dwell(specs)?,
+            InlinePlatformHandoff => OperationRuntime::new_with_inline_platform_handoff(specs)?,
+        };
+        Ok(WorldOperation {
             configs,
             bus_configs,
             runtime,
             invalidated: false,
             pending_target: None,
-        });
-        Ok(())
+        })
     }
     pub fn operation_save(&self) -> Option<WorldOperationSave> {
         self.operation.as_ref().map(|o| WorldOperationSave {
@@ -947,6 +1015,17 @@ impl World {
         }
         let progressive = saved.runtime.format == 3;
         let holding = saved.runtime.format == 4;
+        let handoff = saved.runtime.format == 6;
+        let handoff_qualified = handoff
+            && saved.bus_configs.is_empty()
+            && !saved.parallel_join_lanes
+            && !saved.crossing_reservations
+            && if saved.invalidated {
+                saved.runtime.paused
+                    && Self::inline_handoff_specs(&saved.configs, &saved.runtime.services)
+            } else {
+                self.inline_handoff_eligible(&saved.configs, &saved.runtime.services)
+            };
         let platform = saved.runtime.format == 5;
         let platform_qualified = platform
             && saved.bus_configs.is_empty()
@@ -969,7 +1048,12 @@ impl World {
                 self.following_eligible(&saved.configs, &saved.runtime.services)
                     || (allow_qualified_qa && self.is_straight_rail_occupancy_qa(&saved.configs))
             };
-        if saved.runtime.format != 2 && !holding && !progressive_qualified && !platform_qualified {
+        if saved.runtime.format != 2
+            && !holding
+            && !progressive_qualified
+            && !platform_qualified
+            && !handoff_qualified
+        {
             return Err(OperationError::InvalidClock);
         }
         if holding
@@ -1043,7 +1127,7 @@ impl World {
                         },
                     )
                     .is_ok_and(|current| current == *spec)
-                } else if progressive || holding || platform {
+                } else if progressive || holding || platform || handoff {
                     self.compile_operation(config)
                         .is_ok_and(|current| current == *spec)
                 } else {
@@ -1068,6 +1152,8 @@ impl World {
         }
         let mut runtime = if holding {
             crate::operation::OperationRuntime::restore_with_terminal_hold(saved.runtime)?
+        } else if handoff_qualified {
+            crate::operation::OperationRuntime::restore_with_inline_platform_handoff(saved.runtime)?
         } else if platform_qualified {
             crate::operation::OperationRuntime::restore_with_inline_terminal_dwell(saved.runtime)?
         } else if progressive_qualified {
@@ -1152,6 +1238,80 @@ impl World {
                             section_start = section_end;
                             fits
                         })
+                })
+            })
+    }
+
+    fn inline_handoff_specs(configs: &[OperationServiceConfig], specs: &[ServiceRunSpec]) -> bool {
+        (1..=4).contains(&configs.len())
+            && configs.len() == specs.len()
+            && configs
+                .iter()
+                .map(|c| c.service_id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == configs.len()
+            && specs.iter().any(|s| s.legs.len() == 2)
+            && configs.iter().all(|c| {
+                specs
+                    .iter()
+                    .find(|s| s.service_id == c.service_id.0.to_string())
+                    .is_some_and(|s| {
+                        s.timetable == c.timetable
+                            && s.vehicle == c.vehicle
+                            && s.vehicle.length_m <= 80.
+                            && s.legs.iter().all(|l| l.dwell_ms == c.dwell_ms)
+                            && inline_platform_handoff(s)
+                    })
+            })
+    }
+
+    fn inline_handoff_eligible(
+        &self,
+        configs: &[OperationServiceConfig],
+        specs: &[ServiceRunSpec],
+    ) -> bool {
+        Self::inline_handoff_specs(configs, specs)
+            && self.straight_rail_geometry(configs, true, 2)
+            && specs.iter().all(|spec| {
+                spec.legs.iter().all(|leg| {
+                    [
+                        (leg.from.as_str(), leg.sections.first()),
+                        (leg.to.as_str(), leg.sections.last()),
+                    ]
+                    .into_iter()
+                    .all(|(id, section)| {
+                        let Some((alignment, block, _)) =
+                            section.and_then(lane_resource).and_then(inline_lane_key)
+                        else {
+                            return false;
+                        };
+                        let Ok(id) = id.parse::<u64>() else {
+                            return false;
+                        };
+                        let Some(p) = self.data.station_placements.iter().find(|p| {
+                            p.station_id == StationId(id)
+                                && p.alignment_id == AlignmentId(alignment)
+                        }) else {
+                            return false;
+                        };
+                        let Some(line) =
+                            self.data.alignments.iter().find(|a| a.id == p.alignment_id)
+                        else {
+                            return false;
+                        };
+                        if p.length_m < spec.vehicle.length_m + 4. || p.width_m < 4.1 {
+                            return false;
+                        }
+                        let lengths = line.section_lengths_m();
+                        let Some(length) = lengths.get(block) else {
+                            return false;
+                        };
+                        let left = lengths[..block].iter().sum::<f64>();
+                        let centre = p.position * line.length_m();
+                        let margin = spec.vehicle.length_m.max(p.length_m / 2.) + 2.;
+                        centre - margin >= left && centre + margin <= left + length
+                    })
                 })
             })
     }
@@ -1377,7 +1537,9 @@ impl World {
                     .collect::<Result<Vec<_>, _>>();
                 return match active {
                     Ok(specs) => {
-                        !(if o.runtime.inline_terminal_dwell() {
+                        !(if o.runtime.inline_platform_handoff() {
+                            self.inline_handoff_eligible(&o.configs, &specs)
+                        } else if o.runtime.inline_terminal_dwell() {
                             self.inline_terminal_dwell_eligible(&o.configs, &specs)
                         } else {
                             self.following_eligible(&o.configs, &specs)
@@ -2200,6 +2362,57 @@ mod tests {
             1000,
         ));
         (world, configs)
+    }
+
+    #[test]
+    fn idle_timetable_edit_retains_legacy_progressive_instead_of_selecting_inline_dwell() {
+        let (mut world, mut configs) = inline_platform_fixture(30_000, true);
+        for config in &mut configs {
+            config.timetable.first_departure_ms += 500_000;
+            config.timetable.last_departure_ms += 500_000;
+        }
+        world.configure_operation(configs.clone()).unwrap();
+        assert_eq!(world.operation_save().unwrap().runtime.format, 5);
+        let specs = configs
+            .iter()
+            .map(|config| world.compile_operation(config))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let legacy = crate::operation::OperationRuntime::new_with_progressive_rail(specs).unwrap();
+        let runtime = &mut world.operation_mut().unwrap().runtime;
+        *runtime = legacy;
+        runtime.advance_to(200_000, 128).unwrap();
+        let mut reopened = World::new(world.snapshot().clone()).unwrap();
+        reopened.restore_operation(world.operation_save()).unwrap();
+        let unaffected = configs[0].service_id.0.to_string();
+        let run_before = reopened
+            .operation()
+            .unwrap()
+            .runtime
+            .service_spec(&unaffected)
+            .unwrap()
+            .clone();
+        let target = configs[2].service_id.0.to_string();
+        configs[2].timetable.first_departure_ms += 1_000;
+        configs[2].timetable.last_departure_ms += 1_000;
+        reopened
+            .reconfigure_idle_operation(configs.clone(), vec![], &target)
+            .unwrap();
+        let after = reopened.operation_save().unwrap();
+        assert_eq!(after.runtime.format, 3);
+        assert_eq!(after.runtime.now_ms, 200_000);
+        assert_eq!(after.configs, configs);
+        assert_eq!(
+            reopened
+                .operation()
+                .unwrap()
+                .runtime
+                .service_spec(&unaffected),
+            Some(&run_before)
+        );
+        let mut restored = World::new(reopened.snapshot().clone()).unwrap();
+        restored.restore_operation(Some(after)).unwrap();
+        assert_eq!(restored.operation_save(), reopened.operation_save());
     }
 
     #[test]

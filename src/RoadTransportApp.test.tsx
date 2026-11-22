@@ -39,7 +39,7 @@ async function showRoadMap(tram:boolean,bus=false){
   if(command==='engine_info')return {name:'Rosenfu',version:'road-map-test',road_transport_enabled:true,road_tram_enabled:tram,bus_operation_enabled:bus,operation_enabled:bus};
   if(command==='list_save_slots')return {active_slot_id:null,slots:[]};
   if(command==='ofm_world_token')return 'current-world-token';
-  if(command==='operation_snapshot')return {now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,services:[],trains:[],bus_services:[]};
+  if(command==='operation_snapshot')return {now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,timetable_edit_token:'fixture-token',services:[],trains:[],bus_services:[]};
   return bus?{...qaWorld,road_transport:{...qaWorld.road_transport,bus_routes:[{id:'test-route',name:'自社の検証バス',owner:'2',stops:[],edges:[]},{id:'other-route',name:'他社の検証バス',owner:'3',stops:[],edges:[]}]}}:qaWorld;
  });
  render(<App/>);await screen.findByText(/road-map-test/);fireEvent.click(screen.getByRole('tab',{name:'道路交通（検証）'}));

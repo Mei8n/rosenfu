@@ -163,6 +163,8 @@ pub struct WorldEditor {
     deleted_alignment: Option<(WorldDraft, WorldDraft)>,
     edit_history: history::EditHistory,
     operation_tick: Option<std::time::Instant>,
+    // Invalidates pending schedule edits after another operation intent, including ABA.
+    operation_edit_revision: u64,
     // Per-mounted-world and scenario-revision correlation, not a credential.
     fixed_od_token: u64,
     #[cfg(test)]
@@ -565,7 +567,8 @@ impl WorldEditor {
             deleted_alignment: None,
             edit_history: Default::default(),
             operation_tick: None,
-            fixed_od_token: operation::next_fixed_od_token(),
+            operation_edit_revision: operation::next_session_token(),
+            fixed_od_token: operation::next_session_token(),
             #[cfg(test)]
             pending_manual_replacement: None,
         }
@@ -848,6 +851,7 @@ impl WorldEditor {
             deleted_alignment: None,
             edit_history: history::EditHistory::default(),
             operation_tick: None,
+            operation_edit_revision: self.operation_edit_revision,
             #[cfg(test)]
             pending_manual_replacement: None,
         }
@@ -2428,7 +2432,8 @@ impl WorldEditor {
         self.clear_edit_history();
         self.world = candidate;
         self.operation_tick = None;
-        self.fixed_od_token = operation::next_fixed_od_token();
+        self.fixed_od_token = operation::next_session_token();
+        self.operation_edit_revision = operation::next_session_token();
         self.company = company;
         self.company_setup_required = false;
         #[cfg(test)]

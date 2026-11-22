@@ -5,7 +5,7 @@ import {invoke} from '@tauri-apps/api/core';
 import {BusOperations,OperationClock,OperationProvider,ServiceOperations,type OperationView} from './OperationsPanel';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn()}));
 afterEach(()=>{cleanup();vi.resetAllMocks();vi.useRealTimers();});
-const snapshot:OperationView={now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,services:[],trains:[]};
+const snapshot:OperationView={now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,timetable_edit_token:'initial-token',services:[],trains:[]};
 const config={service_id:'12',timetable:{first_departure_ms:300000,last_departure_ms:64800000,headway_ms:360000},vehicle:{max_speed_kmh:100,acceleration_mps2:0.8,braking_mps2:1,length_m:80},dwell_ms:30000};
 function operation(available=true,epoch=1,onChange=vi.fn()){
  return <OperationProvider available={available} blocked={false} epoch={epoch} onChange={onChange}><OperationClock/><ServiceOperations serviceId="12" enabled/></OperationProvider>;
@@ -24,7 +24,7 @@ test('clock and service settings are authoritative and use the backend IPC units
  fireEvent.change(screen.getByLabelText('初発時刻'),{target:{value:'00:05:00'}});
  fireEvent.change(screen.getByLabelText('運転間隔（分）'),{target:{value:'6'}});
  fireEvent.click(screen.getByText('運行を設定'));
- await waitFor(()=>expect(invoke).toHaveBeenCalledWith('configure_operation_service',{serviceId:'12',timetable:config.timetable,vehicle:config.vehicle,dwellMs:30000}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('configure_operation_service',{serviceId:'12',expectedOperationToken:'initial-token',timetable:config.timetable,vehicle:config.vehicle,dwellMs:30000}));
  await waitFor(()=>expect((screen.getByText('再開') as HTMLButtonElement).disabled).toBe(false));
  fireEvent.change(screen.getByLabelText('速度'),{target:{value:'8'}});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('set_operation_clock',{paused:true,speed:8}));
@@ -53,7 +53,7 @@ test('late operation snapshot cannot replace a new world',async()=>{
 
 test('invalidated operation cannot resume, and reset requires explicit confirmation',async()=>{
  vi.mocked(invoke).mockResolvedValueOnce({...snapshot,now_ms:5000,invalidated:true}).mockResolvedValue(snapshot);
- render(operation());await screen.findByText(/再開するには運行をリセット/);
+ render(operation());await screen.findByText(/運行を停止しました/);
  expect((screen.getByText('再開') as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(screen.getByText('運行をリセット'));
  fireEvent.click(screen.getByText('リセットを取り消す'));
@@ -77,7 +77,7 @@ test('an owned bus route uses the separate native IPC and alone can start the sh
  expect((screen.getByText('再開') as HTMLButtonElement).disabled).toBe(true);
  fireEvent.change(screen.getByLabelText('想定走行速度（km/h）'),{target:{value:'35'}});
  fireEvent.click(screen.getByText('運行を設定'));
- await waitFor(()=>expect(invoke).toHaveBeenCalledWith('configure_bus_operation',{routeId:route.id,timetable:busConfig.timetable,vehicle:busConfig.vehicle,dwellMs:30000,assumedSpeedKmh:35}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('configure_bus_operation',{routeId:route.id,expectedOperationToken:'initial-token',timetable:busConfig.timetable,vehicle:busConfig.vehicle,dwellMs:30000,assumedSpeedKmh:35}));
  await waitFor(()=>expect((screen.getByText('再開') as HTMLButtonElement).disabled).toBe(false));
  expect(dirty).toHaveBeenCalledOnce();
  fireEvent.click(screen.getByText('再開'));
@@ -130,4 +130,58 @@ test('invalidated rail does not show active path wait or add unbooked delay',asy
  expect(await screen.findByText('運行停止中')).toBeTruthy();
  expect(screen.queryByText('進路待ち')).toBeNull();
  expect(screen.getByText('遅れ 1秒')).toBeTruthy();
+});
+
+test('rail timetable can change after an idle pause without resetting time, and writes the displayed native token',async()=>{
+ const later={...snapshot,now_ms:250000,speed:4,timetable_edit_token:'post-run-4',services:[config]};
+ const dirty=vi.fn();
+ vi.mocked(invoke).mockImplementation(async command=>command==='operation_snapshot'?later:{
+  ...later,timetable_edit_token:'next-token',services:[{...config,timetable:{...config.timetable,headway_ms:120000}}],
+ });
+ render(operation(true,1,dirty));
+ expect(await screen.findByText('1日目 00:04')).toBeTruthy();
+ expect(screen.getByText(/現在の時刻と他のダイヤはそのまま/)).toBeTruthy();
+ expect(screen.getByText('ダイヤの変更を適用').matches(':disabled')).toBe(false);
+ fireEvent.change(screen.getByLabelText('運転間隔（分）'),{target:{value:'2'}});
+ fireEvent.click(screen.getByText('ダイヤの変更を適用'));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('configure_operation_service',{
+  serviceId:'12',expectedOperationToken:'post-run-4',timetable:{...config.timetable,headway_ms:120000},vehicle:config.vehicle,dwellMs:30000,
+ }));
+ await waitFor(()=>expect(dirty).toHaveBeenCalledOnce());
+ expect(screen.getByText('1日目 00:04')).toBeTruthy();
+ expect((screen.getByLabelText('速度') as HTMLSelectElement).value).toBe('4');
+ expect(invoke).not.toHaveBeenCalledWith('reset_operation',undefined);
+});
+
+test('native blocker forbids both timetable modes and explains how to reach the idle boundary',async()=>{
+ const reason='走行中・停車中・進路待ちの列車やバスがいます。';
+ const route={id:'qa-R',name:'検証バス'};
+ const later={...snapshot,now_ms:250000,timetable_edit_token:'active-3',timetable_edit_blocker:reason,services:[config]};
+ vi.mocked(invoke).mockResolvedValue(later);
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}><OperationClock/><ServiceOperations serviceId="12" enabled/><BusOperations routes={[route]} enabled/></OperationProvider>);
+ expect((await screen.findAllByText(reason)).length).toBe(2);
+ for(const label of ['ダイヤの変更を適用','運行を設定']){
+  const button=screen.getByText(label) as HTMLButtonElement;
+  expect(button.matches(':disabled')).toBe(true);
+  fireEvent.click(button);
+ }
+ expect(vi.mocked(invoke).mock.calls.map(([command])=>command)).toEqual(['operation_snapshot']);
+});
+
+test('when invalidated but empty, a rejected stale edit preserves the input and does not dirty the world',async()=>{
+ const later={...snapshot,now_ms:250000,invalidated:true,timetable_edit_token:'old-3',services:[config]};
+ const dirty=vi.fn();
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='operation_snapshot')return later;
+  throw Error('ワールドまたは運行状態が変更されました。');
+ });
+ render(operation(true,1,dirty));
+ await screen.findByText(/ダイヤを適用し直すと/);
+ expect((screen.getByText('再開') as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.change(screen.getByLabelText('運転間隔（分）'),{target:{value:'7'}});
+ fireEvent.click(screen.getByText('ダイヤの変更を適用'));
+ const error=await screen.findByRole('alert');
+ expect(error.textContent).toContain('ワールドまたは運行状態が変更されました');
+ expect((screen.getByLabelText('運転間隔（分）') as HTMLInputElement).value).toBe('7');
+ expect(dirty).not.toHaveBeenCalled();
 });

@@ -19,11 +19,18 @@ pub fn configure_operation_service(
     timetable: Timetable,
     vehicle: Vehicle,
     dwell_ms: u64,
+    expected_operation_token: String,
 ) -> Result<OperationView, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .configure_operation_service(service_id, timetable, vehicle, dwell_ms)
+        .configure_operation_service(
+            service_id,
+            timetable,
+            vehicle,
+            dwell_ms,
+            &expected_operation_token,
+        )
 }
 #[tauri::command]
 pub fn set_operation_clock(
@@ -114,9 +121,17 @@ pub fn configure_bus_operation(
     vehicle: Vehicle,
     assumed_speed_kmh: f64,
     dwell_ms: u64,
+    expected_operation_token: String,
 ) -> Result<OperationView, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .configure_bus_operation(route_id, timetable, vehicle, assumed_speed_kmh, dwell_ms)
+        .configure_bus_operation(
+            route_id,
+            timetable,
+            vehicle,
+            assumed_speed_kmh,
+            dwell_ms,
+            &expected_operation_token,
+        )
 }
