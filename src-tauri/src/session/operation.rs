@@ -3,7 +3,7 @@ use rosenfu_core::operation::{Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::OperationServiceConfig;
 #[derive(serde::Serialize)]
-pub struct OperationView {
+pub struct OperationLiveView {
     pub now_ms: u64,
     pub paused: bool,
     pub speed: u32,
@@ -11,9 +11,31 @@ pub struct OperationView {
     pub catching_up: bool,
     pub timetable_edit_token: String,
     pub timetable_edit_blocker: Option<&'static str>,
+    pub configuration_token: String,
+    pub trains: Vec<Train>,
+}
+
+#[derive(serde::Serialize)]
+pub struct OperationView {
+    #[serde(flatten)]
+    pub live: OperationLiveView,
     pub services: Vec<OperationServiceConfig>,
     pub bus_services: Vec<rosenfu_core::world::BusOperationConfig>,
-    pub trains: Vec<Train>,
+}
+
+impl std::ops::Deref for OperationView {
+    type Target = OperationLiveView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.live
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub enum OperationTickView {
+    Full(OperationView),
+    Live(OperationLiveView),
 }
 pub(super) fn next_session_token() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,14 +59,21 @@ pub struct FixedOdRoadTransfer {
 }
 
 impl WorldEditor {
-    fn operation_edit_token(&self) -> String {
-        // Cheap process-local CAS: identity is renewed on every mount (even
-        // same-slot re-open); history covers geometry; the schedule revision
-        // covers explicit operation intents, including A → B → A changes.
+    fn operation_configuration_token(&self) -> String {
+        // The native mount/operation revision changes on reopen, explicit
+        // configure and reset; structural edits and Undo/Redo rotate history.
+        // Elapsed time never changes timetable rows, and is not part of this key.
         format!(
-            "{}:{}:{}",
+            "{}:{}",
             self.operation_edit_revision,
-            self.world_edit_history().revision,
+            self.world_edit_history().revision
+        )
+    }
+
+    fn operation_edit_token(&self) -> String {
+        format!(
+            "{}:{}",
+            self.operation_configuration_token(),
             self.world.operation().map_or(0, |op| op.runtime.now_ms()),
         )
     }
@@ -140,31 +169,38 @@ impl WorldEditor {
     }
 
     pub fn operation_snapshot(&self) -> OperationView {
-        let Some(o) = self.world.operation() else {
-            return OperationView {
-                now_ms: 0,
-                paused: true,
-                speed: 1,
-                invalidated: false,
-                catching_up: false,
-                timetable_edit_token: self.operation_edit_token(),
-                timetable_edit_blocker: self.timetable_edit_blocker(),
-                services: vec![],
-                bus_services: vec![],
-                trains: vec![],
-            };
-        };
+        self.full_operation_view(self.live_operation_view())
+    }
+
+    fn full_operation_view(&self, live: OperationLiveView) -> OperationView {
+        let (services, bus_services) = self
+            .world
+            .operation()
+            .map(|o| (o.configs.clone(), o.bus_configs.clone()))
+            .unwrap_or_default();
         OperationView {
-            now_ms: o.runtime.now_ms(),
-            paused: o.runtime.paused(),
-            speed: o.runtime.speed(),
-            invalidated: o.invalidated,
-            catching_up: o.pending_target.is_some(),
-            timetable_edit_token: self.operation_edit_token(),
+            live,
+            services,
+            bus_services,
+        }
+    }
+
+    fn live_operation_view(&self) -> OperationLiveView {
+        let o = self.world.operation();
+        let now_ms = o.map_or(0, |o| o.runtime.now_ms());
+        let configuration_token = self.operation_configuration_token();
+        OperationLiveView {
+            now_ms,
+            paused: o.is_none_or(|o| o.runtime.paused()),
+            speed: o.map_or(1, |o| o.runtime.speed()),
+            invalidated: o.is_some_and(|o| o.invalidated),
+            catching_up: o.is_some_and(|o| o.pending_target.is_some()),
+            timetable_edit_token: format!("{configuration_token}:{now_ms}"),
             timetable_edit_blocker: self.timetable_edit_blocker(),
-            services: o.configs.clone(),
-            bus_services: o.bus_configs.clone(),
-            trains: o.runtime.trains().cloned().collect(),
+            configuration_token,
+            trains: o
+                .map(|o| o.runtime.trains().cloned().collect())
+                .unwrap_or_default(),
         }
     }
     pub fn configure_operation_service(
@@ -313,7 +349,7 @@ impl WorldEditor {
         if ![1, 2, 4, 8, 16].contains(&speed) {
             return Err("速度は1・2・4・8・16倍から選択してください。".into());
         }
-        self.advance_operation_at(instant)?;
+        self.advance_operation_state_at(instant)?;
         let o = self
             .world
             .operation_mut()
@@ -340,19 +376,43 @@ impl WorldEditor {
         &mut self,
         instant: std::time::Instant,
     ) -> Result<OperationView, String> {
+        self.advance_operation_state_at(instant)?;
+        Ok(self.operation_snapshot())
+    }
+
+    /// A client only receives a lean tick if it has exactly the authoritative
+    /// rail and bus configurations for this world/revision.
+    pub fn advance_operation_with_configuration(
+        &mut self,
+        known_configuration_token: Option<&str>,
+    ) -> Result<OperationTickView, String> {
+        self.advance_operation_state_at(std::time::Instant::now())?;
+        Ok(self.operation_tick_view(known_configuration_token))
+    }
+
+    fn operation_tick_view(&self, known_configuration_token: Option<&str>) -> OperationTickView {
+        let live = self.live_operation_view();
+        if known_configuration_token == Some(live.configuration_token.as_str()) {
+            OperationTickView::Live(live)
+        } else {
+            OperationTickView::Full(self.full_operation_view(live))
+        }
+    }
+
+    fn advance_operation_state_at(&mut self, instant: std::time::Instant) -> Result<(), String> {
         let elapsed = self
             .operation_tick
             .map(|t| instant.saturating_duration_since(t).as_millis())
             .unwrap_or(0);
         self.operation_tick = Some(instant);
         let Some(o) = self.world.operation_mut() else {
-            return Ok(self.operation_snapshot());
+            return Ok(());
         };
         if o.invalidated {
-            return Ok(self.operation_snapshot());
+            return Ok(());
         }
         if o.runtime.paused() {
-            return Ok(self.operation_snapshot());
+            return Ok(());
         }
         let delta = u64::try_from(elapsed)
             .map_err(|_| "時計の範囲を超えました。")?
@@ -368,7 +428,7 @@ impl WorldEditor {
             .advance_to(target, 128)
             .map_err(|e| format!("運行の進行に失敗しました: {e:?}"))?;
         o.pending_target = (!result.reached_target).then_some(target);
-        Ok(self.operation_snapshot())
+        Ok(())
     }
     pub fn fixed_od_scenario(&self) -> FixedOdScenarioView {
         FixedOdScenarioView {
@@ -1221,6 +1281,134 @@ mod tests {
             rosenfu_storage::decode(&rosenfu_storage::encode(&e.world).unwrap()).unwrap();
         assert_eq!(e.world.operation_save(), restored.operation_save());
     }
+    #[test]
+    fn compact_ticks_keep_the_current_clock_and_resync_after_mutation_history_and_reopen() {
+        use std::time::{Duration, Instant};
+
+        let mut e = editor();
+        let rail = e.operation_snapshot().services[0].clone();
+        let timetable = Timetable {
+            first_departure_ms: 20_000,
+            last_departure_ms: 200_000,
+            headway_ms: 60_000,
+        };
+        let token = e.operation_edit_token();
+        e.configure_operation_service(
+            rail.service_id,
+            timetable.clone(),
+            rail.vehicle.clone(),
+            rail.dwell_ms,
+            &token,
+        )
+        .unwrap();
+        add_test_bus(&mut e, timetable.clone());
+        let start = Instant::now();
+        let initial = e.set_operation_clock_at(false, 1, start).unwrap();
+        let legacy = e.operation_tick_view(None);
+        let mut full = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(
+            full["services"][0]["service_id"],
+            rail.service_id.0.to_string()
+        );
+        assert_eq!(full["bus_services"][0]["route_id"], "R");
+
+        // With the same clock and settings, both forms differ only in static rows.
+        let compact = |e: &WorldEditor, known: &str| {
+            assert!(matches!(
+                e.operation_tick_view(Some(known)),
+                OperationTickView::Live(_)
+            ));
+            serde_json::to_value(e.operation_tick_view(Some(known))).unwrap()
+        };
+        let initial_live = compact(&e, &initial.configuration_token);
+        let rows = full.as_object_mut().unwrap();
+        rows.remove("services").unwrap();
+        rows.remove("bus_services").unwrap();
+        assert_eq!(full, initial_live);
+        e.advance_operation_state_at(start + Duration::from_millis(500))
+            .unwrap();
+        let live = compact(&e, &initial.configuration_token);
+        assert_eq!(live["now_ms"], 500);
+        assert_eq!(live["timetable_edit_token"], e.operation_edit_token());
+        assert_ne!(
+            live["timetable_edit_token"],
+            initial_live["timetable_edit_token"]
+        );
+
+        let refreshed = |e: &WorldEditor, stale: &str| match e.operation_tick_view(Some(stale)) {
+            OperationTickView::Full(current) => current,
+            OperationTickView::Live(_) => panic!("stale config must force full resync"),
+        };
+        let paused = e
+            .set_operation_clock_at(true, 1, start + Duration::from_millis(500))
+            .unwrap();
+        assert!(matches!(
+            e.advance_operation_with_configuration(Some(&paused.configuration_token)),
+            Ok(OperationTickView::Live(_))
+        ));
+        assert!(matches!(
+            e.advance_operation_with_configuration(None),
+            Ok(OperationTickView::Full(_))
+        ));
+        let new_rail = Timetable {
+            headway_ms: 80_000,
+            ..timetable.clone()
+        };
+        let edited = e
+            .configure_operation_service(
+                rail.service_id,
+                new_rail.clone(),
+                rail.vehicle.clone(),
+                rail.dwell_ms,
+                &paused.timetable_edit_token,
+            )
+            .unwrap();
+        assert_eq!(
+            refreshed(&e, &paused.configuration_token).services[0].timetable,
+            new_rail
+        );
+        let bus = edited.bus_services[0].clone();
+        let bus_edit = Timetable {
+            headway_ms: 90_000,
+            ..timetable
+        };
+        let edited_bus = e
+            .configure_bus_operation(
+                bus.route_id,
+                bus_edit.clone(),
+                bus.vehicle,
+                bus.assumed_speed_kmh,
+                bus.dwell_ms,
+                &edited.timetable_edit_token,
+            )
+            .unwrap();
+        assert_eq!(
+            refreshed(&e, &edited.configuration_token).bus_services[0].timetable,
+            bus_edit
+        );
+
+        e.rename_company("renamed".into()).unwrap();
+        let renamed = refreshed(&e, &edited_bus.configuration_token);
+        e.undo_world_edit(e.snapshot()).unwrap();
+        let undone = refreshed(&e, &renamed.configuration_token);
+        e.redo_world_edit(e.snapshot()).unwrap();
+        let redone = refreshed(&e, &undone.configuration_token);
+        let path = tempfile::tempdir().unwrap();
+        let save = path.path().join("world.json");
+        e.save(&save).unwrap();
+        e.load(&save).unwrap();
+        let reopened = refreshed(&e, &redone.configuration_token);
+        assert_eq!(reopened.services, redone.services);
+        assert_eq!(reopened.bus_services, redone.bus_services);
+        assert_eq!(reopened.now_ms, 500);
+        e.load(&save).unwrap();
+        let same_slot = refreshed(&e, &reopened.configuration_token);
+        e.reset_operation().unwrap();
+        let cleared = refreshed(&e, &same_slot.configuration_token);
+        assert_eq!(cleared.now_ms, 0);
+        assert!(cleared.services.is_empty() && cleared.bus_services.is_empty());
+    }
+
     #[test]
     fn timetable_edits_keep_idle_clock_and_unrelated_configs_with_exact_reopen() {
         let mut e = editor();

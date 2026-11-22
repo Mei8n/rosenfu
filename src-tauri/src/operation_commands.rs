@@ -1,4 +1,4 @@
-use crate::session::{FixedOdRoadTransfer, OperationView, WorldEditor};
+use crate::session::{FixedOdRoadTransfer, OperationTickView, OperationView, WorldEditor};
 use rosenfu_core::{
     operation::{Timetable, Vehicle},
     world::ServiceId,
@@ -44,11 +44,14 @@ pub fn set_operation_clock(
         .set_operation_clock(paused, speed)
 }
 #[tauri::command]
-pub fn advance_operation(editor: State<'_, Mutex<WorldEditor>>) -> Result<OperationView, String> {
+pub fn advance_operation(
+    editor: State<'_, Mutex<WorldEditor>>,
+    known_configuration_token: Option<String>,
+) -> Result<OperationTickView, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .advance_operation()
+        .advance_operation_with_configuration(known_configuration_token.as_deref())
 }
 #[tauri::command]
 pub fn reset_operation(editor: State<'_, Mutex<WorldEditor>>) -> Result<OperationView, String> {

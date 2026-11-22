@@ -17,6 +17,8 @@ interface NativeRoadRegion {id:string;region:string;origin:string;revision:strin
 type PilotBusEdit = {route_id:string;name:string;expected_route:RoadTransportData['bus_routes'][number]|null;from:StopPosition;to:StopPosition};
 export type RoadTramEdit = {kind:'build';from:string;to:string;name:string;shared:boolean} | {kind:'change_placement';alignment_id:string;from:string;to:string;shared:boolean} | {kind:'remove';alignment_id:string};
 export type RoadMapSelection = {from:string;to:string;revision:number};
+export type RoadPlayerMapRequest = {end:'from'|'to';edgeId:string;position:number};
+export type RoadPlayerMapSelection = RoadPlayerMapRequest & {revision:number};
 export type RoadTransportArgs = {expected:RoadTransportData;replacement:RoadTransportData} | {confirmedSynthetic:true} | {edit:RoadTramEdit|PilotBusEdit} | {assetId:string};
 // Small source-geometry inset. Do not show unknown ways as a selectable road.
 function RoadPathPicker({data,from,to,pick,disabled}:{data:RoadTransportData;from:string;to:string;pick:(id:string)=>void;disabled:boolean}) {
@@ -41,7 +43,7 @@ function RoadPathPicker({data,from,to,pick,disabled}:{data:RoadTransportData;fro
 }
 // Choose an explicitly directed edge before setting a position. Overlapping
 // reverse edges are not resolved by nearest geometry or silently interchanged.
-function FictionalStopPicker({label,edges,value,pick,disabled}:{label:string;edges:RoadEdge[];value?:StopPosition;pick:(value:StopPosition|undefined)=>void;disabled:boolean}) {
+function FictionalStopPicker({label,edges,value,pick,disabled,onPickOnMap}:{label:string;edges:RoadEdge[];value?:StopPosition;pick:(value:StopPosition|undefined)=>void;disabled:boolean;onPickOnMap?:(edgeId:string,position:number)=>void}) {
  const edge=edges.find(e=>e.id===value?.edge_id);
  function setPosition(position:number){
    if(!disabled&&edge&&position>0&&position<1)pick({edge_id:edge.id,position,location_kind:'player_created'});
@@ -57,6 +59,7 @@ function FictionalStopPicker({label,edges,value,pick,disabled}:{label:string;edg
      if(!disabled)pick(id?{edge_id:id,position:0.5,location_kind:'player_created'}:undefined);
    }}><option value="">選択</option>{edges.map((e,i)=><option key={e.id} value={e.id}>道路 {i+1}（{direction(e)}）</option>)}</select></label>
    {edge&&value&&<>
+     {onPickOnMap&&<button type="button" disabled={disabled} onClick={()=>onPickOnMap(edge.id,value.position)}>地図で{label}位置を選ぶ</button>}
      <FictionalStopPreview label={label} edge={edge} position={value.position} pick={setPosition}/>
      <label>{label}の位置<input type="range" min="1" max="99" step="1" value={Math.round(value.position*100)}
        onChange={e=>setPosition(Number(e.target.value)/100)}/></label>
@@ -88,7 +91,7 @@ function FictionalStopPreview({label,edge,position,pick}:{label:string;edge:Road
  </svg>;
 }
 
-export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSelection,onPickOnMap,tramEnabled=false}:{data:RoadTransportData;companyId:string;run:(command:RoadTransportMutation,args:RoadTransportArgs)=>Promise<unknown>;enabled?:boolean;mapSelection?:RoadMapSelection;onPickOnMap?:()=>void;tramEnabled?:boolean}) {
+export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSelection,onPickOnMap,playerMapSelection,onPickPlayerOnMap,tramEnabled=false}:{data:RoadTransportData;companyId:string;run:(command:RoadTransportMutation,args:RoadTransportArgs)=>Promise<unknown>;enabled?:boolean;mapSelection?:RoadMapSelection;onPickOnMap?:()=>void;playerMapSelection?:RoadPlayerMapSelection;onPickPlayerOnMap?:(request:RoadPlayerMapRequest)=>void;tramEnabled?:boolean}) {
  const [confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const [from,setFrom]=useState(''),[to,setTo]=useState(''),[name,setName]=useState('バス系統');
  const [tramName,setTramName]=useState('軌道'),[shared,setShared]=useState(true);
@@ -123,6 +126,13 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
  const pilotEndpointsValid=!!fromPosition&&!!toPosition&&(fromPosition.edge_id!==toPosition.edge_id||fromPosition.position<toPosition.position);
  const ownRoutes=data.bus_routes.filter(route=>route.owner===companyId);
  useEffect(()=>{if(mapSelection){setFrom(mapSelection.from);setTo(mapSelection.to);}},[mapSelection]);
+ useEffect(()=>{
+   if(!playerMapSelection)return;
+   const {end,edgeId,position}=playerMapSelection;
+   if(!(position>0&&position<1)||!playerEdges.some(edge=>edge.id===edgeId))return;
+   const setPosition=end==='from'?setPlayerFrom:setPlayerTo;
+   setPosition(current=>current?.edge_id===edgeId?{...current,position}:current);
+ },[playerMapSelection,playerEdges]);
  function pickInset(id:string){if(!from||to){setFrom(id);setTo('');}else if(id!==from){setTo(id);}}
  const endpointValid=from!==to && data.nodes.some(n=>n.id===from) && data.nodes.some(n=>n.id===to);
  const editTram=(edit:RoadTramEdit)=>mutate('edit_road_tram',{edit});
@@ -174,9 +184,9 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
    <label>降車<select value={pilotTo} onChange={e=>{setPilotTo(e.target.value);setPlayerTo(undefined);}}><option value="">選択</option>{boardingChoices.map(point=><option key={stopKey(point)} value={stopKey(point)}>{point.edge_id} / {point.position*100}%</option>)}</select></label>
  </fieldset>}
  {allowsPlayer&&playerEdges.length>0&&<fieldset disabled={!enabled||busy}><legend>ゲーム内停留所を置く</legend>
-   <p>道路の向きを選んで、略図かスライダーで位置を決めます。</p>
-   <FictionalStopPicker label="乗車" edges={playerEdges} disabled={!enabled||busy} value={playerFrom} pick={point=>{setPlayerFrom(point);if(point)setPilotFrom('');}}/>
-   <FictionalStopPicker label="降車" edges={playerEdges} disabled={!enabled||busy} value={playerTo} pick={point=>{setPlayerTo(point);if(point)setPilotTo('');}}/>
+   <p>道路の向きを選んで、地図・略図・スライダーで位置を決めます。</p>
+   <FictionalStopPicker label="乗車" edges={playerEdges} disabled={!enabled||busy} onPickOnMap={onPickPlayerOnMap?(edgeId,position)=>onPickPlayerOnMap({end:'from',edgeId,position}):undefined} value={playerFrom} pick={point=>{setPlayerFrom(point);if(point)setPilotFrom('');}}/>
+   <FictionalStopPicker label="降車" edges={playerEdges} disabled={!enabled||busy} onPickOnMap={onPickPlayerOnMap?(edgeId,position)=>onPickPlayerOnMap({end:'to',edgeId,position}):undefined} value={playerTo} pick={point=>{setPlayerTo(point);if(point)setPilotTo('');}}/>
  </fieldset>}
  <label>名称<input autoComplete="off" value={name} onChange={e=>setName(e.target.value)}/></label>
  {pilot?<><button disabled={!enabled||busy||!pilotEndpointsValid||!name.trim()} onClick={()=>void run(savePilot)}>{editing?'バス系統の変更を適用':allowsPlayer?'停留所とバス系統を作成':'承認済み停留所でバス系統を作成'}</button>{editing&&<button disabled={!enabled||busy} onClick={clearPilot}>編集をやめる</button>}</>:<button disabled={!enabled||busy||!endpointValid||!name.trim()} onClick={()=>void run(add)}>停留所とバス系統を作成</button>}

@@ -10,8 +10,8 @@ mod history;
 mod operation;
 pub use deletion::AlignmentSectionSelection;
 pub use history::WorldEditHistory;
-pub use operation::OperationView;
 pub use operation::{FixedOdRoadTransfer, FixedOdScenarioView};
+pub use operation::{OperationTickView, OperationView};
 #[path = "session/ofm.rs"]
 mod ofm;
 pub use ofm::{OfmBindingInput, OfmRawInput};

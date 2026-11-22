@@ -1,5 +1,5 @@
 import {BusOperations,OperationClock,OperationProvider,ServiceOperations,ServicePathChangeNotice} from "./OperationsPanel";
-import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection} from "./RoadTransportPanel";
+import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection,type RoadPlayerMapRequest,type RoadPlayerMapSelection} from "./RoadTransportPanel";
 import {RailJourneyReplayPanel} from "./RailJourneyReplayPanel";
 import {FixedOdPanel,type FixedOdScenario,type FixedOdScenarioView} from "./FixedOdPanel";
 import {mapRenderMetrics} from './mapRenderMetrics';
@@ -325,8 +325,11 @@ export function App() {
   const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "select" | "road-transport" | "inactive">("tracks");
   const [roadMapFrom,setRoadMapFrom]=useState<string|null>(null);
   const [roadMapSelection,setRoadMapSelection]=useState<RoadMapSelection>();
+  const [roadPlayerMapPick,setRoadPlayerMapPick]=useState<{request:RoadPlayerMapRequest;graph:RoadTransportData;epoch:number;edge:RoadTransportData['edges'][number]}>();
+  const [roadPlayerMapSelection,setRoadPlayerMapSelection]=useState<{selection:RoadPlayerMapSelection;graph:RoadTransportData;epoch:number}>();
   const roadMapRevision=useRef(0);
-  useEffect(()=>{setRoadMapFrom(null);setRoadMapSelection(undefined);},[mainTab,activeTool,worldEpoch,world?.road_transport]);
+  function cancelRoadMapPick(){setRoadMapFrom(null);setRoadPlayerMapPick(undefined);}
+  useEffect(()=>{cancelRoadMapPick();setRoadMapSelection(undefined);setRoadPlayerMapSelection(undefined);},[mainTab,activeTool,worldEpoch,world?.road_transport]);
   function chooseMainTab(tab:WorkspaceTab){if(seamMutationPending.current)return;setError("");setMainTab(tab);setPanelCollapsed(false);setActiveTool(tab==="construction"?"tracks":tab==="stations"?"station-management":tab==="settings"?"company":tab==="routes"?"routes":tab==="services"?"services":"inactive");changeMapMode(tab==="construction"?"draw":"move");}
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   // Internal compatibility label only; physical tracks are not user-named routes.
@@ -1014,7 +1017,7 @@ export function App() {
     return [...routes.map(route=>"路線: "+route.name),...services.map(service=>"系統: "+service.name)].join(" / ");
   }
   function selectStation(id: string) {
-    if (busyRef.current||roadMapFrom!==null) return;
+    if (busyRef.current||roadMapFrom!==null||roadPlayerMapPick) return;
     if ((mainTab === "routes" || mainTab === "services") && routeMapSelect.current) {
       if (!enabled || !stationsById.has(id)) return;
       const select=routeMapSelect.current;if(routeMapPick!=="sequence")cancelRouteMapPick();select(id);return;
@@ -1637,7 +1640,7 @@ export function App() {
     const key = (event: KeyboardEvent) => {
       if(seamMutationPending.current)return;
       if(slotDialog||slotPicker||confirmLoad)return;
-      if(event.key==="Escape"&&roadMapFrom!==null&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();setRoadMapFrom(null);return;}
+      if(event.key==="Escape"&&(roadMapFrom!==null||roadPlayerMapPick)&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();cancelRoadMapPick();return;}
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete||document.querySelector('[aria-label="系統削除の確認"]'))return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
@@ -1859,7 +1862,38 @@ export function App() {
     const ids=new Set(qaRoadEdges.flatMap(edge=>[edge.from,edge.to]));
     return (world?.road_transport?.nodes??[]).filter(node=>ids.has(node.id)&&Number.isFinite(node.point.latitude)&&Number.isFinite(node.point.longitude));
   },[qaRoadEdges,world?.road_transport]);
-  const roadMapPicking=roadTransportAvailable&&mainTab==="construction"&&activeTool==="road-transport"&&roadMapFrom!==null;
+  const roadMapScope=roadTransportAvailable&&mainTab==="construction"&&activeTool==="road-transport";
+  const qaRoadMapPicking=roadMapScope&&roadMapFrom!==null;
+  const playerMapTarget=roadMapScope&&roadPlayerMapPick&&roadPlayerMapPick.epoch===worldEpoch&&roadPlayerMapPick.graph===world?.road_transport?roadPlayerMapPick:undefined;
+  const playerMapPath=useMemo(()=>playerMapTarget?mapPath(playerMapTarget.edge.geometry,camera):undefined,[playerMapTarget,camera]);
+  const roadMapPicking=qaRoadMapPicking||!!playerMapTarget;
+  function startPlayerRoadMapPick(request:RoadPlayerMapRequest){
+    const graph=world?.road_transport;
+    if(!roadMapScope||!enabled||unapplied||busyRef.current||roadMapPicking||!graph)return;
+    const edge=graph.edges.find(item=>item.id===request.edgeId&&item.source.startsWith("native-pilot:")&&item.bus_access==="allowed"&&item.level==="ground");
+    if(!edge||edge.geometry.length<2||!(request.position>0&&request.position<1))return;
+    const at=pointOnAlignment(edge.geometry,request.position);
+    if(!(at.latitude>=BOUNDS.south&&at.latitude<=BOUNDS.north&&at.longitude>=BOUNDS.west&&at.longitude<=BOUNDS.east))return;
+    cancelMapGesture();cancelRouteMapPick();clearTrackSelection();changeMapMode("move");
+    changeCamera(cameraAt(at.latitude,at.longitude,Math.max(cameraRef.current.zoom,16)));
+    setRoadPlayerMapSelection(undefined);
+    setRoadPlayerMapPick({request,graph,epoch:worldEpoch,edge});
+  }
+  function pickPlayerRoadMapPoint(event:MouseEvent<SVGSVGElement>){
+    if(!playerMapTarget)return;
+    event.stopPropagation();smoothZoom.cancel();
+    if(!enabled||unapplied||busyRef.current||suppressSelectionClick.current||suppressMapClick.current)return;
+    const rect=event.currentTarget.getBoundingClientRect();
+    const point=coordinatesFromClient(event.clientX,event.clientY,rect,camera);
+    if(!point)return;
+    // A click is evaluated only against the selected directed edge, never nearby graph edges.
+    const snapped=nearestOnAlignment(playerMapTarget.edge.geometry,point);
+    const a=project(point.latitude,point.longitude,camera),b=project(snapped.point.latitude,snapped.point.longitude,camera);
+    const position=Math.round(snapped.position*100)/100;
+    if(Math.hypot(a.x-b.x,a.y-b.y)*mapViewport(rect.width,rect.height).scale>10||!(position>0&&position<1))return;
+    setRoadPlayerMapSelection({selection:{...playerMapTarget.request,position,revision:++roadMapRevision.current},graph:playerMapTarget.graph,epoch:playerMapTarget.epoch});
+    cancelRoadMapPick();
+  }
   function startRoadMapPick(){
     if(!roadTransportAvailable||!enabled||unapplied||busyRef.current||activeTool!=="road-transport"||qaRoadNodes.length<2)return;
     cancelMapGesture();cancelRouteMapPick();clearTrackSelection();changeMapMode("move");
@@ -1871,7 +1905,7 @@ export function App() {
     changeCamera(next);setRoadMapFrom("");
   }
   function pickRoadMapNode(id:string){
-    if(!roadMapPicking||!enabled||unapplied||busyRef.current||!qaRoadNodes.some(node=>node.id===id))return;
+    if(!qaRoadMapPicking||!enabled||unapplied||busyRef.current||!qaRoadNodes.some(node=>node.id===id))return;
     if(!roadMapFrom){setRoadMapFrom(id);return;}
     if(id===roadMapFrom)return;
     setRoadMapSelection({from:roadMapFrom,to:id,revision:++roadMapRevision.current});setRoadMapFrom(null);
@@ -1954,7 +1988,7 @@ export function App() {
           </details>
             <div className="map-surface">
             <EditingMapFrame enabled={status==="ready"&&!companySetupRequired} tab={mainTab} tool={activeTool} mapMode={mapMode} pickingStations={routeMapPick!==null}/>
-            {roadMapPicking&&<div className="construction-toolbar" role="group" aria-label="道路交通の地図選択"><span role="status">検証用道路の{roadMapFrom?"終点":"起点"}を選択</span> <button type="button" className="secondary" onClick={()=>setRoadMapFrom(null)}>選択をやめる</button></div>}
+            {roadMapPicking&&<div className="construction-toolbar" role="group" aria-label="道路交通の地図選択"><span role="status">{playerMapTarget?`強調された道路上で${playerMapTarget.request.end==="from"?"乗車":"降車"}位置を選択`:`検証用道路の${roadMapFrom?"終点":"起点"}を選択`}</span> <button type="button" className="secondary" onClick={cancelRoadMapPick}>選択をやめる</button></div>}
             {trackRender.error&&<div role="status" className="field-error">ポイント形状を表示できません: {trackRender.error}</div>}
             {confirmRangeDelete&&<DeletionDialog defaultDelete label={`選択した${rangeCount}区間`} busy={busy} blocked={unapplied?"編集中の変更を適用または取り消してください":rangeCount?"":"区間が選択されていません"} error={error} onCancel={()=>setConfirmRangeDelete(false)} onDelete={deleteRange}/>}
             {deleteTarget&&<DeletionDialog defaultDelete={deleteTarget.kind==='built-section'||deleteTarget.kind==='plan-section'} label={deletionLabel(deleteTarget)} busy={busy} blocked={deletionBlocked(deleteTarget)} error={error} onCancel={()=>setDeleteTarget(null)} onDelete={confirmDeletion}/>}
@@ -1992,7 +2026,7 @@ export function App() {
               const moved=panCamera({...camera,latitude:p.latitude,longitude:p.longitude},event.key==="ArrowLeft"?-5:event.key==="ArrowRight"?5:0,event.key==="ArrowUp"?-5:event.key==="ArrowDown"?5:0);
               setStationCursor({latitude:moved.latitude,longitude:moved.longitude});
               const rect=event.currentTarget.getBoundingClientRect();if(rect.width>0&&rect.height>0){const viewport=mapViewport(rect.width,rect.height),screenPoint=project(moved.latitude,moved.longitude,camera);setCursorPosition({x:(screenPoint.x-viewport.x)*viewport.scale,y:(screenPoint.y-viewport.y)*viewport.scale,width:rect.width,height:rect.height});}
-            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClick={mapClick} className={(enabled && (mainTab==="routes"||mainTab==="services") && routeMapPick ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
+            }} onAuxClick={event=>{if(event.button===1)event.preventDefault();}} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => pointerEnd(event)} onPointerCancel={(event) => pointerEnd(event, true)} onPointerLeave={() => { drawingCursor.current=null;if(anchorGesture.current)return;referenceCopy.clearHover();setCursorPosition(null);setDeleteHover(null);setPlanHover(null);setBuiltHover(null); setHoverPoint(null);setStationCursor(null); if (gestureRef.current && !gestureRef.current.dragged) cancelMapGesture(); }} onLostPointerCapture={(event) => { if (event.target === event.currentTarget) pointerEnd(event, true); }} role="img" aria-label={background === "sample" ? "駅配置用サンプル地図" : background === "osm" ? "駅配置用OpenStreetMap" : "駅配置用地理院地図"} viewBox={`0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`} preserveAspectRatio="xMidYMid slice" onClickCapture={playerMapTarget?pickPlayerRoadMapPoint:undefined} onClick={mapClick} className={(enabled && (playerMapTarget||((mainTab==="routes"||mainTab==="services")&&routeMapPick)) ? "route-station-select" : dragging ? "map-dragging" : enabled && mapMode !== "move" ? "placement-enabled" : "map-move-mode")+(activeTool==="select"?" map-selection-mode":activeTool==="delete"?" map-delete-mode":"")}>
               <defs>
                 <clipPath id="map-extent"><rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} /></clipPath>
                 <pattern id="sample-scene" data-sample-scene="true" width="1000" height="600" patternUnits="userSpaceOnUse" patternTransform={sampleTransform}>
@@ -2065,7 +2099,8 @@ export function App() {
                 </g>;
               })}
               {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<RouteStationSelection stations={world?.stations??[]} ordered={routeSelectedStations} camera={camera} scale={viewport.scale} entityLabel={mainTab==="services"?"系統":"路線"} endpoint={routeMapPick==="start"||routeMapPick==="end"?routeMapPick:null}/>}
-              {roadMapPicking&&<g className="road-qa-map-selection" aria-label="検証用道路の点">
+               {playerMapPath&&<path d={playerMapPath} aria-label="停留所を置く道路" fill="none" stroke="#185d75" strokeWidth="5" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+              {qaRoadMapPicking&&<g className="road-qa-map-selection" aria-label="検証用道路の点">
                 {qaRoadEdges.map(edge=><path key={edge.id} d={drawPath(edge.geometry)} fill="none" stroke="#185d75" strokeWidth="3" strokeDasharray="5 3" vectorEffect="non-scaling-stroke" pointerEvents="none"/>)}
                 {qaRoadNodes.map(({id,point})=>{const p=project(point.latitude,point.longitude,camera);return <circle key={id} role="button" aria-label={`地図上の道路点 ${id}`} aria-pressed={id===roadMapFrom} tabIndex={enabled?0:-1}
                   cx={p.x} cy={p.y} r={9/viewport.scale} fill={id===roadMapFrom?"#c56b13":"#185d75"} stroke="white" strokeWidth="2" vectorEffect="non-scaling-stroke" style={{cursor:"pointer"}}
@@ -2095,7 +2130,7 @@ export function App() {
             {constructionTools.map(([tool,label],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{if(seamMutationPending.current)return;setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const length=constructionTools.length;const next=constructionTools[event.key==="Home"?0:event.key==="End"?length-1:(index+(event.key==="ArrowLeft"?length-1:1))%length][0];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
           </nav>
           {roadTransportAvailable&&world?.companies[0]&&<section id="panel-road-transport" role="tabpanel" aria-labelledby="tab-road-transport" hidden={mainTab!=="construction"||activeTool!=="road-transport"}>
-            <RoadTransportPanel key={worldEpoch} data={world.road_transport??{nodes:[],edges:[],bus_stops:[],bus_routes:[],tram_sections:[]}} companyId={world.companies[0].id} enabled={enabled&&!unapplied&&!roadMapPicking&&mainTab==="construction"&&activeTool==="road-transport"} tramEnabled={info?.road_tram_enabled===true} mapSelection={roadMapSelection} onPickOnMap={qaRoadNodes.length>=2?startRoadMapPick:undefined} run={runRoadTransport}/>
+            <RoadTransportPanel key={worldEpoch} data={world.road_transport??{nodes:[],edges:[],bus_stops:[],bus_routes:[],tram_sections:[]}} companyId={world.companies[0].id} enabled={enabled&&!unapplied&&!roadMapPicking&&mainTab==="construction"&&activeTool==="road-transport"} tramEnabled={info?.road_tram_enabled===true} mapSelection={roadMapSelection} onPickOnMap={qaRoadNodes.length>=2?startRoadMapPick:undefined} playerMapSelection={roadPlayerMapSelection?.graph===world.road_transport&&roadPlayerMapSelection?.epoch===worldEpoch?roadPlayerMapSelection.selection:undefined} onPickPlayerOnMap={startPlayerRoadMapPick} run={runRoadTransport}/>
             {info?.bus_operation_enabled===true&&activeTool==="road-transport"&&mainTab==="construction"&&<BusOperations key={worldEpoch} routes={world.road_transport?.bus_routes.filter(route=>route.owner===world.companies[0].id)??[]} enabled={enabled&&!unapplied&&!roadMapPicking}/> }
           </section>}
           <section id="workspace-panel-finance" role="tabpanel" aria-labelledby="workspace-tab-finance" hidden={mainTab!=="finance"}><h3>財務</h3><p>未実装です。収支・運賃・経費の画面は今後追加します。</p></section>

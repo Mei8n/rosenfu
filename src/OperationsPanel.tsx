@@ -8,7 +8,8 @@ type Config={timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type ServiceConfig=Config&{service_id:string};
 type BusConfig=Config&{route_id:string;assumed_speed_kmh:number};
 type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
-export type OperationView={now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[]};
+export type OperationView={now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[]};
+type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
 type Commands={reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number}};
 type OperationContext={view:OperationView|null;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
 const Context=createContext<OperationContext|null>(null);
@@ -35,10 +36,19 @@ export function OperationProvider({available,blocked,epoch,worldVersion,onChange
    if(!current()||gate.current.blocked)return;
    if(!tick&&command!=='operation_snapshot'){releaseMutation=gate.current.acquireMutation?.();if(releaseMutation===null)return;}
    lock={done:new Promise<void>(resolve=>{release=resolve;})};flight.current=lock;
-   const next=await invoke<OperationView>(command,args);
-   if(!current())return;
-   if(!Number.isSafeInteger(next?.now_ms)||next.now_ms<0||typeof next.paused!=='boolean'||typeof next.timetable_edit_token!=='string'||!next.timetable_edit_token||!speeds.some(speed=>speed===next.speed)||!Array.isArray(next.services)||!Array.isArray(next.trains))throw Error('運行エンジンの応答を確認できませんでした。');
-   setSnapshot({epoch:before.epoch,worldVersion:before.worldVersion,view:next});
+   const cached=tick&&snapshot?.epoch===before.epoch&&snapshot.worldVersion===before.worldVersion?snapshot.view:null;
+   const known=cached?.configuration_token;
+   const next=await invoke<OperationWire>(command,known?{knownConfigurationToken:known}:args);
+   if(!current()||((tick||command==='operation_snapshot')&&before.worldVersion!==gate.current.worldVersion))return;
+   const invalid=()=>Error('運行エンジンの応答を確認できませんでした。');
+   if(!Number.isSafeInteger(next?.now_ms)||next.now_ms<0||typeof next.paused!=='boolean'||typeof next.timetable_edit_token!=='string'||!next.timetable_edit_token||!speeds.some(speed=>speed===next.speed)||!Array.isArray(next.trains)||(next.configuration_token!==undefined&&(typeof next.configuration_token!=='string'||!next.configuration_token)))throw invalid();
+   let view:OperationView;
+   if(Array.isArray(next.services)&&(next.bus_services===undefined||Array.isArray(next.bus_services))){
+    view={...next,services:next.services};
+   }else if(cached&&known===next.configuration_token&&known&&next.services===undefined&&next.bus_services===undefined){
+    view={...next,services:cached.services,bus_services:cached.bus_services};
+   }else throw invalid();
+   setSnapshot({epoch:before.epoch,worldVersion:before.worldVersion,view});
    if(!tick&&command!=='operation_snapshot')gate.current.onChange();
   }catch(cause){
    if(current())setError(String(cause));

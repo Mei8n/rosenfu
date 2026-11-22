@@ -81,3 +81,53 @@ test('only owned bus routes use the supported native operation panel',async()=>{
  expect(screen.getByRole('button',{name:'運行を設定'})).toBeTruthy();
  expect(invoke).not.toHaveBeenCalledWith('configure_bus_operation',expect.anything());
 });
+
+test('fictional boarding snaps only the explicitly chosen directed road on the main map',async()=>{
+ const a={latitude:35,longitude:139},b={latitude:35,longitude:139.006};
+ const edge={id:'forward',from:'a',to:'b',source:'native-pilot:verified-region',revision:'2',geometry:[a,b],bus_access:'allowed',tram_access:'unknown',level:'ground'};
+ const roadWorld={...world,road_transport:{nodes:[{id:'a',point:a},{id:'b',point:b}],edges:[edge,{...edge,id:'reverse',from:'b',to:'a',geometry:[b,a]}],bus_stops:[],bus_routes:[],tram_sections:[]}};
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'player-road-test',road_transport_enabled:true};
+  if(command==='list_save_slots')return {active_slot_id:null,slots:[]};
+  if(command==='ofm_world_token')return 'current-world-token';
+  if(command==='list_native_road_regions')return [{id:'verified-region',region:'地域',origin:'Fixture',revision:'2',attribution:'Fixture',bus_stop_positions:[],allows_player_bus_stops:true}];
+  return roadWorld;
+ });
+ render(<App/>);await screen.findByText(/player-road-test/);
+ fireEvent.click(screen.getByRole('tab',{name:'道路交通（検証）'}));
+ const first=await screen.findByLabelText('乗車の道路');
+ const second=screen.getByLabelText('降車の道路');
+ fireEvent.change(first,{target:{value:'reverse'}});
+ fireEvent.change(second,{target:{value:'reverse'}});
+ expect(screen.queryByRole('button',{name:'地図で起点・終点を選ぶ'})).toBeNull();
+ const view=screen.getByRole('img',{name:/^駅配置用/});
+ view.getBoundingClientRect=()=>new DOMRect(0,0,1000,600);
+ function selectAt(frac:number,dy=0){
+  const line=screen.getByLabelText('停留所を置く道路');
+  const [x0,y0,x1,y1]=[...(line.getAttribute('d')??'').matchAll(/-?\d+(?:\.\d+)?/g)].map(m=>Number(m[0]));
+  expect(x0).toBeGreaterThan(x1); // same shape as forward, but not its direction
+  fireEvent.click(view,{clientX:x0+(x1-x0)*frac,clientY:y0+(y1-y0)*frac+dy});
+ }
+ const openBoarding=()=>fireEvent.click(screen.getByRole('button',{name:'地図で乗車位置を選ぶ'}));
+ openBoarding();
+ selectAt(0.25,30);
+ expect(screen.getByText('強調された道路上で乗車位置を選択')).toBeTruthy();
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.queryByLabelText('停留所を置く道路')).toBeNull();
+ expect(screen.getByRole<HTMLInputElement>('slider',{name:'乗車の位置'}).value).toBe('50');
+ openBoarding();fireEvent.click(screen.getByRole('tab',{name:'選択'}));
+ expect(screen.queryByLabelText('停留所を置く道路')).toBeNull();
+ fireEvent.click(screen.getByRole('tab',{name:'道路交通（検証）'}));
+ openBoarding();selectAt(0.25);
+ expect(screen.getByRole<HTMLInputElement>('slider',{name:'乗車の位置'}).value).toBe('25');
+ fireEvent.click(screen.getByRole('button',{name:'地図で降車位置を選ぶ'}));selectAt(0.75);
+ expect(screen.getByRole<HTMLInputElement>('slider',{name:'降車の位置'}).value).toBe('75');
+ expect(invoke).not.toHaveBeenCalledWith('ofm_world_token');
+ fireEvent.click(screen.getByRole('button',{name:'停留所とバス系統を作成'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('edit_native_pilot_bus',{
+  expectedWorldToken:'current-world-token',
+  edit:{route_id:expect.stringMatching(/^bus:/),name:'バス系統',expected_route:null,
+   from:{edge_id:'reverse',position:0.25,location_kind:'player_created'},
+   to:{edge_id:'reverse',position:0.75,location_kind:'player_created'}},
+ }));
+});
