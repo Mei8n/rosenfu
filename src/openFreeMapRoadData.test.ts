@@ -76,3 +76,19 @@ describe('OpenFreeMap road adapter',()=>{
  });
 
 });
+
+it('observes a rectangle through the same raw provider without re-downloading its viewport cache cells',async()=>{
+ const raw=fixture(), f=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?
+  JSON.stringify({maxzoom:14,tiles:['https://tiles.openfreemap.org/planet/rev/{z}/{x}/{y}.pbf']}):new Uint8Array(raw)));
+ const repo=createOpenFreeMapRoadRepository(f as typeof fetch);
+ await repo.load({west:139.75,east:139.751,south:35.683,north:35.685});
+ const cells=[[14552,6451],[14552,6452],[14553,6451],[14553,6452]] as const;
+ const refs=await repo.observeTiles(cells,'rev');
+ expect(refs.map(r=>[r.x,r.y])).toEqual(cells);
+ const evidence=await repo.readTileEvidenceBatch(refs);
+ expect(evidence.bindings).toHaveLength(4); expect(evidence.rawTiles).toHaveLength(1);
+ expect(f).toHaveBeenCalledTimes(5); // metadata plus four unique raw tiles
+ await expect(repo.observeTiles(cells,'stale')).rejects.toThrow('版');
+ await expect(repo.observeTiles([cells[0],cells[0]],'rev')).rejects.toThrow('範囲');
+ expect(f).toHaveBeenCalledTimes(5);
+});

@@ -305,7 +305,7 @@ impl World {
         {
             return Err(WorldError::InvalidAlignmentConnection);
         }
-        let mut data = self.data.clone();
+        let mut data = self.snapshot().clone();
         let alignment = data
             .alignments
             .iter_mut()
@@ -437,7 +437,7 @@ impl World {
         data.validate()?;
         data.preserve_extended_provenance(&self.data, alignment_id, prepend)?;
         data.preserve_service_traversals(&self.data)?;
-        self.data = data;
+        self.data = data.into();
         Ok(())
     }
 }
@@ -480,7 +480,7 @@ impl World {
         id: AlignmentId,
         speed: f64,
     ) -> Result<(), WorldError> {
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         let alignment = candidate
             .alignments
             .iter_mut()
@@ -577,7 +577,7 @@ impl World {
         length_m: f64,
         width_m: f64,
     ) -> Result<(), WorldError> {
-        let mut data = self.data.clone();
+        let mut data = self.snapshot().clone();
         let placement = data
             .station_placements
             .iter_mut()

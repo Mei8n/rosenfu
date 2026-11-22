@@ -269,10 +269,11 @@ test("rapid pan throttles new tile URLs while keeping shared DOM and existing ti
   const map = screen.getByRole("img", { name: "駅配置用地理院地図" });
   const original = new Map(Array.from(map.querySelectorAll("image")).map(image=>[image.getAttribute("data-tile-id")!,image]));
   for(const image of original.values()) fireEvent.load(image);
-  panMap(300);
+  // Both moves stay above the raster coverage threshold for the ordinary cadence.
+  panMap(180);
   act(()=>vi.advanceTimersByTime(100));
-  panMap(300);
-  const camera = panCamera(panCamera(DEFAULT_CAMERA,300,0),300,0);
+  panMap(180);
+  const camera = panCamera(panCamera(DEFAULT_CAMERA,180,0),180,0);
   expect(Array.from(map.querySelectorAll("image")).map(image=>image.getAttribute("data-tile-id"))).toEqual(Array.from(original.keys()));
   const first = GSI_TILES[0];
   expect(Number(original.get(first.id)!.getAttribute("x"))).toBeCloseTo(positionTile(first,camera).x,8);

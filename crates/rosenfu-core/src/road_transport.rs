@@ -5,11 +5,14 @@ use crate::world::{AlignmentId, CompanyId, GeoPoint, TrackType, WorldDraft};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod native;
+mod ofm;
+pub use ofm::GameplayBusInteriorStopView;
 mod pilot;
 pub use native::{
-    import_native_pilot, native_road_regions, NativeRoadRegion, PilotBusEdit, StopPosition,
+    import_native_pilot, native_road_regions, NativeRoadRegion, PilotBusEdit, PilotBusWaypoint,
+    StopPosition,
 };
-pub use pilot::PilotRoadMode;
+pub use pilot::{BusPathVia, PilotRoadMode, MAX_BUS_WAYPOINTS};
 use pilot::{PilotRoad, PilotTransition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +43,22 @@ pub struct RoadEdge {
     #[serde(default)]
     pub level: Option<crate::world::InfrastructureLevel>,
 }
+/// Legacy/approved references stay distinct from fictional player construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BusStopLocationKind {
+    /// Historical wire default. In native regions this is an exact listed reference.
+    #[default]
+    ReviewedReference,
+    /// A fictional stop. Its verified road edge is real; the stop need not be.
+    PlayerCreated,
+}
+impl BusStopLocationKind {
+    fn is_reviewed_reference(&self) -> bool {
+        *self == Self::ReviewedReference
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BusStop {
@@ -48,6 +67,11 @@ pub struct BusStop {
     pub name: String,
     pub edge_id: String,
     pub position: f64,
+    #[serde(
+        default,
+        skip_serializing_if = "BusStopLocationKind::is_reviewed_reference"
+    )]
+    pub location_kind: BusStopLocationKind,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +122,11 @@ pub enum RoadTransportError {
     DuplicateId,
     MissingReference,
     DisconnectedPath,
+    MissingReturnPath,
+    InvalidBusCircuit,
+    UnreachableBusLeg(usize),
+    MissingBusStopOccurrence,
+    AmbiguousBusStopOccurrence,
     AccessUnknown,
     AccessForbidden,
     WrongOwner,
@@ -481,6 +510,16 @@ impl RoadTransport {
             .iter()
             .find(|r| r.id == route_id)
             .ok_or(MissingReference)?;
+        if let Some(proof) = world
+            .ofm_gameplay_bus_routes
+            .get(route_id)
+            .filter(|proof| proof.pattern == Some(crate::ofm_evidence::BusPattern::ClosedOneWay))
+        {
+            if !std::ptr::eq(self, &world.road_transport) && self != &world.road_transport {
+                return Err(StaleSnapshot);
+            }
+            return world.gameplay_bus_closed_legs(route_id, proof);
+        }
         let edges = indexed(&self.edges, |e| &e.id)?;
         let stops = indexed(&self.bus_stops, |s| &s.id)?;
         route
@@ -592,6 +631,7 @@ mod tests {
                     name: "Start".into(),
                     edge_id: "ab".into(),
                     position: 0.1,
+                    location_kind: Default::default(),
                 },
                 BusStop {
                     id: "s2".into(),
@@ -599,6 +639,7 @@ mod tests {
                     name: "End".into(),
                     edge_id: "ab".into(),
                     position: 0.9,
+                    location_kind: Default::default(),
                 },
             ],
             bus_routes: vec![BusRoute {
@@ -828,6 +869,7 @@ mod tests {
                 name: id.into(),
                 edge_id: "bc".into(),
                 position,
+                location_kind: Default::default(),
             });
         }
         d.bus_routes[0].edges = vec!["ab".into(), "bc".into()];

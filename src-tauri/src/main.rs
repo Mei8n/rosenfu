@@ -14,10 +14,21 @@ struct EngineSessionInfo {
     engine: rosenfu_core::EngineInfo,
     company_setup_required: bool,
     operation_enabled: bool,
+    crossing_planning_enabled: bool,
     fixed_od_enabled: bool,
     rail_journey_replay_enabled: bool,
     fixed_od_scenario_enabled: bool,
     road_transport_enabled: bool,
+    ordinary_ofm_bus_enabled: bool,
+    authored_tram_road_guide_enabled: bool,
+    ordinary_ofm_bus_rectangle_enabled: bool,
+    ordinary_ofm_bus_round_trip_enabled: bool,
+    ordinary_ofm_bus_closed_loop_enabled: bool,
+    ordinary_ofm_bus_observed_grade_enabled: bool,
+    ordinary_ofm_bus_multiple_enabled: bool,
+    ordinary_ofm_bus_waypoints_enabled: bool,
+    ordinary_ofm_bus_interior_stops_enabled: bool,
+    ordinary_ofm_bus_auto_stops_enabled: bool,
     road_tram_enabled: bool,
     bus_operation_enabled: bool,
 }
@@ -26,10 +37,21 @@ fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInf
     Ok(EngineSessionInfo {
         engine: rosenfu_core::engine_info(),
         operation_enabled: true,
+        crossing_planning_enabled: true,
         fixed_od_enabled: true,
         rail_journey_replay_enabled: true,
         fixed_od_scenario_enabled: true,
         road_transport_enabled: true,
+        ordinary_ofm_bus_enabled: true,
+        authored_tram_road_guide_enabled: true,
+        ordinary_ofm_bus_rectangle_enabled: true,
+        ordinary_ofm_bus_round_trip_enabled: true,
+        ordinary_ofm_bus_closed_loop_enabled: true,
+        ordinary_ofm_bus_observed_grade_enabled: true,
+        ordinary_ofm_bus_multiple_enabled: true,
+        ordinary_ofm_bus_waypoints_enabled: true,
+        ordinary_ofm_bus_interior_stops_enabled: true,
+        ordinary_ofm_bus_auto_stops_enabled: true,
         road_tram_enabled: true,
         bus_operation_enabled: true,
         company_setup_required: editor
@@ -282,11 +304,9 @@ async fn preview_construction_plan(
     let validation_only = validation_only.unwrap_or(false);
     let snapshot = {
         let editor = editor.lock().map_err(|_| "world state unavailable")?;
-        if validation_only {
-            editor.construction_validation_snapshot()
-        } else {
-            editor.clone()
-        }
+        // Both modes only read the captured world, water model and company.
+        // Do not clone unrelated interactive history or save bookkeeping.
+        editor.construction_validation_snapshot()
     };
     // Validation can be expensive: never run it on the UI event-loop thread.
     tauri::async_runtime::spawn_blocking(move || {
@@ -901,12 +921,15 @@ fn main() {
         .manage(Mutex::new(editor))
         .invoke_handler(tauri::generate_handler![
             operation_commands::operation_snapshot,
+            operation_commands::preview_crossing_planning,
             operation_commands::preview_fixed_od,
+            operation_commands::preview_observed_fixed_od,
             operation_commands::preview_rail_journey_replay,
             operation_commands::fixed_od_scenario,
             operation_commands::set_fixed_od_scenario,
             operation_commands::configure_bus_operation,
             operation_commands::configure_operation_service,
+            operation_commands::preview_nominal_trainsets,
             operation_commands::set_operation_clock,
             operation_commands::advance_operation,
             operation_commands::reset_operation,
@@ -915,6 +938,10 @@ fn main() {
             road_transport_commands::install_native_road_pilot,
             road_transport_commands::list_native_road_regions,
             road_transport_commands::edit_native_pilot_bus,
+            road_transport_commands::preview_gameplay_ofm_bus,
+            road_transport_commands::preview_authored_tram_road_guide,
+            road_transport_commands::put_gameplay_ofm_bus,
+            road_transport_commands::remove_gameplay_ofm_bus,
             road_transport_commands::find_road_path,
             road_transport_commands::edit_road_tram,
             engine_info,

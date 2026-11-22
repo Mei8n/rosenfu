@@ -359,8 +359,19 @@ fn restore_document<W: Into<WorldDraft>>(
     {
         return Err(StorageError::InvalidHeader);
     }
+    let draft = document.world.into();
+    if version == 26 && !draft.ofm_gameplay_bus_routes.is_empty() {
+        return Err(StorageError::InvalidHeader);
+    }
+    if version == 26
+        && draft.road_transport.bus_stops.iter().any(|stop| {
+            stop.location_kind == rosenfu_core::road_transport::BusStopLocationKind::PlayerCreated
+        })
+    {
+        return Err(StorageError::InvalidHeader);
+    }
     let store = document.road_evidence.restore(version == 26)?;
-    let mut world = World::from_saved_draft(document.world.into(), store)?;
+    let mut world = World::from_saved_draft(draft, store)?;
     world
         .restore_operation(document.operation)
         .map_err(|_| StorageError::InvalidHeader)?;
@@ -847,6 +858,32 @@ pub fn replace_world_if_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_26_does_not_accept_player_created_road_stops() {
+        let mut data: serde_json::Value =
+            serde_json::from_slice(&encode(&World::default()).unwrap()).unwrap();
+        data["schema_version"] = 26.into();
+        assert!(decode(&serde_json::to_vec(&data).unwrap()).is_ok());
+        data["world"]["road_transport"] = serde_json::json!({
+            "nodes": [], "edges": [], "bus_routes": [], "tram_sections": [],
+            "bus_stops": [{
+                "id":"s", "owner":"1", "name":"Player stop", "edge_id":"candidate",
+                "position":0.4, "location_kind":"player_created"
+            }]
+        });
+        assert!(matches!(
+            decode(&serde_json::to_vec(&data).unwrap()),
+            Err(StorageError::InvalidHeader)
+        ));
+        data["schema_version"] = SCHEMA_VERSION.into();
+        assert!(matches!(
+            decode(&serde_json::to_vec(&data).unwrap()),
+            Err(StorageError::InvalidWorld(
+                rosenfu_core::world::WorldError::InvalidRoadTransport
+            ))
+        ));
+    }
 
     #[test]
     fn typed_save_and_value_fallback_agree_on_shape_and_wire_bytes() {

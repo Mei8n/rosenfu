@@ -103,3 +103,236 @@ fn unknown_native_pilot_and_altered_save_never_authorize_graph() {
         assert!(rosenfu_storage::decode(tampered.as_bytes()).is_err());
     }
 }
+
+#[test]
+fn ordinary_authored_tram_intersection_build_operate_and_reopen() {
+    use base64::Engine;
+    use rosenfu_core::ofm_evidence::{AuthoredTramGuide, BusVertex};
+    let mut editor = session::WorldEditor::new();
+    editor.rename_company("合成道路交差テスト".into()).unwrap();
+    let original = editor.snapshot();
+    let undo_depth = editor.world_edit_history().undo_depth;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../rosenfu-core/tests/fixtures/ofm_authored_tram_synthetic.json"
+    ))
+    .unwrap();
+    let tile_key = fixture["tileKey"].as_str().unwrap();
+    let digest = fixture["tileRawSha256"].as_str().unwrap();
+    let guide = AuthoredTramGuide {
+        start_fraction_q: None,
+        end_fraction_q: None,
+        tile_key: tile_key.into(),
+        tile_raw_sha256: digest.into(),
+        start: BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: 0,
+        },
+        end: BusVertex {
+            feature: 1,
+            line: 0,
+            vertex: 1,
+        },
+    };
+    let cached = || {
+        let bytes: Vec<u8> = serde_json::from_value(fixture["raw"].clone()).unwrap();
+        (
+            session::OfmRawInput {
+                sha256: digest.into(),
+                byte_length: bytes.len(),
+                base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            },
+            session::OfmBindingInput {
+                key: tile_key.into(),
+                url: tile_key.into(),
+                raw_sha256: digest.into(),
+                revision: fixture["revision"].as_str().unwrap().into(),
+                z: 14,
+                x: 14552,
+                y: 6451,
+                decoder_rule: "ofm_transportation_z14_v1".into(),
+                license: "ODbL-1.0".into(),
+                attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+            },
+        )
+    };
+    let token = editor.ofm_world_token().unwrap();
+    assert!(editor
+        .preview_authored_tram_road_guide("bad-token", &guide, Some(cached()))
+        .is_err());
+    assert!(editor
+        .preview_authored_tram_road_guide(&token, &guide, None)
+        .is_err());
+    let points = editor
+        .preview_authored_tram_road_guide(&token, &guide, Some(cached()))
+        .unwrap();
+    assert_eq!(points.len(), 3);
+    let reverse = AuthoredTramGuide {
+        start: guide.end,
+        end: guide.start,
+        ..guide
+    };
+    let opposite = editor
+        .preview_authored_tram_road_guide(&token, &reverse, Some(cached()))
+        .unwrap();
+    assert!(points.iter().rev().eq(&opposite));
+    assert_eq!(editor.snapshot(), original);
+    assert_eq!(editor.ofm_world_token().unwrap(), token);
+    assert_eq!(editor.world_edit_history().undo_depth, undo_depth);
+
+    let alignment = |levels| {
+        serde_json::from_value::<session::PlannedAlignment>(serde_json::json!({
+            "name": "編集した架空軌道", "trackType": "tram", "points": points,
+            "anchorIndices": [0, 2], "anchorLevels": levels, "stations": []
+        }))
+        .unwrap()
+    };
+    // The road evidence is horizontal only: game height/gradient still runs
+    // through the normal construction gate, not a measured real rail grade.
+    assert!(editor
+        .build_construction_plan(vec![alignment(["ground", "elevated"])], vec![])
+        .is_err());
+    assert_eq!(editor.snapshot(), original);
+    let built = editor
+        .build_construction_plan(vec![alignment(["ground", "ground"])], vec![])
+        .unwrap();
+    assert_eq!(
+        built.alignments[0].track_type,
+        rosenfu_core::world::TrackType::Tram
+    );
+    assert!(built.road_path_provenance.is_empty() && built.road_evidence_descriptors.is_empty());
+    assert!(built.road_transport.tram_sections.is_empty());
+    assert!(built.road_transport.edges.is_empty());
+    // No shared-road debug graph, pilot, or imported rail: the player
+    // provisions ordinary ground platforms and a route on the built track.
+    use rosenfu_core::operation::{Timetable, TrainState, Vehicle};
+    use rosenfu_core::world::{RouteSegment, World};
+    let id = built.alignments[0].id;
+    let stops_world = editor
+        .place_station_on_alignment("南西停留場".into(), id, 0.15, 20., 8.)
+        .unwrap();
+    let from = stops_world.stations[0].id;
+    let stops_world = editor
+        .place_station_on_alignment("北停留場".into(), id, 0.88, 20., 8.)
+        .unwrap();
+    let to = stops_world.stations[1].id;
+    let path = vec![RouteSegment::Alignment {
+        alignment_id: id,
+        from,
+        to,
+    }];
+    let route_world = editor
+        .save_planned_route(None, "交差点線".into(), from, path.clone(), vec![])
+        .unwrap();
+    let route = route_world.routes[0].id;
+    let stops = editor
+        .preview_service_path(from, path.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .map(|occ| occ.reference)
+        .collect::<Vec<_>>();
+    assert_eq!(stops.len(), 2);
+    let service_world = editor
+        .create_service_path_with_source_routes("各停".into(), from, path, stops, Some(route), None)
+        .unwrap();
+    let service = service_world.services[0].id;
+    let editable = editor.operation_snapshot().timetable_edit_token.clone();
+    let configured = editor
+        .configure_operation_service(
+            service,
+            Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 0,
+                headway_ms: 60_000,
+            },
+            Vehicle {
+                max_speed_kmh: 95.,
+                acceleration_mps2: 1.,
+                braking_mps2: 1.,
+                length_m: 12.,
+            },
+            15_000,
+            &editable,
+        )
+        .unwrap();
+    assert!(configured.paused && configured.trains.is_empty());
+    assert_eq!(configured.services.len(), 1);
+    assert!(configured.bus_services.is_empty());
+    let config = &configured.services[0];
+    let spec = World::new(service_world.clone())
+        .unwrap()
+        .compile_operation(config)
+        .unwrap();
+    assert_eq!(spec.legs.len(), 2);
+    assert_eq!(spec.legs[0].from, from.0.to_string());
+    assert_eq!(spec.legs[0].to, to.0.to_string());
+    assert_eq!(spec.legs[1].from, to.0.to_string());
+    assert_eq!(spec.legs[1].to, from.0.to_string());
+    assert!(spec.legs.iter().all(|leg| !leg.sections.is_empty()));
+    assert!(spec
+        .legs
+        .iter()
+        .flat_map(|leg| &leg.sections)
+        .all(|section| section.speed_limit_kmh <= 50.));
+
+    editor.set_operation_clock(false, 1).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let departed = editor.advance_operation().unwrap();
+    assert!(departed.now_ms > configured.now_ms);
+    assert!(!departed.paused && !departed.invalidated);
+    assert_eq!(departed.trains.len(), 1);
+    let train = &departed.trains[0];
+    assert_eq!(train.key.service_id, service.0.to_string());
+    assert_eq!(train.key.scheduled_ms, 0);
+    assert_eq!(train.leg, 0);
+    let TrainState::Moving {
+        entered_ms,
+        arrival_ms,
+        release_ms,
+    } = train.state
+    else {
+        panic!("ordinary tram did not depart");
+    };
+    assert_eq!(entered_ms, 0);
+    assert!(arrival_ms > departed.now_ms);
+
+    // Autonomously ticked via the ordinary session clock; pause before disk I/O
+    // to compare the exact in-flight clock and train after session reload.
+    let before_save = editor.set_operation_clock(true, 1).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("player-authored-tram.json");
+    editor.save(&file).unwrap();
+    let mut opened_editor = session::WorldEditor::new();
+    assert_eq!(opened_editor.load(&file).unwrap(), service_world);
+    let reopened = opened_editor.operation_snapshot();
+    assert!(reopened.paused && !reopened.invalidated);
+    assert_eq!(reopened.now_ms, before_save.now_ms);
+    assert_eq!(reopened.trains, before_save.trains);
+    assert_eq!(reopened.services, before_save.services);
+
+    // Finish the exact saved in-flight trip with the deterministic shared
+    // scheduler, instead of waiting real seconds or injecting a train.
+    let mut world = rosenfu_storage::load_world(&file).unwrap();
+    let runtime = &mut world.operation_mut().unwrap().runtime;
+    runtime.set_paused(false);
+    let arrived = runtime.advance_to(arrival_ms, 128).unwrap();
+    assert!(arrived.reached_target);
+    assert_eq!(arrived.arrivals.len(), 1);
+    assert_eq!(arrived.arrivals[0].station_id, to.0.to_string());
+    assert_eq!(arrived.arrivals[0].train, train.key);
+    assert_eq!(arrived.arrivals[0].delay_ms, 0);
+    let cleared = runtime.advance_to(release_ms, 128).unwrap();
+    assert!(cleared.reached_target);
+    assert!(cleared.arrivals.is_empty());
+    assert_eq!(
+        runtime.trains().map(|train| train.leg).collect::<Vec<_>>(),
+        vec![1]
+    );
+    let returned = runtime.advance_to(release_ms + 120_000, 128).unwrap();
+    assert!(returned.reached_target);
+    assert_eq!(returned.arrivals.len(), 1);
+    assert_eq!(returned.arrivals[0].station_id, from.0.to_string());
+    assert_eq!(returned.arrivals[0].train, train.key);
+    assert_eq!(runtime.trains().count(), 0);
+}

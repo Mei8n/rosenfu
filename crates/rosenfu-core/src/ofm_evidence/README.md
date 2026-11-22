@@ -341,3 +341,183 @@ split / append / prepend, deletion plus snapshot Undo, and unrelated tile additi
 workflows, UI Undo execution, and physical seam-build acceptance. The core entrypoints
 preserve existing typed alignment/extension checks; session must still apply actual
 height/grade/curvature/speed and endpoint-connection policy before live commit.
+
+## Ordinary Bus graph checkpoint
+
+`find_gameplay_bus_path` derives a simulator-only ground route from one already
+validated z14 tile in an `EvidenceStore` scope. It does not install or enlarge a
+native road catalog. Supported street classes with no explicit access tag are
+usable by gameplay convention; denied and unrecognized values are excluded.
+Bridge, tunnel, nonzero layer, buffered portions, guessed geometric intersections,
+nearby endpoints and coincident interiors are not connected. The multiple-feature
+junction is inferred only at a shared integer vertex with at most four occurrences
+and at most one interior occurrence, with separate original lines. This does not
+resolve missing structural tags or assert surveyed junctions or real bus access.
+
+By default pass `respect_oneway=false` for bidirectional gameplay (known supplier
+oneway values only). Explicit `true` enforces forward/reverse tags. The tile feed
+does not carry full turn restrictions, barriers or public-service access semantics.
+
+The result keeps the exact input vertices, ordered original fragment spans, source
+revision/URL and raw SHA, plus a reproducible algorithm version. Use
+`reconstruct_gameplay_bus_path` against `store.scope` when replaying a request.
+This slice has no inter-tile seams, arbitrary interior-edge endpoint picks, route
+editing/operation, world declaration or installed road data. Raw bytes in tests
+are generated MVT; no imported tile corpus is bundled.
+
+The next native checkpoint can commit one of these routes in an otherwise empty
+road network from already retained evidence, run it using the existing bus runtime,
+and restore it through the ordinary world save. It projects only traversed
+raw fragments, not a second network, and distinguishes its fictional stop labels
+and simulator-only eligibility from released native pilot data. Restoring a
+current save regenerates the route against exact archived raw SHA and fixed-point
+tile routing; only the latest validated derivation is memoized in the existing
+archive cache. Old unmarked saves keep their bytes; older binaries do not read the
+new marked world, and schema 26 explicitly refuses it. A fresh player-facing
+cache admission and map flow, arbitrary stop positions/vias, broader coverage
+and inter-tile continuity are not included in this native slice.
+
+The cache-admission checkpoint accepts one paired, already fetched raw tile and
+the matching ordinary road binding (or neither for a tile already in the
+world). The same input/size/SHA/canonical URL checks as park-plan admission run
+before publication. It makes neither a rail plan nor a catalog selection.
+Native preview and commit share candidate evaluation; preview changes neither
+the world nor its retained raw archive. The expected world token and atomic
+save-size guard still apply. There is no separate loader or source UI.
+
+### Bounded rectangular context, v2
+
+`ofm_ground_bus_rectangle_z14_v2` adds the explicit end tile and up to 15
+additional exact URL/SHA bindings. It verifies the complete rectangle of
+adjacent same-revision z14 cells, admitting freshly fetched raw cache entries
+atomically and checking retained tiles for missing/changed evidence. V1 still
+works with neither field. The resolved geometry and fictional stops keep the
+same preview/commit/save path and operate through the existing Bus runtime.
+
+A road may cross an internal tile edge only between unique ground fragments
+accepted by the existing reciprocal geometrical overlap verifier. The original
+raw segments must additionally cross that boundary at the **same exact rational
+grid coordinate**, which allows exact cuts without requiring a stored border
+vertex. There is no nearest-neighbor gap bridge or corner jump. The boundary
+verifier sees every possible crossing fragment, while lines lying wholly to
+one side of every internal boundary do not consume its work budget. Restriction
+and work limits fail closed; incomplete, ambiguous, unsupported and even small
+mismatched seams can produce no path, not invented connections. Fixed-point
+search and deterministic tie-breaking are independent of projected latitude.
+
+This milestone's route remains limited to two selected raw vertices and a
+single persisted ordinary route. It does not yet implement vias, arbitrary
+interior stops, cross-tile geographic coverage guarantees, or shared-road Tram.
+
+### Independent ordinary Bus routes
+
+The native world stores ordinary route proofs indexed by route ID. Reconstruct
+each proof against the same immutable tile archive, then materialize the union of
+only traversed directed raw atoms. Exact tile URL/SHA, original line/segment and
+owned interval determine identity; geometry proximity does not coalesce distinct
+atoms. A shared directed atom has one runtime road resource. Different routes
+retain independent fictional endpoint IDs even at the same point. Removing a
+route prunes only unreferenced directed atoms and retains raw archives and
+unrelated tracks/services for Undo and future reconstruction. Route preview
+displays only the chosen ordered path, not the whole materialized union.
+
+The marker is absent from previously published worlds and from existing pinned,
+lab and QA routes. Those save formats are unchanged. The unpublished single-route
+experimental world marker is intentionally not migrated; opening such a
+prototype is non-destructively rejected. V1 one-tile queries and V2 multi-tile
+queries are both supported as proof values in the indexed format.
+
+Bounds: up to 64 proof rows, 256 total bound tile occurrences, 4,096 atoms per
+route and 32,768 ordered atom occurrences across the derived union, subject also
+to the existing tile and world-save byte budgets. A bounded proof memo retains
+the hot cohort plus a candidate (up to 36,864 atom occurrences); first restore
+rebuilds verified paths as required and warm world validations do not rescan the
+whole geography. The existing provider cache remains the only raw source.
+
+### Ordered authored via vertices
+
+Optional `via` holds up to 30 stable, unique control IDs with exact raw
+tile/feature/line/vertex pointers in the same source rectangle as the
+endpoints. Via points constrain the chosen geometry; they are not passenger
+stops. Search builds or reuses a compiled graph keyed only by complete immutable
+scope and direction policy, then runs ordered directed searches with shared
+scratch space. A multi-anchor route has a cumulative 1,000,000 relaxation and
+4,096 atom limit. A failed leg prevents the full edit, and native preview can
+return a zero-based failure index without any partial route geometry.
+
+The default bidirectional open mode solves return via points in reverse order,
+rather than reversing rendered points. With explicit strict one-way enabled,
+outbound shape controls stay outbound-only and the return independently finds
+a legal route between endpoints, avoiding a detour merely to revisit an
+outbound control. Intermediate passenger stop editing and fractional picks
+are follow-on, not part of this waypoint feature.
+
+### Manual interior passenger stops
+
+After confirming native preview geometry, a stop tool can request one
+`stopOccurrenceKey` per drawn outward segment (array indexed by the matching
+point pair). Each key binds the directed raw atom and its enclosing authored
+control pair, so distinct visits to the same road do not share a stop target.
+In `interiorStops`, an authored ID, display name, exact occurrence key and
+integer `fractionQ` (1–999,999 millionths) create a regular player BusStop.
+Automatic endpoint stops are unchanged. Edits to names/stops do not reroute or
+change the raw-geometry memo key.
+
+A stop's identity survives unrelated geometry edits while its exact occurrence
+is still present. Loss of that occurrence refuses the full edit and requires an
+explicit new selection; it does not search for a nearby road. Return operation
+serves the same stop only on a matching physical raw atom and unambiguous
+return occurrence, using the corresponding reverse fraction when applicable.
+A missing/detour return atom or conflicting repeated occurrence is displayed
+as outbound-only. Existing runtime/OD consumes ordinary stop IDs and sorted
+per-direction pieces; geometric paths, raw authority and occupancy keys do not
+change. No automatic stop spacing is implemented here.
+
+### Automatic intermediate passenger-stop suggestions
+
+An explicit Auto draft can request `requestAutoStopSuggestions` from the normal
+native Bus preview and add `autoStopSuggestions` to the same confirmed route's
+existing stop proof list. The preview is read-only and never replaces manually
+specified stops. There is no persisted automatic re-layout flag, so unrelated
+edits and reopening a world cannot alter these stops by themselves.
+
+The initial simulator heuristic fills gaps between termini and retained authored
+stops at roughly a 2 km maximum target using deterministic metric path lengths,
+with coarser spacing only to stay within the existing 64-intermediate-stop cap.
+It never adds a stop at an exact route node, adds no duplicate raw physical stop,
+and does not assume that an outward point is served on a detouring return.
+The existing stop proof owns the occurrence, fraction, ID, dwell and OD behavior.
+
+Design reference: [TrainsWorld 50f7b159, bus stops](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/docs/track-and-service.md#L2279-L2284)
+and [its spacing constants](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/sim/src/track/bus.rs#L33-L40).
+Its default distinguishes sparse passenger/demand stops from roughly 400 m street
+stop presentation/timing; it also considers nearby verified stations and crossings.
+This independent first Rosenfu implementation creates the sparse boardable stops
+only, not the street-only layer, stop dwell at drawn-only points, station snapping
+or crossing-based transfer creation.
+
+### Observed-grade road continuation for new Bus proofs
+
+An explicitly chosen `gradePolicy: "observedConnectors"` can follow supported
+road classes (including motorway/trunk) along original bridge, tunnel, layer
+and surface fragments. Omission preserves the original ground-only graph and
+stored geometry/IDs. Denied/private access and unsupported classes/attributes
+remain excluded. There is no road creation or pass-through via implied
+coordinates. Off-ground matches take only exact, unobstructed, same-class and
+subclass endpoint continuations with opposed headings; ground approaches to a
+bridge/tunnel follow that same conservative rule. Tagged layer limits are a
+source distinction, not absolute elevation or a slope calculation.
+
+Seams reuse complete mutual uniqueness and exact rational border cuts with
+matching source grade; different grade at a border never connects. Separately
+resolved structural vertices at the same map XY keep distinct source/grade
+IDs even in the materialized multi-line graph. Legacy surface vertex IDs and
+raw-atom occupancy IDs are unchanged. Ordinary Bus stops keep the existing
+fictional path-occurrence rules; this does not add any entrance, access,
+boarding-equivalence, rail, Tram, high-speed interchange, or federated
+transfer rules.
+
+[TrainsWorld busRoads.ts](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/app/src/map/busRoads.ts#L13-L17)
+uses motorways as well as streets; [roadGraph.ts](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/app/src/map/roadGraph.ts#L701-L705)
+also models bridge/tunnel approaches. Rosenfu intentionally does not copy its
+close-distance snaps or unrestricted junction inference.

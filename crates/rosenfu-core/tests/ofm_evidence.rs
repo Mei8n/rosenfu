@@ -1,4 +1,5 @@
 use rosenfu_core::ofm_evidence::*;
+use rosenfu_core::world::WorldDraft;
 fn v(mut n: u64) -> Vec<u8> {
     let mut out = Vec::new();
     while n >= 128 {
@@ -1352,4 +1353,792 @@ fn archive_and_cold_scope_rederive_identical_tiles_without_weakening_ingress() {
         vec![binding(&malformed)]
     )
     .is_err());
+}
+
+fn bus_geometry(points: &[[i32; 2]]) -> Vec<u64> {
+    let mut geom = Vec::new();
+    let mut prev = [0i32; 2];
+    for (i, &point) in points.iter().enumerate() {
+        match i {
+            0 => geom.push(9),
+            1 => geom.push((points.len() as u64 - 1) * 8 + 2),
+            _ => {}
+        }
+        for j in 0..2 {
+            let delta = point[j] - prev[j];
+            geom.push(((delta << 1) ^ (delta >> 31)) as u64);
+        }
+        prev = point;
+    }
+    geom
+}
+
+type BusFixtureLine<'a> = (&'a [[i32; 2]], Option<(&'a str, &'a str)>);
+fn bus_fixture_raw(lines: &[BusFixtureLine<'_>]) -> Vec<u8> {
+    let mut keys = vec!["class"];
+    let mut values = vec![field(1, b"minor")];
+    let mut features = vec![];
+    for (points, extra) in lines {
+        let mut tags = vec![0, 0];
+        if let Some((k, value)) = extra {
+            let index = keys.iter().position(|x| x == k).unwrap_or_else(|| {
+                keys.push(k);
+                keys.len() - 1
+            });
+            tags.extend([index as u64, values.len() as u64]);
+            values.push(field(1, value.as_bytes()));
+        }
+        features.push(feature(&tags, &bus_geometry(points)));
+    }
+    field(3, &layer(&features, &keys, &values))
+}
+
+fn bus_fixture(lines: &[BusFixtureLine<'_>]) -> (TileBinding, EvidenceStore) {
+    let raw = bus_fixture_raw(lines);
+    let b = binding(&raw);
+    let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![b.clone()]).unwrap();
+    (b, store)
+}
+
+fn bus_vertex(feature: u32, vertex: u32) -> BusVertex {
+    BusVertex {
+        feature,
+        line: 0,
+        vertex,
+    }
+}
+
+#[test]
+fn ordinary_bus_routes_both_ways_on_verified_road_and_replays_source_identity() {
+    let (b, store) = bus_fixture(&[
+        (
+            &[[100, 100], [200, 100], [300, 100]],
+            Some(("oneway", "yes")),
+        ),
+        (&[[200, 100], [200, 200], [200, 300]], Some(("layer", "0"))),
+    ]);
+    let a = bus_vertex(0, 0);
+    let z = bus_vertex(1, 2);
+    let route =
+        |a, z, strict| find_gameplay_bus_path(&store, &b.canonical_url, a, z, strict).unwrap();
+    let forward = route(a, z, false).unwrap();
+    let reverse = route(z, a, false).unwrap();
+    assert_ne!(forward.source_atom_id(0), reverse.source_atom_id(2));
+    assert!(forward
+        .source_atom_id(0)
+        .unwrap()
+        .starts_with("ofm-bus:edge:"));
+    assert!(forward.source_atom_id(3).is_none());
+    assert_eq!(forward.points.len(), 4);
+    assert_eq!(
+        forward.points.iter().rev().copied().collect::<Vec<_>>(),
+        reverse.points
+    );
+    assert!((forward.length_m - reverse.length_m).abs() < 1e-9);
+    assert!((1.0..250.0).contains(&forward.length_m));
+    assert_eq!(forward.spans.len(), 2);
+    assert_eq!((forward.spans[0].from, forward.spans[0].to), (0., 1.));
+    assert_eq!((forward.spans[1].from, forward.spans[1].to), (0., 2.));
+    assert_eq!((reverse.spans[0].from, reverse.spans[0].to), (2., 0.));
+    assert_eq!(forward.binding.rule, BUS_GRAPH_RULE);
+    assert!(route(a, z, true).is_some());
+    assert!(route(z, a, true).is_none());
+    let archived = EvidenceStore::from_archive_parts(
+        vec![raw_entry(store.raw(&b.raw_sha256).unwrap())],
+        vec![b.clone()],
+    )
+    .unwrap();
+    let repro = serde_json::from_str(&serde_json::to_string(&forward.binding).unwrap()).unwrap();
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&archived.scope(&[b.canonical_url.clone()]).unwrap(), &repro)
+            .unwrap(),
+        Some(forward.clone())
+    );
+    let mut altered = repro;
+    altered.tile_raw_sha256 = "0".repeat(64);
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &altered),
+        Err(Error::Hash)
+    );
+}
+
+#[test]
+fn ordinary_bus_does_not_snap_connect_grade_or_infer_an_interior_crossing() {
+    for (vertical, tag) in [
+        (&[[200, 50], [200, 100], [200, 150]][..], None),
+        (&[[200, 50], [200, 150]][..], None),
+        (&[[201, 100], [201, 150]][..], None),
+        (&[[200, 100], [200, 150]][..], Some(("brunnel", "bridge"))),
+        (&[[200, 100], [200, 150]][..], Some(("brunnel", "tunnel"))),
+        (&[[200, 100], [200, 150]][..], Some(("layer", "1"))),
+        (&[[200, 100], [200, 150]][..], Some(("layer", "-1"))),
+    ] {
+        let (b, store) = bus_fixture(&[
+            (&[[100, 100], [200, 100], [300, 100]], None),
+            (vertical, tag),
+        ]);
+        assert!(
+            find_gameplay_bus_path(
+                &store,
+                &b.canonical_url,
+                bus_vertex(0, 0),
+                bus_vertex(1, vertical.len() as u32 - 1),
+                false,
+            )
+            .unwrap()
+            .is_none(),
+            "{vertical:?} {tag:?}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_bus_refuses_denied_unknown_or_buffered_edges() {
+    for tag in [
+        Some(("access", "private")),
+        Some(("access", "no")),
+        Some(("access", "conditional")),
+        Some(("oneway", "reversible")),
+    ] {
+        let (b, store) = bus_fixture(&[(&[[100, 100], [200, 100]], tag)]);
+        for strict in [false, true] {
+            assert!(
+                find_gameplay_bus_path(
+                    &store,
+                    &b.canonical_url,
+                    bus_vertex(0, 0),
+                    bus_vertex(0, 1),
+                    strict,
+                )
+                .unwrap()
+                .is_none(),
+                "{tag:?}"
+            );
+        }
+    }
+    let (b, store) = bus_fixture(&[(&[[-20, 100], [100, 100], [200, 100]], None)]);
+    let query = |index| {
+        find_gameplay_bus_path(
+            &store,
+            &b.canonical_url,
+            bus_vertex(0, index),
+            bus_vertex(0, 2),
+            false,
+        )
+        .unwrap()
+    };
+    assert!(query(0).is_none());
+    assert!(query(1).is_some());
+    assert!(query(3).is_none());
+}
+
+#[test]
+fn ordinary_bus_strict_reverse_and_no_cross_talk_from_an_ambiguous_third_branch() {
+    let (b, store) = bus_fixture(&[
+        (
+            &[[100, 100], [200, 100], [300, 100]],
+            Some(("oneway", "-1")),
+        ),
+        (&[[200, 50], [200, 100], [200, 150]], None),
+        (&[[200, 100], [150, 150]], None),
+    ]);
+    let query = |a, z| find_gameplay_bus_path(&store, &b.canonical_url, a, z, true).unwrap();
+    assert!(query(bus_vertex(0, 2), bus_vertex(0, 0)).is_some());
+    assert!(query(bus_vertex(0, 0), bus_vertex(0, 2)).is_none());
+    assert!(query(bus_vertex(0, 2), bus_vertex(1, 2)).is_none());
+    assert!(query(bus_vertex(0, 2), bus_vertex(2, 1)).is_none());
+}
+
+fn bus_rectangle(cells: &[(u32, u32, &[BusFixtureLine<'_>])]) -> (Vec<TileBinding>, EvidenceStore) {
+    let raw: Vec<_> = cells
+        .iter()
+        .map(|(_, _, lines)| bus_fixture_raw(lines))
+        .collect();
+    let bindings: Vec<_> = raw
+        .iter()
+        .zip(cells)
+        .map(|(r, (x, y, _))| {
+            let mut b = binding(r);
+            b.x = *x;
+            b.y = *y;
+            b.canonical_url = format!(
+                "https://tiles.openfreemap.org/planet/{}/14/{x}/{y}.pbf",
+                b.revision
+            );
+            b
+        })
+        .collect();
+    let store = EvidenceStore::from_archive_parts(
+        raw.iter().map(|r| raw_entry(r)).collect(),
+        bindings.clone(),
+    )
+    .unwrap();
+    (bindings, store)
+}
+
+fn bus_rectangle_query(tiles: &[TileBinding], end: BusVertex, oneway: bool) -> BusPathBinding {
+    BusPathBinding {
+        rule: BUS_RECTANGLE_RULE.into(),
+        grade_policy: None,
+        tile_key: tiles[0].canonical_url.clone(),
+        tile_raw_sha256: tiles[0].raw_sha256.clone(),
+        additional_tiles: tiles[1..]
+            .iter()
+            .map(|t| BusTileProof {
+                tile_key: t.canonical_url.clone(),
+                tile_raw_sha256: t.raw_sha256.clone(),
+            })
+            .collect(),
+        end_tile_key: Some(tiles.last().unwrap().canonical_url.clone()),
+        pattern: None,
+        interior_stops: vec![],
+        via: vec![],
+        respect_oneway: oneway,
+        start: bus_vertex(0, 0),
+        end,
+    }
+}
+
+#[test]
+fn ordinary_bus_crosses_two_exact_seams_without_raw_seam_vertices() {
+    let (tiles, store) = bus_rectangle(&[
+        (14552, 6451, &[(&[[3200, 2010], [4200, 2010]], None)]),
+        (14553, 6451, &[(&[[-104, 2010], [4200, 2010]], None)]),
+        (14554, 6451, &[(&[[-104, 2010], [896, 2010]], None)]),
+    ]);
+    let request = bus_rectangle_query(&tiles, bus_vertex(0, 1), false);
+    let path = reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(path.spans.len(), 3);
+    assert_eq!(path.points.len(), 4);
+    assert_eq!(
+        path.spans
+            .iter()
+            .map(|s| s.binding_key.clone())
+            .collect::<Vec<_>>(),
+        tiles
+            .iter()
+            .map(|t| t.canonical_url.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(path.spans[0].to < 1.);
+    assert!(path.spans[1].from > 0. && path.spans[1].to < 1.);
+    assert!(path.spans[2].from > 0.);
+    assert!((2000.0..3200.0).contains(&path.length_m));
+    let mut reversed_tiles = tiles.clone();
+    reversed_tiles.reverse();
+    let mut reverse = bus_rectangle_query(&reversed_tiles, bus_vertex(0, 0), false);
+    reverse.start = bus_vertex(0, 1);
+    let result = reconstruct_gameplay_bus_path(&store, &reverse)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.points,
+        path.points.iter().rev().copied().collect::<Vec<_>>()
+    );
+    let mut paired = request.clone();
+    paired.pattern = Some(rosenfu_core::ofm_evidence::BusPattern::OpenRoundTrip);
+    let draft = WorldDraft {
+        runtime_road_evidence: store.clone(),
+        ..WorldDraft::default()
+    };
+    let returned = draft.gameplay_bus_return_path(&paired).unwrap().unwrap();
+    assert_eq!(returned.binding.tile_key, tiles[2].canonical_url);
+    assert_eq!(returned.binding.tile_raw_sha256, tiles[2].raw_sha256);
+    assert_eq!(
+        returned.binding.end_tile_key,
+        Some(tiles[0].canonical_url.clone())
+    );
+    assert_eq!(returned.points, result.points);
+    assert_eq!(returned.spans, result.spans);
+    assert!(draft.gameplay_bus_return_path(&paired).unwrap().is_some());
+
+    let mut wrong = request.clone();
+    wrong.additional_tiles[0].tile_raw_sha256 = "0".repeat(64);
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &wrong),
+        Err(Error::Hash)
+    );
+    let mut missing = request;
+    missing.additional_tiles.remove(0);
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &missing),
+        Err(Error::Binding)
+    );
+}
+
+#[test]
+fn ordinary_bus_seam_refuses_nonidentical_nearby_or_grade_separated_fragments() {
+    for (offset, tag) in [
+        (1, None),
+        (0, Some(("brunnel", "bridge"))),
+        (0, Some(("layer", "1"))),
+        (0, Some(("access", "private"))),
+    ] {
+        let (tiles, store) = bus_rectangle(&[
+            (14552, 6451, &[(&[[3200, 2010], [4200, 2010]], None)]),
+            (
+                14553,
+                6451,
+                &[(&[[-104, 2010 + offset], [896, 2010 + offset]], tag)],
+            ),
+        ]);
+        assert!(
+            reconstruct_gameplay_bus_path(
+                &store,
+                &bus_rectangle_query(&tiles, bus_vertex(0, 1), false)
+            )
+            .unwrap()
+            .is_none(),
+            "crossed seam despite {offset} {tag:?}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_bus_seams_preserve_selected_oneway_mode_and_complete_diagonal_rectangle() {
+    // Vertical through-road. Tag 1 uses numeric MVT encoding accepted by the
+    // original ground-seam verifier, rather than inferring arbitrary strings.
+    let raw = [
+        tile(
+            &bus_geometry(&[[2000, 3500], [2000, 4196]]),
+            Some(("oneway", scalar(4, 1))),
+        ),
+        tile(
+            &bus_geometry(&[[2000, -100], [2000, 896]]),
+            Some(("oneway", scalar(4, 1))),
+        ),
+    ];
+    let mut t: Vec<_> = raw.iter().map(|r| binding(r)).collect();
+    t[1].y += 1;
+    t[1].canonical_url = t[1].canonical_url.replace("6451.pbf", "6452.pbf");
+    let store =
+        EvidenceStore::from_parts(raw.iter().map(|r| raw_entry(r)).collect(), t.clone()).unwrap();
+    let forward = bus_rectangle_query(&t, bus_vertex(0, 1), true);
+    assert!(reconstruct_gameplay_bus_path(&store, &forward)
+        .unwrap()
+        .is_some());
+    t.reverse();
+    let mut reverse = bus_rectangle_query(&t, bus_vertex(0, 0), true);
+    reverse.start = bus_vertex(0, 1);
+    assert!(reconstruct_gameplay_bus_path(&store, &reverse)
+        .unwrap()
+        .is_none());
+    reverse.respect_oneway = false;
+    assert!(reconstruct_gameplay_bus_path(&store, &reverse)
+        .unwrap()
+        .is_some());
+
+    let (tiles, store) = bus_rectangle(&[
+        (14552, 6451, &[(&[[3200, 2010], [4200, 2010]], None)]),
+        (14553, 6452, &[(&[[-104, 2010], [896, 2010]], None)]),
+    ]);
+    assert_eq!(
+        reconstruct_gameplay_bus_path(
+            &store,
+            &bus_rectangle_query(&tiles, bus_vertex(0, 1), false)
+        ),
+        Err(Error::Binding)
+    );
+}
+
+#[test]
+fn dense_bus_seam_budget_counts_crossing_candidates_not_unrelated_interiors() {
+    let west = [[3200, 2010], [4200, 2010]];
+    let east = [[-104, 2010], [896, 2010]];
+    let short = [[100, 100], [120, 180]];
+    let mut left: Vec<BusFixtureLine<'_>> = vec![(&west, None)];
+    left.extend(std::iter::repeat_n((&short[..], None), 2500));
+    let accepted: &[BusFixtureLine<'_>] = &[(&east, None)];
+    let duplicate: &[BusFixtureLine<'_>] = &[(&east, None), (&east, None)];
+    for (right, pass) in [(accepted, true), (duplicate, false)] {
+        let (tiles, store) = bus_rectangle(&[(14552, 6451, &left), (14553, 6451, right)]);
+        assert_eq!(
+            boundary_candidates(&store, &[(14552, 6451), (14553, 6451)]),
+            Err(Error::Limit)
+        );
+        assert_eq!(
+            reconstruct_gameplay_bus_path(
+                &store,
+                &bus_rectangle_query(&tiles, bus_vertex(0, 1), false)
+            )
+            .unwrap()
+            .is_some(),
+            pass
+        );
+    }
+}
+
+#[test]
+fn ordinary_bus_vias_share_one_scope_and_keep_ordered_occurrences_across_tiles() {
+    let (tiles, store) = bus_rectangle(&[
+        (14552, 6451, &[(&[[3200, 2010], [4200, 2010]], None)]),
+        (
+            14553,
+            6451,
+            &[(
+                &[[-104, 2010], [1000, 2010], [3000, 2010], [4200, 2010]],
+                None,
+            )],
+        ),
+        (14554, 6451, &[(&[[-104, 2010], [896, 2010]], None)]),
+    ]);
+    let mut request = bus_rectangle_query(&tiles, bus_vertex(0, 1), false);
+    let direct = reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .unwrap();
+    assert!(!serde_json::to_string(&request).unwrap().contains("\"via\""));
+    request.via = vec![
+        BusVia {
+            id: "v-a".into(),
+            tile_key: tiles[1].canonical_url.clone(),
+            vertex: bus_vertex(0, 1),
+        },
+        BusVia {
+            id: "v-b".into(),
+            tile_key: tiles[1].canonical_url.clone(),
+            vertex: bus_vertex(0, 2),
+        },
+    ];
+    let straight = reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(straight.points, direct.points);
+    assert_eq!(straight.via_point_indices, [2, 3]);
+    assert_eq!(straight.length_m, direct.length_m);
+    for i in 0..direct.points.len() - 1 {
+        assert_eq!(straight.source_atom_id(i), direct.source_atom_id(i));
+    }
+
+    // Click order is authoritative even when shortest endpoints would ignore
+    // the backwards excursion at the valid bidirectional neighbor.
+    request.via.swap(0, 1);
+    let detour = reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(detour.via_point_indices, [3, 4]);
+    assert!(detour.length_m > straight.length_m);
+    assert_eq!(
+        detour.points[detour.via_point_indices[0]],
+        straight.points[3]
+    );
+    assert_eq!(
+        detour.points[detour.via_point_indices[1]],
+        straight.points[2]
+    );
+    let archived = serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &archived).unwrap(),
+        Some(detour)
+    );
+
+    let mut duplicate = request.clone();
+    duplicate.via[1].id = duplicate.via[0].id.clone();
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &duplicate),
+        Err(Error::Binding)
+    );
+    let mut wrong = request.clone();
+    wrong.via[1].vertex = bus_vertex(0, 99);
+    assert!(reconstruct_gameplay_bus_path(&store, &wrong)
+        .unwrap()
+        .is_none());
+    let mut over = request;
+    over.via = (0..31)
+        .map(|i| BusVia {
+            id: format!("x{i}"),
+            tile_key: tiles[1].canonical_url.clone(),
+            vertex: bus_vertex(0, 1),
+        })
+        .collect();
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &over),
+        Err(Error::Limit)
+    );
+}
+
+#[test]
+fn ordinary_bus_via_that_requires_wrong_way_refuses_whole_draft() {
+    let (tile, store) = bus_fixture(&[(
+        &[[100, 100], [200, 100], [300, 100], [400, 100]],
+        Some(("oneway", "yes")),
+    )]);
+    let mut request = find_gameplay_bus_path(
+        &store,
+        &tile.canonical_url,
+        bus_vertex(0, 0),
+        bus_vertex(0, 3),
+        true,
+    )
+    .unwrap()
+    .unwrap()
+    .binding;
+    request.via = vec![
+        BusVia {
+            id: "first".into(),
+            tile_key: tile.canonical_url.clone(),
+            vertex: bus_vertex(0, 2),
+        },
+        BusVia {
+            id: "second".into(),
+            tile_key: tile.canonical_url.clone(),
+            vertex: bus_vertex(0, 1),
+        },
+    ];
+    assert!(reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .is_none());
+    request.respect_oneway = false;
+    assert!(reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .is_some());
+}
+
+type GradeFixtureLine<'a> = (&'a [[i32; 2]], &'a [(&'a str, &'a str)]);
+fn grade_tile(lines: &[GradeFixtureLine<'_>]) -> Vec<u8> {
+    let mut keys = vec![];
+    let mut values = vec![];
+    let mut fs = vec![];
+    for &(points, attrs) in lines {
+        let tags: Vec<_> = attrs
+            .iter()
+            .flat_map(|&(k, v)| {
+                let i = keys.iter().position(|x| x == &k).unwrap_or_else(|| {
+                    keys.push(k);
+                    keys.len() - 1
+                });
+                let j = values.len();
+                values.push(field(1, v.as_bytes()));
+                [i as u64, j as u64]
+            })
+            .collect();
+        fs.push(feature(&tags, &bus_geometry(points)));
+    }
+    field(3, &layer(&fs, &keys, &values))
+}
+fn observed_query(tile: &TileBinding, start: BusVertex, end: BusVertex) -> BusPathBinding {
+    let mut query = bus_rectangle_query(std::slice::from_ref(tile), end, false);
+    query.rule = BUS_GRAPH_RULE.into();
+    query.end_tile_key = None;
+    query.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+    query.start = start;
+    query
+}
+
+#[test]
+fn ordinary_bus_bridges_and_tunnels_have_exact_approaches_but_not_underpass_turns() {
+    let common = &[("class", "minor")];
+    for (kind, lvl) in [("bridge", "1"), ("tunnel", "-1")] {
+        let elevated = &[("class", "minor"), ("brunnel", kind), ("layer", lvl)];
+        let raw = grade_tile(&[
+            (&[[100, 100], [300, 100]], common),
+            (&[[300, 100], [450, 100], [700, 100]], elevated),
+            (&[[450, 40], [450, 100], [450, 200]], common),
+            (&[[700, 100], [900, 100]], common),
+        ]);
+        let tile = binding(&raw);
+        let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![tile.clone()]).unwrap();
+        let q = observed_query(&tile, bus_vertex(0, 0), bus_vertex(3, 1));
+        let works = reconstruct_gameplay_bus_path(&store, &q).unwrap().unwrap();
+        assert_eq!(works.points.len(), 5);
+        assert_eq!(works.spans.len(), 3);
+        let mut wrong = q.clone();
+        wrong.end = bus_vertex(2, 2);
+        assert!(reconstruct_gameplay_bus_path(&store, &wrong)
+            .unwrap()
+            .is_none());
+        wrong.start = bus_vertex(2, 0);
+        wrong.end = bus_vertex(1, 1);
+        assert!(reconstruct_gameplay_bus_path(&store, &wrong)
+            .unwrap()
+            .is_none());
+        let mut old = q;
+        old.grade_policy = None;
+        assert!(!serde_json::to_string(&old).unwrap().contains("gradePolicy"));
+        assert!(reconstruct_gameplay_bus_path(&store, &old)
+            .unwrap()
+            .is_none());
+        old.end = bus_vertex(0, 1);
+        let old_ground = reconstruct_gameplay_bus_path(&store, &old)
+            .unwrap()
+            .unwrap();
+        old.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+        let new_ground = reconstruct_gameplay_bus_path(&store, &old)
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_ground.points, new_ground.points);
+        assert_eq!(old_ground.source_atom_id(0), new_ground.source_atom_id(0));
+    }
+}
+
+#[test]
+fn ordinary_bus_grade_changes_refuse_ambiguity_wrong_angle_and_denied_access() {
+    let common = &[("class", "minor")];
+    let elevated = &[("class", "minor"), ("brunnel", "bridge"), ("layer", "1")];
+    let private = &[("class", "minor"), ("access", "private")];
+    let denied = &[
+        ("class", "minor"),
+        ("brunnel", "bridge"),
+        ("layer", "1"),
+        ("access", "no"),
+    ];
+    let scenarios: Vec<Vec<GradeFixtureLine<'_>>> = vec![
+        vec![
+            (&[[100, 100], [300, 100]], common),
+            (&[[300, 100], [700, 100]], elevated),
+            (&[[300, 100], [300, 300]], private),
+        ],
+        vec![
+            (&[[100, 100], [300, 100]], common),
+            (&[[300, 100], [300, 500]], elevated),
+        ],
+        vec![
+            (&[[100, 100], [300, 100]], common),
+            (&[[300, 100], [700, 100]], denied),
+        ],
+    ];
+    for features in scenarios {
+        let raw = grade_tile(&features);
+        let tile = binding(&raw);
+        let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![tile.clone()]).unwrap();
+        let q = observed_query(&tile, bus_vertex(0, 0), bus_vertex(1, 1));
+        assert!(reconstruct_gameplay_bus_path(&store, &q).unwrap().is_none());
+    }
+}
+
+#[test]
+fn ordinary_bus_same_grade_motorway_seam_carries_connected_approaches_only() {
+    let ground = &[("class", "motorway")];
+    let bridge = &[("class", "motorway"), ("brunnel", "bridge"), ("layer", "1")];
+    let tunnel = &[
+        ("class", "motorway"),
+        ("brunnel", "tunnel"),
+        ("layer", "-1"),
+    ];
+    let wrong_layer = &[("class", "motorway"), ("brunnel", "bridge"), ("layer", "2")];
+    for (end_grade, pass) in [(bridge, true), (tunnel, false), (wrong_layer, false)] {
+        let west = grade_tile(&[
+            (&[[3000, 2010], [3500, 2010]], ground),
+            (&[[3500, 2010], [4200, 2010]], bridge),
+        ]);
+        let east = grade_tile(&[
+            (&[[-104, 2010], [700, 2010]], end_grade),
+            (&[[700, 2010], [900, 2010]], ground),
+        ]);
+        let mut a = binding(&west);
+        let mut b = binding(&east);
+        a.x = 14552;
+        a.canonical_url = a.canonical_url.replace("/14553/", "/14552/");
+        b.x = 14553;
+        let tiles = vec![a, b];
+        let store = EvidenceStore::from_archive_parts(
+            vec![raw_entry(&west), raw_entry(&east)],
+            tiles.clone(),
+        )
+        .unwrap();
+        let mut q = bus_rectangle_query(&tiles, bus_vertex(1, 1), false);
+        q.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+        let path = reconstruct_gameplay_bus_path(&store, &q).unwrap();
+        assert_eq!(path.is_some(), pass);
+        if let Some(path) = path {
+            assert_eq!(path.spans.len(), 4);
+        }
+        q.grade_policy = None;
+        assert!(reconstruct_gameplay_bus_path(&store, &q).unwrap().is_none());
+    }
+}
+
+#[test]
+fn authored_tram_uses_exact_ground_junction_without_treating_motor_direction_as_rail_authority() {
+    let t = |road: Option<(&str, &str)>| {
+        bus_fixture(&[
+            (
+                &[[100, 100], [200, 100], [300, 100]],
+                Some(("oneway", "yes")),
+            ),
+            (&[[200, 100], [200, 200]], road),
+        ])
+    };
+    let (b, store) = t(None);
+    let guide = |binding: &TileBinding, start, end| AuthoredTramGuide {
+        start_fraction_q: None,
+        end_fraction_q: None,
+        tile_key: binding.canonical_url.clone(),
+        tile_raw_sha256: binding.raw_sha256.clone(),
+        start,
+        end,
+    };
+    let start = bus_vertex(0, 0);
+    let finish = bus_vertex(1, 1);
+    let a = reconstruct_authored_tram_guide(&store, &guide(&b, start, finish))
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.len(), 3);
+    let back = reconstruct_authored_tram_guide(&store, &guide(&b, finish, start))
+        .unwrap()
+        .unwrap();
+    assert!(a.iter().rev().eq(&back));
+    let fractional = AuthoredTramGuide {
+        start_fraction_q: Some(250_000),
+        end_fraction_q: Some(750_000),
+        ..guide(&b, start, bus_vertex(1, 0))
+    };
+    let partial = reconstruct_authored_tram_guide(&store, &fractional)
+        .unwrap()
+        .unwrap();
+    assert_eq!(partial.len(), 3);
+    assert_eq!(partial[0][0], a[0][0] + (a[1][0] - a[0][0]) * 0.25);
+    assert_eq!(partial[1], a[1]);
+    assert_eq!(partial[2][1], a[1][1] + (a[2][1] - a[1][1]) * 0.75);
+    let refused = AuthoredTramGuide {
+        start_fraction_q: Some(1_000_001),
+        ..fractional
+    };
+    assert!(reconstruct_authored_tram_guide(&store, &refused)
+        .unwrap()
+        .is_none());
+    assert!(
+        find_gameplay_bus_path(&store, &b.canonical_url, finish, start, true)
+            .unwrap()
+            .is_none()
+    );
+    let mut tamper = guide(&b, start, finish);
+    tamper.tile_raw_sha256 = "0".repeat(64);
+    assert_eq!(
+        reconstruct_authored_tram_guide(&store, &tamper),
+        Err(Error::Hash)
+    );
+    for attr in [
+        ("access", "private"),
+        ("access", "unknown"),
+        ("brunnel", "bridge"),
+        ("layer", "1"),
+    ] {
+        let (b, scoped) = t(Some(attr));
+        assert!(
+            reconstruct_authored_tram_guide(&scoped, &guide(&b, start, finish))
+                .unwrap()
+                .is_none()
+        );
+    }
+    let (b, scoped) = bus_fixture(&[
+        (&[[100, 100], [200, 100], [300, 100]], None),
+        (&[[200, 50], [200, 100], [200, 150]], None),
+    ]);
+    assert!(
+        reconstruct_authored_tram_guide(&scoped, &guide(&b, start, bus_vertex(1, 2)))
+            .unwrap()
+            .is_none()
+    ); // overlapping interior-only vertices do not join
+    let (b, scoped) = bus_fixture(&[
+        (&[[100, 100], [200, 100], [300, 100]], None),
+        (&[[200, 100], [200, 200]], None),
+        (&[[200, 100], [220, 25]], Some(("access", "private"))),
+    ]);
+    assert!(
+        reconstruct_authored_tram_guide(&scoped, &guide(&b, start, finish))
+            .unwrap()
+            .is_none()
+    ); // unknown/denied third arm is not ignored
 }

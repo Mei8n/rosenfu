@@ -65,5 +65,12 @@ export function useAutomaticRoad(bounds:GraphBounds,enabled:boolean,world:unknow
   try{const evidence=await provider.readTileEvidenceBatch(refs,signal);return matches()?{status:'ready',evidence}:{status:'stale'};}
   catch(error){return matches()?{status:'unavailable',reason:`道路証拠未取得：${String(error)}`}:{status:'stale'};}
  },[key,world,enabled]);
- return {...state,readTileEvidenceBatch,retry:()=>setAttempt(n=>n+1),ensureCurrent};
+ const observeRouteTiles=useCallback(async(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal)=>{
+  const matches=()=>!signal?.aborted&&current.current.enabled&&current.current.key===key&&current.current.world===world;
+  if(!matches()||!provider)throw Error('道路取得が終了しました。位置を選び直してください。');
+  const observed=await provider.observeTiles(cells,revision,signal);
+  if(!matches())throw Error('道路取得範囲が変わりました。位置を選び直してください。');
+  return observed;
+ },[key,world,enabled]);
+ return {...state,readTileEvidenceBatch,observeRouteTiles,retry:()=>setAttempt(n=>n+1),ensureCurrent};
 }

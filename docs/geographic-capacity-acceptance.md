@@ -51,3 +51,42 @@ regional MVT pack is included. This does not verify actual long-distance
 connected route construction, complete nationwide capacity, desktop
 Undo/Redo, or multiplayer source reconciliation. Save version, path,
 archive, and request limits are unchanged.
+
+## Crossing inputs with actual retained road geometry
+
+A separate Linux x86-64 native fixture retained these **actual source
+geometries** in the same World:
+
+- Shipped Tokyo pack: 36 cells, 37,643 way entries and 224,908 coordinates.
+  Coverage was verified relative to the pinned source extraction.
+- Frozen OSM extracts for Shimada and Dejima: 35 way entries and 642
+  coordinates, with coverage **unverified**. These are neither released
+  road packs nor OpenFreeMap tiles.
+
+The seven fictional test tracks include four paths using the independent
+**synthetic** MVT archive described above. That archive still holds 256
+bindings, with a maximum of 16 tiles per scope. It does not provide
+actual OpenFreeMap coverage in any of the three places.
+
+The mixed file occupied 14,894,811 bytes, 1,882,405 bytes below the
+16 MiB limit. It reopened offline in a fresh native process and reproduced
+the same canonical bytes. A separate, valid synthetic addition of 600 ways
+and 60,000 coordinates exceeded the storage limit: capacity check, encoding,
+and a compare-and-save with the correct prior version each rejected it.
+The existing save and backup still reopened with identical bytes and
+version hashes.
+
+For at most 64 alignments, the crossing assessor skips direct geometry
+preparation for snapshots whose declared scopes cannot intersect any
+queried alignment. Verified coverage still comes from the original
+sources; split-way continuation uses its exact source point; the global
+OpenFreeMap seam budget and matching are unchanged. Larger alignment
+collections retain the broad preparation path. The mixed fixture prepared
+4 of 38 snapshots (2,455 of 37,678 way entries). Ordered crossing results
+matched the baseline exactly. Three paired Release runs of the native
+assessment alone (31 samples per process) measured median times of
+1.90–2.06 ms before and 0.11–0.26 ms after the change.
+
+This improves crossing assessment, not save size, JSON decoding, viewport or
+desktop responsiveness. It does not establish connected long-distance
+routing or nationwide capacity.

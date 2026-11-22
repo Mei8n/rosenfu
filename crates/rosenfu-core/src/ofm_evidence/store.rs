@@ -60,12 +60,54 @@ struct State {
 }
 /// Best-effort derived tile cache. Independent of the immutable archive: eviction
 /// or a contended/unavailable cache can never remove proof or change a result.
+#[derive(Debug, PartialEq, Eq)]
+struct BusCompiledGraphKey {
+    rule: String,
+    grade_policy: Option<super::BusGradePolicy>,
+    respect_oneway: bool,
+    tile_keys_and_hashes: Vec<(String, String)>,
+}
 #[derive(Debug, Default)]
 struct ScopeCache {
     entries: VecDeque<(DecodeKey, Arc<DecodedTile>, usize)>,
+    // Stored proofs have their own capped cohort; candidate previews do not
+    // evict unrelated validated routes during normal edits.
+    bus_paths: VecDeque<Arc<super::BusPath>>,
+    bus_steps: usize,
+    bus_path: Option<Arc<super::BusPath>>,
+    bus_graph: Option<(BusCompiledGraphKey, Arc<super::bus::GameplayBusGraph>)>,
     weight: usize,
 }
 impl ScopeCache {
+    fn get_bus_path(&mut self, binding: &super::BusPathBinding) -> Option<Arc<super::BusPath>> {
+        if let Some(i) = self.bus_paths.iter().position(|p| &p.binding == binding) {
+            let hit = self.bus_paths.remove(i)?;
+            self.bus_paths.push_back(Arc::clone(&hit));
+            Some(hit)
+        } else {
+            self.bus_path
+                .as_ref()
+                .filter(|p| &p.binding == binding)
+                .cloned()
+        }
+    }
+    fn admit_bus_path(&mut self, path: Arc<super::BusPath>) {
+        const MAX_STEPS: usize = 32_768 + 4_096;
+        // Each admitted ordinary route may have independently searched
+        // directions; the existing total atomic-step budget stays fixed.
+        const MAX_PATHS: usize = 2 * 65;
+        if path.steps.len() > 4096 || self.bus_paths.iter().any(|p| p.binding == path.binding) {
+            return;
+        }
+        while self.bus_paths.len() >= MAX_PATHS || self.bus_steps + path.steps.len() > MAX_STEPS {
+            let Some(evicted) = self.bus_paths.pop_front() else {
+                return;
+            };
+            self.bus_steps -= evicted.steps.len();
+        }
+        self.bus_steps += path.steps.len();
+        self.bus_paths.push_back(path);
+    }
     fn get(&mut self, key: &DecodeKey) -> Option<Arc<DecodedTile>> {
         let pos = self.entries.iter().position(|entry| &entry.0 == key)?;
         let entry = self.entries.remove(pos)?;
@@ -257,7 +299,23 @@ impl EvidenceStore {
                     // Every new blob was SHA-checked above; old bytes are
                     // immutable. Inputs select blobs by the binding's SHA.
                     None => {
-                        decode_tile_with_verified_sha(input.binding, input.raw)?.canonical_sha256
+                        let cached = (!restore)
+                            .then(|| self.cache.lock().ok().and_then(|mut cache| cache.get(&key)))
+                            .flatten();
+                        if let Some(tile) = cached {
+                            // Submitted bytes were rechecked against this immutable
+                            // DecodeKey's raw SHA; preview never grants new trust.
+                            tile.canonical_sha256.clone()
+                        } else {
+                            let tile = decode_tile_with_verified_sha(input.binding, input.raw)?;
+                            let digest = tile.canonical_sha256.clone();
+                            if !restore {
+                                if let Ok(mut cache) = self.cache.lock() {
+                                    cache.insert(key.clone(), Arc::new(tile));
+                                }
+                            }
+                            digest
+                        }
                     }
                 };
                 canonical.insert(key, digest);
@@ -355,6 +413,91 @@ impl EvidenceStore {
     pub(super) fn is_decoded_scope(&self) -> bool {
         self.state.decoded.len() == self.state.bindings.len()
     }
+    pub(crate) fn gameplay_bus_path(
+        &self,
+        proposed: &super::BusPathBinding,
+    ) -> Result<Option<Arc<super::BusPath>>> {
+        self.gameplay_bus_path_cached(proposed, false)
+    }
+    pub(crate) fn stored_gameplay_bus_path(
+        &self,
+        proposed: &super::BusPathBinding,
+    ) -> Result<Option<Arc<super::BusPath>>> {
+        self.gameplay_bus_path_cached(proposed, true)
+    }
+    fn gameplay_bus_path_cached(
+        &self,
+        proposed: &super::BusPathBinding,
+        stored: bool,
+    ) -> Result<Option<Arc<super::BusPath>>> {
+        let geometry_only;
+        let proposed = if proposed.interior_stops.is_empty() {
+            proposed
+        } else {
+            geometry_only = super::BusPathBinding {
+                interior_stops: vec![],
+                ..proposed.clone()
+            };
+            &geometry_only
+        };
+        let keys = proposed.tile_keys()?;
+        for (key, digest) in std::iter::once((&proposed.tile_key, &proposed.tile_raw_sha256)).chain(
+            proposed
+                .additional_tiles
+                .iter()
+                .map(|p| (&p.tile_key, &p.tile_raw_sha256)),
+        ) {
+            let binding = self.state.bindings.get(key).ok_or(Error::Binding)?;
+            if &binding.raw_sha256 != digest {
+                return Err(Error::Hash);
+            }
+        }
+        if let Ok(mut cache) = self.cache.lock() {
+            if let Some(hit) = cache.get_bus_path(proposed) {
+                if stored {
+                    cache.admit_bus_path(Arc::clone(&hit));
+                }
+                return Ok(Some(hit));
+            }
+        }
+        let key = BusCompiledGraphKey {
+            rule: proposed.rule.clone(),
+            grade_policy: proposed.grade_policy,
+            respect_oneway: proposed.respect_oneway,
+            tile_keys_and_hashes: keys
+                .iter()
+                .map(|key| (key.clone(), self.state.bindings[key].raw_sha256.clone()))
+                .collect(),
+        };
+        let hit = self.cache.lock().ok().and_then(|cache| {
+            cache
+                .bus_graph
+                .as_ref()
+                .filter(|(have, _)| have == &key)
+                .map(|(_, graph)| Arc::clone(graph))
+        });
+        let graph = if let Some(hit) = hit {
+            hit
+        } else {
+            let scope = self.scope(&keys)?;
+            let graph = Arc::new(super::bus::build_gameplay_bus_graph(&scope, proposed)?);
+            if graph.fits_cache() {
+                if let Ok(mut cache) = self.cache.lock() {
+                    cache.bus_graph = Some((key, Arc::clone(&graph)));
+                }
+            }
+            graph
+        };
+        let path = super::bus::solve_gameplay_bus_graph(&graph, proposed)?.map(Arc::new);
+        if let (Some(path), Ok(mut cache)) = (path.as_ref(), self.cache.lock()) {
+            if stored {
+                cache.admit_bus_path(Arc::clone(path));
+            } else if path.steps.len() <= 4096 {
+                cache.bus_path = Some(Arc::clone(path));
+            }
+        }
+        Ok(path)
+    }
     pub fn descriptors(&self) -> Vec<EvidenceDescriptor> {
         self.state
             .bindings
@@ -414,3 +557,82 @@ impl PartialEq for EvidenceStore {
     }
 }
 impl Eq for EvidenceStore {}
+
+#[cfg(test)]
+mod bus_preview_cache_tests {
+    use super::*;
+    use crate::ofm_evidence::{BusPathBinding, BusVertex, BusVia, BUS_GRAPH_RULE};
+
+    #[test]
+    fn moving_a_via_reuses_the_compiled_graph_within_exact_scope() {
+        // Generated class=minor MVT: an eligible three-point line and branch.
+        let raw = vec![
+            26, 81, 10, 14, 116, 114, 97, 110, 115, 112, 111, 114, 116, 97, 116, 105, 111, 110,
+            120, 2, 40, 128, 32, 18, 20, 18, 2, 0, 0, 24, 2, 34, 12, 9, 200, 1, 200, 1, 18, 200, 1,
+            0, 200, 1, 0, 18, 20, 18, 2, 0, 0, 24, 2, 34, 12, 9, 144, 3, 200, 1, 18, 0, 200, 1, 0,
+            200, 1, 26, 5, 99, 108, 97, 115, 115, 34, 7, 10, 5, 109, 105, 110, 111, 114,
+        ];
+        let sha = super::super::raw_sha256(&raw);
+        let key = "https://tiles.openfreemap.org/planet/20261101_080013_pt/14/14552/6451.pbf";
+        let binding = TileBinding {
+            canonical_url: key.into(),
+            revision: "20261101_080013_pt".into(),
+            z: 14,
+            x: 14552,
+            y: 6451,
+            raw_sha256: sha.clone(),
+            decoder_rule: super::super::DECODER_RULE.into(),
+        };
+        let stored = EvidenceStore::from_parts(
+            vec![RawEvidence {
+                sha256: sha.clone(),
+                bytes: raw,
+            }],
+            vec![binding],
+        )
+        .unwrap();
+        let v = |feature, vertex| BusVertex {
+            feature,
+            line: 0,
+            vertex,
+        };
+        let mut q = BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
+            tile_key: key.into(),
+            tile_raw_sha256: sha,
+            respect_oneway: false,
+            start: v(0, 0),
+            end: v(1, 2),
+            additional_tiles: vec![],
+            end_tile_key: None,
+            via: vec![BusVia {
+                id: "v".into(),
+                tile_key: key.into(),
+                vertex: v(1, 0),
+            }],
+            pattern: None,
+            interior_stops: vec![],
+        };
+        let first = stored.gameplay_bus_path(&q).unwrap().unwrap();
+        let graph = |store: &EvidenceStore| {
+            Arc::clone(&store.cache.lock().unwrap().bus_graph.as_ref().unwrap().1)
+        };
+        let initialized = graph(&stored);
+        q.via[0].vertex = v(1, 1);
+        let moved = stored.clone().gameplay_bus_path(&q).unwrap().unwrap();
+        assert_ne!(first.via_point_indices, moved.via_point_indices);
+        assert!(Arc::ptr_eq(&initialized, &graph(&stored)));
+        q.interior_stops.push(crate::ofm_evidence::BusInteriorStop {
+            id: "stop".into(),
+            name: "停留所".into(),
+            occurrence_key: moved.stop_occurrence_keys()[0].clone(),
+            fraction_q: 500_000,
+        });
+        let same_path = stored.gameplay_bus_path(&q).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&moved, &same_path));
+        q.respect_oneway = true;
+        assert!(stored.gameplay_bus_path(&q).unwrap().is_some());
+        assert!(!Arc::ptr_eq(&initialized, &graph(&stored)));
+    }
+}

@@ -199,10 +199,10 @@ impl World {
         start: InfrastructureLevel,
         finish: InfrastructureLevel,
     ) -> Result<AlignmentId, WorldError> {
-        let mut candidate = Self::new(self.data.clone())?;
+        let mut candidate = Self::new(self.snapshot().clone())?;
         let id = candidate.build_alignment_typed(owner, name, points, track_type)?;
         let alignment = candidate
-            .data
+            .data_mut()
             .alignments
             .iter_mut()
             .find(|a| a.id == id)

@@ -94,6 +94,17 @@ export function positionTile(tile: MapTile, camera: Camera): MapTile {
   const count = 2 ** zoom, scale = scaleFor(camera.zoom);
   return { ...tile, x: (x / count - worldX(camera.longitude)) * scale + MAP_VIEWBOX.width / 2, y: (y / count - mercatorY(camera.latitude)) * scale + MAP_VIEWBOX.height / 2, width: scale / count, height: scale / count };
 }
+/** Screen fraction geometrically covered by one intact visibleTiles() request.
+ * That producer emits a rectangle in x-major order, not a subset of loaded tiles.
+ * Only its two corners need projection, even on high-DPI frames. */
+export function requestedTileCoverage(tiles: readonly MapTile[], camera: Camera, size: {width:number;height:number}) {
+  if (!tiles.length) return 0;
+  const first = positionTile(tiles[0], camera), last = positionTile(tiles[tiles.length - 1], camera);
+  const view = mapViewport(size.width, size.height);
+  const dx = Math.max(0, Math.min(last.x + last.width, view.x + view.width) - Math.max(first.x, view.x));
+  const dy = Math.max(0, Math.min(last.y + last.height, view.y + view.height) - Math.max(first.y, view.y));
+  return dx * dy / (view.width * view.height);
+}
 /** Enumerate only visible tiles at screen resolution, never prefetch or persist them.
  * Camera coordinates stay unchanged; finer raster tiles are drawn at smaller logical sizes.
  * Bound requests on extreme DPI/screens by reducing detail rather than dropping coverage.

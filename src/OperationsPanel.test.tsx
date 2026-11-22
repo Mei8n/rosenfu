@@ -86,10 +86,30 @@ test('an owned bus route uses the separate native IPC and alone can start the sh
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='configure_operation_service')).toBe(false);
 });
 
+test.each([
+ ['first ordinary open configuration','openRoundTrip',false,undefined,true],
+ ['existing unversioned open configuration','openRoundTrip',true,undefined,false],
+ ['existing explicit open configuration','openRoundTrip',true,120000,false],
+ ['closed route','closedOneWay',false,undefined,false],
+ ['forward route',undefined,false,undefined,false],
+] as const)('only a new ordinary open line gets the turnaround default: %s',async (_name,pattern,existing,turnaround,sendsDefault)=>{
+ const route={id:'R1',name:'市内線',pattern};
+ const prior={route_id:route.id,timetable:config.timetable,vehicle:config.vehicle,dwell_ms:30000,assumed_speed_kmh:30,turnaround_ms:turnaround};
+ vi.mocked(invoke).mockResolvedValue({...snapshot,bus_services:existing?[prior]:[]});
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}><BusOperations routes={[route]} enabled/></OperationProvider>);
+ const save=await screen.findByRole('button',{name:existing?'ダイヤの変更を適用':'運行を設定'});
+ expect(!!screen.queryByText('終点の折り返し時間：120秒')).toBe(sendsDefault||turnaround!==undefined);
+ fireEvent.click(save);
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='configure_bus_operation')).toBe(true));
+ const [,payload]=vi.mocked(invoke).mock.calls.find(([command])=>command==='configure_bus_operation')!;
+ if(sendsDefault)expect(payload).toHaveProperty('turnaroundMs',120000);
+ else expect(payload).not.toHaveProperty('turnaroundMs');
+});
+
 test('rail shows scheduled dwell, live path wait, and rear clearance separately',async()=>{
  const trains:OperationView['trains']=[
   {key:{service_id:'12',scheduled_ms:0},leg:1,delay_ms:0,state:{state:'waiting',ready_ms:7000}},
-  {key:{service_id:'12',scheduled_ms:1000},leg:1,delay_ms:1100,state:{state:'waiting',ready_ms:2500}},
+  {key:{service_id:'12',scheduled_ms:1000},leg:1,delay_ms:1100,waiting_for:'junction',state:{state:'waiting',ready_ms:2500}},
   {key:{service_id:'12',scheduled_ms:2000},leg:0,delay_ms:700,state:{state:'moving',entered_ms:2500,arrival_ms:5000,release_ms:5500}},
   {key:{service_id:'12',scheduled_ms:3000},leg:0,delay_ms:0,state:{state:'waiting',ready_ms:5100}},
  ];
@@ -98,7 +118,7 @@ test('rail shows scheduled dwell, live path wait, and rear clearance separately'
  const rows=(await screen.findByRole('list',{name:'運行中・待機中の列車'})).querySelectorAll('li');
  expect(rows[0].textContent).toContain('停車中');
  expect(rows[0].textContent).not.toContain('遅れ');
- expect(rows[1].textContent).toContain('進路待ち');
+ expect(rows[1].textContent).toContain('進路待ち（分岐・接続）');
  expect(rows[1].textContent).toContain('遅れ 4秒');
  expect(rows[2].textContent).toContain('到着済み');
  expect(rows[2].textContent).toContain('遅れ 1秒');
@@ -108,16 +128,17 @@ test('rail shows scheduled dwell, live path wait, and rear clearance separately'
 
 test('a train entering after a wait does not count the same delay twice',async()=>{
  const key={service_id:'12',scheduled_ms:1000};
- const wait={...snapshot,now_ms:6000,paused:false,services:[config],trains:[{key,leg:0,delay_ms:0,state:{state:'waiting',ready_ms:2000}}]} satisfies OperationView;
+ const wait={...snapshot,now_ms:6000,paused:false,services:[config],trains:[{key,leg:0,delay_ms:0,waiting_for:'crossing',state:{state:'waiting',ready_ms:2000}}]} satisfies OperationView;
  const enter={...wait,now_ms:6200,trains:[{key,leg:0,delay_ms:4200,state:{state:'moving',entered_ms:6200,arrival_ms:9000,release_ms:9500}}]} satisfies OperationView;
  vi.useFakeTimers();
  vi.mocked(invoke).mockImplementation(async command=>command==='advance_operation'?enter:wait);
  render(operation());
  await act(async()=>{});
- expect(screen.getByText('進路待ち')).toBeTruthy();
+ expect(screen.getByText('進路待ち（平面交差）')).toBeTruthy();
  expect(screen.getByText('遅れ 4秒')).toBeTruthy();
  await act(async()=>vi.advanceTimersByTime(500));
  expect(screen.getByText('走行中')).toBeTruthy();
+ expect(screen.queryByText('進路待ち（平面交差）')).toBeNull();
  expect(screen.getByText('遅れ 5秒')).toBeTruthy();
  expect(screen.queryByText('進路待ち')).toBeNull();
 });
@@ -184,4 +205,116 @@ test('when invalidated but empty, a rejected stale edit preserves the input and 
  expect(error.textContent).toContain('ワールドまたは運行状態が変更されました');
  expect((screen.getByLabelText('運転間隔（分）') as HTMLInputElement).value).toBe('7');
  expect(dirty).not.toHaveBeenCalled();
+});
+
+test('clock ticks and displays real vehicle state with the lean wire and no demand rows',async()=>{
+ vi.useFakeTimers();
+ const before={...snapshot,now_ms:59500,paused:false,services:[config]};
+ const moving={key:{service_id:'12',scheduled_ms:59500},leg:0,delay_ms:0,state:{state:'moving',entered_ms:59500,arrival_ms:70000,release_ms:72000}} as const;
+ const after={...before,now_ms:60000,timetable_edit_token:'second',trains:[moving]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='advance_operation'?after:before);
+ render(operation());
+ await act(async()=>{});
+ expect(screen.getByText('1日目 00:00')).toBeTruthy();
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(invoke).toHaveBeenCalledWith('advance_operation',undefined);
+ expect(screen.getByText('1日目 00:01')).toBeTruthy();
+ expect(screen.getByText('走行中')).toBeTruthy();
+});
+
+test('a matching compact tick retains separate timetable rows and updates the active clock and tokens',async()=>{
+ vi.useFakeTimers();
+ const route={id:'R',name:'バス線'};
+ const bus={route_id:route.id,timetable:{...config.timetable,headway_ms:900000},vehicle:config.vehicle,dwell_ms:30000,assumed_speed_kmh:35};
+ const full={...snapshot,services:[config],bus_services:[bus],paused:false,now_ms:59500,configuration_token:'world:0'};
+ const {services:_,bus_services:__,...live}=full;
+ vi.mocked(invoke).mockImplementation(async(command)=>command==='advance_operation'
+   ?{...live,paused:true,now_ms:60000,timetable_edit_token:'edit-live'}:full);
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}><OperationClock/><ServiceOperations serviceId="12" enabled/><BusOperations routes={[route]} enabled/></OperationProvider>);
+ await act(async()=>{});
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(invoke).toHaveBeenCalledWith('advance_operation',{knownConfigurationToken:'world:0'});
+ expect(screen.getByText('1日目 00:01')).toBeTruthy();
+ expect(screen.getAllByLabelText('運転間隔（分）').map(x=>(x as HTMLInputElement).value)).toEqual(['6','15']);
+ fireEvent.click(screen.getAllByText('ダイヤの変更を適用')[1]);
+ await act(async()=>{});
+ expect(invoke).toHaveBeenCalledWith('configure_bus_operation',expect.objectContaining({routeId:'R',expectedOperationToken:'edit-live'}));
+ expect(vi.mocked(invoke).mock.calls.some(([cmd])=>cmd==='configure_operation_service')).toBe(false);
+});
+
+test('a full tick refreshes both timetable arrays after a native revision change',async()=>{
+ vi.useFakeTimers();
+ const full={...snapshot,services:[config],paused:false,configuration_token:'old'};
+ const fresh={...snapshot,services:[{...config,timetable:{...config.timetable,headway_ms:720000}}],bus_services:[],paused:true,configuration_token:'new'};
+ vi.mocked(invoke).mockImplementation(async cmd=>cmd==='advance_operation'?fresh:full);
+ render(operation());await act(async()=>{});
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(invoke).toHaveBeenCalledWith('advance_operation',{knownConfigurationToken:'old'});
+ expect((screen.getByLabelText('運転間隔（分）') as HTMLInputElement).value).toBe('12');
+ expect(screen.getByText('再開')).toBeTruthy();
+});
+
+test.each([1,2])('a delayed lean response is discarded after a world revision change (next epoch %s)',async(nextEpoch)=>{
+ vi.useFakeTimers();
+ const full={...snapshot,services:[config],paused:false,configuration_token:'old'};
+ const fresh={...snapshot,services:[],bus_services:[],now_ms:86400000,configuration_token:'new'};
+ let resolveTick!:(reply:unknown)=>void;
+ const pending=new Promise(resolve=>{resolveTick=resolve;});
+ let requested=0;
+ vi.mocked(invoke).mockImplementation(async cmd=>cmd==='advance_operation'?pending:++requested===1?full:fresh);
+ const page=(epoch:number,version:number)=><OperationProvider available blocked={false} epoch={epoch} worldVersion={version} onChange={vi.fn()}><OperationClock/><ServiceOperations serviceId="12" enabled/></OperationProvider>;
+ const h=render(page(1,1));await act(async()=>{});
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(invoke).toHaveBeenCalledWith('advance_operation',{knownConfigurationToken:'old'});
+ h.rerender(page(nextEpoch,2));await act(async()=>{});
+ const {services:_,...live}=full;
+ await act(async()=>resolveTick({...live,now_ms:60000}));
+ expect(screen.getByText('2日目 00:00')).toBeTruthy();
+ expect(screen.queryByText('1日目 00:01')).toBeNull();
+ expect(screen.getByText('この系統のダイヤは未設定です。')).toBeTruthy();
+});
+
+test('a mismatched compact token is rejected instead of borrowing stale timetable rows',async()=>{
+ vi.useFakeTimers();
+ const full={...snapshot,services:[config],paused:false,configuration_token:'old'};
+ const {services:_,...live}=full;
+ const fresh={...snapshot,now_ms:86400000,configuration_token:'fresh'};
+ let snapshots=0;
+ vi.mocked(invoke).mockImplementation(async cmd=>cmd==='advance_operation'
+  ?{...live,paused:true,now_ms:60000,configuration_token:'wrong'}
+  :++snapshots===1?full:fresh);
+ render(operation());await act(async()=>{});
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(screen.getByRole('alert').textContent).toContain('運行エンジンの応答を確認できませんでした');
+ expect(screen.queryByText('1日目 00:01')).toBeNull();
+ fireEvent.click(screen.getByText('運行状態を再取得'));
+ await act(async()=>{});
+ expect(screen.getByText('2日目 00:00')).toBeTruthy();
+ expect(screen.getByText('この系統のダイヤは未設定です。')).toBeTruthy();
+});
+
+test('the active handoff exposes only the existing rail timetable and submits unchanged vehicle and dwell', async()=>{
+ const paused={...snapshot,now_ms:35000,timetable_edit_blocker:'車両が走行中',rail_timetable_handoff_available:true,services:[config]};
+ vi.mocked(invoke).mockResolvedValue(paused);
+ render(operation());
+ const submit=await screen.findByRole('button',{name:'今後の発車時刻を変更'});
+ expect((screen.getByLabelText('駅の停車時間（秒）') as HTMLInputElement).disabled).toBe(true);
+ expect((screen.getByLabelText('最高速度（km/h）') as HTMLInputElement).disabled).toBe(true);
+ fireEvent.change(screen.getByLabelText('初発時刻'),{target:{value:'00:01:30'}});
+ fireEvent.click(submit);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('configure_operation_service',{
+  serviceId:'12',expectedOperationToken:'initial-token',timetable:{...config.timetable,first_departure_ms:90000},
+  vehicle:config.vehicle,dwellMs:config.dwell_ms
+ }));
+});
+
+test('clock warns about older builds only while native reports mixed timetable births',async()=>{
+ vi.mocked(invoke).mockImplementation(async command=>command==='operation_snapshot'
+  ?{...snapshot,rail_timetable_handoff_in_progress:true,services:[config]}
+  :{...snapshot,services:[config]});
+ render(operation());
+ const notice=await screen.findByText(/この間に保存したデータは旧ビルドでは開けません/);
+ expect(notice.getAttribute('role')).toBe('status');
+ fireEvent.change(screen.getByLabelText('速度'),{target:{value:'4'}});
+ await waitFor(()=>expect(screen.queryByText(/この間に保存したデータは旧ビルドでは開けません/)).toBeNull());
 });

@@ -343,3 +343,147 @@ fn unqualified_geometry_falls_back_and_legacy_snapshots_do_not_upgrade() {
     assert_eq!(restored.operation_save().unwrap().runtime.format, 2);
     assert_eq!(rosenfu_storage::encode(&restored).unwrap(), bytes);
 }
+
+#[test]
+fn isolated_unserved_rail_component_does_not_change_the_refuge_or_saved_runtime() {
+    for separate_branches in [false, true] {
+        let (mut original, configs, [west, _, _, _]) = fixture(separate_branches, false, 1., 80.);
+        original.configure_operation(configs.clone()).unwrap();
+        let before_timing = original
+            .operation()
+            .unwrap()
+            .runtime
+            .preview_passenger_replay(1_000_000, 128)
+            .unwrap();
+        tick(&mut original, 110_000);
+        let before = original.operation_save().unwrap();
+        assert_eq!(before.runtime.format, 7);
+
+        let mut cold = World::new(original.snapshot().clone()).unwrap();
+        let owner = cold
+            .snapshot()
+            .alignments
+            .iter()
+            .find(|a| a.id == west)
+            .unwrap()
+            .owner;
+        let point = |longitude| GeoPoint {
+            latitude: 36.,
+            longitude,
+        };
+        let x = cold
+            .build_alignment(
+                owner,
+                "Distant siding A".into(),
+                vec![point(140.), point(140.01)],
+            )
+            .unwrap();
+        let y = cold
+            .build_alignment(
+                owner,
+                "Distant siding B".into(),
+                vec![point(140.01), point(140.02)],
+            )
+            .unwrap();
+        cold.connect_alignment_endpoints(
+            owner,
+            AlignmentEndpointRef {
+                alignment_id: x,
+                endpoint: AlignmentEndpoint::End,
+            },
+            AlignmentEndpointRef {
+                alignment_id: y,
+                endpoint: AlignmentEndpoint::Start,
+            },
+        )
+        .unwrap();
+        assert_eq!(cold.snapshot().alignments.len(), 6);
+        assert_eq!(cold.snapshot().alignment_connections.len(), 5);
+        cold.configure_operation(configs).unwrap();
+        let replay = cold
+            .operation()
+            .unwrap()
+            .runtime
+            .preview_passenger_replay(1_000_000, 128)
+            .unwrap();
+        assert_eq!(cold.operation_save().unwrap().runtime.format, 7);
+        assert_eq!(replay, before_timing);
+
+        let mut active = World::new(cold.snapshot().clone()).unwrap();
+        active.retain_operation_from(&original);
+        assert_eq!(active.operation_save(), Some(before.clone()));
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("refuge-component.rosenfu");
+        rosenfu_storage::save_world(&file, &active).unwrap();
+        let (mut reopened, _) = rosenfu_storage::load_world_with_version(&file).unwrap();
+        assert_eq!(reopened.operation_save(), Some(before));
+        assert_eq!(
+            tick(&mut reopened, 1_000_000),
+            tick(&mut original, 1_000_000)
+        );
+        assert_eq!(reopened.operation_save(), original.operation_save());
+    }
+}
+
+#[test]
+fn spur_or_spatial_overlap_still_reject_candidate_and_freeze_an_existing_refuge() {
+    for connect_spur in [true, false] {
+        let (mut original, configs, [west, _, _, _]) = fixture(true, false, 1., 80.);
+        original.configure_operation(configs.clone()).unwrap();
+        tick(&mut original, 110_000);
+        let before = original.operation_save().unwrap();
+        assert_eq!(before.runtime.format, 7);
+        let mut altered = World::new(original.snapshot().clone()).unwrap();
+        let owner = altered
+            .snapshot()
+            .alignments
+            .iter()
+            .find(|a| a.id == west)
+            .unwrap()
+            .owner;
+        let point = |latitude, longitude| GeoPoint {
+            latitude,
+            longitude,
+        };
+        let points = if connect_spur {
+            vec![point(35., 139.49), point(35., 139.50)]
+        } else {
+            // Both new vertices are remote from the loop, but the straight
+            // span between them crosses its west approach at ground level.
+            vec![point(34.98, 139.505), point(35.02, 139.505)]
+        };
+        let extra = altered
+            .build_alignment(owner, "Unqualified extra track".into(), points)
+            .unwrap();
+        if connect_spur {
+            altered
+                .connect_alignment_endpoints(
+                    owner,
+                    AlignmentEndpointRef {
+                        alignment_id: extra,
+                        endpoint: AlignmentEndpoint::End,
+                    },
+                    AlignmentEndpointRef {
+                        alignment_id: west,
+                        endpoint: AlignmentEndpoint::Start,
+                    },
+                )
+                .unwrap();
+        }
+        altered.configure_operation(configs).unwrap();
+        assert_eq!(altered.operation_save().unwrap().runtime.format, 2);
+        let cold = altered.operation_save();
+        assert!(altered.restore_operation(Some(before.clone())).is_err());
+        assert_eq!(altered.operation_save(), cold);
+        altered.retain_operation_from(&original);
+        let frozen = altered.operation_save().unwrap();
+        assert!(frozen.invalidated);
+        assert!(frozen.runtime.paused);
+        assert_eq!(frozen.runtime, before.runtime);
+        let bytes = rosenfu_storage::encode(&altered).unwrap();
+        assert_eq!(
+            rosenfu_storage::decode(&bytes).unwrap().operation_save(),
+            Some(frozen)
+        );
+    }
+}

@@ -1,6 +1,6 @@
 #[path = "session/road_transport.rs"]
 mod road_transport;
-pub use road_transport::RoadTramEdit;
+pub use road_transport::{GameplayBusPathPreview, GameplayBusPreviewOptions, RoadTramEdit};
 // Desktop application operations. The core owns IDs and referential integrity.
 #[path = "session/deletion.rs"]
 mod deletion;
@@ -10,15 +10,15 @@ mod history;
 mod operation;
 pub use deletion::AlignmentSectionSelection;
 pub use history::WorldEditHistory;
-pub use operation::OperationView;
-pub use operation::{FixedOdRoadTransfer, FixedOdScenarioView};
+pub use operation::{CrossingPlanningView, OperationTickView, OperationView};
+pub use operation::{FixedOdRoadTransfer, FixedOdScenarioView, ObservedFixedOdInput};
 #[path = "session/ofm.rs"]
 mod ofm;
 pub use ofm::{OfmBindingInput, OfmRawInput};
 #[path = "session/save_slots.rs"]
 mod save_slots;
 use rosenfu_core::world::{
-    AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, World, WorldDraft,
+    AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, TrackType, World, WorldDraft,
 };
 pub use save_slots::SaveSlotList;
 use std::path::{Path, PathBuf};
@@ -40,6 +40,75 @@ fn changed_summary_alignment_ids(
         .filter(|line| previous.get(&line.id).is_none_or(|old| *old != *line))
         .map(|line| line.id)
         .collect()
+}
+
+// Match the previous exact f64 equality: signed zeros are equal; NaN never
+// matches even itself. Do not round nearby physical crossings to one key.
+fn crossing_key(road_id: &str, point: GeoPoint) -> Option<(&str, u64, u64)> {
+    fn coordinate(value: f64) -> Option<u64> {
+        (!value.is_nan()).then(|| if value == 0.0 { 0 } else { value.to_bits() })
+    }
+
+    Some((
+        road_id,
+        coordinate(point.latitude)?,
+        coordinate(point.longitude)?,
+    ))
+}
+
+fn count_new_crossings<'a>(
+    prior: impl IntoIterator<Item = (&'a str, GeoPoint)>,
+    after: impl IntoIterator<Item = (&'a str, GeoPoint)>,
+) -> usize {
+    let previous: std::collections::HashSet<_> = prior
+        .into_iter()
+        .filter_map(|(road, point)| crossing_key(road, point))
+        .collect();
+    after
+        .into_iter()
+        .filter(|&(road, point)| {
+            crossing_key(road, point).is_none_or(|key| !previous.contains(&key))
+        })
+        .count()
+}
+
+#[cfg(test)]
+#[test]
+fn crossing_summary_index_preserves_exact_equality_and_multiplicity() {
+    let p = |latitude, longitude| GeoPoint {
+        latitude,
+        longitude,
+    };
+    let before = [
+        ("r", p(-0.0, 0.0)),
+        ("r", p(1.0, 2.0)),
+        ("r", p(1.0, 2.0)),
+        ("nan", p(f64::NAN, 2.0)),
+        ("nan2", p(1.0, f64::NAN)),
+    ];
+    let after = [
+        ("r", p(0.0, -0.0)),
+        ("r", p(1.0, 2.0)),
+        ("other", p(1.0, 2.0)),
+        ("r", p(1.0 + f64::EPSILON, 2.0)),
+        ("r", p(1.0, 2.0 + 2.0 * f64::EPSILON)),
+        ("r", p(1.0, 2.0 + 2.0 * f64::EPSILON)),
+        ("nan", p(f64::NAN, 2.0)),
+        ("nan2", p(1.0, f64::NAN)),
+    ];
+
+    let reference = after
+        .iter()
+        .filter(|(road, point)| {
+            !before
+                .iter()
+                .any(|(old_road, old_point)| old_road == road && old_point == point)
+        })
+        .count();
+    assert_eq!(reference, 6);
+    assert_eq!(count_new_crossings(before, after), reference);
+    assert_eq!(count_new_crossings([], after), after.len());
+    assert_eq!(count_new_crossings(before, []), 0);
 }
 
 /// Compact advisory result; no preview world is serialized across IPC.
@@ -892,35 +961,43 @@ impl WorldEditor {
                 .add_road_snapshot(snapshot)
                 .map_err(|e| e.to_string())?;
         }
-        let before = self.snapshot();
+        // Refusals include no crossing metrics. Validate first so a rejected
+        // hover never scans the current world's road assets. A successful
+        // preview keeps the exact before/after topology and separate scans.
+        let candidate = match self.prepared_construction_clone(alignments, stations) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                return Ok(ConstructionPreview {
+                    new_crossing_count: None,
+                    roads_unverified: None,
+                    validation_error: Some(error),
+                })
+            }
+        };
+        let before = self.world.snapshot();
         let prior_crossings: Vec<_> = self
             .road_assessments()
             .into_iter()
             .flat_map(|(_, assessment)| assessment.crossings)
             .collect();
-        if let Err(error) = self.build_construction_plan(alignments, stations) {
-            return Ok(ConstructionPreview {
-                new_crossing_count: None,
-                roads_unverified: None,
-                validation_error: Some(error),
-            });
-        }
-        let after = self.snapshot();
+        let after = candidate.world.snapshot();
         let changed = changed_summary_alignment_ids(&before.alignments, &after.alignments);
-        let assessments = self.road_assessments();
+        // This isolated preview does not publish history, operation or OD; none
+        // of that metadata is an input to per-world physical road assessment.
+        let assessments = candidate.road_assessments();
         let roads_unverified = assessments
             .iter()
             .any(|(id, a)| changed.contains(id) && (!a.roads_ready || a.unknown_road_height));
         // Endpoint splitting may change IDs or ownership, not the physical asset.
-        let new_crossing_count = assessments
-            .iter()
-            .flat_map(|(_, a)| &a.crossings)
-            .filter(|crossing| {
-                !prior_crossings
-                    .iter()
-                    .any(|old| old.road_id == crossing.road_id && old.point == crossing.point)
-            })
-            .count();
+        let new_crossing_count = count_new_crossings(
+            prior_crossings
+                .iter()
+                .map(|crossing| (crossing.road_id.as_str(), crossing.point)),
+            assessments
+                .iter()
+                .flat_map(|(_, assessment)| &assessment.crossings)
+                .map(|crossing| (crossing.road_id.as_str(), crossing.point)),
+        );
         Ok(ConstructionPreview {
             new_crossing_count: Some(new_crossing_count),
             roads_unverified: Some(roads_unverified),
@@ -974,12 +1051,23 @@ impl WorldEditor {
         alignments: Vec<PlannedAlignment>,
         stations: Vec<PlannedBuiltStation>,
     ) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.prepare_construction_candidate(self.world.snapshot(), alignments, stations)?;
+        let mut candidate = self.prepared_construction_clone(alignments, stations)?;
         // Construction is final. Only a successful atomic commit ends prior history.
         candidate.deleted_alignment = None;
         self.commit_edit(candidate, true);
         Ok(self.snapshot())
+    }
+
+    /// Shared by actual construction and full summary. All geometry, water,
+    /// topology, and save-size checks happen before either caller can proceed.
+    fn prepared_construction_clone(
+        &self,
+        alignments: Vec<PlannedAlignment>,
+        stations: Vec<PlannedBuiltStation>,
+    ) -> Result<Self, String> {
+        let mut candidate = self.clone();
+        candidate.prepare_construction_candidate(self.world.snapshot(), alignments, stations)?;
+        Ok(candidate)
     }
 
     /// Mutate only the isolated candidate. Both full commit and compact click
@@ -1290,7 +1378,7 @@ impl WorldEditor {
             if alignment.destination.is_some() && alignment.extension.is_none() {
                 return Err("接続先を指定するには既存線路から延伸してください。".into());
             }
-            if let Some(extension) = alignment.extension {
+            if let Some(extension) = &alignment.extension {
                 let old = candidate
                     .world
                     .snapshot()
@@ -1298,6 +1386,13 @@ impl WorldEditor {
                     .iter()
                     .find(|a| a.id == extension.alignment_id)
                     .ok_or("延伸対象の線路がありません。")?;
+                if Self::mixed_tram_track(old.track_type, alignment.track_type) {
+                    // A change between tram-only and conventional infrastructure
+                    // is a junction to a new span, not an extension of the old ID.
+                    let start_height = old.endpoint_height_m(extension.endpoint);
+                    candidate.build_sloped_plan(alignment, start_height)?;
+                    continue;
+                }
                 if old.track_type != alignment.track_type {
                     return Err("延伸対象と線路種別が一致しません。".into());
                 }
@@ -1482,7 +1577,10 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         Ok(())
     }
-    /// A rising/falling extension is a new explicit span, never a rewrite of old track.
+    fn mixed_tram_track(a: TrackType, b: TrackType) -> bool {
+        (a == TrackType::Tram) != (b == TrackType::Tram)
+    }
+    /// A rising/falling or mixed-track extension is a new explicit span.
     fn build_sloped_plan(
         &mut self,
         alignment: PlannedAlignment,
@@ -1496,17 +1594,21 @@ impl WorldEditor {
                 .iter()
                 .find(|a| a.id == extension.alignment_id && a.owner == self.company)
                 .ok_or("延伸対象の自社線路がありません。")?;
-            if source.track_type != alignment.track_type {
-                return Err("延伸対象と線路種別が一致しません。".into());
+            if Self::mixed_tram_track(source.track_type, alignment.track_type) {
+                alignment.design_speed_kmh
+            } else {
+                if source.track_type != alignment.track_type {
+                    return Err("延伸対象と線路種別が一致しません。".into());
+                }
+                let speed = source.effective_design_speed_kmh();
+                if alignment
+                    .design_speed_kmh
+                    .is_some_and(|v| (v - speed).abs() > 1e-9)
+                {
+                    return Err("延伸では元の線路の目標最高速度を引き継ぎます。".into());
+                }
+                Some(speed)
             }
-            let speed = source.effective_design_speed_kmh();
-            if alignment
-                .design_speed_kmh
-                .is_some_and(|v| (v - speed).abs() > 1e-9)
-            {
-                return Err("延伸では元の線路の目標最高速度を引き継ぎます。".into());
-            }
-            Some(speed)
         } else {
             alignment.design_speed_kmh
         };
@@ -2347,18 +2449,25 @@ impl WorldEditor {
             }
         }
     }
-    /// Restore atomically, retaining normal backup behavior for a healthy manual save.
+    #[cfg(test)]
     pub fn load_autosave(
         &mut self,
         autosave_path: &Path,
         manual_path: &Path,
     ) -> Result<WorldDraft, String> {
-        let mut candidate = self.clone();
-        candidate.load(autosave_path)?;
-        let auto_version = candidate
-            .manual_version
-            .clone()
-            .ok_or("復元元が確認できません。")?;
+        self.restore_saved_autosave(autosave_path, manual_path)?;
+        Ok(self.snapshot())
+    }
+
+    /// Restore atomically, retaining normal backup behavior for a healthy
+    /// manual save. Hold only the decoded replacement, not a copy of the
+    /// previously mounted world; publish after all fallible reads/checks.
+    fn restore_saved_autosave(
+        &mut self,
+        autosave_path: &Path,
+        manual_path: &Path,
+    ) -> Result<(), String> {
+        let (world, auto_version, company) = Self::read_saved_world(autosave_path)?;
         let manual_version =
             rosenfu_storage::file_version(manual_path).map_err(|e| e.to_string())?;
         let repair_allowed = if manual_version == rosenfu_storage::FileVersion::Missing {
@@ -2387,19 +2496,22 @@ impl WorldEditor {
                 Err(error) => return Err(error.to_string()),
             }
         };
-        candidate.deleted_alignment = None;
-        candidate.loaded_path = Some(manual_path.to_owned());
-        candidate.manual_version = Some(manual_version);
-        candidate.manual_repair_allowed = repair_allowed;
-        candidate.autosave_version = Some((autosave_path.to_owned(), auto_version));
-        candidate.autosave_blocked = false;
-        candidate.autosave_replace_allowed = false;
-        candidate.edit_history = self.edit_history.clone();
-        candidate.clear_edit_history();
-        *self = candidate;
+        self.install_saved_world(world, company, manual_path, manual_version);
+        self.manual_repair_allowed = repair_allowed;
+        self.autosave_version = Some((autosave_path.to_owned(), auto_version));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn load(&mut self, path: &Path) -> Result<WorldDraft, String> {
+        let (world, version, company) = Self::read_saved_world(path)?;
+        self.install_saved_world(world, company, path, version);
         Ok(self.snapshot())
     }
-    pub fn load(&mut self, path: &Path) -> Result<WorldDraft, String> {
+
+    fn read_saved_world(
+        path: &Path,
+    ) -> Result<(World, rosenfu_storage::FileVersion, CompanyId), String> {
         let (candidate, version) =
             rosenfu_storage::load_world_with_version(path).map_err(|e| e.to_string())?;
         let data = candidate.snapshot();
@@ -2424,9 +2536,19 @@ impl WorldEditor {
             return Err("編集範囲外の路線を含むため読み込めません。".into());
         }
         let company = data.companies[0].id;
+        Ok((candidate, version, company))
+    }
+
+    fn install_saved_world(
+        &mut self,
+        world: World,
+        company: CompanyId,
+        path: &Path,
+        version: rosenfu_storage::FileVersion,
+    ) {
         self.deleted_alignment = None;
         self.clear_edit_history();
-        self.world = candidate;
+        self.world = world;
         self.operation_tick = None;
         self.fixed_od_token = operation::next_session_token();
         self.operation_edit_revision = operation::next_session_token();
@@ -2444,7 +2566,6 @@ impl WorldEditor {
         self.observed_autosave = None;
         self.autosave_blocked = false;
         self.autosave_replace_allowed = false;
-        Ok(self.snapshot())
     }
 }
 
@@ -5991,6 +6112,79 @@ mod endpoint_join_tests {
         }
     }
     #[test]
+    fn reopened_mixed_tram_plan_creates_distinct_span_and_preserves_source() {
+        use rosenfu_core::world::{ConstructionPlans, SectionInfrastructure};
+        for (source_type, built_type) in [
+            (TrackType::Normal, TrackType::Tram),
+            (TrackType::Tram, TrackType::HighSpeed),
+        ] {
+            let mut editor = WorldEditor::new();
+            editor.company_setup_required = false;
+            let source = editor
+                .world
+                .build_alignment_typed(
+                    editor.company,
+                    "Existing".into(),
+                    vec![p(139.), p(139.01)],
+                    source_type,
+                )
+                .unwrap();
+            let desired_speed = built_type.default_design_speed_kmh();
+            let points = vec![p(139.01), p(139.02)];
+            let plans: ConstructionPlans = serde_json::from_value(serde_json::json!({
+                "version":1,"plans":[{"id":1,"name":"Mixed plan"}],"parkedPaths":[],
+                "activePathId":1,"activePlanId":1,"draftPoints":points,"redoPoints":[],
+                "draftExtension":{"alignmentId":source,"endpoint":"end"},
+                "trackType":built_type,"designSpeedKmh":desired_speed,"roadFollowing":false,
+                "plannedStations":[],"draftFinished":true
+            }))
+            .unwrap();
+            let d = tempfile::tempdir().unwrap();
+            let file = d.path().join("mixed-plan.rosenfu");
+            editor
+                .save_with_plans(&file, Some(plans.clone()), false)
+                .unwrap();
+            let reopened = editor.load(&file).unwrap();
+            assert_eq!(reopened.construction_plans, Some(plans));
+            let expected = reopened.alignments[0].clone();
+            let result = editor
+                .build_plan(vec![PlannedAlignment {
+                    ofm_path: None,
+                    anchor_levels: None,
+                    junction_source: None,
+                    start_level: None,
+                    infrastructure: SectionInfrastructure::default(),
+                    anchor_indices: None,
+                    name: "New type".into(),
+                    points,
+                    track_type: built_type,
+                    design_speed_kmh: Some(desired_speed),
+                    stations: vec![],
+                    reference: None,
+                    extension: Some(PlannedAlignmentExtension {
+                        alignment_id: source,
+                        endpoint: AlignmentEndpoint::End,
+                    }),
+                    destination: None,
+                }])
+                .unwrap();
+            assert_eq!(result.alignments.len(), 2);
+            assert_eq!(result.alignments[0], expected);
+            assert_eq!(result.alignments[1].track_type, built_type);
+            assert_eq!(
+                result.alignments[1].effective_design_speed_kmh(),
+                desired_speed
+            );
+            assert_eq!(result.alignment_connections.len(), 1);
+            assert_eq!(result.alignment_connections[0].a.alignment_id, source);
+            assert_eq!(
+                result.alignment_connections[0].b.alignment_id,
+                result.alignments[1].id
+            );
+        }
+    }
+
+    #[test]
     fn moved_or_missing_target_cannot_publish_the_extension() {
         let mut editor = WorldEditor::new();
         let a = editor
@@ -6654,14 +6848,33 @@ mod road_snapshot_transaction_tests {
             .unwrap();
         assert_eq!(preview.new_crossing_count, Some(0));
         assert_eq!(preview.roads_unverified, Some(true));
-        let mut invalid = plan();
-        invalid.points.clear();
-        assert!(editor
-            .clone()
-            .preview_construction_summary(vec![invalid], vec![], vec![roads()])
-            .unwrap()
-            .validation_error
-            .is_some());
+        let invalid = || {
+            let mut plan = plan();
+            plan.points.clear();
+            plan
+        };
+        let refused = editor
+            .construction_validation_snapshot()
+            .preview_construction_summary(vec![invalid()], vec![], vec![roads()])
+            .unwrap();
+        assert!(refused.validation_error.is_some());
+        assert_eq!(refused.new_crossing_count, None);
+        assert_eq!(refused.roads_unverified, None);
+
+        // An invalid staged source is still rejected before plan validation.
+        let mut invalid_source = roads();
+        invalid_source.source_sha256 = "invalid".into();
+        let error = editor
+            .construction_validation_snapshot()
+            .preview_construction_summary(vec![invalid()], vec![], vec![invalid_source.clone()])
+            .err()
+            .expect("invalid road source must fail");
+        let expected = editor
+            .construction_validation_snapshot()
+            .preview_construction_summary(vec![plan()], vec![], vec![invalid_source])
+            .err()
+            .expect("invalid road source must fail");
+        assert_eq!(error, expected);
         assert_eq!(editor.snapshot(), old);
     }
     #[test]

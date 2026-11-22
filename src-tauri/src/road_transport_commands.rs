@@ -101,3 +101,121 @@ pub fn edit_native_pilot_bus(
     }
     editor.edit_native_pilot_bus(edit)
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CachedOfmBusTile {
+    raw_evidence: crate::session::OfmRawInput,
+    tile_binding: crate::session::OfmBindingInput,
+}
+
+fn cached_tiles(
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+    context_tiles: Option<Vec<CachedOfmBusTile>>,
+) -> Result<Vec<(crate::session::OfmRawInput, crate::session::OfmBindingInput)>, String> {
+    let tiles = context_tiles.unwrap_or_default();
+    if tiles.len() > rosenfu_core::ofm_evidence::MAX_TILES {
+        return Err("道路の参照範囲が広すぎます。".into());
+    }
+    let mut cached: Vec<_> = tiles
+        .into_iter()
+        .map(|t| (t.raw_evidence, t.tile_binding))
+        .collect();
+    match (raw_evidence, tile_binding) {
+        (None, None) => {}
+        (Some(raw), Some(binding)) => cached.push((raw, binding)),
+        _ => return Err("道路のキャッシュ情報が揃っていません。".into()),
+    }
+    Ok(cached)
+}
+
+/// Geometry for the game track guide, not permission to operate a real tram.
+#[tauri::command]
+pub async fn preview_authored_tram_road_guide(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    guide: rosenfu_core::ofm_evidence::AuthoredTramGuide,
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+) -> Result<Vec<rosenfu_core::world::GeoPoint>, String> {
+    let cached = match (raw_evidence, tile_binding) {
+        (Some(raw), Some(binding)) => Some((raw, binding)),
+        (None, None) => None,
+        _ => return Err("道路のキャッシュ情報が揃っていません。".into()),
+    };
+    let snapshot = editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshot.preview_authored_tram_road_guide(&expected_world_token, &guide, cached)
+    })
+    .await
+    .map_err(|_| "道路に沿う軌道の経路を確認できません。".to_owned())?
+}
+
+#[tauri::command]
+pub async fn preview_gameplay_ofm_bus(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    route_id: String,
+    name: String,
+    path: rosenfu_core::ofm_evidence::BusPathBinding,
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+    context_tiles: Option<Vec<CachedOfmBusTile>>,
+    request_stop_targets: Option<bool>,
+    request_auto_stop_suggestions: Option<bool>,
+) -> Result<crate::session::GameplayBusPathPreview, String> {
+    let cached = cached_tiles(raw_evidence, tile_binding, context_tiles)?;
+    // Clone the immutable draft inputs/cache under the lock only. Geometry
+    // search never holds up live edits or runs on the WebView command thread.
+    let snapshot = editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshot.preview_gameplay_ofm_bus_details(
+            &expected_world_token,
+            route_id,
+            name,
+            path,
+            cached,
+            crate::session::GameplayBusPreviewOptions {
+                request_stop_targets: request_stop_targets.unwrap_or(false),
+                request_auto_stop_suggestions: request_auto_stop_suggestions.unwrap_or(false),
+            },
+        )
+    })
+    .await
+    .map_err(|_| "バス経路のプレビューを取得できません。".to_owned())?
+}
+
+/// Use the normal OFM cache data (or already retained world evidence) to stage
+/// and commit an ordinary Bus route. This does not claim legal road permission.
+#[tauri::command]
+pub fn put_gameplay_ofm_bus(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    route_id: String,
+    name: String,
+    path: rosenfu_core::ofm_evidence::BusPathBinding,
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+    context_tiles: Option<Vec<CachedOfmBusTile>>,
+) -> Result<WorldDraft, String> {
+    let cached = cached_tiles(raw_evidence, tile_binding, context_tiles)?;
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.put_gameplay_ofm_bus(&expected_world_token, route_id, name, path, cached)
+}
+
+#[tauri::command]
+pub fn remove_gameplay_ofm_bus(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    route_id: String,
+) -> Result<WorldDraft, String> {
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    editor.remove_gameplay_ofm_bus(&expected_world_token, &route_id)
+}

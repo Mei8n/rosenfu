@@ -134,6 +134,33 @@ def grid_cells(bounds, max_cells=4096):
             for x in range(x0,x1) for y in range(y0,y1)]
 
 
+def read_osm_xml(source, limit, expected_sha=None):
+    raw = read_limited(source, limit)
+    if expected_sha is not None:
+        require(source.suffix != ".bz2" and sha(raw) == expected_sha, "raw OSM source digest mismatch")
+    xml = read_limited(source, limit, True) if source.suffix == '.bz2' else raw
+    # Reject DTD/entities and non-UTF8 XML before ElementTree can expand anything.
+    decoded = xml.decode('utf-8-sig')
+    require('<!DOCTYPE' not in decoded.upper() and '<!ENTITY' not in decoded.upper(), 'DTD/entities prohibited')
+    root = ET.fromstring(decoded)
+    require(root.tag == 'osm', 'OSM XML required')
+    return raw, xml, root
+
+
+def is_turn_restriction(tags):
+    return (tags.get('type', '').split(':')[0] == 'restriction'
+            or any(k.split(':')[0] == 'restriction' for k in tags))
+
+
+def read_tags(element):
+    tags = {}
+    for tag in element.findall('tag'):
+        k, v = tag.get('k'), tag.get('v')
+        require(k is not None and v is not None and k not in tags and len(k)<=256 and len(v)<=4096, 'invalid tags')
+        tags[k] = v
+    return tags
+
+
 def generate(source, coverage, bounds, revision, origin, output, limits=None):
     limits = {**LIMITS, **(limits or {})}
     require(all(type(v) is int and v > 0 for v in limits.values()), 'positive limits required')
@@ -149,13 +176,7 @@ def generate(source, coverage, bounds, revision, origin, output, limits=None):
     for key,box in grid_cells(bounds,limits['cells']):
         require(covered(box,ring), 'cell not wholly inside certified coverage polygon')
         cells[key] = {'bounds':list(box),'ways':[]}
-    raw = read_limited(source, limits['input_bytes'])
-    xml = read_limited(source, limits['input_bytes'], True) if source.suffix == '.bz2' else raw
-    # Reject DTD/entities and non-UTF8 XML before ElementTree can expand anything.
-    decoded = xml.decode('utf-8-sig')
-    require('<!DOCTYPE' not in decoded.upper() and '<!ENTITY' not in decoded.upper(), 'DTD/entities prohibited')
-    root = ET.fromstring(decoded)
-    require(root.tag == 'osm', 'OSM XML required')
+    raw, xml, root = read_osm_xml(source, limits['input_bytes'])
     nodes, ways, seen_ways = {}, [], set()
     for el in root:
         if el.tag == 'node':
@@ -168,11 +189,7 @@ def generate(source, coverage, bounds, revision, origin, output, limits=None):
             require(ident not in seen_ways, 'duplicate way')
             seen_ways.add(ident)
             require(len(seen_ways) <= limits['features'], 'feature limit')
-            tags = {}
-            for tag in el.findall('tag'):
-                k,v = tag.get('k'),tag.get('v')
-                require(k is not None and v is not None and k not in tags and len(k)<=256 and len(v)<=4096, 'invalid tags')
-                tags[k] = v
+            tags = read_tags(el)
             if tags.get('highway') not in CLASSES or tags.get('area') == 'yes':
                 continue
             refs = [osm_id(nd.get('ref')) for nd in el.findall('nd')]

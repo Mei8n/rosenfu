@@ -1,5 +1,8 @@
 //! Alpha 0.2 fixed-OD reference assignment. Synthetic inputs, not population data.
 //! No mutation, charging or capacity simulation occurs here. Recompute after network changes.
+mod observed_fixed_od;
+pub use observed_fixed_od::{ObservedFixedOd, ObservedFixedOdStatus};
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -161,16 +164,38 @@ struct Edge {
     headway: f64,
     through: f64,
 }
+#[derive(Clone, Copy)]
+enum SearchStep<'a> {
+    Rail { leg_id: &'a str },
+    Walk { from: &'a str, to: &'a str },
+}
+
+impl SearchStep<'_> {
+    fn into_passenger_step(self) -> PassengerStep {
+        match self {
+            Self::Rail { leg_id } => PassengerStep::Rail {
+                leg_id: leg_id.to_owned(),
+            },
+            Self::Walk { from, to } => PassengerStep::Walk {
+                from: from.to_owned(),
+                to: to.to_owned(),
+            },
+        }
+    }
+}
+
+// Network and access identifiers outlive the OD search. Own strings only in
+// returned paths; branching must not copy every ID in the path so far.
 #[derive(Clone)]
-struct State {
-    station: String,
-    visited: Vec<String>,
-    services: Vec<String>,
-    current_service: Option<String>,
+struct State<'a> {
+    station: &'a str,
+    visited: Vec<&'a str>,
+    services: Vec<&'a str>,
+    current_service: Option<&'a str>,
     next_sequence: usize,
     can_alight: bool,
-    leg_ids: Vec<String>,
-    steps: Vec<PassengerStep>,
+    leg_ids: Vec<&'a str>,
+    steps: Vec<SearchStep<'a>>,
     cost: f64,
     time: PathTimeBreakdown,
 }
@@ -370,8 +395,8 @@ fn assign_fixed_od_budgeted(
             .rev()
             .take(max_states_per_od)
             .map(|(station, &seconds)| State {
-                station: station.clone(),
-                visited: vec![station.clone()],
+                station: station.as_str(),
+                visited: vec![station.as_str()],
                 services: vec![],
                 current_service: None,
                 next_sequence: 0,
@@ -396,7 +421,7 @@ fn assign_fixed_od_budgeted(
                 break;
             }
             states += 1;
-            if let Some(seconds) = egress.get(&state.station) {
+            if let Some(seconds) = egress.get(state.station) {
                 if !state.services.is_empty() && state.can_alight {
                     let cost = state.cost + seconds * weights.walk;
                     let mut time = state.time;
@@ -415,17 +440,21 @@ fn assign_fixed_od_budgeted(
                         break 'search;
                     }
                     result.rail.push(PathAllocation {
-                        stations: state.visited.clone(),
-                        leg_ids: state.leg_ids.clone(),
-                        steps: state.steps.clone(),
-                        services: state.services.clone(),
+                        stations: state.visited.iter().map(|&id| id.to_owned()).collect(),
+                        leg_ids: state.leg_ids.iter().map(|&id| id.to_owned()).collect(),
+                        steps: state
+                            .steps
+                            .iter()
+                            .map(|step| step.into_passenger_step())
+                            .collect(),
+                        services: state.services.iter().map(|&id| id.to_owned()).collect(),
                         generalized_seconds: cost,
                         time,
                         trips: 0.0,
                     });
                 }
             }
-            if let Some(edges) = graph.get(&state.station) {
+            if let Some(edges) = graph.get(state.station) {
                 for edge in edges.iter().rev() {
                     if edges_examined >= max_states_per_od
                         || !spend(&mut batch_work, state.visited.len() + 1)
@@ -435,7 +464,7 @@ fn assign_fixed_od_budgeted(
                     }
                     edges_examined += 1;
                     let same_service =
-                        edge.service.is_some() && edge.service == state.current_service;
+                        edge.service.is_some() && edge.service.as_deref() == state.current_service;
                     // At a closed pattern's terminal, the next departure is a new boarding,
                     // not a free same-train continuation across the timetable boundary.
                     let terminal_reboard = same_service
@@ -453,7 +482,7 @@ fn assign_fixed_od_budgeted(
                     } else if !state.can_alight || (edge.service.is_some() && !edge.board_allowed) {
                         continue;
                     }
-                    if state.visited.contains(&edge.to) {
+                    if state.visited.contains(&edge.to.as_str()) {
                         continue;
                     }
                     // Check before allocating any clone. An eligible unseen
@@ -466,9 +495,9 @@ fn assign_fixed_od_budgeted(
                         break 'search;
                     }
                     let mut next = state.clone();
-                    next.station = edge.to.clone();
-                    next.visited.push(edge.to.clone());
-                    if let Some(service) = &edge.service {
+                    next.station = edge.to.as_str();
+                    next.visited.push(edge.to.as_str());
+                    if let Some(service) = edge.service.as_deref() {
                         let ride = edge.seconds + if continuation { edge.through } else { 0.0 };
                         next.cost += ride * weights.ride;
                         next.time.ride_seconds += ride;
@@ -479,23 +508,22 @@ fn assign_fixed_od_budgeted(
                                 next.cost += weights.transfer_penalty_seconds;
                                 next.time.transfers += 1;
                             }
-                            next.services.push(service.clone());
+                            next.services.push(service);
                         }
                     } else {
                         next.cost += edge.seconds * weights.walk;
                         next.time.walk_seconds += edge.seconds;
                     }
-                    next.current_service = edge.service.clone();
+                    next.current_service = edge.service.as_deref();
                     next.next_sequence = edge.sequence + 1;
                     next.can_alight = edge.alight_allowed;
-                    if let Some(id) = &edge.leg_id {
-                        next.leg_ids.push(id.clone());
-                        next.steps.push(PassengerStep::Rail { leg_id: id.clone() });
-                    }
-                    if edge.leg_id.is_none() {
-                        next.steps.push(PassengerStep::Walk {
-                            from: state.station.clone(),
-                            to: edge.to.clone(),
+                    if let Some(id) = edge.leg_id.as_deref() {
+                        next.leg_ids.push(id);
+                        next.steps.push(SearchStep::Rail { leg_id: id });
+                    } else {
+                        next.steps.push(SearchStep::Walk {
+                            from: state.station,
+                            to: edge.to.as_str(),
                         });
                     }
                     if !next.cost.is_finite()
@@ -519,25 +547,15 @@ fn assign_fixed_od_budgeted(
             results.push(result);
             continue;
         }
-        let best = result
-            .rail
-            .iter()
-            .map(|p| p.generalized_seconds)
-            .chain(od.alternative_seconds)
-            .min_by(f64::total_cmp);
-        if let Some(best) = best {
-            let score = |cost: f64| (-(cost - best) / weights.choice_scale_seconds).exp();
-            let other = od.alternative_seconds.map(score).unwrap_or(0.0);
-            let total = result
-                .rail
-                .iter()
-                .map(|p| score(p.generalized_seconds))
-                .sum::<f64>()
-                + other;
+        if let Some(scores) = ChoiceScores::new(
+            result.rail.iter().map(|p| p.generalized_seconds),
+            od.alternative_seconds,
+            weights.choice_scale_seconds,
+        ) {
             for path in &mut result.rail {
-                path.trips = trips * (score(path.generalized_seconds) / total);
+                path.trips = trips * scores.share(path.generalized_seconds);
             }
-            result.alternative_trips = trips * (other / total);
+            result.alternative_trips = trips * scores.alternative_share();
         } else if result.search_complete {
             result.unserved_trips = trips;
         } else {
@@ -546,6 +564,41 @@ fn assign_fixed_od_budgeted(
         results.push(result);
     }
     Ok(results)
+}
+
+/// Stable normalized choice scores with an exact best-score reference. Reused
+/// unchanged for scheduled and explicitly observed choices.
+struct ChoiceScores {
+    best: f64,
+    scale: f64,
+    other: f64,
+    total: f64,
+}
+
+impl ChoiceScores {
+    fn new(
+        rail: impl Iterator<Item = f64> + Clone,
+        alternative: Option<f64>,
+        scale: f64,
+    ) -> Option<Self> {
+        let best = rail.clone().chain(alternative).min_by(f64::total_cmp)?;
+        let score = |cost: f64| (-(cost - best) / scale).exp();
+        let other = alternative.map(score).unwrap_or(0.0);
+        Some(Self {
+            best,
+            scale,
+            other,
+            total: rail.map(score).sum::<f64>() + other,
+        })
+    }
+
+    fn share(&self, cost: f64) -> f64 {
+        (-(cost - self.best) / self.scale).exp() / self.total
+    }
+
+    fn alternative_share(&self) -> f64 {
+        self.other / self.total
+    }
 }
 
 fn checked_cost(value: f64) -> Result<(), String> {
@@ -722,8 +775,26 @@ mod tests {
             100,
         )
         .unwrap();
-        assert_eq!(r[0].rail[0].services.len(), 2);
-        assert_eq!(r[0].rail[0].generalized_seconds, 1620.0);
+        let path = &r[0].rail[0];
+        assert_eq!(path.stations, ["1", "2", "4", "3"]);
+        assert_eq!(path.services, ["1", "2"]);
+        assert_eq!(path.leg_ids, ["1:1:2", "2:4:3"]);
+        assert_eq!(
+            path.steps,
+            [
+                PassengerStep::Rail {
+                    leg_id: "1:1:2".into()
+                },
+                PassengerStep::Walk {
+                    from: "2".into(),
+                    to: "4".into()
+                },
+                PassengerStep::Rail {
+                    leg_id: "2:4:3".into()
+                },
+            ]
+        );
+        assert_eq!(path.generalized_seconds, 1620.0);
         assert_eq!(
             r[0].rail[0].time,
             PathTimeBreakdown {
@@ -887,7 +958,9 @@ mod tests {
         let r = assign_fixed_od(&[od()], &legs, &[], &ChoiceWeights::default(), 2).unwrap();
         assert!(!r[0].search_complete);
         assert!(r[0].rail.is_empty());
-        assert!(!r[0].partial_candidates.is_empty());
+        assert_eq!(r[0].partial_candidates.len(), 1);
+        assert_eq!(r[0].partial_candidates[0].stations, ["1", "3"]);
+        assert_eq!(r[0].partial_candidates[0].leg_ids, ["1:1:3"]);
         assert!(r[0].partial_candidates.iter().all(|p| p.trips == 0.0));
         assert_eq!(r[0].alternative_trips, 0.0);
         assert_eq!(r[0].unresolved_trips, 100.0);

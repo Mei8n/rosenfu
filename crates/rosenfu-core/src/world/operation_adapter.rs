@@ -95,7 +95,7 @@ fn lane_join_resource(
     )
 }
 
-fn crossing(a: &Alignment, b: &Alignment) -> Option<(f64, f64)> {
+pub(super) fn crossing(a: &Alignment, b: &Alignment) -> Option<(f64, f64)> {
     let [p, q] = [a.points[0], a.points[1]];
     let [r, s] = [b.points[0], b.points[1]];
     let u = (q.longitude - p.longitude, q.latitude - p.latitude);
@@ -203,6 +203,9 @@ pub struct BusOperationConfig {
     /// Explicit game assumption, not an observed legal road speed.
     pub assumed_speed_kmh: f64,
     pub dwell_ms: u64,
+    /// Optional explicit pause on the outward terminal arrival. Absence preserves legacy run specs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turnaround_ms: Option<u64>,
 }
 #[derive(Clone)]
 struct Span {
@@ -376,6 +379,9 @@ impl World {
         let occurrences = self
             .service_path_occurrences(config.service_id)
             .map_err(|_| invalid())?;
+        let start = occurrences.first().ok_or_else(invalid)?.station_id;
+        let mixed_tram =
+            service_paths::is_mixed_tram_service(&self.data, path, start).map_err(|_| invalid())?;
         let mut runs = self.compile_rail_direction(
             &path.legs,
             &path.stops,
@@ -392,6 +398,13 @@ impl World {
             .flatten()
         {
             runs.extend(return_legs);
+        }
+        if mixed_tram {
+            // Match the mixed tram ceiling on every traversed section, without
+            // changing the existing track model's lower fixed Tram cap.
+            for section in runs.iter_mut().flat_map(|leg| &mut leg.sections) {
+                section.speed_limit_kmh = section.speed_limit_kmh.min(75.);
+            }
         }
         Ok(ServiceRunSpec {
             service_id: config.service_id.0.to_string(),
@@ -435,6 +448,7 @@ impl World {
         let mut runs = Vec::new();
         let mut pending = Vec::new();
         let mut last_stop = occurrences.first().ok_or_else(invalid)?.station_id;
+        let mut reversed_tram = BTreeSet::new();
         for leg in legs {
             let (from, to, connections) = match &leg.segment {
                 RouteSegment::Alignment { from, to, .. } => (*from, *to, &[][..]),
@@ -563,6 +577,9 @@ impl World {
             for span in spans {
                 let a = alignment(span.id)?;
                 let forward = span.to > span.from;
+                if span.to < span.from && a.track_type == TrackType::Tram {
+                    reversed_tram.insert(a.id);
+                }
                 let mut cursor = span.from;
                 while next_occurrence < leg_occurrences.len() {
                     let occurrence = leg_occurrences[next_occurrence];
@@ -626,6 +643,10 @@ impl World {
         if !pending.is_empty() || runs.is_empty() {
             return Err(invalid());
         }
+        self.data
+            .road_transport
+            .validate_reverse_native_tram(&self.data, &reversed_tram)
+            .map_err(|_| invalid())?;
         Ok(runs)
     }
 
@@ -881,6 +902,31 @@ impl World {
         edited_service: &str,
     ) -> Result<(), OperationError> {
         self.reconfigure_idle_operation_with_policy(configs, bus_configs, edited_service, false)
+    }
+
+    /// Change only the future departure grid of an already configured rail
+    /// service. Occupied track, vehicle, dwell and all other services stay put.
+    pub fn handoff_active_rail_timetable(
+        &mut self,
+        request: OperationServiceConfig,
+    ) -> Result<(), OperationError> {
+        let operation = self.operation.as_mut().ok_or(OperationError::InvalidPath)?;
+        if operation.invalidated || operation.pending_target.is_some() {
+            return Err(OperationError::InvalidClock);
+        }
+        let existing = operation
+            .configs
+            .iter_mut()
+            .find(|old| old.service_id == request.service_id)
+            .ok_or(OperationError::InvalidPath)?;
+        if existing.vehicle != request.vehicle || existing.dwell_ms != request.dwell_ms {
+            return Err(OperationError::ReservationScopeChanged);
+        }
+        operation
+            .runtime
+            .handoff_rail_timetable(&request.service_id.0.to_string(), request.timetable.clone())?;
+        existing.timetable = request.timetable;
+        Ok(())
     }
 
     /// Revalidate an idle service-path edit without selecting a different
@@ -1341,25 +1387,44 @@ impl World {
         else {
             return false;
         };
-        if d.alignments.len() != 4
-            || d.alignment_connections.len() != 4
-            || !d.road_transport.bus_routes.is_empty()
-            || !d.road_transport.tram_sections.is_empty()
+        if !d.road_transport.bus_routes.is_empty() || !d.road_transport.tram_sections.is_empty() {
+            return false;
+        }
+        let main = [w, mid, e];
+        let mut sibling = None;
+        for link in &d.alignment_connections {
+            let (a, b) = (link.a.alignment_id.0, link.b.alignment_id.0);
+            let external = match (main.contains(&a), main.contains(&b)) {
+                (true, false) => b,
+                (false, true) => a,
+                _ => continue,
+            };
+            if sibling.is_some_and(|id| id != external) {
+                return false;
+            }
+            sibling = Some(external);
+        }
+        let Some(sibling) = sibling else {
+            return false;
+        };
+        let component = [w, mid, e, sibling];
+        // Exact connected component, not a subgraph of a busier junction.
+        let incident = |id: AlignmentId| component.contains(&id.0);
+        if d.alignment_connections
+            .iter()
+            .filter(|link| incident(link.a.alignment_id) || incident(link.b.alignment_id))
+            .count()
+            != 4
+            || ![mid, sibling].contains(&express_branch)
         {
             return false;
         }
         let get = |id| d.alignments.iter().find(|a| a.id.0 == id);
-        let (Some(west), Some(middle), Some(east), Some(other)) = (
-            get(w),
-            get(mid),
-            get(e),
-            d.alignments.iter().find(|a| ![w, mid, e].contains(&a.id.0)),
-        ) else {
+        let (Some(west), Some(middle), Some(east), Some(other)) =
+            (get(w), get(mid), get(e), get(sibling))
+        else {
             return false;
         };
-        if ![mid, other.id.0].contains(&express_branch) {
-            return false;
-        }
         let links = [(west, middle), (west, other), (middle, east), (other, east)];
         if links.into_iter().any(|(a, b)| {
             let from = AlignmentEndpointRef {
@@ -1408,6 +1473,51 @@ impl World {
             .chain(&east.points)
             .any(|p| p.latitude != latitude)
         {
+            return false;
+        }
+        // Only the same two proven specs can be active. Even an inactive
+        // alignment near the component is outside this proof: decline on
+        // overlapping padded boxes rather than infer grade separation, or
+        // ignore a through crossing whose endpoints happen to be far away.
+        let mut exclusion = (
+            latitude,
+            latitude,
+            west.points[0].longitude,
+            west.points[0].longitude,
+        );
+        for point in [west, middle, east, other]
+            .into_iter()
+            .flat_map(|a| &a.points)
+        {
+            exclusion.0 = exclusion.0.min(point.latitude);
+            exclusion.1 = exclusion.1.max(point.latitude);
+            exclusion.2 = exclusion.2.min(point.longitude);
+            exclusion.3 = exclusion.3.max(point.longitude);
+        }
+        // At the qualified latitude this is over 200 m even east-west;
+        // well beyond two maximum half-platform widths and turnout leads.
+        const PAD: f64 = 0.004;
+        if d.alignments.iter().filter(|a| !incident(a.id)).any(|a| {
+            if a.points
+                .windows(2)
+                .any(|p| (p[0].longitude - p[1].longitude).abs() > 180.)
+            {
+                return true;
+            }
+            let p = &a.points[0];
+            let (mut south, mut north, mut west, mut east) =
+                (p.latitude, p.latitude, p.longitude, p.longitude);
+            for q in &a.points[1..] {
+                south = south.min(q.latitude);
+                north = north.max(q.latitude);
+                west = west.min(q.longitude);
+                east = east.max(q.longitude);
+            }
+            north >= exclusion.0 - PAD
+                && south <= exclusion.1 + PAD
+                && east >= exclusion.2 - PAD
+                && west <= exclusion.3 + PAD
+        }) {
             return false;
         }
         let straight = |a: &Alignment| a.points.iter().all(|p| p.latitude == latitude);
@@ -1518,8 +1628,15 @@ impl World {
         configs: &[OperationServiceConfig],
         specs: &[ServiceRunSpec],
     ) -> bool {
+        // A single, straight block is an even narrower case of format 6:
+        // while parked it owns its whole directional lane, and the outgoing
+        // leg requests that same lane only. It cannot wait on a different
+        // holder and a same-lane train must not enter during the dwell.
+        let one_block = matches!(self.data.alignments.as_slice(),
+            [line] if line.section_count() == 1 && line.points.len() == 2)
+            && self.straight_rail_geometry(configs, false, 2);
         Self::inline_handoff_specs(configs, specs)
-            && self.straight_rail_geometry(configs, true, 2)
+            && (one_block || self.straight_rail_geometry(configs, true, 2))
             && specs.iter().all(|spec| {
                 spec.legs.iter().all(|leg| {
                     [
@@ -1889,16 +2006,39 @@ impl World {
         {
             return Err(OperationError::InvalidVehicle);
         }
+        if config.turnaround_ms.is_some_and(|ms| ms > 3_600_000) {
+            return Err(OperationError::InvalidClock);
+        }
         let roads = &self.data.road_transport;
-        let legs = roads
-            .bus_legs(&self.data, &config.route_id)
-            .map_err(|_| OperationError::InvalidPath)?;
+        let (legs, terminal_arrival) = if let Some(binding) = self
+            .data
+            .ofm_gameplay_bus_routes
+            .get(&config.route_id)
+            .filter(|b| b.pattern == Some(crate::ofm_evidence::BusPattern::OpenRoundTrip))
+        {
+            self.data
+                .gameplay_bus_roundtrip_legs(&config.route_id, binding)
+                .map(|(legs, terminal)| (legs, Some(terminal)))
+        } else {
+            if config.turnaround_ms.is_some() {
+                return Err(OperationError::InvalidPath);
+            }
+            roads
+                .bus_legs(&self.data, &config.route_id)
+                .map(|legs| (legs, None))
+        }
+        .map_err(|_| OperationError::InvalidPath)?;
         let runs = legs
             .into_iter()
-            .map(|leg| RunLeg {
+            .enumerate()
+            .map(|(i, leg)| RunLeg {
                 from: format!("bus:{}", leg.from_stop_id),
                 to: format!("bus:{}", leg.to_stop_id),
-                dwell_ms: config.dwell_ms,
+                dwell_ms: if Some(i) == terminal_arrival {
+                    config.turnaround_ms.unwrap_or(config.dwell_ms)
+                } else {
+                    config.dwell_ms
+                },
                 sections: vec![Section {
                     length_m: leg.length_m,
                     speed_limit_kmh: config.assumed_speed_kmh,
@@ -2137,7 +2277,7 @@ mod tests {
             .advance_to(0, 100)
             .unwrap();
         let mut edited = legacy.clone();
-        edited.data.companies[0].name = "renamed".into();
+        edited.data_mut().companies[0].name = "renamed".into();
         edited.retain_operation_with_crossing_limit(&legacy, 0);
         assert_eq!(edited.operation_save(), legacy.operation_save());
         assert!(!edited.operation().unwrap().invalidated);
@@ -2148,7 +2288,7 @@ mod tests {
         // Fault injection: a real previously successful unchanged case cannot
         // exceed the same fixed budget without a relevant geometry change.
         let mut locked = world.clone();
-        locked.data.companies[0].name = "renamed".into();
+        locked.data_mut().companies[0].name = "renamed".into();
         locked.retain_operation_with_crossing_limit(&world, 0);
         assert!(locked.operation().unwrap().invalidated);
         assert!(locked.operation().unwrap().runtime.paused());
@@ -2320,7 +2460,7 @@ mod tests {
         let (mut w, c) = fixture();
         let id = c.service_id;
         let path = w
-            .data
+            .data_mut()
             .service_paths
             .iter_mut()
             .find(|p| p.service_id == id)

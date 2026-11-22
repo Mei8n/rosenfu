@@ -1,5 +1,6 @@
 //! Stable stop references for explicit, independently owned service paths.
 use super::*;
+use std::{cell::OnceCell, collections::BTreeMap};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceLeg {
@@ -70,6 +71,87 @@ fn resolve(
     }
     Ok(occurrences)
 }
+/// Ephemeral index for one validation pass. The common no-tram world does
+/// not scan station placements or classify individual service paths.
+struct TramServiceIndex<'a> {
+    data: &'a WorldDraft,
+    alignments: BTreeSet<AlignmentId>,
+    platforms: OnceCell<BTreeMap<StationId, AlignmentId>>,
+}
+impl<'a> TramServiceIndex<'a> {
+    fn new(data: &'a WorldDraft) -> Self {
+        let alignments = data
+            .alignments
+            .iter()
+            .filter(|a| a.track_type == TrackType::Tram)
+            .map(|a| a.id)
+            .collect::<BTreeSet<_>>();
+        Self {
+            data,
+            alignments,
+            platforms: OnceCell::new(),
+        }
+    }
+
+    /// The caller has already resolved the complete path and verified every
+    /// selected reference. Consult the physical platform, not its station group.
+    fn classify(&self, path: &ServicePath, start: StationId) -> Result<bool, WorldError> {
+        if self.alignments.is_empty() {
+            return Ok(false);
+        }
+        let mut tram_path = BTreeSet::new();
+        let mut mixed = false;
+        let mut see = |id| {
+            if self.alignments.contains(&id) {
+                tram_path.insert(id);
+            } else {
+                mixed = true;
+            }
+        };
+        for leg in &path.legs {
+            match &leg.segment {
+                RouteSegment::Alignment { alignment_id, .. } => see(*alignment_id),
+                RouteSegment::ConnectedAlignments { connections, .. } => {
+                    for link in connections {
+                        see(link.a.alignment_id);
+                        see(link.b.alignment_id);
+                    }
+                }
+            }
+        }
+        if tram_path.is_empty() {
+            return Ok(false);
+        }
+        let platforms = self.platforms.get_or_init(|| {
+            self.data
+                .station_placements
+                .iter()
+                .filter(|p| self.alignments.contains(&p.alignment_id))
+                .map(|p| (p.station_id, p.alignment_id))
+                .collect()
+        });
+        if !path.stops.iter().any(|stop| {
+            let id = match stop {
+                StationOccurrenceRef::Start => start,
+                StationOccurrenceRef::OnLeg { station_id, .. } => *station_id,
+            };
+            platforms
+                .get(&id)
+                .is_some_and(|alignment| tram_path.contains(alignment))
+        }) {
+            return Err(WorldError::TramTrackRequiresStop);
+        }
+        Ok(mixed)
+    }
+}
+
+pub(super) fn is_mixed_tram_service(
+    data: &WorldDraft,
+    path: &ServicePath,
+    start: StationId,
+) -> Result<bool, WorldError> {
+    TramServiceIndex::new(data).classify(path, start)
+}
 impl WorldDraft {
     /// Only for the endpoint-extension command, which preserves old geometry and
     /// coordinates by construction. No service definitions or occurrences may change.
@@ -91,6 +173,10 @@ impl WorldDraft {
         Ok(())
     }
     pub(super) fn validate_service_paths(&self) -> Result<(), WorldError> {
+        if self.service_paths.is_empty() {
+            return Ok(());
+        }
+        let tram = TramServiceIndex::new(self);
         let mut ids = BTreeSet::new();
         for path in &self.service_paths {
             let service = self
@@ -119,6 +205,7 @@ impl WorldDraft {
                     .ok_or(WorldError::InvalidServicePath)?
                     + 1;
             }
+            tram.classify(path, service.start)?;
         }
         Ok(())
     }
@@ -274,7 +361,7 @@ impl World {
         if name.is_empty() || name.chars().count() > 80 {
             return Err(WorldError::EmptyName("service (1–80 characters)"));
         }
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         let service = candidate
             .services
             .iter_mut()
@@ -288,7 +375,7 @@ impl World {
         service.name = name.to_owned();
         path.stops = stops;
         candidate.validate()?;
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
     /// Preview a replacement with fresh keys. Retired leg identities are never reused.
@@ -361,7 +448,7 @@ impl World {
             .next_leg_key
             .checked_add(preview.legs.len() as u64)
             .ok_or(WorldError::InvalidServicePath)?;
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         let service = candidate
             .services
             .iter_mut()
@@ -381,7 +468,7 @@ impl World {
             stops,
         };
         candidate.validate()?;
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
     pub fn service_path_occurrences(

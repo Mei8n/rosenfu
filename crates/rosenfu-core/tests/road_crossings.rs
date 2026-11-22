@@ -613,3 +613,55 @@ fn ofm_revision_is_provider_wide_and_failed_add_keeps_saved_facts() {
     other.revision = "different".into();
     world.add_road_snapshot(other).unwrap(); // Existing non-OFM identity rules unchanged.
 }
+
+#[test]
+fn distant_snapshot_scope_cannot_create_crossing_ownership_or_certify_a_gap() {
+    let (mut w, rail) = world();
+    let mut west = snapshot();
+    west.road_coverage[0].east = 139.;
+    west.roads[0].id = "split-west".into();
+    west.roads[0].points = vec![point(0., -0.01), point(0., 0.)];
+    let mut east = snapshot();
+    east.road_coverage[0].west = 139.;
+    east.coverage_verified = false;
+    east.roads[0].id = "split-east".into();
+    east.roads[0].points = vec![point(0., 0.), point(0., 0.01)];
+    w.add_road_snapshot(west).unwrap();
+    w.add_road_snapshot(east).unwrap();
+    let local = w.road_assessment(rail).unwrap();
+    assert!(!local.roads_ready);
+    assert!(!local.unknown_road_height);
+    assert_eq!(local.crossings.len(), 1);
+    assert_eq!(local.crossings[0].road_id, "split-west");
+
+    // The remote raw way extends into the rail, but contributes nothing unless
+    // the exact crossing point is supported by that source cell's own bounds.
+    let mut distant = snapshot();
+    distant.road_coverage = vec![CoverageBounds {
+        west: 130.0,
+        east: 131.0,
+        south: 31.0,
+        north: 32.0,
+    }];
+    distant.roads[0].id = "beyond-scope".into();
+    distant.roads[0].points.insert(
+        0,
+        GeoPoint {
+            longitude: 130.5,
+            latitude: 31.5,
+        },
+    );
+    distant.roads[0].layer = Some("?".into());
+    w.add_road_snapshot(distant).unwrap();
+
+    let mut empty = snapshot();
+    empty.road_coverage.clear();
+    empty.roads[0].id = "absent-scope".into();
+    w.add_road_snapshot(empty).unwrap();
+
+    assert_eq!(w.road_assessment(rail).unwrap(), local);
+    let saved = serde_json::to_vec(w.snapshot()).unwrap();
+    let reopened = World::new(serde_json::from_slice(&saved).unwrap()).unwrap();
+    assert_eq!(reopened.road_assessment(rail).unwrap(), local);
+    assert_eq!(reopened.snapshot().road_snapshots.len(), 4);
+}

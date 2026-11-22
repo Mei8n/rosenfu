@@ -577,6 +577,11 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .draft-path.track-explicit-selection { stroke:#c17c0b; }
 .workbench .draft-path.invalid-candidate { stroke:#c43d45; stroke-dasharray:4 3; }
 
+/* Only the active tram road-follow tool uses this guide palette. */
+.reference-graph-road.tram-road-guide-overlay { stroke:#298746; }
+.workbench .draft-path.tram-road-guide-preview:not(.invalid-candidate) { stroke:#1a7c43; }
+.track-focus-marker.tram-road-guide-marker[data-allowed="true"] { fill:#1a7c43; }
+
 /* Keep the placing panel's inline size independent of the open disclosure.
    max-content let the speed row resize/recenter the entire toolbar. */
 .workbench .track-construction-toolbar {

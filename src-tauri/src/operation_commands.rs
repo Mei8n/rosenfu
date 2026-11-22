@@ -1,4 +1,6 @@
-use crate::session::{FixedOdRoadTransfer, OperationView, WorldEditor};
+use crate::session::{
+    FixedOdRoadTransfer, ObservedFixedOdInput, OperationTickView, OperationView, WorldEditor,
+};
 use rosenfu_core::{
     operation::{Timetable, Vehicle},
     world::ServiceId,
@@ -11,6 +13,17 @@ pub fn operation_snapshot(editor: State<'_, Mutex<WorldEditor>>) -> Result<Opera
         .lock()
         .map_err(|_| "world state unavailable")?
         .operation_snapshot())
+}
+#[tauri::command]
+pub fn preview_crossing_planning(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_configuration_token: String,
+    start_ms: String,
+) -> Result<crate::session::CrossingPlanningView, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_crossing_planning(&expected_configuration_token, &start_ms)
 }
 #[tauri::command]
 pub fn configure_operation_service(
@@ -33,6 +46,18 @@ pub fn configure_operation_service(
         )
 }
 #[tauri::command]
+pub fn preview_nominal_trainsets(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    configuration_token: String,
+    request: rosenfu_core::operation::service_planning::FleetPlanningRequest,
+) -> Result<rosenfu_core::operation::service_planning::NominalFleetPlanning, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_nominal_trainsets(service_id, &configuration_token, request)
+}
+#[tauri::command]
 pub fn set_operation_clock(
     editor: State<'_, Mutex<WorldEditor>>,
     paused: bool,
@@ -44,11 +69,14 @@ pub fn set_operation_clock(
         .set_operation_clock(paused, speed)
 }
 #[tauri::command]
-pub fn advance_operation(editor: State<'_, Mutex<WorldEditor>>) -> Result<OperationView, String> {
+pub fn advance_operation(
+    editor: State<'_, Mutex<WorldEditor>>,
+    known_configuration_token: Option<String>,
+) -> Result<OperationTickView, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .advance_operation()
+        .advance_operation_with_configuration(known_configuration_token.as_deref())
 }
 #[tauri::command]
 pub fn reset_operation(editor: State<'_, Mutex<WorldEditor>>) -> Result<OperationView, String> {
@@ -93,6 +121,22 @@ pub fn preview_rail_journey_replay(
 }
 
 #[tauri::command]
+pub fn preview_observed_fixed_od(
+    editor: State<'_, Mutex<WorldEditor>>,
+    query: ObservedFixedOdInput,
+) -> Result<rosenfu_core::demand::ObservedFixedOd, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_observed_fixed_od(
+            query.origin_station_id,
+            query.destination_station_id,
+            query.trips,
+            query.alternative_seconds,
+        )
+}
+
+#[tauri::command]
 pub fn preview_fixed_od(
     editor: State<'_, Mutex<WorldEditor>>,
     origin_station_id: String,
@@ -114,6 +158,7 @@ pub fn preview_fixed_od(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn configure_bus_operation(
     editor: State<'_, Mutex<WorldEditor>>,
     route_id: String,
@@ -121,6 +166,7 @@ pub fn configure_bus_operation(
     vehicle: Vehicle,
     assumed_speed_kmh: f64,
     dwell_ms: u64,
+    turnaround_ms: Option<u64>,
     expected_operation_token: String,
 ) -> Result<OperationView, String> {
     editor
@@ -132,6 +178,7 @@ pub fn configure_bus_operation(
             vehicle,
             assumed_speed_kmh,
             dwell_ms,
+            turnaround_ms,
             &expected_operation_token,
         )
 }

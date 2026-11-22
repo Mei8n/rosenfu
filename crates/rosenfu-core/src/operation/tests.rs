@@ -349,3 +349,351 @@ fn terminal_hold_keeps_same_train_and_blocks_opposing_admission_until_return_cle
     let mut replay = OperationRuntime::restore_with_terminal_hold(before_advance).unwrap();
     assert_eq!(continuous, replay.advance_to(200_000, 100).unwrap());
 }
+
+#[test]
+fn release_and_departure_time_ties_respect_existing_waiting_order_after_resume() {
+    let mut later = service("0", "shared");
+    later.timetable.first_departure_ms = 21_000;
+    later.timetable.last_departure_ms = 21_000;
+    let mut runtime =
+        OperationRuntime::new(vec![later, service("1", "shared"), service("2", "shared")]).unwrap();
+
+    let before_release = runtime.advance_to(21_000, 2).unwrap();
+    assert!(!before_release.reached_target);
+    assert_eq!(before_release.now_ms, 20_000);
+    assert_eq!(before_release.arrivals[0].train.service_id, "1");
+
+    let mut reopened = OperationRuntime::restore(runtime.save()).unwrap();
+    let resumed = reopened.advance_to(21_000, 1).unwrap();
+    assert!(resumed.reached_target);
+    assert!(resumed.arrivals.is_empty());
+    let order = reopened
+        .trains()
+        .map(|train| (&*train.key.service_id, train.state.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        vec![
+            ("0", TrainState::Waiting { ready_ms: 21_000 }),
+            (
+                "2",
+                TrainState::Moving {
+                    entered_ms: 21_000,
+                    arrival_ms: 41_000,
+                    release_ms: 42_000,
+                },
+            ),
+        ]
+    );
+    assert_eq!(
+        reopened.advance_to(u64::MAX, 0),
+        Err(OperationError::Overflow)
+    );
+    assert_eq!(reopened.now_ms(), 21_000);
+}
+
+fn observed_scope_service(
+    id: &str,
+    road: bool,
+    resource: &str,
+    first: u64,
+    last: u64,
+) -> ServiceRunSpec {
+    let (from, to) = if road {
+        ("bus:a", "bus:b")
+    } else {
+        ("11", "12")
+    };
+    ServiceRunSpec {
+        service_id: id.into(),
+        vehicle: Vehicle {
+            max_speed_kmh: 36.,
+            acceleration_mps2: 1.,
+            braking_mps2: 1.,
+            length_m: 10.,
+        },
+        timetable: Timetable {
+            first_departure_ms: first,
+            last_departure_ms: last,
+            headway_ms: 20_000,
+        },
+        legs: vec![RunLeg {
+            from: from.into(),
+            to: to.into(),
+            sections: vec![Section {
+                length_m: 100.,
+                speed_limit_kmh: 36.,
+                resources: vec![resource.into()],
+            }],
+            dwell_ms: 0,
+        }],
+    }
+}
+
+#[test]
+fn rail_cohort_ignores_proven_independent_bus_births_without_changing_the_live_clock_or_state() {
+    let rail = observed_scope_service("1", false, "rail:1:section:0:lane:0", 0, 0);
+    let bus = observed_scope_service(
+        "bus:independent",
+        true,
+        "road:edge:independent",
+        0,
+        1_800_000,
+    );
+    let mixed = OperationRuntime::new(vec![rail.clone(), bus]).unwrap();
+    let untouched = mixed.clone();
+    assert_eq!(
+        mixed.preview_passenger_replay(1_800_000, 256),
+        Err(PassengerReplayError::OutsideBudget)
+    );
+    let expected = OperationRuntime::new(vec![rail])
+        .unwrap()
+        .preview_passenger_replay(1_800_000, 256)
+        .unwrap();
+    let observed = mixed.preview_rail_cohort_replay(1_800_000, 256).unwrap();
+    assert_eq!(observed, expected);
+    assert_eq!(
+        observed.earliest_rail_itinerary("11", "12").arrival_ms,
+        Some(20_000)
+    );
+    assert_eq!(mixed, untouched);
+}
+
+#[test]
+fn rail_cohort_omits_active_independent_road_leases_and_matches_unfiltered_rail_observations() {
+    let rail = observed_scope_service("1", false, "rail:1:section:0:lane:0", 0, 0);
+    let bus = observed_scope_service("bus:independent", true, "road:edge:independent", 0, 0);
+    let mut mixed = OperationRuntime::new(vec![rail, bus]).unwrap();
+    mixed.advance_to(5_000, 256).unwrap();
+    assert!(mixed.occupied.contains_key("road:edge:independent"));
+    assert!(mixed.occupied.contains_key("rail:1:section:0:lane:0"));
+    let untouched = mixed.clone();
+    let mut expected = mixed.preview_passenger_replay(1_800_000, 256).unwrap();
+    expected
+        .completed_legs
+        .retain(|leg| leg.train.service_id == "1");
+    assert_eq!(
+        mixed.preview_rail_cohort_replay(1_800_000, 256).unwrap(),
+        expected
+    );
+    assert_eq!(mixed, untouched);
+}
+
+#[test]
+fn rail_cohort_with_shared_or_unproven_resources_keeps_real_delay_and_the_full_budget_result() {
+    let resource = "rail:crossing:1:2";
+    let rail = observed_scope_service("1", false, resource, 1_000, 1_000);
+    let bus = observed_scope_service("bus:shared", true, resource, 0, 0);
+    let mixed = OperationRuntime::new(vec![rail.clone(), bus]).unwrap();
+    let full = mixed.preview_passenger_replay(1_800_000, 256).unwrap();
+    let result = mixed.preview_rail_cohort_replay(1_800_000, 256).unwrap();
+    assert_eq!(result, full);
+    assert!(result
+        .completed_legs
+        .iter()
+        .any(|leg| leg.train.service_id == "1" && leg.cumulative_reservation_wait_ms > 0));
+    let dense = observed_scope_service("bus:shared", true, resource, 0, 1_800_000);
+    let mixed = OperationRuntime::new(vec![rail.clone(), dense]).unwrap();
+    assert_eq!(
+        mixed.preview_rail_cohort_replay(1_800_000, 256),
+        Err(PassengerReplayError::OutsideBudget)
+    );
+    // Unknown stop namespace also refuses the projection even if every
+    // observed resource name is otherwise independent.
+    let mut unknown =
+        observed_scope_service("bus:noncanonical", true, "road:edge:separate", 0, 1_800_000);
+    unknown.legs[0].to = "12".into();
+    let mixed = OperationRuntime::new(vec![rail, unknown]).unwrap();
+    assert_eq!(
+        mixed.preview_rail_cohort_replay(1_800_000, 256),
+        Err(PassengerReplayError::OutsideBudget)
+    );
+}
+
+#[test]
+fn rail_cohort_keeps_unexplained_eligible_waiters_on_the_full_event_timeline() {
+    let rail = observed_scope_service("1", false, "rail:1:section:0:lane:0", 0, 0);
+    let bus = observed_scope_service(
+        "bus:independent",
+        true,
+        "road:edge:independent",
+        5_000,
+        5_000,
+    );
+    let mut mixed = OperationRuntime::new(vec![rail, bus]).unwrap();
+    let key = TrainKey {
+        service_id: "1".into(),
+        scheduled_ms: 0,
+    };
+    mixed.trains.insert(
+        key.clone(),
+        Train {
+            key,
+            leg: 0,
+            delay_ms: 0,
+            state: TrainState::Waiting { ready_ms: 0 },
+        },
+    );
+    mixed.services.get_mut("1").unwrap().next_departure = None;
+    assert!(!mixed.can_omit_road_replay());
+    let full = mixed.preview_passenger_replay(1_800_000, 256).unwrap();
+    assert_eq!(
+        mixed.preview_rail_cohort_replay(1_800_000, 256).unwrap(),
+        full
+    );
+    assert_eq!(
+        full.earliest_rail_itinerary("11", "12").arrival_ms,
+        Some(25_000)
+    );
+}
+
+#[test]
+fn current_rail_wait_reports_actual_join_lane_and_unknown_owners() {
+    for (resource, expected) in [
+        ("rail:join:1:End", Some(RailWaitReason::Junction)),
+        ("rail:lane-join:1:1:0:2:0:0", Some(RailWaitReason::Junction)),
+        ("rail:1:point:1", Some(RailWaitReason::Junction)),
+        ("rail:1:section:0:lane:0", Some(RailWaitReason::Track)),
+        ("future_reservation", None),
+    ] {
+        let first = observed_scope_service("1", false, resource, 0, 0);
+        let second = observed_scope_service("2", false, resource, 1_000, 1_000);
+        let mut runtime = OperationRuntime::new(vec![first, second]).unwrap();
+        let key = TrainKey {
+            service_id: "2".into(),
+            scheduled_ms: 1_000,
+        };
+        runtime.advance_to(999, 10).unwrap();
+        assert_eq!(runtime.rail_wait_reason(&key), None);
+        runtime.advance_to(1_000, 10).unwrap();
+        assert!(matches!(
+            runtime.trains[&key].state,
+            TrainState::Waiting { ready_ms: 1_000 }
+        ));
+        assert_eq!(runtime.rail_wait_reason(&key), expected);
+        runtime.advance_to(21_000, 10).unwrap();
+        assert!(matches!(
+            runtime.trains[&key].state,
+            TrainState::Moving {
+                entered_ms: 21_000,
+                ..
+            }
+        ));
+        assert_eq!(runtime.rail_wait_reason(&key), None);
+    }
+}
+
+#[test]
+fn active_rail_schedule_cutover_keeps_occupancy_and_original_births() {
+    let mut a = service("1", "rail:1:section:0:lane:0");
+    a.legs[0].sections[0].length_m = 1_000.;
+    a.timetable.last_departure_ms = 120_000;
+    let mut b = service("2", "rail:2:section:0:lane:0");
+    b.timetable = Timetable {
+        first_departure_ms: 10_000,
+        last_departure_ms: 130_000,
+        headway_ms: 60_000,
+    };
+    let mut current = OperationRuntime::new(vec![a, b]).unwrap();
+    current.advance_to(35_000, 100).unwrap();
+    let old = current.clone();
+    let requested = Timetable {
+        first_departure_ms: 90_000,
+        last_departure_ms: 180_000,
+        headway_ms: 90_000,
+    };
+    current.set_paused(false);
+    assert_eq!(
+        current.handoff_rail_timetable("1", requested.clone()),
+        Err(OperationError::InvalidClock)
+    );
+    current.set_paused(true);
+    current
+        .handoff_rail_timetable("1", requested.clone())
+        .unwrap();
+    assert_eq!(current.trains, old.trains);
+    assert_eq!(current.occupied, old.occupied);
+    assert_eq!(current.services["2"], old.services["2"]);
+    assert_eq!(current.rail_admission, old.rail_admission);
+    assert_eq!(current.now_ms(), 35_000);
+    assert!(current.paused());
+    let mixed = current.save();
+    assert_eq!(
+        mixed.next_departures,
+        vec![
+            ("1".to_owned(), Some(90_000)),
+            ("2".to_owned(), Some(70_000))
+        ]
+    );
+    assert_eq!(mixed.timetable_handoffs.len(), 1);
+    let mut another = requested.clone();
+    another.headway_ms = 120_000;
+    assert_eq!(
+        current.handoff_rail_timetable("1", another),
+        Err(OperationError::TimetableHandoffPending)
+    );
+    assert_eq!(current.save(), mixed);
+    let mut altered = mixed.clone();
+    altered.timetable_handoffs.clear();
+    assert_eq!(
+        OperationRuntime::restore(altered),
+        Err(OperationError::InvalidTimetable)
+    );
+    let mut altered = mixed.clone();
+    altered.timetable_handoffs[0].1.cutover_ms = 36_000;
+    assert_eq!(
+        OperationRuntime::restore(altered),
+        Err(OperationError::InvalidTimetable)
+    );
+    let mut altered = mixed.clone();
+    altered.next_departures[0].1 = Some(60_000);
+    assert_eq!(
+        OperationRuntime::restore(altered),
+        Err(OperationError::InvalidTimetable)
+    );
+
+    let mut reopened = OperationRuntime::restore(
+        serde_json::from_slice(&serde_json::to_vec(&mixed).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reopened, current);
+    let expected = current.advance_to(300_000, 100).unwrap().arrivals;
+    let actual = (40_000..=300_000)
+        .step_by(5_000)
+        .flat_map(|now| reopened.advance_to(now, 100).unwrap().arrivals)
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+    assert_eq!(reopened, current);
+    assert!(current.save().timetable_handoffs.is_empty());
+    let births = |id| {
+        expected
+            .iter()
+            .filter(|e| e.train.service_id == id)
+            .map(|e| e.train.scheduled_ms)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(births("1"), [0, 90_000, 180_000]);
+    assert_eq!(births("2"), [70_000, 130_000]);
+}
+
+#[test]
+fn live_cutover_never_spawns_a_departure_equal_to_its_processed_boundary() {
+    let mut a = service("1", "rail:1:section:0:lane:0");
+    a.legs[0].sections[0].length_m = 1_000.;
+    let mut runtime = OperationRuntime::new(vec![a]).unwrap();
+    runtime.advance_to(35_000, 100).unwrap();
+    runtime
+        .handoff_rail_timetable(
+            "1",
+            Timetable {
+                first_departure_ms: 35_000,
+                last_departure_ms: 95_000,
+                headway_ms: 60_000,
+            },
+        )
+        .unwrap();
+    assert_eq!(runtime.services["1"].next_departure, Some(95_000));
+    assert_eq!(runtime.advance_to(35_000, 100).unwrap().arrivals, []);
+    assert_eq!(runtime.trains().count(), 1);
+    assert_eq!(OperationRuntime::restore(runtime.save()).unwrap(), runtime);
+}

@@ -1,6 +1,6 @@
 //! Validated, renderer-independent construction data. Not a stable save format yet.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! id_type {
     ($($name:ident),+) => { $(
@@ -101,6 +101,9 @@ impl ViewState {
 pub struct WorldDraft {
     #[serde(default)]
     pub road_transport: crate::road_transport::RoadTransport,
+    /// Exact immutable OFM path proof for each independently authored ordinary Bus route.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ofm_gameplay_bus_routes: BTreeMap<String, crate::ofm_evidence::BusPathBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
     /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
@@ -164,6 +167,7 @@ impl Default for WorldDraft {
     fn default() -> Self {
         Self {
             road_transport: crate::road_transport::RoadTransport::default(),
+            ofm_gameplay_bus_routes: BTreeMap::new(),
             road_path_provenance: vec![],
             runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
             road_evidence_descriptors: vec![],
@@ -208,6 +212,8 @@ pub enum WorldError {
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
+    TramTrackRequiresStop,
+    StationAtMixedTrackConnection,
     InvalidServiceAppearance,
     InvalidServiceRouteBinding,
     InvalidProvenance,
@@ -231,6 +237,12 @@ impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if matches!(self, Self::InvalidRoadTransport) {
             return write!(f,"道路交通の参照が不整合です。併用軌道の関連付けを外してから線路を延伸・変更・撤去してください。");
+        }
+        if matches!(self, Self::TramTrackRequiresStop) {
+            return write!(f, "普通列車はトラム専用線を通れません。トラムとして運行するには、通過ではなくトラムのホームを停車駅に指定してください。");
+        }
+        if matches!(self, Self::StationAtMixedTrackConnection) {
+            return write!(f, "トラム専用線と鉄道線の接続点には駅を設置できません。接続点から離れた場所に設置してください。");
         }
         if matches!(self, Self::StationOnGradient) {
             return write!(f,"ホーム全長が平坦な場所に駅を設置してください。勾配やその境界に重なるホームは設置できません。");
@@ -258,7 +270,7 @@ impl std::error::Error for WorldError {}
 /// Only valid snapshots can enter the running world.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct World {
-    data: WorldDraft,
+    data: std::sync::Arc<WorldDraft>,
     operation: Option<WorldOperation>,
     fixed_od_scenario: Option<FixedOdScenario>,
 }
@@ -266,7 +278,7 @@ impl World {
     pub fn new(data: WorldDraft) -> Result<Self, WorldError> {
         data.validate()?;
         Ok(Self {
-            data,
+            data: data.into(),
             operation: None,
             fixed_od_scenario: None,
         })
@@ -299,11 +311,11 @@ impl World {
     }
     fn insert(&mut self, insert: impl FnOnce(&mut WorldDraft, u64)) -> Result<u64, WorldError> {
         let id = self.data.next_id;
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         candidate.next_id = id.checked_add(1).ok_or(WorldError::IdExhausted)?;
         insert(&mut candidate, id);
         candidate.validate()?;
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(id)
     }
     pub fn add_player(&mut self, name: String) -> Result<PlayerId, WorldError> {
@@ -346,6 +358,15 @@ impl World {
     pub fn snapshot(&self) -> &WorldDraft {
         &self.data
     }
+    /// Retain exactly this immutable snapshot without deep-copying map assets.
+    /// Validated replacements publish a new allocation; scoped mutations are
+    /// copy-on-write. Operation clock and scenario state are held separately.
+    pub fn shared_snapshot(&self) -> std::sync::Arc<WorldDraft> {
+        self.data.clone()
+    }
+    fn data_mut(&mut self) -> &mut WorldDraft {
+        std::sync::Arc::make_mut(&mut self.data)
+    }
     /// Atomic candidate replacement: failures leave the live state unchanged.
     pub fn replace(&mut self, mut candidate: WorldDraft) -> Result<(), WorldError> {
         // Explicit alignment removal drops only its derived range records; source
@@ -377,7 +398,7 @@ impl World {
         existing_only!(routes);
         existing_only!(services);
         existing_only!(alignments);
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
 }
@@ -499,7 +520,7 @@ impl WorldDraft {
         // All references and platform footprints are valid by this point. Check
         // derived turnout geometry before any candidate snapshot is committed.
         let geometry_world = World {
-            data: self.clone(),
+            data: self.clone().into(),
             operation: None,
             fixed_od_scenario: None,
         };
@@ -780,4 +801,9 @@ pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskReque
 mod operation_adapter;
 pub use operation_adapter::{
     BusOperationConfig, OperationServiceConfig, WorldOperation, WorldOperationSave,
+};
+
+mod planned_crossing_delay;
+pub use planned_crossing_delay::{
+    PlannedCrossingDelay, PlannedCrossingDelayError, PlannedCrossingDelayPreview,
 };

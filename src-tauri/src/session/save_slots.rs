@@ -104,20 +104,17 @@ impl WorldEditor {
     }
     pub fn load_save_slot(&mut self, root: &Path, id: String) -> Result<WorldDraft, String> {
         let path = rosenfu_storage::save_slot_path(root, &id).map_err(|e| e.to_string())?;
-        let mut candidate = self.clone();
-        candidate.load(&path)?;
-        candidate.active_slot_id = Some(id);
-        *self = candidate;
+        let (world, version, company) = Self::read_saved_world(&path)?;
+        self.install_saved_world(world, company, &path, version);
+        self.active_slot_id = Some(id);
         Ok(self.snapshot())
     }
     pub fn load_slot_autosave(&mut self, root: &Path) -> Result<WorldDraft, String> {
         let id = self.active_slot_id.clone();
         let manual = self.active_save_path(root)?;
         let automatic = self.active_autosave_path(root)?;
-        let mut candidate = self.clone();
-        candidate.load_autosave(&automatic, &manual)?;
-        candidate.active_slot_id = id;
-        *self = candidate;
+        self.restore_saved_autosave(&automatic, &manual)?;
+        self.active_slot_id = id;
         Ok(self.snapshot())
     }
     pub fn save_world_as_slot(

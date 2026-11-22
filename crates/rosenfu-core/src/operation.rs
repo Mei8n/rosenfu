@@ -2,6 +2,7 @@
 //! distances, caps and shared resource IDs; the renderer never owns this clock.
 use serde::{Deserialize, Serialize};
 mod passenger_replay;
+pub mod service_planning;
 pub use passenger_replay::{ReplayItinerary, ReplayItineraryStatus, ReplayRide};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,6 +15,7 @@ pub enum OperationError {
     CrossingBudget,
     CrossingPlatform,
     ReservationScopeChanged,
+    TimetableHandoffPending,
     Overflow,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +51,16 @@ pub struct Timetable {
     pub headway_ms: u64,
 }
 impl Timetable {
+    fn is_valid(&self) -> bool {
+        self.headway_ms != 0 && self.first_departure_ms <= self.last_departure_ms
+    }
+
+    fn contains(&self, departure_ms: u64) -> bool {
+        departure_ms >= self.first_departure_ms
+            && departure_ms <= self.last_departure_ms
+            && (departure_ms - self.first_departure_ms).checked_rem(self.headway_ms) == Some(0)
+    }
+
     // A started runtime has already accounted for every departure up to now.
     fn next_unprocessed_departure(&self, started: bool, now_ms: u64) -> Option<u64> {
         if !started || now_ms < self.first_departure_ms {
@@ -108,6 +120,35 @@ pub struct Train {
     pub delay_ms: u64,
     pub state: TrainState,
 }
+/// A currently contested resource, not a timetable estimate or a track capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RailWaitReason {
+    Crossing,
+    Junction,
+    Track,
+}
+
+impl RailWaitReason {
+    fn of_resource(resource: &str) -> Option<Self> {
+        if resource.starts_with("rail:crossing:") {
+            return Some(Self::Crossing);
+        }
+        if resource.starts_with("rail:join:") || resource.starts_with("rail:lane-join:") {
+            return Some(Self::Junction);
+        }
+        let mut parts = resource.split(':');
+        if matches!(
+            (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+            (Some("rail"), Some(alignment), Some("point"), Some(anchor), None)
+                if alignment.parse::<u64>().is_ok() && anchor.parse::<usize>().is_ok()
+        ) {
+            return Some(Self::Junction);
+        }
+        rail_lane(resource).then_some(Self::Track)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arrival {
     pub train: TrainKey,
@@ -130,6 +171,7 @@ struct CompiledLeg {
 struct CompiledService {
     spec: ServiceRunSpec,
     legs: Vec<CompiledLeg>,
+    journey_ms: u64,
     next_departure: Option<u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,11 +203,20 @@ pub struct OperationRuntime {
     paused: bool,
     speed: u32,
     started: bool,
+    time_margin_ms: u64,
     services: BTreeMap<String, CompiledService>,
     trains: BTreeMap<TrainKey, Train>,
     occupied: BTreeMap<String, TrainKey>,
+    timetable_handoffs: BTreeMap<String, TimetableHandoff>,
     rail_admission: RailAdmissionModel,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TimetableHandoff {
+    cutover_ms: u64,
+    previous: Timetable,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationSave {
@@ -177,6 +228,8 @@ pub struct OperationSave {
     pub services: Vec<ServiceRunSpec>,
     pub trains: Vec<Train>,
     pub next_departures: Vec<(String, Option<u64>)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    timetable_handoffs: Vec<(String, TimetableHandoff)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvanceResult {
@@ -233,6 +286,30 @@ fn millis(s: f64) -> Result<u64, OperationError> {
 /// assume that the maximum speed is reached. Gradients do not change speed.
 pub fn running_time_ms(sections: &[Section], vehicle: &Vehicle) -> Result<u64, OperationError> {
     running_time_profile(sections, vehicle, None)
+}
+
+/// Nominal position time on one physical-speed section. Splitting the speed
+/// envelope at an internal marker does not stop the train at that marker.
+pub(crate) fn uniform_section_passage_ms(
+    section: &Section,
+    vehicle: &Vehicle,
+    fraction: f64,
+) -> Result<u64, OperationError> {
+    if !(fraction > 0.0 && fraction < 1.0) {
+        return Err(OperationError::InvalidPath);
+    }
+    let before = section.length_m * fraction;
+    let pieces = [before, section.length_m - before].map(|length_m| Section {
+        length_m,
+        speed_limit_kmh: section.speed_limit_kmh,
+        resources: Vec::new(),
+    });
+    let mut boundaries = Vec::with_capacity(2);
+    running_time_profile(&pieces, vehicle, Some(&mut boundaries))?;
+    boundaries
+        .first()
+        .copied()
+        .ok_or(OperationError::InvalidPath)
 }
 
 fn running_time_profile(
@@ -530,12 +607,12 @@ impl OperationRuntime {
         rail_admission: RailAdmissionModel,
     ) -> Result<Self, OperationError> {
         let mut services = BTreeMap::new();
+        let mut time_margin_ms = 0;
         for spec in specs {
             let t = &spec.timetable;
             if spec.service_id.trim().is_empty()
                 || services.contains_key(&spec.service_id)
-                || t.headway_ms == 0
-                || t.first_departure_ms > t.last_departure_ms
+                || !t.is_valid()
             {
                 return Err(OperationError::InvalidTimetable);
             }
@@ -616,6 +693,11 @@ impl OperationRuntime {
                     .and_then(|n| n.checked_add(physical_clearance_ms))
                     .and_then(|n| n.checked_add(l.dwell_ms))
                     .ok_or(OperationError::Overflow)?;
+                time_margin_ms = time_margin_ms.max(
+                    duration_ms
+                        .saturating_add(clearance_ms)
+                        .saturating_add(l.dwell_ms),
+                );
                 legs.push(CompiledLeg {
                     duration_ms,
                     clearance_ms,
@@ -673,6 +755,7 @@ impl OperationRuntime {
                 CompiledService {
                     spec,
                     legs,
+                    journey_ms: journey,
                     next_departure,
                 },
             );
@@ -682,9 +765,11 @@ impl OperationRuntime {
             paused: true,
             speed: 1,
             started: false,
+            time_margin_ms,
             services,
             trains: BTreeMap::new(),
             occupied: BTreeMap::new(),
+            timetable_handoffs: BTreeMap::new(),
             rail_admission,
         })
     }
@@ -716,6 +801,29 @@ impl OperationRuntime {
         self.terminal_hold() || self.parked_platform_handoff()
     }
 
+    fn reservation_blocks(&self, resource: &str, key: &TrainKey) -> bool {
+        self.occupied
+            .get(resource)
+            .is_some_and(|owner| !self.own_lease_allows_admission() || owner != key)
+    }
+
+    /// First current rail reservation conflict in deterministic resource order.
+    /// May report no category for an unknown resource. Scheduled dwell, moving
+    /// vehicles and any bus are never reported as rail reservation waits.
+    pub fn rail_wait_reason(&self, key: &TrainKey) -> Option<RailWaitReason> {
+        key.service_id.parse::<u64>().ok()?;
+        let train = self.trains.get(key)?;
+        if !matches!(train.state, TrainState::Waiting { ready_ms } if ready_ms <= self.now_ms) {
+            return None;
+        }
+        let leg = self.services.get(&key.service_id)?.legs.get(train.leg)?;
+        let resource = leg
+            .resources
+            .iter()
+            .find(|key_resource| self.reservation_blocks(key_resource, key))?;
+        RailWaitReason::of_resource(resource)
+    }
+
     /// Transfer only an idle clock to a freshly compiled timetable. Departures
     /// are on the new absolute timetable grid, never replayed through the past.
     pub(crate) fn retain_idle_clock(&mut self, previous: &Self) -> Result<(), OperationError> {
@@ -732,6 +840,69 @@ impl OperationRuntime {
                 .timetable
                 .next_unprocessed_departure(self.started, self.now_ms);
         }
+        Ok(())
+    }
+
+    fn has_live_birth_at_or_before(
+        trains: &BTreeMap<TrainKey, Train>,
+        id: &str,
+        time: u64,
+    ) -> bool {
+        let first = TrainKey {
+            service_id: id.to_owned(),
+            scheduled_ms: 0,
+        };
+        trains
+            .range(first..)
+            .next()
+            .is_some_and(|(key, _)| key.service_id == id && key.scheduled_ms <= time)
+    }
+
+    /// Future dispatch only: all current trains and compiled leases stay in place.
+    /// One previous grid per affected service is sufficient; refuse overlapping
+    /// handoffs rather than accepting a birth not proven by its original grid.
+    pub(crate) fn handoff_rail_timetable(
+        &mut self,
+        id: &str,
+        timetable: Timetable,
+    ) -> Result<(), OperationError> {
+        if !self.paused || !self.started || self.trains.is_empty() {
+            return Err(OperationError::InvalidClock);
+        }
+        if id.parse::<u64>().is_err() {
+            return Err(OperationError::InvalidPath);
+        }
+        let service = self
+            .services
+            .get_mut(id)
+            .ok_or(OperationError::InvalidPath)?;
+        if service.spec.timetable == timetable {
+            return Ok(());
+        }
+        if !timetable.is_valid() {
+            return Err(OperationError::InvalidTimetable);
+        }
+        let next = timetable
+            .next_unprocessed_departure(true, self.now_ms)
+            .ok_or(OperationError::InvalidTimetable)?;
+        timetable
+            .last_departure_ms
+            .checked_add(service.journey_ms)
+            .ok_or(OperationError::Overflow)?;
+        if self.timetable_handoffs.contains_key(id) {
+            return Err(OperationError::TimetableHandoffPending);
+        }
+        if Self::has_live_birth_at_or_before(&self.trains, id, self.now_ms) {
+            self.timetable_handoffs.insert(
+                id.to_owned(),
+                TimetableHandoff {
+                    cutover_ms: self.now_ms,
+                    previous: service.spec.timetable.clone(),
+                },
+            );
+        }
+        service.spec.timetable = timetable;
+        service.next_departure = Some(next);
         Ok(())
     }
 
@@ -777,9 +948,23 @@ impl OperationRuntime {
     pub fn service_spec(&self, id: &str) -> Option<&ServiceRunSpec> {
         self.services.get(id).map(|s| &s.spec)
     }
+    pub(crate) fn unblocked_leg_timing(&self, service_id: &str, leg: usize) -> Option<(u64, u64)> {
+        let service = self.services.get(service_id)?;
+        let compiled = service.legs.get(leg)?;
+        let stationary_ms = compiled
+            .clearance_ms
+            .max(service.spec.legs.get(leg)?.dwell_ms);
+        Some((compiled.duration_ms, stationary_ms))
+    }
+
     pub fn now_ms(&self) -> u64 {
         self.now_ms
     }
+    /// True while a save still needs a prior rail timetable to validate live births.
+    pub fn rail_timetable_handoff_in_progress(&self) -> bool {
+        !self.timetable_handoffs.is_empty()
+    }
+
     pub fn trains(&self) -> impl Iterator<Item = &Train> {
         self.trains.values()
     }
@@ -832,23 +1017,174 @@ impl OperationRuntime {
         until_ms: u64,
         events: usize,
     ) -> Result<PassengerReplay, PassengerReplayError> {
+        self.preview_passenger_replay_in_scope(until_ms, events, false)
+    }
+
+    /// Use the narrower observation budget for a rail-only cohort only if
+    /// every road run and its current leases are independent of every rail
+    /// run. Unknown resources and future mixed modes retain the full replay.
+    pub fn preview_rail_cohort_replay(
+        &self,
+        until_ms: u64,
+        events: usize,
+    ) -> Result<PassengerReplay, PassengerReplayError> {
+        self.preview_passenger_replay_in_scope(until_ms, events, self.can_omit_road_replay())
+    }
+
+    fn can_omit_road_replay(&self) -> bool {
+        // This proof must remain cheap even if the complete replay would
+        // refuse a large world. Current graphs express traffic interactions
+        // exclusively through the compiled locks. A future rail/road conflict
+        // must use a shared resource or explicitly disable this projection.
+        let mut work = 262_144usize;
+        let mut charge = |amount: usize| -> bool {
+            let Some(remaining) = work.checked_sub(amount) else {
+                return false;
+            };
+            work = remaining;
+            true
+        };
+        let road_tag = |value: &str| value.strip_prefix("bus:").is_some_and(|id| !id.is_empty());
+        let lock_in_family = |key: &str, road: bool| {
+            let namespace = if road { "road:edge:" } else { "rail:" };
+            key.strip_prefix(namespace)
+                .is_some_and(|suffix| !suffix.is_empty())
+        };
+        let mut have_bus = false;
+        let mut have_rail = false;
+        // Only attempt this for at most the existing service cap, and
+        // perform no heap allocation while proving the separation.
+        if self.services.len() > 64
+            || self.trains.len() > 64
+            || !self.services.keys().any(|id| road_tag(id))
+        {
+            return false;
+        }
+        for (id, service) in &self.services {
+            let road = road_tag(id);
+            if id != &service.spec.service_id
+                || id.len() > 128
+                || !charge(64 + id.len())
+                || service.legs.len() != service.spec.legs.len()
+                || (!road && id.parse::<u64>().is_err())
+            {
+                return false;
+            }
+            have_bus |= road;
+            have_rail |= !road;
+            let station_in_family = |key: &str| {
+                if road {
+                    road_tag(key)
+                } else {
+                    key.parse::<u64>().is_ok()
+                }
+            };
+            for (spec, leg) in service.spec.legs.iter().zip(&service.legs) {
+                if !charge(
+                    128usize
+                        .saturating_add(spec.from.len())
+                        .saturating_add(spec.to.len()),
+                ) || !station_in_family(&spec.from)
+                    || !station_in_family(&spec.to)
+                    || leg.resources.is_empty()
+                {
+                    return false;
+                }
+                // Crossing, lane, point, platform and terminal ownership all
+                // come from these compiled locks, including retained leases.
+                for key in leg
+                    .resources
+                    .iter()
+                    .chain(leg.early_releases.keys())
+                    .chain(leg.through_lane.iter())
+                {
+                    if !charge(64usize.saturating_add(key.len())) || !lock_in_family(key, road) {
+                        return false;
+                    }
+                }
+            }
+        }
+        for (resource, owner) in &self.occupied {
+            if !charge(64usize.saturating_add(resource.len()))
+                || !self.trains.contains_key(owner)
+                || !self.services.contains_key(&owner.service_id)
+                || !lock_in_family(resource, road_tag(&owner.service_id))
+            {
+                return false;
+            }
+        }
+        for (key, train) in &self.trains {
+            let Some(leg) = self
+                .services
+                .get(&key.service_id)
+                .and_then(|s| s.legs.get(train.leg))
+            else {
+                return false;
+            };
+            if train.key != *key {
+                return false;
+            }
+            if !road_tag(&key.service_id)
+                && matches!(train.state, TrainState::Waiting {ready_ms} if ready_ms <= self.now_ms)
+            {
+                // A previously eligible but unblocked waiter would use the
+                // next event as a wake-up even if that event were unrelated.
+                // Valid live frames normally admit it immediately; otherwise
+                // leave the full timeline in place, rather than guess.
+                let mut blocked = false;
+                for resource in &leg.resources {
+                    if !charge(64usize.saturating_add(resource.len())) {
+                        return false;
+                    }
+                    if self.reservation_blocks(resource, key) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if !blocked {
+                    return false;
+                }
+            }
+        }
+        have_bus && have_rail
+    }
+
+    fn preview_passenger_replay_in_scope(
+        &self,
+        until_ms: u64,
+        events: usize,
+        omit_proven_road: bool,
+    ) -> Result<PassengerReplay, PassengerReplayError> {
+        let keep = |id: &str| !omit_proven_road || !id.starts_with("bus:");
         const MAX_SPAN_MS: u64 = 3_600_000;
         const MAX_EVENTS: usize = 256;
         const MAX_SERVICES: usize = 64;
         const MAX_TRAINS: u64 = 64;
         const MAX_STATIC_WEIGHT: usize = 262_144;
+        let count_services = if omit_proven_road {
+            self.services.keys().filter(|id| keep(id)).count()
+        } else {
+            self.services.len()
+        };
         if until_ms
             .checked_sub(self.now_ms)
             .is_none_or(|span| span > MAX_SPAN_MS)
             || events == 0
             || events > MAX_EVENTS
-            || self.services.len() > MAX_SERVICES
+            || count_services > MAX_SERVICES
         {
             return Err(PassengerReplayError::OutsideBudget);
         }
         // Count scheduled births in the whole requested window, even if
         // some trains would have finished before other trains depart.
-        let mut trains = self.trains.len() as u64;
+        let mut trains = if omit_proven_road {
+            self.trains
+                .keys()
+                .filter(|key| keep(&key.service_id))
+                .count()
+        } else {
+            self.trains.len()
+        } as u64;
         let mut weight = 0usize;
         let mut spend = |units: usize| -> Result<(), PassengerReplayError> {
             weight = weight
@@ -857,7 +1193,11 @@ impl OperationRuntime {
                 .ok_or(PassengerReplayError::OutsideBudget)?;
             Ok(())
         };
-        for service in self.services.values() {
+        for service in self
+            .services
+            .values()
+            .filter(|service| keep(&service.spec.service_id))
+        {
             let t = &service.spec.timetable;
             let end = t.last_departure_ms.min(until_ms);
             if let Some(next) = service.next_departure.filter(|&next| next <= end) {
@@ -882,7 +1222,38 @@ impl OperationRuntime {
                 }
             }
         }
-        let mut shadow = self.clone();
+        let mut shadow = if omit_proven_road {
+            Self {
+                now_ms: self.now_ms,
+                paused: self.paused,
+                speed: self.speed,
+                started: self.started,
+                time_margin_ms: self.time_margin_ms,
+                rail_admission: self.rail_admission,
+                // Replay does not serialize or validate historical births.
+                timetable_handoffs: BTreeMap::new(),
+                services: self
+                    .services
+                    .iter()
+                    .filter(|(id, _)| keep(id))
+                    .map(|(id, service)| (id.clone(), service.clone()))
+                    .collect(),
+                trains: self
+                    .trains
+                    .iter()
+                    .filter(|(key, _)| keep(&key.service_id))
+                    .map(|(key, train)| (key.clone(), train.clone()))
+                    .collect(),
+                occupied: self
+                    .occupied
+                    .iter()
+                    .filter(|(_, owner)| keep(&owner.service_id))
+                    .map(|(resource, owner)| (resource.clone(), owner.clone()))
+                    .collect(),
+            }
+        } else {
+            self.clone()
+        };
         let mut completed_legs = Vec::new();
         let result = shadow
             .advance_to_inner(until_ms, events, Some(&mut completed_legs))
@@ -916,7 +1287,13 @@ impl OperationRuntime {
         target: u64,
         event_budget: usize,
     ) -> Result<AdvanceResult, OperationError> {
-        self.advance_to_inner(target, event_budget, None)
+        let result = self.advance_to_inner(target, event_budget, None)?;
+        if !self.timetable_handoffs.is_empty() {
+            self.timetable_handoffs.retain(|id, handoff| {
+                Self::has_live_birth_at_or_before(&self.trains, id, handoff.cutover_ms)
+            });
+        }
+        Ok(result)
     }
 
     fn advance_to_inner(
@@ -928,24 +1305,18 @@ impl OperationRuntime {
         if target < self.now_ms {
             return Err(OperationError::InvalidClock);
         }
-        let margin = self
-            .services
-            .values()
-            .flat_map(|s| s.legs.iter().zip(&s.spec.legs))
-            .map(|(c, l)| {
-                c.duration_ms
-                    .saturating_add(c.clearance_ms)
-                    .saturating_add(l.dwell_ms)
-            })
-            .max()
-            .unwrap_or(0);
-        if target.checked_add(margin).is_none() {
+        if target.checked_add(self.time_margin_ms).is_none() {
             return Err(OperationError::Overflow);
         }
+        let mut departure = self
+            .services
+            .values()
+            .filter_map(|service| service.next_departure)
+            .min();
         let mut arrivals = Vec::new();
         let mut events = 0;
         loop {
-            let next = self.next_event();
+            let next = self.next_event(departure);
             let Some(at) = next.filter(|at| *at <= target) else {
                 self.started = true;
                 self.now_ms = target;
@@ -1031,24 +1402,33 @@ impl OperationRuntime {
                     }
                 }
             }
-            for (id, s) in &mut self.services {
-                if s.next_departure == Some(at) {
-                    let key = TrainKey {
-                        service_id: id.clone(),
-                        scheduled_ms: at,
-                    };
-                    self.trains.insert(
-                        key.clone(),
-                        Train {
-                            key,
-                            leg: 0,
-                            delay_ms: 0,
-                            state: TrainState::Waiting { ready_ms: at },
-                        },
-                    );
-                    s.next_departure = at
-                        .checked_add(s.spec.timetable.headway_ms)
-                        .filter(|n| *n <= s.spec.timetable.last_departure_ms);
+            // Train events do not change timetable cursors; preserving the
+            // minimum in this advance avoids rescanning every service twice
+            // at arrival, rear-clear, or dwell-only events.
+            if departure == Some(at) {
+                departure = None;
+                for (id, s) in &mut self.services {
+                    if s.next_departure == Some(at) {
+                        let key = TrainKey {
+                            service_id: id.clone(),
+                            scheduled_ms: at,
+                        };
+                        self.trains.insert(
+                            key.clone(),
+                            Train {
+                                key,
+                                leg: 0,
+                                delay_ms: 0,
+                                state: TrainState::Waiting { ready_ms: at },
+                            },
+                        );
+                        s.next_departure = at
+                            .checked_add(s.spec.timetable.headway_ms)
+                            .filter(|n| *n <= s.spec.timetable.last_departure_ms);
+                    }
+                    if let Some(next) = s.next_departure {
+                        departure = Some(departure.map_or(next, |previous| previous.min(next)));
+                    }
                 }
             }
             let mut waiting: Vec<_> = self
@@ -1065,11 +1445,7 @@ impl OperationRuntime {
             for (ready, key) in waiting {
                 let t = &self.trains[&key];
                 let c = &self.services[&key.service_id].legs[t.leg];
-                if c.resources.iter().any(|r| {
-                    self.occupied
-                        .get(r)
-                        .is_some_and(|owner| !self.own_lease_allows_admission() || *owner != key)
-                }) {
+                if c.resources.iter().any(|r| self.reservation_blocks(r, &key)) {
                     continue;
                 }
                 let arrival_ms = at
@@ -1094,12 +1470,7 @@ impl OperationRuntime {
             }
         }
     }
-    fn next_event(&self) -> Option<u64> {
-        let mut next = self
-            .services
-            .values()
-            .filter_map(|s| s.next_departure)
-            .min();
+    fn next_event(&self, mut next: Option<u64>) -> Option<u64> {
         for t in self.trains.values() {
             let at = match t.state {
                 TrainState::Moving {
@@ -1152,6 +1523,11 @@ impl OperationRuntime {
             paused: self.paused,
             speed: self.speed,
             services: self.services.values().map(|s| s.spec.clone()).collect(),
+            timetable_handoffs: self
+                .timetable_handoffs
+                .iter()
+                .map(|(id, handoff)| (id.clone(), handoff.clone()))
+                .collect(),
         }
     }
     pub fn restore(saved: OperationSave) -> Result<Self, OperationError> {
@@ -1242,6 +1618,34 @@ impl OperationRuntime {
             }
             service.next_departure = next;
         }
+        if saved.timetable_handoffs.len() > runtime.services.len() {
+            return Err(OperationError::InvalidTimetable);
+        }
+        for (id, handoff) in saved.timetable_handoffs {
+            let service = runtime
+                .services
+                .get(&id)
+                .ok_or(OperationError::InvalidTimetable)?;
+            if !saved.started
+                || id.parse::<u64>().is_err()
+                || handoff.cutover_ms > saved.now_ms
+                || !handoff.previous.is_valid()
+                || handoff.previous == service.spec.timetable
+                || service
+                    .spec
+                    .timetable
+                    .next_unprocessed_departure(true, handoff.cutover_ms)
+                    .is_none()
+                || handoff
+                    .previous
+                    .last_departure_ms
+                    .checked_add(service.journey_ms)
+                    .is_none()
+                || runtime.timetable_handoffs.insert(id, handoff).is_some()
+            {
+                return Err(OperationError::InvalidTimetable);
+            }
+        }
         for train in saved.trains {
             let service = runtime
                 .services
@@ -1251,12 +1655,12 @@ impl OperationRuntime {
                 .legs
                 .get(train.leg)
                 .ok_or(OperationError::InvalidPath)?;
-            let table = &service.spec.timetable;
-            if train.key.scheduled_ms > saved.now_ms
-                || train.key.scheduled_ms < table.first_departure_ms
-                || train.key.scheduled_ms > table.last_departure_ms
-                || (train.key.scheduled_ms - table.first_departure_ms) % table.headway_ms != 0
-            {
+            let table = runtime
+                .timetable_handoffs
+                .get(&train.key.service_id)
+                .filter(|handoff| train.key.scheduled_ms <= handoff.cutover_ms)
+                .map_or(&service.spec.timetable, |handoff| &handoff.previous);
+            if train.key.scheduled_ms > saved.now_ms || !table.contains(train.key.scheduled_ms) {
                 return Err(OperationError::InvalidTimetable);
             }
             // Inline-terminal services have only their first leg. Their initial
@@ -1376,6 +1780,11 @@ impl OperationRuntime {
                     return Err(OperationError::InvalidClock);
                 }
             }
+        }
+        if runtime.timetable_handoffs.iter().any(|(id, handoff)| {
+            !Self::has_live_birth_at_or_before(&runtime.trains, id, handoff.cutover_ms)
+        }) {
+            return Err(OperationError::InvalidTimetable);
         }
         runtime.paused = saved.paused;
         Ok(runtime)

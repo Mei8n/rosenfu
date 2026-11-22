@@ -187,6 +187,32 @@ impl WorldDraft {
     }
 }
 impl World {
+    /// An ordinary OFM Bus edit owns only its addressed raw tiles and the
+    /// route reconstructed from it. Never permits arbitrary draft replacement.
+    pub fn candidate_with_gameplay_ofm_bus(
+        &self,
+        owner: CompanyId,
+        route_id: String,
+        name: String,
+        path: crate::ofm_evidence::BusPathBinding,
+        cached: Vec<(RawEvidence, TileBinding)>,
+    ) -> Result<Self, crate::road_transport::RoadTransportError> {
+        let mut candidate = self.clone();
+        candidate.data = self
+            .snapshot()
+            .clone()
+            .admit_gameplay_ofm_bus_tiles(&path, cached)?
+            .put_ofm_gameplay_bus(owner, route_id, name, path)?
+            .into();
+        candidate
+            .data
+            .validate()
+            .map_err(|_| crate::road_transport::RoadTransportError::InvalidData)?;
+        Ok(candidate)
+    }
+}
+
+impl World {
     /// Park light plans and raw evidence in one candidate. Supplied preview points
     /// are replaced by regenerated backend points, not promoted to trusted geometry.
     pub fn stage_ofm_construction_plans(
@@ -220,12 +246,12 @@ impl World {
                 p.line = points;
             }
         }
-        let mut draft = self.data.clone();
+        let mut draft = self.snapshot().clone();
         draft.road_evidence_descriptors = store.descriptors();
         draft.runtime_road_evidence = store;
         draft.construction_plans = Some(plans);
         draft.validate()?;
-        self.data = draft;
+        self.data = draft.into();
         Ok(())
     }
     pub fn build_alignment_from_road_path(
@@ -240,7 +266,7 @@ impl World {
         let mut candidate = self.clone();
         let id = candidate.build_alignment_typed(owner, name, points, track_type)?;
         candidate
-            .data
+            .data_mut()
             .road_path_provenance
             .push(AlignmentRoadPathProvenance {
                 alignment_id: id,
@@ -294,7 +320,7 @@ impl World {
             }
         };
         candidate
-            .data
+            .data_mut()
             .road_path_provenance
             .push(AlignmentRoadPathProvenance {
                 alignment_id: id,

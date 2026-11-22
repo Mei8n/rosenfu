@@ -198,6 +198,48 @@ pub fn boundary_candidates(
     store: &EvidenceStore,
     required_tiles: &[(u32, u32)],
 ) -> Result<Vec<BoundaryCandidate>> {
+    boundary_candidates_impl(store, required_tiles, false, false)
+}
+
+/// Only remove lines that cannot intersect both sides of any required seam.
+/// Unlike filtering by gameplay permission or nearest geometry, this preserves
+/// every possible competing boundary fragment in the authorized context.
+pub(super) fn boundary_candidates_for_bus(
+    store: &EvidenceStore,
+    required_tiles: &[(u32, u32)],
+    structured: bool,
+) -> Result<Vec<BoundaryCandidate>> {
+    boundary_candidates_impl(store, required_tiles, true, structured)
+}
+
+fn crosses_context_boundary(
+    line: &TileLine,
+    tile: &TileBinding,
+    cells: &BTreeSet<(u32, u32)>,
+) -> bool {
+    let mut lo = [i32::MAX; 2];
+    let mut hi = [i32::MIN; 2];
+    for point in &line.coordinates {
+        for axis in 0..2 {
+            lo[axis] = lo[axis].min(point[axis]);
+            hi[axis] = hi[axis].max(point[axis]);
+        }
+    }
+    let crosses = |axis: usize, boundary: i32| lo[axis] < boundary && hi[axis] > boundary;
+    let extent = line.extent as i32;
+    let (x, y) = (tile.x, tile.y);
+    (x > 0 && cells.contains(&(x - 1, y)) && crosses(0, 0))
+        || (cells.contains(&(x + 1, y)) && crosses(0, extent))
+        || (y > 0 && cells.contains(&(x, y - 1)) && crosses(1, 0))
+        || (cells.contains(&(x, y + 1)) && crosses(1, extent))
+}
+
+fn boundary_candidates_impl(
+    store: &EvidenceStore,
+    required_tiles: &[(u32, u32)],
+    prefilter_interior_only: bool,
+    structured_bus: bool,
+) -> Result<Vec<BoundaryCandidate>> {
     let required: BTreeSet<_> = required_tiles.iter().copied().collect();
     let available: BTreeSet<_> = store.bindings().map(|b| (b.x, b.y)).collect();
     if required.len() != required_tiles.len() || required != available || required.is_empty() {
@@ -211,11 +253,22 @@ pub fn boundary_candidates(
         scoped = store.scope(&keys)?;
         &scoped
     };
+    let grade_context = |l: &TileLine| {
+        super::bus_grade::supported_class(l)
+            && super::bus_grade::grade(l).is_some()
+            && super::bus_grade::one_way(l).is_some()
+            && super::bus_grade::allowed_access(l)
+    };
     let mut lines = Vec::new();
     let mut points = 0;
     for b in store.bindings() {
         for l in &store.decoded(&b.canonical_url)?.lines {
-            if !candidate_class(l) {
+            if !(if structured_bus {
+                super::bus_grade::supported_class(l)
+            } else {
+                candidate_class(l)
+            }) || (prefilter_interior_only && !crosses_context_boundary(l, b, &required))
+            {
                 continue;
             }
             points += l.coordinates.len();
@@ -282,12 +335,24 @@ pub fn boundary_candidates(
             };
             let ac: Vec<_> = a
                 .iter()
-                .filter(|l| eligible(l.raw))
+                .filter(|l| {
+                    if structured_bus {
+                        grade_context(l.raw)
+                    } else {
+                        eligible(l.raw)
+                    }
+                })
                 .filter_map(|l| clip(l, axis, seam, scale, low, high))
                 .collect();
             let bc: Vec<_> = b
                 .iter()
-                .filter(|l| eligible(l.raw))
+                .filter(|l| {
+                    if structured_bus {
+                        grade_context(l.raw)
+                    } else {
+                        eligible(l.raw)
+                    }
+                })
                 .filter_map(|l| clip(l, axis, seam, scale, low, high))
                 .collect();
             let mut found = Vec::new();
@@ -297,14 +362,17 @@ pub fn boundary_candidates(
                     if !same(a.line.raw, b.line.raw) {
                         continue;
                     }
-                    if a.line
-                        .raw
-                        .attributes
-                        .get("oneway")
-                        .and_then(number)
-                        .is_some_and(|v| v != 0.)
-                        && a.direction != b.direction
-                    {
+                    let directed = if structured_bus {
+                        super::bus_grade::one_way(a.line.raw).is_some_and(|v| v != 0)
+                    } else {
+                        a.line
+                            .raw
+                            .attributes
+                            .get("oneway")
+                            .and_then(number)
+                            .is_some_and(|v| v != 0.)
+                    };
+                    if directed && a.direction != b.direction {
                         continue;
                     }
                     checked += 1;

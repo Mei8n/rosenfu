@@ -37,6 +37,7 @@ test('bus stop OD uses native namespaced stop IDs and displays the bus route nam
  render(<FixedOdPanel stations={stations} services={services} busStops={busStops} busRoutes={[{id:'test:route',name:'検証バス'}]} enabled worldVersion={1}/>);
  fireEvent.change(screen.getByLabelText('出発地点'),{target:{value:'bus:test:a'}});
  fireEvent.change(screen.getByLabelText('到着地点'),{target:{value:'bus:test:b'}});
+ expect((screen.getByRole('button',{name:'運行の遅れを含めて試算'}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(screen.getByText('需要を試算'));
  expect(await screen.findByText('検証バス')).toBeTruthy();
  expect(screen.getByText(/駅とバス停の徒歩乗り換えは、試算で指定した場合だけ計算します/)).toBeTruthy();
@@ -73,6 +74,9 @@ test('only applies a user-entered rail to bus walk to preview and never saves it
  fireEvent.change(screen.getByLabelText('出発地点'),{target:{value:'1'}});
  fireEvent.change(screen.getByLabelText('到着地点'),{target:{value:'bus:test:b'}});
  fireEvent.click(screen.getByLabelText('駅とバス停の乗り換えを試す'));
+ fireEvent.change(screen.getByLabelText('到着地点'),{target:{value:'2'}});
+ expect((screen.getByRole('button',{name:'運行の遅れを含めて試算'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.change(screen.getByLabelText('到着地点'),{target:{value:'bus:test:b'}});
  fireEvent.click(screen.getByText('需要を試算'));
  expect((await screen.findByRole('alert')).textContent).toContain('1〜60分');
  expect(invoke).not.toHaveBeenCalledWith('preview_fixed_od',expect.anything());
@@ -89,4 +93,30 @@ test('only applies a user-entered rail to bus walk to preview and never saves it
  fireEvent.click(screen.getByLabelText('駅とバス停の乗り換えを試す'));
  fireEvent.click(screen.getByText('需要を試算'));
  expect(invoke).toHaveBeenCalledWith('preview_fixed_od',scenario);
+});
+
+test('observed allocation is an explicit rail-only request and shows physical elapsed time',async()=>{
+ vi.mocked(invoke).mockResolvedValue({status:'reached',potential_trips:100,rail_trips:37,alternative_trips:63,unresolved_trips:0,
+  itinerary:{ready_ms:0,arrival_ms:1740000,platform_wait_ms:600000,onboard_ms:1140000}});
+ render(panel());
+ const observe=screen.getByRole('button',{name:'運行の遅れを含めて試算'}) as HTMLButtonElement;
+ expect(observe.disabled).toBe(true);
+ fireEvent.change(screen.getByLabelText('出発駅'),{target:{value:'1'}});
+ fireEvent.change(screen.getByLabelText('到着駅'),{target:{value:'2'}});
+ fireEvent.change(screen.getByLabelText('鉄道以外の所要時間（分・任意）'),{target:{value:'26'}});
+ expect(invoke).not.toHaveBeenCalled();
+ fireEvent.click(observe);
+ expect(await screen.findByText('所要 29分（待ち 10分、乗車 19分）')).toBeTruthy();
+ expect(screen.getByText('37人',{selector:'dd'})).toBeTruthy();
+ expect(invoke).toHaveBeenCalledExactlyOnceWith('preview_observed_fixed_od',{query:{originStationId:'1',destinationStationId:'2',trips:100,alternativeSeconds:1560}});
+});
+
+test('observed partial or finite-window no arrival does not allocate substitute trips',async()=>{
+ vi.mocked(invoke).mockResolvedValue({status:'no_arrival_within_window',potential_trips:100,rail_trips:0,alternative_trips:0,unresolved_trips:100});
+ render(panel());
+ fireEvent.change(screen.getByLabelText('出発駅'),{target:{value:'1'}});
+ fireEvent.change(screen.getByLabelText('到着駅'),{target:{value:'2'}});
+ fireEvent.click(screen.getByRole('button',{name:'運行の遅れを含めて試算'}));
+ expect(await screen.findByText(/100人は未確定/)).toBeTruthy();
+ expect(screen.queryByText('別の移動手段を利用')).toBeNull();
 });

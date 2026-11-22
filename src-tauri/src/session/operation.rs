@@ -1,9 +1,40 @@
 use super::*;
-use rosenfu_core::operation::{PassengerOffer, Timetable, Train, Vehicle};
+use rosenfu_core::operation::{RailWaitReason, Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::OperationServiceConfig;
+#[path = "operation/bus_transfers.rs"]
+mod bus_transfers;
+#[path = "operation/crossing_planning.rs"]
+mod crossing_planning;
+pub use crossing_planning::CrossingPlanningView;
+/// Case-specific payload. Transfer/walking options belong only to scheduled OD.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObservedFixedOdInput {
+    pub origin_station_id: String,
+    pub destination_station_id: String,
+    pub trips: Option<f64>,
+    pub alternative_seconds: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct OperationLiveTrain {
+    #[serde(flatten)]
+    pub train: Train,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<RailWaitReason>,
+}
+
+impl std::ops::Deref for OperationLiveTrain {
+    type Target = Train;
+
+    fn deref(&self) -> &Self::Target {
+        &self.train
+    }
+}
+
 #[derive(serde::Serialize)]
-pub struct OperationView {
+pub struct OperationLiveView {
     pub now_ms: u64,
     pub paused: bool,
     pub speed: u32,
@@ -11,10 +42,35 @@ pub struct OperationView {
     pub catching_up: bool,
     pub timetable_edit_token: String,
     pub timetable_edit_blocker: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rail_timetable_handoff_available: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub rail_timetable_handoff_in_progress: bool,
+    pub configuration_token: String,
+    pub trains: Vec<OperationLiveTrain>,
+}
+
+#[derive(serde::Serialize)]
+pub struct OperationView {
+    #[serde(flatten)]
+    pub live: OperationLiveView,
     pub services: Vec<OperationServiceConfig>,
     pub bus_services: Vec<rosenfu_core::world::BusOperationConfig>,
-    pub trains: Vec<Train>,
-    pub offers: Vec<PassengerOffer>,
+}
+
+impl std::ops::Deref for OperationView {
+    type Target = OperationLiveView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.live
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub enum OperationTickView {
+    Full(OperationView),
+    Live(OperationLiveView),
 }
 pub(super) fn next_session_token() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,14 +94,21 @@ pub struct FixedOdRoadTransfer {
 }
 
 impl WorldEditor {
-    fn operation_edit_token(&self) -> String {
-        // Cheap process-local CAS: identity is renewed on every mount (even
-        // same-slot re-open); history covers geometry; the schedule revision
-        // covers explicit operation intents, including A → B → A changes.
+    fn operation_configuration_token(&self) -> String {
+        // The native mount/operation revision changes on reopen, explicit
+        // configure and reset; structural edits and Undo/Redo rotate history.
+        // Elapsed time never changes timetable rows, and is not part of this key.
         format!(
-            "{}:{}:{}",
+            "{}:{}",
             self.operation_edit_revision,
-            self.world_edit_history().revision,
+            self.world_edit_history().revision
+        )
+    }
+
+    fn operation_edit_token(&self) -> String {
+        format!(
+            "{}:{}",
+            self.operation_configuration_token(),
             self.world.operation().map_or(0, |op| op.runtime.now_ms()),
         )
     }
@@ -72,12 +135,26 @@ impl WorldEditor {
         None
     }
 
-    fn require_timetable_edit(&self, expected: &str) -> Result<(), String> {
+    fn rail_timetable_handoff_available(&self) -> bool {
+        self.world.operation().is_some_and(|op| {
+            !op.invalidated
+                && op.pending_target.is_none()
+                && op.runtime.paused()
+                && op.runtime.trains().next().is_some()
+        })
+    }
+
+    fn require_current_timetable_token(&self, expected: &str) -> Result<(), String> {
         if expected != self.operation_edit_token() {
             return Err(
                 "ワールドまたは運行状態が変更されました。最新の運行状態を確認してください。".into(),
             );
         }
+        Ok(())
+    }
+
+    fn require_timetable_edit(&self, expected: &str) -> Result<(), String> {
+        self.require_current_timetable_token(expected)?;
         self.timetable_edit_blocker()
             .map_or(Ok(()), |reason| Err(reason.into()))
     }
@@ -141,39 +218,94 @@ impl WorldEditor {
     }
 
     pub fn operation_snapshot(&self) -> OperationView {
-        let Some(o) = self.world.operation() else {
-            return OperationView {
-                now_ms: 0,
-                paused: true,
-                speed: 1,
-                invalidated: false,
-                catching_up: false,
-                timetable_edit_token: self.operation_edit_token(),
-                timetable_edit_blocker: self.timetable_edit_blocker(),
-                services: vec![],
-                bus_services: vec![],
-                trains: vec![],
-                offers: vec![],
-            };
-        };
+        self.full_operation_view(self.live_operation_view())
+    }
+
+    fn full_operation_view(&self, live: OperationLiveView) -> OperationView {
+        let (services, bus_services) = self
+            .world
+            .operation()
+            .map(|o| (o.configs.clone(), o.bus_configs.clone()))
+            .unwrap_or_default();
         OperationView {
-            now_ms: o.runtime.now_ms(),
-            paused: o.runtime.paused(),
-            speed: o.runtime.speed(),
-            invalidated: o.invalidated,
-            catching_up: o.pending_target.is_some(),
-            timetable_edit_token: self.operation_edit_token(),
-            timetable_edit_blocker: self.timetable_edit_blocker(),
-            services: o.configs.clone(),
-            bus_services: o.bus_configs.clone(),
-            trains: o.runtime.trains().cloned().collect(),
-            offers: if o.invalidated {
-                vec![]
-            } else {
-                o.runtime.passenger_offers()
-            },
+            live,
+            services,
+            bus_services,
         }
     }
+
+    fn live_operation_view(&self) -> OperationLiveView {
+        let o = self.world.operation();
+        let now_ms = o.map_or(0, |o| o.runtime.now_ms());
+        let configuration_token = self.operation_configuration_token();
+        OperationLiveView {
+            now_ms,
+            paused: o.is_none_or(|o| o.runtime.paused()),
+            speed: o.map_or(1, |o| o.runtime.speed()),
+            invalidated: o.is_some_and(|o| o.invalidated),
+            catching_up: o.is_some_and(|o| o.pending_target.is_some()),
+            timetable_edit_token: format!("{configuration_token}:{now_ms}"),
+            timetable_edit_blocker: self.timetable_edit_blocker(),
+            rail_timetable_handoff_available: self.rail_timetable_handoff_available(),
+            rail_timetable_handoff_in_progress: o
+                .is_some_and(|op| op.runtime.rail_timetable_handoff_in_progress()),
+            configuration_token,
+            trains: o
+                .map(|o| {
+                    o.runtime
+                        .trains()
+                        .map(|train| OperationLiveTrain {
+                            train: train.clone(),
+                            waiting_for: (!o.invalidated
+                                && matches!(train.state, rosenfu_core::operation::TrainState::Waiting { ready_ms } if ready_ms <= now_ms))
+                            .then(|| o.runtime.rail_wait_reason(&train.key))
+                            .flatten(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+    pub fn preview_nominal_trainsets(
+        &self,
+        service_id: ServiceId,
+        configuration_token: &str,
+        request: rosenfu_core::operation::service_planning::FleetPlanningRequest,
+    ) -> Result<rosenfu_core::operation::service_planning::NominalFleetPlanning, String> {
+        use rosenfu_core::operation::service_planning::FleetPlanningError;
+        if configuration_token != self.operation_configuration_token() {
+            return Err("運行設定が変わりました。もう一度お試しください。".into());
+        }
+        if !self
+            .world
+            .snapshot()
+            .services
+            .iter()
+            .any(|service| service.id == service_id && service.owner == self.company)
+        {
+            return Err("自社の鉄道系統を選択してください。".into());
+        }
+        let operation = self
+            .world
+            .operation()
+            .filter(|op| !op.invalidated)
+            .ok_or("先に運行する系統を設定してください。")?;
+        operation
+            .runtime
+            .preview_nominal_fleet(&service_id.0.to_string(), request)
+            .map_err(|error| match error {
+                FleetPlanningError::UnsupportedRun => {
+                    "両端で同じ線路に折り返せる既存の往復系統だけを試算できます。".to_owned()
+                }
+                FleetPlanningError::InvalidInput => {
+                    "運転間隔または編成数に正の値を入れてください。".to_owned()
+                }
+                FleetPlanningError::TimeOutsideBudget => {
+                    "往復時間が試算上限を超えています。".to_owned()
+                }
+            })
+    }
+
     pub fn configure_operation_service(
         &mut self,
         service_id: ServiceId,
@@ -194,18 +326,38 @@ impl WorldEditor {
         {
             return Err("自社の系統を選択してください。".into());
         }
-        self.require_timetable_edit(expected_operation_token)?;
-        let mut configs = self
-            .world
-            .operation()
-            .map(|o| o.configs.clone())
-            .unwrap_or_default();
+        self.require_current_timetable_token(expected_operation_token)?;
         let request = OperationServiceConfig {
             service_id,
             timetable,
             vehicle,
             dwell_ms,
         };
+        if self.rail_timetable_handoff_available() {
+            let mut candidate = self.world.clone();
+            candidate.handoff_active_rail_timetable(request).map_err(|e| match e {
+                rosenfu_core::operation::OperationError::TimetableHandoffPending =>
+                    "前のダイヤで発車した列車が残っています。その列車の運行が終わってから再変更してください。".to_owned(),
+                rosenfu_core::operation::OperationError::ReservationScopeChanged =>
+                    "列車が残っている間は今後の発車時刻だけ変更できます。車両と停車時間は変更していません。".to_owned(),
+                rosenfu_core::operation::OperationError::InvalidTimetable =>
+                    "現在時刻より後に少なくとも1便が必要です。ダイヤは変更していません。".to_owned(),
+                rosenfu_core::operation::OperationError::InvalidPath =>
+                    "運行が残っている間は、設定済みの鉄道系統の今後の発車時刻だけ変更できます。".to_owned(),
+                _ => format!("運行設定を適用できません: {e:?}"),
+            })?;
+            rosenfu_storage::ensure_world_saveable(&candidate).map_err(|e| e.to_string())?;
+            self.world = candidate;
+            self.operation_tick = None;
+            self.update_operation_revision();
+            return Ok(self.operation_snapshot());
+        }
+        self.require_timetable_edit(expected_operation_token)?;
+        let mut configs = self
+            .world
+            .operation()
+            .map(|o| o.configs.clone())
+            .unwrap_or_default();
         if let Some(prior) = configs.iter_mut().find(|c| c.service_id == service_id) {
             *prior = request;
         } else {
@@ -234,6 +386,7 @@ impl WorldEditor {
         self.update_operation_revision();
         Ok(self.operation_snapshot())
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn configure_bus_operation(
         &mut self,
         route_id: String,
@@ -241,6 +394,7 @@ impl WorldEditor {
         vehicle: Vehicle,
         assumed_speed_kmh: f64,
         dwell_ms: u64,
+        turnaround_ms: Option<u64>,
         expected_operation_token: &str,
     ) -> Result<OperationView, String> {
         if self.company_setup_required
@@ -265,12 +419,22 @@ impl WorldEditor {
             .operation()
             .map(|o| o.bus_configs.clone())
             .unwrap_or_default();
+        // New ordinary open lines pass an explicit default; omitted inputs preserve history.
+        let turnaround_ms = turnaround_ms.or_else(|| {
+            bus.iter()
+                .find(|c| c.route_id == route_id)
+                .and_then(|c| c.turnaround_ms)
+        });
+        if turnaround_ms.is_some_and(|ms| ms > 3_600_000) {
+            return Err("折り返し時間は0〜3600秒で設定してください。".into());
+        }
         let request = rosenfu_core::world::BusOperationConfig {
             route_id: route_id.clone(),
             timetable,
             vehicle,
             assumed_speed_kmh,
             dwell_ms,
+            turnaround_ms,
         };
         if let Some(prior) = bus.iter_mut().find(|c| c.route_id == request.route_id) {
             *prior = request;
@@ -320,7 +484,7 @@ impl WorldEditor {
         if ![1, 2, 4, 8, 16].contains(&speed) {
             return Err("速度は1・2・4・8・16倍から選択してください。".into());
         }
-        self.advance_operation_at(instant)?;
+        self.advance_operation_state_at(instant)?;
         let o = self
             .world
             .operation_mut()
@@ -347,19 +511,43 @@ impl WorldEditor {
         &mut self,
         instant: std::time::Instant,
     ) -> Result<OperationView, String> {
+        self.advance_operation_state_at(instant)?;
+        Ok(self.operation_snapshot())
+    }
+
+    /// A client only receives a lean tick if it has exactly the authoritative
+    /// rail and bus configurations for this world/revision.
+    pub fn advance_operation_with_configuration(
+        &mut self,
+        known_configuration_token: Option<&str>,
+    ) -> Result<OperationTickView, String> {
+        self.advance_operation_state_at(std::time::Instant::now())?;
+        Ok(self.operation_tick_view(known_configuration_token))
+    }
+
+    fn operation_tick_view(&self, known_configuration_token: Option<&str>) -> OperationTickView {
+        let live = self.live_operation_view();
+        if known_configuration_token == Some(live.configuration_token.as_str()) {
+            OperationTickView::Live(live)
+        } else {
+            OperationTickView::Full(self.full_operation_view(live))
+        }
+    }
+
+    fn advance_operation_state_at(&mut self, instant: std::time::Instant) -> Result<(), String> {
         let elapsed = self
             .operation_tick
             .map(|t| instant.saturating_duration_since(t).as_millis())
             .unwrap_or(0);
         self.operation_tick = Some(instant);
         let Some(o) = self.world.operation_mut() else {
-            return Ok(self.operation_snapshot());
+            return Ok(());
         };
         if o.invalidated {
-            return Ok(self.operation_snapshot());
+            return Ok(());
         }
         if o.runtime.paused() {
-            return Ok(self.operation_snapshot());
+            return Ok(());
         }
         let delta = u64::try_from(elapsed)
             .map_err(|_| "時計の範囲を超えました。")?
@@ -375,7 +563,7 @@ impl WorldEditor {
             .advance_to(target, 128)
             .map_err(|e| format!("運行の進行に失敗しました: {e:?}"))?;
         o.pending_target = (!result.reached_target).then_some(target);
-        Ok(self.operation_snapshot())
+        Ok(())
     }
     pub fn fixed_od_scenario(&self) -> FixedOdScenarioView {
         FixedOdScenarioView {
@@ -449,6 +637,59 @@ impl WorldEditor {
         Ok(replay.earliest_rail_itinerary(origin, destination))
     }
 
+    /// A single explicitly requested cohort starts at the current simulation
+    /// time; aliases, nearby stops, and actual population are never inferred.
+    pub fn preview_observed_fixed_od(
+        &self,
+        origin_station_id: String,
+        destination_station_id: String,
+        trips: Option<f64>,
+        alternative_seconds: Option<f64>,
+    ) -> Result<rosenfu_core::demand::ObservedFixedOd, String> {
+        use rosenfu_core::{demand::ObservedFixedOd, operation::PassengerReplayError};
+        let scenario = FixedOdScenario {
+            origin_station_id,
+            destination_station_id,
+            trips,
+            alternative_seconds,
+        };
+        scenario.validate()?;
+        if scenario.origin_station_id.starts_with("bus:")
+            || scenario.destination_station_id.starts_with("bus:")
+            || !scenario.endpoints_exist(self.world.snapshot())
+        {
+            return Err("遅延を含む試算では、異なる既存の鉄道駅を選択してください。".into());
+        }
+        let operation = self
+            .world
+            .operation()
+            .ok_or("先に運行する系統を設定してください。")?;
+        if operation.invalidated {
+            return Err("運行経路の更新が必要です。".into());
+        }
+        let runtime = &operation.runtime;
+        let until = runtime
+            .now_ms()
+            .checked_add(30 * 60_000)
+            .ok_or("時計の範囲を超えました。")?;
+        let replay = match runtime.preview_rail_cohort_replay(until, 256) {
+            Ok(replay) => replay,
+            Err(PassengerReplayError::OutsideBudget) => {
+                return Ok(ObservedFixedOd::outside_budget(trips));
+            }
+            Err(PassengerReplayError::Runtime(_)) => {
+                return Err("運行の再現に失敗しました。".into())
+            }
+        };
+        Ok(ObservedFixedOd::from_replay(
+            &replay,
+            &scenario.origin_station_id,
+            &scenario.destination_station_id,
+            trips,
+            alternative_seconds,
+        ))
+    }
+
     #[cfg(test)]
     pub fn preview_fixed_od(
         &self,
@@ -485,7 +726,7 @@ impl WorldEditor {
         if !scenario.endpoints_exist(self.world.snapshot()) {
             return Err("異なる既存の駅・停留所を選択してください。".into());
         }
-        let walks = if let Some(transfer) = transfer {
+        let mut walks = if let Some(transfer) = transfer {
             let rail = transfer.station_id;
             let bus = transfer.bus_stop_id;
             let seconds = f64::from(transfer.walk_seconds);
@@ -545,6 +786,10 @@ impl WorldEditor {
                 headway_seconds: l.headway_seconds,
             })
             .collect::<Vec<_>>();
+        walks.extend(bus_transfers::coincident_ordinary_bus_walks(
+            self.world.snapshot(),
+            &legs,
+        )?);
         let od = FixedOd {
             id: "synthetic-station-od".into(),
             origin_region: "synthetic".into(),
@@ -750,6 +995,27 @@ mod tests {
         .unwrap();
         e
     }
+    #[test]
+    fn nominal_fleet_uses_the_existing_authoritative_round_trip_without_editing() {
+        use rosenfu_core::operation::service_planning::FleetPlanningRequest;
+        let editor = editor();
+        let operation = editor.world.operation().unwrap();
+        let config = &operation.configs[0];
+        let token = editor.operation_configuration_token();
+        let before = editor.world.operation_save().unwrap();
+        assert_eq!(before.runtime.services[0].legs.len(), 2);
+        let trial = FleetPlanningRequest::TimedHeadway { headway_ms: 60_000 };
+        let plan = editor
+            .preview_nominal_trainsets(config.service_id, &token, trial)
+            .unwrap();
+        assert_eq!(plan.trainsets, plan.cycle_ms.div_ceil(60_000));
+        assert_eq!(plan.cycle_ms, plan.running_ms + plan.dwell_and_clearance_ms);
+        assert!(editor
+            .preview_nominal_trainsets(config.service_id, "stale", trial)
+            .is_err());
+        assert_eq!(editor.world.operation_save(), Some(before));
+    }
+
     // Non-qualifying ordinary rail geometry keeps the fixed reservation
     // model when the previously skipped middle station is added as a stop.
     fn stop_edit_editor(
@@ -997,8 +1263,11 @@ mod tests {
         replace(&mut e).unwrap();
         assert!(e.operation_snapshot().paused && !e.operation_snapshot().invalidated);
         assert!(e
-            .operation_snapshot()
-            .offers
+            .world
+            .operation()
+            .unwrap()
+            .runtime
+            .passenger_offers()
             .iter()
             .any(|offer| offer.to == b.0.to_string()));
     }
@@ -1143,6 +1412,7 @@ mod tests {
                     name: "A".into(),
                     edge_id: "qa:0-1".into(),
                     position: 0.2,
+                    location_kind: Default::default(),
                 },
                 BusStop {
                     id: "B".into(),
@@ -1150,6 +1420,7 @@ mod tests {
                     name: "B".into(),
                     edge_id: "qa:1-2".into(),
                     position: 0.8,
+                    location_kind: Default::default(),
                 },
             ],
             bus_routes: vec![BusRoute {
@@ -1184,6 +1455,7 @@ mod tests {
             },
             30.,
             10000,
+            None,
             &e.operation_edit_token(),
         )
         .unwrap();
@@ -1199,7 +1471,7 @@ mod tests {
                 headway_ms: 60000,
             },
         );
-        let offers = e.operation_snapshot().offers;
+        let offers = e.world.operation().unwrap().runtime.passenger_offers();
         let bus = offers.iter().find(|o| o.service_id == "bus:R").unwrap();
         assert_eq!(bus.from, "bus:A");
         assert_eq!(bus.to, "bus:B");
@@ -1223,6 +1495,135 @@ mod tests {
             rosenfu_storage::decode(&rosenfu_storage::encode(&e.world).unwrap()).unwrap();
         assert_eq!(e.world.operation_save(), restored.operation_save());
     }
+    #[test]
+    fn compact_ticks_keep_the_current_clock_and_resync_after_mutation_history_and_reopen() {
+        use std::time::{Duration, Instant};
+
+        let mut e = editor();
+        let rail = e.operation_snapshot().services[0].clone();
+        let timetable = Timetable {
+            first_departure_ms: 20_000,
+            last_departure_ms: 200_000,
+            headway_ms: 60_000,
+        };
+        let token = e.operation_edit_token();
+        e.configure_operation_service(
+            rail.service_id,
+            timetable.clone(),
+            rail.vehicle.clone(),
+            rail.dwell_ms,
+            &token,
+        )
+        .unwrap();
+        add_test_bus(&mut e, timetable.clone());
+        let start = Instant::now();
+        let initial = e.set_operation_clock_at(false, 1, start).unwrap();
+        let legacy = e.operation_tick_view(None);
+        let mut full = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(
+            full["services"][0]["service_id"],
+            rail.service_id.0.to_string()
+        );
+        assert_eq!(full["bus_services"][0]["route_id"], "R");
+
+        // With the same clock and settings, both forms differ only in static rows.
+        let compact = |e: &WorldEditor, known: &str| {
+            assert!(matches!(
+                e.operation_tick_view(Some(known)),
+                OperationTickView::Live(_)
+            ));
+            serde_json::to_value(e.operation_tick_view(Some(known))).unwrap()
+        };
+        let initial_live = compact(&e, &initial.configuration_token);
+        let rows = full.as_object_mut().unwrap();
+        rows.remove("services").unwrap();
+        rows.remove("bus_services").unwrap();
+        assert_eq!(full, initial_live);
+        e.advance_operation_state_at(start + Duration::from_millis(500))
+            .unwrap();
+        let live = compact(&e, &initial.configuration_token);
+        assert_eq!(live["now_ms"], 500);
+        assert_eq!(live["timetable_edit_token"], e.operation_edit_token());
+        assert_ne!(
+            live["timetable_edit_token"],
+            initial_live["timetable_edit_token"]
+        );
+
+        let refreshed = |e: &WorldEditor, stale: &str| match e.operation_tick_view(Some(stale)) {
+            OperationTickView::Full(current) => current,
+            OperationTickView::Live(_) => panic!("stale config must force full resync"),
+        };
+        let paused = e
+            .set_operation_clock_at(true, 1, start + Duration::from_millis(500))
+            .unwrap();
+        assert!(matches!(
+            e.advance_operation_with_configuration(Some(&paused.configuration_token)),
+            Ok(OperationTickView::Live(_))
+        ));
+        assert!(matches!(
+            e.advance_operation_with_configuration(None),
+            Ok(OperationTickView::Full(_))
+        ));
+        let new_rail = Timetable {
+            headway_ms: 80_000,
+            ..timetable.clone()
+        };
+        let edited = e
+            .configure_operation_service(
+                rail.service_id,
+                new_rail.clone(),
+                rail.vehicle.clone(),
+                rail.dwell_ms,
+                &paused.timetable_edit_token,
+            )
+            .unwrap();
+        assert_eq!(
+            refreshed(&e, &paused.configuration_token).services[0].timetable,
+            new_rail
+        );
+        let bus = edited.bus_services[0].clone();
+        let bus_edit = Timetable {
+            headway_ms: 90_000,
+            ..timetable
+        };
+        let edited_bus = e
+            .configure_bus_operation(
+                bus.route_id,
+                bus_edit.clone(),
+                bus.vehicle,
+                bus.assumed_speed_kmh,
+                bus.dwell_ms,
+                None,
+                &edited.timetable_edit_token,
+            )
+            .unwrap();
+        assert_eq!(
+            refreshed(&e, &edited.configuration_token).bus_services[0].timetable,
+            bus_edit
+        );
+
+        e.rename_company("renamed".into()).unwrap();
+        let renamed = refreshed(&e, &edited_bus.configuration_token);
+        e.undo_world_edit(e.snapshot()).unwrap();
+        let undone = refreshed(&e, &renamed.configuration_token);
+        e.redo_world_edit(e.snapshot()).unwrap();
+        let redone = refreshed(&e, &undone.configuration_token);
+        let path = tempfile::tempdir().unwrap();
+        let save = path.path().join("world.json");
+        e.save(&save).unwrap();
+        e.load(&save).unwrap();
+        let reopened = refreshed(&e, &redone.configuration_token);
+        assert_eq!(reopened.services, redone.services);
+        assert_eq!(reopened.bus_services, redone.bus_services);
+        assert_eq!(reopened.now_ms, 500);
+        e.load(&save).unwrap();
+        let same_slot = refreshed(&e, &reopened.configuration_token);
+        e.reset_operation().unwrap();
+        let cleared = refreshed(&e, &same_slot.configuration_token);
+        assert_eq!(cleared.now_ms, 0);
+        assert!(cleared.services.is_empty() && cleared.bus_services.is_empty());
+    }
+
     #[test]
     fn timetable_edits_keep_idle_clock_and_unrelated_configs_with_exact_reopen() {
         let mut e = editor();
@@ -1283,10 +1684,17 @@ mod tests {
             .unwrap();
         let active = rosenfu_storage::encode(&e.world).unwrap();
         let active_token = e.operation_edit_token();
-        assert!(set_rail(&mut e, edit.clone(), &active_token)
+        assert!(e
+            .configure_operation_service(
+                initial.service_id,
+                edit.clone(),
+                initial.vehicle.clone(),
+                initial.dwell_ms + 1,
+                &active_token
+            )
             .err()
             .unwrap()
-            .contains("列車やバス"));
+            .contains("停車時間"));
         assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), active);
         assert_eq!(e.operation_edit_token(), active_token);
         {
@@ -1340,6 +1748,7 @@ mod tests {
                 bus.vehicle.clone(),
                 bus.assumed_speed_kmh,
                 bus.dwell_ms,
+                None,
                 &token
             )
             .err()
@@ -1353,6 +1762,7 @@ mod tests {
                 bus.vehicle,
                 bus.assumed_speed_kmh,
                 bus.dwell_ms,
+                None,
                 &view.timetable_edit_token,
             )
             .unwrap();
@@ -1378,6 +1788,145 @@ mod tests {
         runtime.advance_to(280_000, 100).unwrap();
         assert_eq!(runtime.trains().count(), 1);
         assert_eq!(runtime.trains().next().unwrap().key.service_id, "bus:R");
+    }
+
+    #[test]
+    fn active_rail_timetable_handoff_has_a_disk_roundtrip_and_never_replays_old_dispatch() {
+        let mut e = editor();
+        let prior = e.operation_snapshot().services[0].clone();
+        let initial = Timetable {
+            first_departure_ms: 0,
+            last_departure_ms: 120_000,
+            headway_ms: 60_000,
+        };
+        let edit = Timetable {
+            first_departure_ms: 90_000,
+            last_departure_ms: 180_000,
+            headway_ms: 90_000,
+        };
+        let set = |e: &mut WorldEditor, timetable: Timetable, tok: &str| {
+            e.configure_operation_service(
+                prior.service_id,
+                timetable,
+                prior.vehicle.clone(),
+                prior.dwell_ms,
+                tok,
+            )
+        };
+        let tok = e.operation_edit_token();
+        set(&mut e, initial, &tok).unwrap();
+        add_test_bus(
+            &mut e,
+            Timetable {
+                first_departure_ms: 70_000,
+                last_departure_ms: 130_000,
+                headway_ms: 60_000,
+            },
+        );
+        e.world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(35_000, 100)
+            .unwrap();
+        let before = e.operation_snapshot();
+        let trial = rosenfu_core::operation::service_planning::FleetPlanningRequest::TimedHeadway {
+            headway_ms: edit.headway_ms,
+        };
+        let nominal = e
+            .preview_nominal_trainsets(prior.service_id, &before.configuration_token, trial)
+            .unwrap();
+        assert!(before.rail_timetable_handoff_available);
+        assert_eq!(before.trains[0].key.scheduled_ms, 0);
+        let paused = rosenfu_storage::encode(&e.world).unwrap();
+        e.world.operation_mut().unwrap().pending_target = Some(36_000);
+        assert!(!e.operation_snapshot().rail_timetable_handoff_available);
+        assert!(set(&mut e, edit.clone(), &before.timetable_edit_token).is_err());
+        e.world.operation_mut().unwrap().pending_target = None;
+        e.world.operation_mut().unwrap().invalidated = true;
+        assert!(!e.operation_snapshot().rail_timetable_handoff_available);
+        assert!(set(&mut e, edit.clone(), &before.timetable_edit_token).is_err());
+        e.world.operation_mut().unwrap().invalidated = false;
+        assert_eq!(paused, rosenfu_storage::encode(&e.world).unwrap());
+
+        let after = set(&mut e, edit.clone(), &before.timetable_edit_token).unwrap();
+        assert_eq!(after.now_ms, before.now_ms);
+        assert_eq!(after.trains, before.trains);
+        assert_eq!(after.bus_services, before.bus_services);
+        assert_eq!(after.services[0].timetable, edit);
+        assert!(
+            serde_json::to_value(&after.live).unwrap()["rail_timetable_handoff_in_progress"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_ne!(after.timetable_edit_token, before.timetable_edit_token);
+        assert!(set(&mut e, edit, &before.timetable_edit_token).is_err());
+        assert!(e
+            .preview_nominal_trainsets(prior.service_id, &before.configuration_token, trial)
+            .is_err());
+        assert_eq!(
+            e.preview_nominal_trainsets(prior.service_id, &after.configuration_token, trial)
+                .unwrap(),
+            nominal
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("handoff.rosenfu");
+        e.save(&file).unwrap();
+        let mixed = e.world.operation_save().unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&file).unwrap();
+        assert_eq!(reopened.world.operation_save(), Some(mixed));
+        assert!(
+            reopened
+                .operation_snapshot()
+                .rail_timetable_handoff_in_progress
+        );
+        let full = e
+            .world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(600_000, 1000)
+            .unwrap()
+            .arrivals;
+        let chunks = (40_000..=600_000)
+            .step_by(5_000)
+            .flat_map(|at| {
+                reopened
+                    .world
+                    .operation_mut()
+                    .unwrap()
+                    .runtime
+                    .advance_to(at, 1000)
+                    .unwrap()
+                    .arrivals
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks, full);
+        assert_eq!(reopened.world.operation_save(), e.world.operation_save());
+        assert!(
+            !reopened
+                .operation_snapshot()
+                .rail_timetable_handoff_in_progress
+        );
+        assert!(serde_json::to_value(&reopened.operation_snapshot().live)
+            .unwrap()
+            .get("rail_timetable_handoff_in_progress")
+            .is_none());
+        let rail = prior.service_id.0.to_string();
+        let rail_births = full
+            .iter()
+            .filter(|arrival| arrival.train.service_id == rail)
+            .map(|arrival| arrival.train.scheduled_ms)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rail_births, [0, 90_000, 180_000].into_iter().collect());
+        let buses = full
+            .iter()
+            .filter(|arrival| arrival.train.service_id.starts_with("bus:"))
+            .map(|arrival| arrival.train.scheduled_ms)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(buses, [70_000, 130_000].into_iter().collect());
     }
 
     #[test]
@@ -1509,6 +2058,95 @@ mod tests {
         assert!(e.operation_tick.is_none());
     }
     #[test]
+    fn operation_tick_wire_omits_passenger_offers_but_native_fixed_od_still_uses_them() {
+        #[derive(serde::Serialize)]
+        struct LegacyWire<'a> {
+            #[serde(flatten)]
+            current: &'a OperationView,
+            offers: Vec<rosenfu_core::operation::PassengerOffer>,
+        }
+
+        let mut e = editor();
+        let first = e.operation_snapshot().services[0].clone();
+        let path = e.world.snapshot().service_paths[0].clone();
+        let from = e.world.snapshot().services[0].start;
+        let segments: Vec<_> = path.legs.iter().map(|leg| leg.segment.clone()).collect();
+        let mut configs = vec![first.clone()];
+        for n in 2..=64 {
+            let service_id = e
+                .world
+                .add_service_path(
+                    e.company,
+                    format!("Timing fixture {n}"),
+                    from,
+                    segments.clone(),
+                    path.stops.clone(),
+                )
+                .unwrap();
+            configs.push(OperationServiceConfig {
+                service_id,
+                ..first.clone()
+            });
+        }
+        e.world.configure_operation(configs).unwrap();
+        let start = std::time::Instant::now();
+        e.set_operation_clock_at(false, 1, start).unwrap();
+        let before = e.world.operation_save().unwrap();
+        let view = e
+            .advance_operation_at(start + std::time::Duration::from_millis(500))
+            .unwrap();
+        assert_eq!(view.now_ms, 500);
+        assert_eq!(view.services.len(), 64);
+        assert!(!view.trains.is_empty());
+
+        let offers = e.world.operation().unwrap().runtime.passenger_offers();
+        assert_eq!(offers.len(), 128);
+        let old = serde_json::to_vec(&LegacyWire {
+            current: &view,
+            offers,
+        })
+        .unwrap();
+        let current = serde_json::to_vec(&view).unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&old).unwrap();
+        assert_eq!(
+            legacy
+                .as_object_mut()
+                .unwrap()
+                .remove("offers")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            128
+        );
+        assert_eq!(
+            legacy,
+            serde_json::from_slice::<serde_json::Value>(&current).unwrap()
+        );
+        assert!(current.len() < old.len());
+        let stations = &e.world.snapshot().stations;
+        let od = e
+            .preview_fixed_od(
+                stations[0].id.0.to_string(),
+                stations[1].id.0.to_string(),
+                Some(10.),
+                None,
+            )
+            .unwrap();
+        assert_eq!(od.potential_trips, Some(10.));
+        assert!(od.search_complete);
+        assert!((od.rail.iter().map(|path| path.trips).sum::<f64>() - 10.).abs() < 1e-9);
+        assert_ne!(e.world.operation_save().unwrap(), before);
+        let native = e.world.operation().unwrap();
+        let begin = std::time::Instant::now();
+        for _ in 0..2_000 {
+            std::hint::black_box(native.runtime.passenger_offers());
+        }
+        eprintln!("operation wire: {} -> {} bytes; {} offers not built per tick; 2000 former offers-only builds {:.3} ms",
+            old.len(),current.len(),128,begin.elapsed().as_secs_f64()*1000.);
+    }
+
+    #[test]
     fn synthetic_od_uses_real_service_and_does_not_mutate() {
         let e = editor();
         let stations = &e.world.snapshot().stations;
@@ -1583,6 +2221,7 @@ mod tests {
                     edge_id: "qa:1-2".into(),
                     name: id.into(),
                     position,
+                    location_kind: Default::default(),
                 })
                 .collect();
             roads.bus_routes.push(BusRoute {
@@ -1677,6 +2316,7 @@ mod tests {
                 vehicle,
                 30.,
                 10000,
+                None,
                 &e.operation_edit_token(),
             )
             .unwrap();
@@ -1759,5 +2399,21 @@ mod tests {
             assert_eq!(opposite.unserved_trips, 50.);
             assert_eq!(before, rosenfu_storage::encode(&e.world).unwrap());
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn observed_fixed_od_payload_rejects_unsupported_transfer_fields() {
+    let query = serde_json::json!({
+        "originStationId": "1", "destinationStationId": "2",
+        "trips": 100, "alternativeSeconds": 500,
+    });
+    assert!(serde_json::from_value::<ObservedFixedOdInput>(query.clone()).is_ok());
+    for key in ["transfer", "walkSeconds", "busLegs", "stationAliases"] {
+        let mut unsupported = query.clone();
+        // Null is not a supported option either; never silently drop it.
+        unsupported[key] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ObservedFixedOdInput>(unsupported).is_err());
     }
 }

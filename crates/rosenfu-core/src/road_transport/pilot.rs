@@ -22,6 +22,16 @@ const MAX_EDGES: usize = 4096;
 const MAX_TRANSITIONS: usize = 8192;
 const MAX_PATH: usize = 4096;
 
+/// Total directed points (including the two endpoints) per authored bus route.
+pub const MAX_BUS_WAYPOINTS: usize = 32;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BusPathVia {
+    pub edges: Vec<String>,
+    /// One edge occurrence per input point; two ordered points may share an edge.
+    pub waypoint_edge_indices: Vec<usize>,
+}
+
 pub struct PilotRoad<'a> {
     graph: &'a RoadTransport,
     edges: BTreeMap<&'a str, &'a RoadEdge>,
@@ -133,6 +143,12 @@ impl<'a> PilotRoad<'a> {
             } == Access::Allowed
     }
 
+    pub(crate) fn supports_bus_boarding(&self, edge_id: &str) -> bool {
+        self.edges
+            .get(edge_id)
+            .is_some_and(|edge| Self::edge_is_allowed(edge, PilotRoadMode::Bus))
+    }
+
     fn permits(&self, mode: PilotRoadMode, incoming: &str, outgoing: &str) -> bool {
         self.transitions
             .get(&(mode, incoming))
@@ -176,6 +192,54 @@ impl<'a> PilotRoad<'a> {
         Ok(())
     }
 
+    /// The reverse of a frozen tram section must follow the exact same
+    /// surveyed polyline on independently allowed opposite edges, including
+    /// their positive tram transitions. An alternate path between endpoints
+    /// or a nearby opposite carriageway is not the built track.
+    pub(super) fn validate_reverse_tram_path(
+        &self,
+        path: &[String],
+    ) -> Result<(), RoadTransportError> {
+        let mut reverse_by_endpoints = BTreeMap::<_, Vec<_>>::new();
+        for &edge in self.edges.values() {
+            if Self::edge_is_allowed(edge, PilotRoadMode::Tram) {
+                reverse_by_endpoints
+                    .entry((edge.to.as_str(), edge.from.as_str()))
+                    .or_default()
+                    .push(edge);
+            }
+        }
+        let mut predecessors: Option<Vec<&str>> = None;
+        for id in path.iter().rev() {
+            let edge = self.edges.get(id.as_str()).ok_or(MissingReference)?;
+            let permitted = predecessors.as_ref().map(|previous| {
+                previous
+                    .iter()
+                    .filter_map(|incoming| self.transitions.get(&(PilotRoadMode::Tram, incoming)))
+                    .flatten()
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+            });
+            let candidates: Vec<_> = reverse_by_endpoints
+                .get(&(edge.from.as_str(), edge.to.as_str()))
+                .into_iter()
+                .flatten()
+                .filter(|candidate| {
+                    permitted
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(candidate.id.as_str()))
+                        && candidate.geometry.iter().eq(edge.geometry.iter().rev())
+                })
+                .map(|candidate| candidate.id.as_str())
+                .collect();
+            if candidates.is_empty() {
+                return Err(AccessForbidden);
+            }
+            predecessors = Some(candidates);
+        }
+        predecessors.map(|_| ()).ok_or(InvalidData)
+    }
+
     /// State is the incoming directed edge, not the node. Arriving at a junction
     /// via a different predecessor may allow a different next movement.
     pub fn shortest_path(
@@ -192,6 +256,40 @@ impl<'a> PilotRoad<'a> {
         }
 
         self.search(mode, |_, edge| edge.from == from, |_, edge| edge.to == to)
+    }
+
+    /// Resolve the positive directed slices through exact user-selected edge
+    /// positions. This plans geometry only; a caller must authorize boarding
+    /// independently wherever it chooses to place stops.
+    pub fn bus_path_via(&self, points: &[(&str, f64)]) -> Result<BusPathVia, RoadTransportError> {
+        if !(2..=MAX_BUS_WAYPOINTS).contains(&points.len())
+            || points.iter().any(|&(_, fraction)| !position(fraction))
+        {
+            return Err(InvalidData);
+        }
+        let mut edges = Vec::<String>::new();
+        let mut waypoint_edge_indices = Vec::with_capacity(points.len());
+        waypoint_edge_indices.push(0);
+        for w in points.windows(2) {
+            let [(from, from_position), (to, to_position)] = [w[0], w[1]];
+            let slice = self.bus_path_between(from, from_position, to, to_position)?;
+            let skip = usize::from(!edges.is_empty());
+            // The two slices meet at the exact same directed edge occurrence.
+            // Drop only the duplicate join edge, not a later lap's occurrence.
+            if skip == 1 && edges.last() != slice.first() {
+                return Err(DisconnectedPath);
+            }
+            if edges.len() + slice.len() - skip > MAX_PATH {
+                return Err(InvalidData);
+            }
+            edges.extend(slice.into_iter().skip(skip));
+            waypoint_edge_indices.push(edges.len() - 1);
+        }
+        self.validate_path(PilotRoadMode::Bus, None, None, &edges)?;
+        Ok(BusPathVia {
+            edges,
+            waypoint_edge_indices,
+        })
     }
 
     pub(crate) fn bus_path_between(
@@ -361,6 +459,90 @@ mod tests {
     }
 
     #[test]
+    fn reverse_tram_requires_a_positive_reverse_movement_not_just_two_opposite_edges() {
+        let mut graph = fixture();
+        let mut reverse = graph
+            .edges
+            .iter()
+            .find(|edge| edge.id == "jd")
+            .unwrap()
+            .clone();
+        reverse.id = "dj".into();
+        (reverse.from, reverse.to) = (reverse.to, reverse.from);
+        reverse.geometry.reverse();
+        graph.edges.push(reverse);
+        let path = ids(&["aj", "jd"]);
+        assert_eq!(
+            gate(&graph, &[rule("dj", "ja", Bus)])
+                .unwrap()
+                .validate_reverse_tram_path(&path),
+            Err(AccessForbidden)
+        );
+        assert_eq!(
+            gate(&graph, &[rule("dj", "ja", Tram)])
+                .unwrap()
+                .validate_reverse_tram_path(&path),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn bus_waypoints_keep_directed_join_and_repeated_edge_occurrences() {
+        let graph = fixture();
+        let gate = gate(
+            &graph,
+            &[
+                rule("ab", "bj", Bus),
+                rule("bj", "jd", Bus),
+                rule("bj", "ja", Bus),
+                rule("ja", "ab", Bus),
+                rule("aj", "jd", Tram),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            gate.bus_path_via(&[("ab", 0.2), ("ab", 0.6), ("jd", 0.8)]),
+            Ok(BusPathVia {
+                edges: ids(&["ab", "bj", "jd"]),
+                waypoint_edge_indices: vec![0, 0, 2]
+            }),
+        );
+        let looped = [
+            ("ab", 0.8),
+            ("bj", 0.5),
+            ("ja", 0.5),
+            ("ab", 0.2),
+            ("jd", 0.4),
+        ];
+        let expected = BusPathVia {
+            edges: ids(&["ab", "bj", "ja", "ab", "bj", "jd"]),
+            waypoint_edge_indices: vec![0, 1, 2, 3, 5],
+        };
+        assert_eq!(gate.bus_path_via(&looped), Ok(expected));
+        // Do not insert an implicit loop, jump between edges, or use a tram-only turn.
+        assert_eq!(
+            gate.bus_path_via(&[("ab", 0.8), ("ab", 0.2), ("jd", 0.4)]),
+            Err(InvalidStopOrder)
+        );
+        assert_eq!(
+            gate.bus_path_via(&[("jd", 0.5), ("bj", 0.5), ("ab", 0.5)]),
+            Err(DisconnectedPath)
+        );
+        assert_eq!(
+            gate.bus_path_via(&[("aj", 0.5), ("jd", 0.3), ("jd", 0.8)]),
+            Err(DisconnectedPath)
+        );
+        assert_eq!(
+            gate.bus_path_via(&[("ab", 0.5), ("bj", f64::NAN), ("jd", 0.5)]),
+            Err(InvalidData)
+        );
+        assert_eq!(
+            gate.bus_path_via(&[("ab", 0.5); MAX_BUS_WAYPOINTS + 1]),
+            Err(InvalidData)
+        );
+    }
+
+    #[test]
     fn different_approach_can_be_legal_and_modes_do_not_leak() {
         let graph = fixture();
         let gate = gate(
@@ -439,6 +621,7 @@ mod tests {
                 name: id.into(),
                 edge_id: edge_id.into(),
                 position: 0.5,
+                location_kind: Default::default(),
             });
         }
         graph.bus_routes.push(BusRoute {

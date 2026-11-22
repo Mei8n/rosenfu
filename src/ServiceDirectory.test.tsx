@@ -25,3 +25,14 @@ test('disabled actions and empty search do not mutate selected service',()=>{
  fireEvent.change(screen.getByLabelText('系統を探す'),{target:{value:'unknown'}});
  expect(screen.getByText('一致する系統がありません')).toBeTruthy();
 });
+
+test('first appearance wins and a new committed snapshot updates the badge',()=>{
+ const props={services,selected:null,enabled:true,onChoose:vi.fn(),onCreate:vi.fn()};
+ const first={service_id:'internal-a',color:'#ffffff',symbol:'先'};
+ const second={service_id:'internal-a',color:'#000000',symbol:'後'};
+ const {rerender}=render(<ServiceDirectory {...props} appearances={[first,second]}/>);
+ const badge=()=>screen.getByRole('button',{name:'系統編集: 各駅停車'}).querySelector('.service-badge')?.textContent;
+ expect(badge()).toBe('先');
+ rerender(<ServiceDirectory {...props} appearances={[second,first]}/>);
+ expect(badge()).toBe('後');
+});

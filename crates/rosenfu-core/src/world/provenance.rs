@@ -598,10 +598,10 @@ impl World {
             .iter()
             .any(|s| s.key == source_record.key)
         {
-            candidate.data.source_records.push(source_record);
+            candidate.data_mut().source_records.push(source_record);
         }
         candidate
-            .data
+            .data_mut()
             .alignment_provenance
             .push(AlignmentProvenance {
                 derived_slice: None,
