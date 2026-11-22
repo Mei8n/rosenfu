@@ -54,7 +54,7 @@ import {twoEndedJoin} from "./twoEndedJoin";
 import {DeletionDialog} from "./DeletionDialog";
 import {removePlannedTarget,type PlannedDeleteTarget} from "./plannedDeletion";
 import {deletionSections,anchorIndices} from "./deletionSections";
-import {destinationJoinError,occupiedEndpoint} from "./destinationJoin";
+import {destinationJoinError,mixedTramTracks,occupiedEndpoint} from "./destinationJoin";
 import type {EndpointConnection} from "./destinationJoin";
 import {anchorDragFeedback} from "./anchorDragFeedback";
 import {PlanDeleteDialog} from "./PlanDeleteDialog";
@@ -385,6 +385,7 @@ export function App() {
   const [startLevel,setStartLevel]=useState<SectionInfrastructure["level"]|undefined>(undefined);
   const [infrastructure,setInfrastructure]=useState<SectionInfrastructure>(DEFAULT_INFRASTRUCTURE);
   const [trackType,setTrackType]=useState<TrackType>("normal");
+  const selectedTrackType=useRef<TrackType|null>(null);
   const [designSpeedKmh,setDesignSpeedKmh]=useState(120);
   const [roadFollowing,setRoadFollowing]=useState(false);
   const [tramCtrl,setTramCtrl]=useState(false);
@@ -417,7 +418,7 @@ export function App() {
   const graphIndex=useMemo(()=>graphBundle?indexGraphDisplay(graphBundle.graph):[],[graphBundle]);
   const graphDisplay=useMemo(()=>queryGraphDisplay(graphIndex,viewBounds(camera,mapSize),camera.zoom,graphVisible),[graphIndex,camera,mapSize,graphVisible]);
 
-  function chooseTrackType(value:TrackType){cancelParallel();setParallelMode(false);setTrackType(value);setDesignSpeedKmh(defaultDesignSpeed(value));setRoadFollowing(value==="tram");setReferencePanel(value==="tram");setHoverPoint(null);}
+  function chooseTrackType(value:TrackType){selectedTrackType.current=value;cancelParallel();setParallelMode(false);setTrackType(value);setDesignSpeedKmh(defaultDesignSpeed(value));setRoadFollowing(value==="tram");setReferencePanel(value==="tram");setHoverPoint(null);}
   const nextPathId = useRef(2);
   const [plannedStations,setPlannedStations]=useState<PlannedStation[]>([]);
   const nextPlannedStationId=useRef(1);
@@ -568,6 +569,7 @@ export function App() {
   function selectPath(id:number,resume=true,endpoint:"start"|"end"="end") {
     if(!enabled || referenceCopy.active)return;
     const found=parkedPaths.find(path=>path.id===id);if(!found||found.reference||found.ofmPath)return;const target={...found};
+    selectedTrackType.current=null;
     const current=parkCurrentPlan();
     if(current)parkAnchorHistory();
     const history=parkedAnchorHistory.current.get(id);parkedAnchorHistory.current.delete(id);
@@ -879,7 +881,7 @@ export function App() {
   const demandVersion=useMemo(()=>({world,operationRevision}),[world,operationRevision]);
   const closeGuard = useUnsavedCloseGuard(dirty || plansDirty || unapplied || stationResizePending);
   function restoreConstructionPlans(value:ConstructionPlans|null|undefined,compact=false){
-    parkedAnchorHistory.current.clear();
+    parkedAnchorHistory.current.clear();selectedTrackType.current=null;
     const raw=value??emptyConstructionPlans(),original={...raw,infrastructure:raw.infrastructure?.track_count===1&&raw.infrastructure.level==="ground"?undefined:raw.infrastructure},restored=compact?compactEmptyPlans(original):original,ids=nextConstructionIds(restored);
     setPlans(restored.plans);setParkedPaths(restored.parkedPaths);setActivePathId(restored.activePathId);setActivePlanId(restored.activePlanId);
     setDraftPoints(restored.draftPoints);setDraftEditedGeometry(restored.draftEditedGeometry);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints(restored.redoPoints);setDraftExtension(restored.draftExtension);setDraftDestination(restored.draftDestination);setDraftRedoDestination(restored.draftRedoDestination);setDraftFinished(restored.draftFinished);
@@ -1440,8 +1442,15 @@ export function App() {
           if(occupiedEndpoint(world?.alignment_connections??[],{alignmentId:target.alignment.id,endpoint:target.endpoint})){setError("この端点は接続済みです");return;}
           if(draftFinished)newPath(true);
           setDraftDestination(undefined);setDraftRedoDestination(undefined);setDraftExtension({alignmentId:target.alignment.id,endpoint:target.endpoint});
-          setDraftJunctionSource(undefined);setStartLevel(endpointInfrastructure(target.alignment,target.endpoint).level);setInfrastructure(endpointInfrastructure(target.alignment,target.endpoint));setTrackType(target.alignment.track_type??"normal");setDesignSpeedKmh(target.alignment.design_speed_kmh??defaultDesignSpeed(target.alignment.track_type??"normal"));/* Keep the selected drawing assistance when starting from built track. */
-          setDraftAnchorLevels([endpointInfrastructure(target.alignment,target.endpoint).level]);setRedoAnchorLevels([]);setDraftPoints([target.point]);setRedoPoints([]);setHoverPoint(null);setDraftFinished(false);
+          const sourceType=target.alignment.track_type??"normal",sourceInfrastructure=endpointInfrastructure(target.alignment,target.endpoint);
+          // A deliberate tram/rail choice builds a separate span. An ordinary
+          // extension still inherits the existing type and speed.
+          if(selectedTrackType.current!==trackType||!mixedTramTracks(sourceType,trackType)){
+            if(sourceType!==trackType)selectedTrackType.current=null;
+            setTrackType(sourceType);setDesignSpeedKmh(target.alignment.design_speed_kmh??defaultDesignSpeed(sourceType));
+          }
+          setDraftJunctionSource(undefined);setStartLevel(sourceInfrastructure.level);setInfrastructure(sourceInfrastructure);
+          setDraftAnchorLevels([sourceInfrastructure.level]);setRedoAnchorLevels([]);setDraftPoints([target.point]);setRedoPoints([]);setHoverPoint(null);setDraftFinished(false);
           setNotice("建設済み線路の"+(target.endpoint==="start"?"始点":"終点")+"から延伸を計画しています。着工まで既存線路は変更されません。");return;
         }
         const junction=nearestJunctionSource(alignments as JunctionSource['expectedAlignment'][],coordinates,camera,mapViewport(rect.width,rect.height).scale,world?.companies[0]?.id,infrastructure.level);

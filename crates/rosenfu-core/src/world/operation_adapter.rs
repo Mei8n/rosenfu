@@ -376,6 +376,9 @@ impl World {
         let occurrences = self
             .service_path_occurrences(config.service_id)
             .map_err(|_| invalid())?;
+        let start = occurrences.first().ok_or_else(invalid)?.station_id;
+        let mixed_tram =
+            service_paths::is_mixed_tram_service(&self.data, path, start).map_err(|_| invalid())?;
         let mut runs = self.compile_rail_direction(
             &path.legs,
             &path.stops,
@@ -392,6 +395,13 @@ impl World {
             .flatten()
         {
             runs.extend(return_legs);
+        }
+        if mixed_tram {
+            // Match the mixed tram ceiling on every traversed section, without
+            // changing the existing track model's lower fixed Tram cap.
+            for section in runs.iter_mut().flat_map(|leg| &mut leg.sections) {
+                section.speed_limit_kmh = section.speed_limit_kmh.min(75.);
+            }
         }
         Ok(ServiceRunSpec {
             service_id: config.service_id.0.to_string(),

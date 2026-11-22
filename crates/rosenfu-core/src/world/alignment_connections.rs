@@ -61,8 +61,6 @@ impl WorldDraft {
             let (b, other, bi) = ends[1];
             // Connections require equal actual elevation, not merely equal map coordinates.
             if a.owner != b.owner
-                || (a.track_type != b.track_type
-                    && (a.track_type == TrackType::Tram || b.track_type == TrackType::Tram))
                 || point != other
                 || (a.endpoint_height_m(connection.a.endpoint)
                     - b.endpoint_height_m(connection.b.endpoint))
@@ -97,6 +95,13 @@ impl WorldDraft {
         }
         // Reject unsupported multi-way cliques/cycles rather than silently choosing
         // a movement. One turnout consists of a stem and two branches.
+        let tram_alignment_ids: BTreeSet<_> = self
+            .alignments
+            .iter()
+            .filter(|a| a.track_type == TrackType::Tram)
+            .map(|a| a.id)
+            .collect();
+        let mut mixed_ports = BTreeSet::new();
         for initial in occupied.keys() {
             let mut ports = BTreeSet::from([*initial]);
             loop {
@@ -114,6 +119,30 @@ impl WorldDraft {
                     break;
                 }
             }
+            if ports.iter().any(|(id, _)| tram_alignment_ids.contains(id))
+                && ports.iter().any(|(id, _)| !tram_alignment_ids.contains(id))
+            {
+                mixed_ports.extend(ports);
+            }
+        }
+        if !mixed_ports.is_empty()
+            && self.station_placements.iter().any(|p| {
+                let at_start = mixed_ports.contains(&(p.alignment_id, false));
+                let at_end = mixed_ports.contains(&(p.alignment_id, true));
+                if !at_start && !at_end {
+                    return false;
+                }
+                self.alignments
+                    .iter()
+                    .find(|a| a.id == p.alignment_id)
+                    .is_some_and(|a| {
+                        let half = p.length_m / (2. * a.length_m());
+                        (at_start && p.position <= half + 1e-9)
+                            || (at_end && p.position >= 1. - half - 1e-9)
+                    })
+            })
+        {
+            return Err(WorldError::StationAtMixedTrackConnection);
         }
         Ok(())
     }

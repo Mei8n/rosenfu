@@ -18,7 +18,7 @@ pub use ofm::{OfmBindingInput, OfmRawInput};
 #[path = "session/save_slots.rs"]
 mod save_slots;
 use rosenfu_core::world::{
-    AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, World, WorldDraft,
+    AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, TrackType, World, WorldDraft,
 };
 pub use save_slots::SaveSlotList;
 use std::path::{Path, PathBuf};
@@ -1359,7 +1359,7 @@ impl WorldEditor {
             if alignment.destination.is_some() && alignment.extension.is_none() {
                 return Err("接続先を指定するには既存線路から延伸してください。".into());
             }
-            if let Some(extension) = alignment.extension {
+            if let Some(extension) = &alignment.extension {
                 let old = candidate
                     .world
                     .snapshot()
@@ -1367,6 +1367,13 @@ impl WorldEditor {
                     .iter()
                     .find(|a| a.id == extension.alignment_id)
                     .ok_or("延伸対象の線路がありません。")?;
+                if Self::mixed_tram_track(old.track_type, alignment.track_type) {
+                    // A change between tram-only and conventional infrastructure
+                    // is a junction to a new span, not an extension of the old ID.
+                    let start_height = old.endpoint_height_m(extension.endpoint);
+                    candidate.build_sloped_plan(alignment, start_height)?;
+                    continue;
+                }
                 if old.track_type != alignment.track_type {
                     return Err("延伸対象と線路種別が一致しません。".into());
                 }
@@ -1551,7 +1558,10 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         Ok(())
     }
-    /// A rising/falling extension is a new explicit span, never a rewrite of old track.
+    fn mixed_tram_track(a: TrackType, b: TrackType) -> bool {
+        (a == TrackType::Tram) != (b == TrackType::Tram)
+    }
+    /// A rising/falling or mixed-track extension is a new explicit span.
     fn build_sloped_plan(
         &mut self,
         alignment: PlannedAlignment,
@@ -1565,17 +1575,21 @@ impl WorldEditor {
                 .iter()
                 .find(|a| a.id == extension.alignment_id && a.owner == self.company)
                 .ok_or("延伸対象の自社線路がありません。")?;
-            if source.track_type != alignment.track_type {
-                return Err("延伸対象と線路種別が一致しません。".into());
+            if Self::mixed_tram_track(source.track_type, alignment.track_type) {
+                alignment.design_speed_kmh
+            } else {
+                if source.track_type != alignment.track_type {
+                    return Err("延伸対象と線路種別が一致しません。".into());
+                }
+                let speed = source.effective_design_speed_kmh();
+                if alignment
+                    .design_speed_kmh
+                    .is_some_and(|v| (v - speed).abs() > 1e-9)
+                {
+                    return Err("延伸では元の線路の目標最高速度を引き継ぎます。".into());
+                }
+                Some(speed)
             }
-            let speed = source.effective_design_speed_kmh();
-            if alignment
-                .design_speed_kmh
-                .is_some_and(|v| (v - speed).abs() > 1e-9)
-            {
-                return Err("延伸では元の線路の目標最高速度を引き継ぎます。".into());
-            }
-            Some(speed)
         } else {
             alignment.design_speed_kmh
         };
@@ -6078,6 +6092,79 @@ mod endpoint_join_tests {
             }
         }
     }
+    #[test]
+    fn reopened_mixed_tram_plan_creates_distinct_span_and_preserves_source() {
+        use rosenfu_core::world::{ConstructionPlans, SectionInfrastructure};
+        for (source_type, built_type) in [
+            (TrackType::Normal, TrackType::Tram),
+            (TrackType::Tram, TrackType::HighSpeed),
+        ] {
+            let mut editor = WorldEditor::new();
+            editor.company_setup_required = false;
+            let source = editor
+                .world
+                .build_alignment_typed(
+                    editor.company,
+                    "Existing".into(),
+                    vec![p(139.), p(139.01)],
+                    source_type,
+                )
+                .unwrap();
+            let desired_speed = built_type.default_design_speed_kmh();
+            let points = vec![p(139.01), p(139.02)];
+            let plans: ConstructionPlans = serde_json::from_value(serde_json::json!({
+                "version":1,"plans":[{"id":1,"name":"Mixed plan"}],"parkedPaths":[],
+                "activePathId":1,"activePlanId":1,"draftPoints":points,"redoPoints":[],
+                "draftExtension":{"alignmentId":source,"endpoint":"end"},
+                "trackType":built_type,"designSpeedKmh":desired_speed,"roadFollowing":false,
+                "plannedStations":[],"draftFinished":true
+            }))
+            .unwrap();
+            let d = tempfile::tempdir().unwrap();
+            let file = d.path().join("mixed-plan.rosenfu");
+            editor
+                .save_with_plans(&file, Some(plans.clone()), false)
+                .unwrap();
+            let reopened = editor.load(&file).unwrap();
+            assert_eq!(reopened.construction_plans, Some(plans));
+            let expected = reopened.alignments[0].clone();
+            let result = editor
+                .build_plan(vec![PlannedAlignment {
+                    ofm_path: None,
+                    anchor_levels: None,
+                    junction_source: None,
+                    start_level: None,
+                    infrastructure: SectionInfrastructure::default(),
+                    anchor_indices: None,
+                    name: "New type".into(),
+                    points,
+                    track_type: built_type,
+                    design_speed_kmh: Some(desired_speed),
+                    stations: vec![],
+                    reference: None,
+                    extension: Some(PlannedAlignmentExtension {
+                        alignment_id: source,
+                        endpoint: AlignmentEndpoint::End,
+                    }),
+                    destination: None,
+                }])
+                .unwrap();
+            assert_eq!(result.alignments.len(), 2);
+            assert_eq!(result.alignments[0], expected);
+            assert_eq!(result.alignments[1].track_type, built_type);
+            assert_eq!(
+                result.alignments[1].effective_design_speed_kmh(),
+                desired_speed
+            );
+            assert_eq!(result.alignment_connections.len(), 1);
+            assert_eq!(result.alignment_connections[0].a.alignment_id, source);
+            assert_eq!(
+                result.alignment_connections[0].b.alignment_id,
+                result.alignments[1].id
+            );
+        }
+    }
+
     #[test]
     fn moved_or_missing_target_cannot_publish_the_extension() {
         let mut editor = WorldEditor::new();

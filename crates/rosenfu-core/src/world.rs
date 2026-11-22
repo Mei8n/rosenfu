@@ -208,6 +208,8 @@ pub enum WorldError {
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
+    TramTrackRequiresStop,
+    StationAtMixedTrackConnection,
     InvalidServiceAppearance,
     InvalidServiceRouteBinding,
     InvalidProvenance,
@@ -231,6 +233,12 @@ impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if matches!(self, Self::InvalidRoadTransport) {
             return write!(f,"道路交通の参照が不整合です。併用軌道の関連付けを外してから線路を延伸・変更・撤去してください。");
+        }
+        if matches!(self, Self::TramTrackRequiresStop) {
+            return write!(f, "普通列車はトラム専用線を通れません。トラムとして運行するには、通過ではなくトラムのホームを停車駅に指定してください。");
+        }
+        if matches!(self, Self::StationAtMixedTrackConnection) {
+            return write!(f, "トラム専用線と鉄道線の接続点には駅を設置できません。接続点から離れた場所に設置してください。");
         }
         if matches!(self, Self::StationOnGradient) {
             return write!(f,"ホーム全長が平坦な場所に駅を設置してください。勾配やその境界に重なるホームは設置できません。");
