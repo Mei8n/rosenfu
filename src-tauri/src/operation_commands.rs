@@ -35,6 +35,18 @@ pub fn configure_operation_service(
         )
 }
 #[tauri::command]
+pub fn preview_nominal_trainsets(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service_id: ServiceId,
+    configuration_token: String,
+    request: rosenfu_core::operation::service_planning::FleetPlanningRequest,
+) -> Result<rosenfu_core::operation::service_planning::NominalFleetPlanning, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .preview_nominal_trainsets(service_id, &configuration_token, request)
+}
+#[tauri::command]
 pub fn set_operation_clock(
     editor: State<'_, Mutex<WorldEditor>>,
     paused: bool,

@@ -1,6 +1,7 @@
 import {createContext,useContext,useEffect,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import './operationsPanel.css';
+import {TrainsetPlanning} from './TrainsetPlanning';
 
 type Timetable={first_departure_ms:number;last_departure_ms:number;headway_ms:number};
 type Vehicle={max_speed_kmh:number;acceleration_mps2:number;braking_mps2:number;length_m:number};
@@ -172,6 +173,8 @@ export function ServiceOperations({serviceId,enabled}:{serviceId:string;enabled:
   <h4>運行</h4>
   <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={!enabled||busy||blocked||!!blocker} send={send} expectedOperationToken={view.timetable_edit_token}/>
   {blocker?<p>{blocker}</p>:view.now_ms>0&&<p>現在の時刻と他のダイヤはそのままです。変更後の過去の便は走りません。</p>}
+  {config&&view.configuration_token&&<TrainsetPlanning serviceId={serviceId} configurationToken={view.configuration_token}
+   currentHeadwayMs={config.timetable.headway_ms} enabled={enabled&&!blocked&&!view.invalidated}/>}
   <ActiveVehicles trains={trains} configured={!!config} now={view.now_ms} invalidated={view.invalidated}/>
   {error&&<p role="status">時刻欄の運行エラーを確認してください。</p>}
  </section>;

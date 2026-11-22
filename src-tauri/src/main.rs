@@ -926,6 +926,7 @@ fn main() {
             operation_commands::set_fixed_od_scenario,
             operation_commands::configure_bus_operation,
             operation_commands::configure_operation_service,
+            operation_commands::preview_nominal_trainsets,
             operation_commands::set_operation_clock,
             operation_commands::advance_operation,
             operation_commands::reset_operation,

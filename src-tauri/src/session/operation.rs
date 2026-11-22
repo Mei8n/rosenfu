@@ -242,6 +242,46 @@ impl WorldEditor {
                 .unwrap_or_default(),
         }
     }
+    pub fn preview_nominal_trainsets(
+        &self,
+        service_id: ServiceId,
+        configuration_token: &str,
+        request: rosenfu_core::operation::service_planning::FleetPlanningRequest,
+    ) -> Result<rosenfu_core::operation::service_planning::NominalFleetPlanning, String> {
+        use rosenfu_core::operation::service_planning::FleetPlanningError;
+        if configuration_token != self.operation_configuration_token() {
+            return Err("運行設定が変わりました。もう一度お試しください。".into());
+        }
+        if !self
+            .world
+            .snapshot()
+            .services
+            .iter()
+            .any(|service| service.id == service_id && service.owner == self.company)
+        {
+            return Err("自社の鉄道系統を選択してください。".into());
+        }
+        let operation = self
+            .world
+            .operation()
+            .filter(|op| !op.invalidated)
+            .ok_or("先に運行する系統を設定してください。")?;
+        operation
+            .runtime
+            .preview_nominal_fleet(&service_id.0.to_string(), request)
+            .map_err(|error| match error {
+                FleetPlanningError::UnsupportedRun => {
+                    "両端で同じ線路に折り返せる既存の往復系統だけを試算できます。".to_owned()
+                }
+                FleetPlanningError::InvalidInput => {
+                    "運転間隔または編成数に正の値を入れてください。".to_owned()
+                }
+                FleetPlanningError::TimeOutsideBudget => {
+                    "往復時間が試算上限を超えています。".to_owned()
+                }
+            })
+    }
+
     pub fn configure_operation_service(
         &mut self,
         service_id: ServiceId,
@@ -911,6 +951,27 @@ mod tests {
         .unwrap();
         e
     }
+    #[test]
+    fn nominal_fleet_uses_the_existing_authoritative_round_trip_without_editing() {
+        use rosenfu_core::operation::service_planning::FleetPlanningRequest;
+        let editor = editor();
+        let operation = editor.world.operation().unwrap();
+        let config = &operation.configs[0];
+        let token = editor.operation_configuration_token();
+        let before = editor.world.operation_save().unwrap();
+        assert_eq!(before.runtime.services[0].legs.len(), 2);
+        let trial = FleetPlanningRequest::TimedHeadway { headway_ms: 60_000 };
+        let plan = editor
+            .preview_nominal_trainsets(config.service_id, &token, trial)
+            .unwrap();
+        assert_eq!(plan.trainsets, plan.cycle_ms.div_ceil(60_000));
+        assert_eq!(plan.cycle_ms, plan.running_ms + plan.dwell_and_clearance_ms);
+        assert!(editor
+            .preview_nominal_trainsets(config.service_id, "stale", trial)
+            .is_err());
+        assert_eq!(editor.world.operation_save(), Some(before));
+    }
+
     // Non-qualifying ordinary rail geometry keeps the fixed reservation
     // model when the previously skipped middle station is added as a stop.
     fn stop_edit_editor(

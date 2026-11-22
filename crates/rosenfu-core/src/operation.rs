@@ -2,6 +2,7 @@
 //! distances, caps and shared resource IDs; the renderer never owns this clock.
 use serde::{Deserialize, Serialize};
 mod passenger_replay;
+pub mod service_planning;
 pub use passenger_replay::{ReplayItinerary, ReplayItineraryStatus, ReplayRide};
 use std::collections::{BTreeMap, BTreeSet};
 
