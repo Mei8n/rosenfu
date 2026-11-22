@@ -1,5 +1,6 @@
-//! Ground-only, bounded OFM bus gameplay graph. This is not traffic authorization,
-//! a coverage guarantee, or a way to install a native road catalog.
+//! Bounded OFM bus gameplay graph: legacy ground-only and explicitly observed
+//! grade continuations. Not traffic authorization, guaranteed coverage or a road catalog.
+use super::bus_grade::{self, Grade};
 use super::{
     number, Error, EvidenceStore, RawValue, Result, SourceSpan, TileBinding, TileLine, MAX_TILES,
 };
@@ -57,12 +58,22 @@ pub struct BusInteriorStop {
 }
 pub(crate) const BUS_STOP_DENOMINATOR: u32 = 1_000_000;
 
+/// Opted-in structure-aware topology. Absent uses the original ground-only
+/// routing rule to reproduce already authored and saved paths exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BusGradePolicy {
+    ObservedConnectors,
+}
+
 /// A reproducible request, not a proof or an independently trusted saved route.
 /// Call the solver again against the matching verified tile to reconstruct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusPathBinding {
     pub rule: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade_policy: Option<BusGradePolicy>,
     pub tile_key: String,
     pub tile_raw_sha256: String,
     pub respect_oneway: bool,
@@ -93,11 +104,20 @@ pub struct BusPath {
     pub via_point_indices: Vec<usize>,
     pub(crate) steps: Vec<BusSourceStep>,
     pub(crate) points_grid: Vec<BusGridPoint>,
+    node_suffixes: Vec<String>,
 }
 
 impl BusPath {
     /// Directed materialized identity shared by every ordinary route that
     /// traverses this exact verified raw segment (or owned seam-clipped part).
+    pub(crate) fn node_id_at(&self, i: usize) -> Option<String> {
+        let grid = self.points_grid.get(i)?;
+        let suffix = self.node_suffixes.get(i)?;
+        Some(format!("{}{suffix}", grid.id()))
+    }
+    pub(crate) fn atom_is_ground(&self, i: usize) -> bool {
+        self.steps.get(i).is_some_and(|step| step.ground)
+    }
     pub fn source_atom_id(&self, index: usize) -> Option<String> {
         self.atom_id(index, false)
     }
@@ -171,6 +191,7 @@ impl BusPath {
 /// Directional, potentially seam-clipped atom of one original raw segment.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct BusSourceStep {
+    ground: bool,
     pub span: usize,
     pub raw_ordinal: usize,
     pub from: f64,
@@ -237,7 +258,22 @@ fn oneway(value: Option<&RawValue>) -> Option<Direction> {
     }
 }
 
-fn eligible(line: &TileLine, respect_oneway: bool) -> Option<Direction> {
+fn eligible(line: &TileLine, respect_oneway: bool, structured: bool) -> Option<(Direction, Grade)> {
+    if structured {
+        if !bus_grade::supported_class(line) || !bus_grade::allowed_access(line) {
+            return None;
+        }
+        let grade = bus_grade::grade(line)?;
+        let tagged = oneway(line.attributes.get("oneway"))?;
+        return Some((
+            if respect_oneway {
+                tagged
+            } else {
+                Direction::Both
+            },
+            grade,
+        ));
+    }
     let attrs = &line.attributes;
     if !matches!(attrs.get("class"), Some(RawValue::String(s)) if matches!(
         s.as_str(), "primary" | "secondary" | "tertiary" | "minor" | "service" |
@@ -257,11 +293,14 @@ fn eligible(line: &TileLine, respect_oneway: bool) -> Option<Direction> {
         return None;
     }
     let tagged = oneway(attrs.get("oneway"))?;
-    Some(if respect_oneway {
-        tagged
-    } else {
-        Direction::Both
-    })
+    Some((
+        if respect_oneway {
+            tagged
+        } else {
+            Direction::Both
+        },
+        Grade::Ground,
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -409,6 +448,7 @@ struct Line<'a> {
     raw: &'a TileLine,
     base: usize,
     direction: Direction,
+    grade: Grade,
     ports: BTreeMap<usize, Vec<Port>>,
 }
 type Groups = BTreeMap<(Cell, [i32; 2]), Vec<(usize, usize, bool)>>;
@@ -490,6 +530,7 @@ pub fn find_gameplay_bus_path(
     let tile = store.decoded(tile_key)?;
     let request = BusPathBinding {
         rule: BUS_GRAPH_RULE.into(),
+        grade_policy: None,
         tile_key: tile_key.into(),
         tile_raw_sha256: tile.binding.raw_sha256.clone(),
         respect_oneway,
@@ -510,13 +551,30 @@ struct BusGraphLine {
     fragment_id: String,
     extent: u32,
     metric_scale: u128,
+    grade: Grade,
 }
+#[derive(Debug, Clone, Copy)]
+enum NodeSource {
+    Surface,
+    Vertex {
+        grade: Grade,
+        line: usize,
+        raw_vertex: usize,
+    },
+    Seam {
+        grade: Grade,
+        one: usize,
+        two: usize,
+    },
+}
+
 #[derive(Debug)]
 pub(super) struct GameplayBusGraph {
     lines: Vec<BusGraphLine>,
     offsets: BTreeMap<String, BTreeMap<(u32, u32), (usize, usize)>>,
     representative: Vec<usize>,
     geometry: Vec<BusGridPoint>,
+    node_sources: Vec<NodeSource>,
     adj: Vec<Vec<Arc>>,
 }
 impl GameplayBusGraph {
@@ -524,6 +582,31 @@ impl GameplayBusGraph {
         let &(base, n) = self.offsets.get(key)?.get(&(v.feature, v.line))?;
         let i = v.vertex as usize;
         (i < n).then(|| self.representative[base + i])
+    }
+    fn node_suffix(&self, index: usize) -> String {
+        let (grade, source) = match self.node_sources[index] {
+            NodeSource::Surface => return String::new(),
+            NodeSource::Vertex {
+                grade,
+                line,
+                raw_vertex,
+            } => (
+                grade,
+                format!("v\0{}\0{raw_vertex}", self.lines[line].fragment_id),
+            ),
+            NodeSource::Seam { grade, one, two } => (
+                grade,
+                format!(
+                    "s\0{}\0{}",
+                    self.lines[one].fragment_id, self.lines[two].fragment_id
+                ),
+            ),
+        };
+        format!(
+            "{}:{}",
+            grade.node_suffix(),
+            super::raw_sha256(source.as_bytes())
+        )
     }
     pub(super) fn fits_cache(&self) -> bool {
         // Bound the one retained compiled graph independently from tile/path
@@ -535,6 +618,7 @@ impl GameplayBusGraph {
                 .map(|a| a.capacity() * std::mem::size_of::<Arc>())
                 .sum::<usize>()
             + self.geometry.capacity() * std::mem::size_of::<BusGridPoint>()
+            + self.node_sources.capacity() * std::mem::size_of::<NodeSource>()
             + self.representative.capacity() * std::mem::size_of::<usize>()
             + self
                 .offsets
@@ -597,14 +681,26 @@ pub(super) fn build_gameplay_bus_graph(
             && !(x == 0 && tile.x > min_x)
             && !(y == 0 && tile.y > min_y)
     };
+    let structured = query.grade_policy == Some(BusGradePolicy::ObservedConnectors);
     let mut groups: Groups = BTreeMap::new();
+    let mut observed_counts: BTreeMap<_, usize> = BTreeMap::new();
+    let mut node_sources = Vec::new();
     let mut lines = Vec::<Line<'_>>::new();
     let mut offsets: BTreeMap<String, BTreeMap<(u32, u32), (usize, usize)>> = BTreeMap::new();
     let mut geometry = Vec::new();
     let mut ids = BTreeMap::new();
     for tile in tiles {
         for raw in &tile.lines {
-            let Some(direction) = eligible(raw, query.respect_oneway) else {
+            if structured {
+                for &p in &raw.coordinates {
+                    if owned(&tile.binding, raw.extent as i32, p) {
+                        *observed_counts
+                            .entry((Cell(tile.binding.x, tile.binding.y), p))
+                            .or_default() += 1;
+                    }
+                }
+            }
+            let Some((direction, grade)) = eligible(raw, query.respect_oneway, structured) else {
                 continue;
             };
             if raw.coordinates.windows(2).any(|p| p[0] == p[1]) {
@@ -622,6 +718,17 @@ pub(super) fn build_gameplay_bus_graph(
                         .or_default()
                         .push((lines.len(), base + i, i == 0 || i + 1 == n));
                 }
+                node_sources.push(
+                    if grade.is_ground() && (!structured || !bus_grade::fast_class(raw)) {
+                        NodeSource::Surface
+                    } else {
+                        NodeSource::Vertex {
+                            grade,
+                            line: lines.len(),
+                            raw_vertex: i,
+                        }
+                    },
+                );
                 geometry.push(BusGridPoint::new(
                     &tile.binding,
                     raw.extent,
@@ -638,27 +745,77 @@ pub(super) fn build_gameplay_bus_graph(
                 raw,
                 base,
                 direction,
+                grade,
                 ports: BTreeMap::new(),
             });
         }
     }
 
     let mut representative: Vec<_> = (0..geometry.len()).collect();
-    for group in groups.values().filter(|g| g.len() > 1 && g.len() <= 4) {
+    let join_surface = |group: &[(usize, usize, bool)], representative: &mut [usize]| {
+        if !(2..=4).contains(&group.len()) {
+            return;
+        }
         let mut distinct = BTreeSet::new();
         if group.iter().filter(|(_, _, e)| !e).count() > 1
             || !group.iter().all(|(line, _, _)| distinct.insert(*line))
         {
-            continue;
+            return;
         }
         for &(_, id, _) in group {
             representative[id] = group[0].1;
+        }
+    };
+    for (coordinate, group) in &groups {
+        if !structured {
+            join_surface(group, &mut representative);
+            continue;
+        }
+        let ground: Vec<_> = group
+            .iter()
+            .copied()
+            .filter(|&(line, _, _)| {
+                lines[line].grade.is_ground() && !bus_grade::fast_class(lines[line].raw)
+            })
+            .collect();
+        join_surface(&ground, &mut representative);
+        if observed_counts.get(coordinate) != Some(&2) {
+            continue;
+        }
+        let [(a, one, true), (b, two, true)] = group.as_slice() else {
+            continue;
+        };
+        if a == b
+            || (lines[*a].grade.is_ground()
+                && lines[*b].grade.is_ground()
+                && !bus_grade::fast_class(lines[*a].raw)
+                && !bus_grade::fast_class(lines[*b].raw))
+        {
+            continue;
+        }
+        let left = &lines[*a];
+        let right = &lines[*b];
+        if bus_grade::exact_continuation(
+            left.raw,
+            *one - left.base,
+            left.grade,
+            right.raw,
+            *two - right.base,
+            right.grade,
+        ) {
+            let chosen = if right.grade.is_ground() && !left.grade.is_ground() {
+                *two
+            } else {
+                *one
+            };
+            representative[*one] = chosen;
+            representative[*two] = chosen;
         }
     }
 
     if query.rule == BUS_RECTANGLE_RULE {
         let coords: Vec<_> = cells.iter().map(|c| (c.0, c.1)).collect();
-        for seam in super::candidates::boundary_candidates_for_bus(store, &coords)? {
+        for seam in super::candidates::boundary_candidates_for_bus(store, &coords, structured)? {
             let (Some(&a), Some(&b)) = (ids.get(&seam.a_fragment), ids.get(&seam.b_fragment))
             else {
                 continue;
@@ -672,6 +829,9 @@ pub(super) fn build_gameplay_bus_graph(
             let (low, high) = if a_direction { (a, b) } else { (b, a) };
             let a_line = &lines[low];
             let b_line = &lines[high];
+            if a_line.grade != b_line.grade {
+                continue;
+            }
             let (Some(a_cut), Some(b_cut)) = (
                 seam_cut(
                     a_line.raw,
@@ -706,6 +866,17 @@ pub(super) fn build_gameplay_bus_graph(
                 return Err(Error::Limit);
             }
             geometry.push(BusGridPoint::new(a_line.tile, extent, offsets));
+            node_sources.push(
+                if a_line.grade.is_ground() && (!structured || !bus_grade::fast_class(a_line.raw)) {
+                    NodeSource::Surface
+                } else {
+                    NodeSource::Seam {
+                        grade: a_line.grade,
+                        one: low,
+                        two: high,
+                    }
+                },
+            );
             for (index, cut) in [(low, a_cut), (high, b_cut)] {
                 lines[index]
                     .ports
@@ -784,6 +955,7 @@ pub(super) fn build_gameplay_bus_graph(
             fragment_id: fragment(line.tile, line.raw),
             extent: line.raw.extent,
             metric_scale: scales[&line.tile.y],
+            grade: line.grade,
         })
         .collect();
     Ok(GameplayBusGraph {
@@ -791,6 +963,7 @@ pub(super) fn build_gameplay_bus_graph(
         offsets,
         representative,
         geometry,
+        node_sources,
         adj,
     })
 }
@@ -929,6 +1102,7 @@ pub(super) fn solve_gameplay_bus_graph(
     let mut spans: Vec<SourceSpan> = Vec::new();
     let mut steps = Vec::with_capacity(edges.len());
     let mut points_grid = vec![graph.geometry[source]];
+    let mut node_suffixes = vec![graph.node_suffix(source)];
     let mut length_um = 0u128;
     let mut atom_operation_micrometres = Vec::new();
     let round_trip = query.pattern == Some(BusPattern::OpenRoundTrip);
@@ -957,12 +1131,14 @@ pub(super) fn solve_gameplay_bus_graph(
             });
         }
         steps.push(BusSourceStep {
+            ground: line.grade.is_ground(),
             span: spans.len() - 1,
             raw_ordinal: arc.ordinal,
             from,
             to,
         });
         points_grid.push(graph.geometry[arc.to]);
+        node_suffixes.push(graph.node_suffix(arc.to));
     }
     let points: Vec<_> = points_grid.iter().map(|p| p.point()).collect();
     let length_m = points.windows(2).map(|p| distance(p[0], p[1])).sum();
@@ -971,6 +1147,7 @@ pub(super) fn solve_gameplay_bus_graph(
         spans,
         steps,
         points_grid,
+        node_suffixes,
         points,
         length_m,
         operation_length_mm: u64::try_from((length_um + 500) / 1000).map_err(|_| Error::Limit)?,

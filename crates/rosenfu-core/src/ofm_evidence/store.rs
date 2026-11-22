@@ -63,6 +63,7 @@ struct State {
 #[derive(Debug, PartialEq, Eq)]
 struct BusCompiledGraphKey {
     rule: String,
+    grade_policy: Option<super::BusGradePolicy>,
     respect_oneway: bool,
     tile_keys_and_hashes: Vec<(String, String)>,
 }
@@ -461,6 +462,7 @@ impl EvidenceStore {
         }
         let key = BusCompiledGraphKey {
             rule: proposed.rule.clone(),
+            grade_policy: proposed.grade_policy,
             respect_oneway: proposed.respect_oneway,
             tile_keys_and_hashes: keys
                 .iter()
@@ -596,6 +598,7 @@ mod bus_preview_cache_tests {
         };
         let mut q = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
             tile_key: key.into(),
             tile_raw_sha256: sha,
             respect_oneway: false,

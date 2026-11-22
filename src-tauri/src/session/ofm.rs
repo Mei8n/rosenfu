@@ -233,6 +233,7 @@ mod tests {
         };
         let request = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
             tile_key: key.clone(),
             tile_raw_sha256: sha.clone(),
             respect_oneway: true,
@@ -454,6 +455,7 @@ mod tests {
             );
             let binding = BusPathBinding {
                 rule: BUS_GRAPH_RULE.into(),
+                grade_policy: None,
                 tile_key: key.clone(),
                 tile_raw_sha256: sha,
                 respect_oneway: true,
@@ -753,6 +755,7 @@ mod tests {
         };
         let request = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
             tile_key: key.clone(),
             tile_raw_sha256: sha.clone(),
             respect_oneway: false,
@@ -1068,6 +1071,7 @@ mod tests {
         let all = cached();
         let request = BusPathBinding {
             rule: BUS_RECTANGLE_RULE.into(),
+            grade_policy: None,
             tile_key: all[0].1.key.clone(),
             tile_raw_sha256: all[0].0.sha256.clone(),
             end_tile_key: Some(all[2].1.key.clone()),
@@ -1298,6 +1302,7 @@ mod tests {
         };
         let proof = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
             tile_key: key.into(),
             tile_raw_sha256: digest.clone(),
             respect_oneway: true,
@@ -1528,6 +1533,7 @@ mod tests {
         editor.rename_company("停留所の検証".into()).unwrap();
         let actual = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
             tile_key: key.into(),
             tile_raw_sha256: sha.clone(),
             respect_oneway: false,
@@ -1730,6 +1736,128 @@ mod tests {
             .iter()
             .any(|s| s.id == loop_stops.interior_stops[0].stop_id));
         assert_eq!(loaded.undo_world_edit(changed).unwrap(), saved_loop);
+    }
+
+    #[test]
+    fn observed_bus_bridge_does_not_join_legacy_ground_at_equal_xy_after_reopen() {
+        use rosenfu_core::ofm_evidence::{
+            BusGradePolicy, BusPathBinding, BusPattern, BusVertex, BUS_GRAPH_RULE,
+        };
+        let encoded="GpgBCg50cmFuc3BvcnRhdGlvbngCKIAgEhESAgAAGAIiCQnIAcgBCpADABIYEgYAAAEBAgIYAiIMCdgEyAESrAIA9AMAEhISAgAAGAIiCgmEB1ASAHgAyAESERICAAAYAiIJCfgKyAEKkAMAGgVjbGFzcxoHYnJ1bm5lbBoFbGF5ZXIiBwoFbWlub3IiCAoGYnJpZGdlIgMKATE=";
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let sha = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+        let tile = fixture()["tileBindings"][0].clone();
+        let key = tile["canonical_url"].as_str().unwrap();
+        let cache = vec![(
+            OfmRawInput {
+                sha256: sha.clone(),
+                byte_length: bytes.len(),
+                base64: encoded.into(),
+            },
+            OfmBindingInput {
+                key: key.into(),
+                url: key.into(),
+                raw_sha256: sha.clone(),
+                revision: tile["revision"].as_str().unwrap().into(),
+                z: 14,
+                x: tile["x"].as_u64().unwrap() as u32,
+                y: tile["y"].as_u64().unwrap() as u32,
+                decoder_rule: tile["decoder_rule"].as_str().unwrap().into(),
+                license: "ODbL-1.0".into(),
+                attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+            },
+        )];
+        let v = |feature, vertex| BusVertex {
+            feature,
+            line: 0,
+            vertex,
+        };
+        let legacy = BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            tile_key: key.into(),
+            tile_raw_sha256: sha,
+            respect_oneway: false,
+            start: v(2, 0),
+            end: v(2, 2),
+            additional_tiles: vec![],
+            end_tile_key: None,
+            grade_policy: None,
+            pattern: Some(BusPattern::OpenRoundTrip),
+            via: vec![],
+            interior_stops: vec![],
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("立体交差の検証".into()).unwrap();
+        let below = editor
+            .put_gameplay_ofm_bus(
+                &editor.ofm_world_token().unwrap(),
+                "below".into(),
+                "下の道路".into(),
+                legacy.clone(),
+                cache,
+            )
+            .unwrap();
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("gradePolicy")
+            .is_none());
+        let mut approach = legacy;
+        approach.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+        approach.start = v(0, 0);
+        approach.end = v(3, 1);
+        let mut impossible = approach.clone();
+        impossible.end = v(2, 2);
+        let token = editor.ofm_world_token().unwrap();
+        assert!(editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "above".into(),
+                "橋の道路".into(),
+                impossible,
+                vec![]
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), below);
+        let both = editor
+            .put_gameplay_ofm_bus(&token, "above".into(), "橋の道路".into(), approach, vec![])
+            .unwrap();
+        assert!(both
+            .road_transport
+            .bus_routes
+            .contains(&below.road_transport.bus_routes[0]));
+        for edge in &below.road_transport.edges {
+            assert!(both.road_transport.edges.contains(edge));
+        }
+        let route = both
+            .road_transport
+            .bus_routes
+            .iter()
+            .find(|r| r.id == "above")
+            .unwrap();
+        let road = |id: &str| {
+            both.road_transport
+                .edges
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap()
+        };
+        let elevated = road(&route.edges[1]);
+        let flat = road(&below.road_transport.bus_routes[0].edges[0]);
+        assert_eq!(elevated.level, None); // source grade is not an invented metre level
+        assert_eq!(
+            flat.level,
+            Some(rosenfu_core::world::InfrastructureLevel::Ground)
+        );
+        assert_eq!(elevated.geometry[1], flat.geometry[1]);
+        assert_ne!(elevated.to, flat.to);
+        let dir = tempfile::tempdir().unwrap();
+        let save = dir.path().join("grade-bridge.rosenfu");
+        editor.save(&save).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&save).unwrap();
+        assert_eq!(reopened.snapshot(), both);
     }
 
     fn request() -> PlannedAlignment {

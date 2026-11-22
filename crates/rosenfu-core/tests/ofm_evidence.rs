@@ -1579,6 +1579,7 @@ fn bus_rectangle(cells: &[(u32, u32, &[BusFixtureLine<'_>])]) -> (Vec<TileBindin
 fn bus_rectangle_query(tiles: &[TileBinding], end: BusVertex, oneway: bool) -> BusPathBinding {
     BusPathBinding {
         rule: BUS_RECTANGLE_RULE.into(),
+        grade_policy: None,
         tile_key: tiles[0].canonical_url.clone(),
         tile_raw_sha256: tiles[0].raw_sha256.clone(),
         additional_tiles: tiles[1..]
@@ -1892,4 +1893,158 @@ fn ordinary_bus_via_that_requires_wrong_way_refuses_whole_draft() {
     assert!(reconstruct_gameplay_bus_path(&store, &request)
         .unwrap()
         .is_some());
+}
+
+type GradeFixtureLine<'a> = (&'a [[i32; 2]], &'a [(&'a str, &'a str)]);
+fn grade_tile(lines: &[GradeFixtureLine<'_>]) -> Vec<u8> {
+    let mut keys = vec![];
+    let mut values = vec![];
+    let mut fs = vec![];
+    for &(points, attrs) in lines {
+        let tags: Vec<_> = attrs
+            .iter()
+            .flat_map(|&(k, v)| {
+                let i = keys.iter().position(|x| x == &k).unwrap_or_else(|| {
+                    keys.push(k);
+                    keys.len() - 1
+                });
+                let j = values.len();
+                values.push(field(1, v.as_bytes()));
+                [i as u64, j as u64]
+            })
+            .collect();
+        fs.push(feature(&tags, &bus_geometry(points)));
+    }
+    field(3, &layer(&fs, &keys, &values))
+}
+fn observed_query(tile: &TileBinding, start: BusVertex, end: BusVertex) -> BusPathBinding {
+    let mut query = bus_rectangle_query(std::slice::from_ref(tile), end, false);
+    query.rule = BUS_GRAPH_RULE.into();
+    query.end_tile_key = None;
+    query.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+    query.start = start;
+    query
+}
+
+#[test]
+fn ordinary_bus_bridges_and_tunnels_have_exact_approaches_but_not_underpass_turns() {
+    let common = &[("class", "minor")];
+    for (kind, lvl) in [("bridge", "1"), ("tunnel", "-1")] {
+        let elevated = &[("class", "minor"), ("brunnel", kind), ("layer", lvl)];
+        let raw = grade_tile(&[
+            (&[[100, 100], [300, 100]], common),
+            (&[[300, 100], [450, 100], [700, 100]], elevated),
+            (&[[450, 40], [450, 100], [450, 200]], common),
+            (&[[700, 100], [900, 100]], common),
+        ]);
+        let tile = binding(&raw);
+        let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![tile.clone()]).unwrap();
+        let q = observed_query(&tile, bus_vertex(0, 0), bus_vertex(3, 1));
+        let works = reconstruct_gameplay_bus_path(&store, &q).unwrap().unwrap();
+        assert_eq!(works.points.len(), 5);
+        assert_eq!(works.spans.len(), 3);
+        let mut wrong = q.clone();
+        wrong.end = bus_vertex(2, 2);
+        assert!(reconstruct_gameplay_bus_path(&store, &wrong)
+            .unwrap()
+            .is_none());
+        wrong.start = bus_vertex(2, 0);
+        wrong.end = bus_vertex(1, 1);
+        assert!(reconstruct_gameplay_bus_path(&store, &wrong)
+            .unwrap()
+            .is_none());
+        let mut old = q;
+        old.grade_policy = None;
+        assert!(!serde_json::to_string(&old).unwrap().contains("gradePolicy"));
+        assert!(reconstruct_gameplay_bus_path(&store, &old)
+            .unwrap()
+            .is_none());
+        old.end = bus_vertex(0, 1);
+        let old_ground = reconstruct_gameplay_bus_path(&store, &old)
+            .unwrap()
+            .unwrap();
+        old.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+        let new_ground = reconstruct_gameplay_bus_path(&store, &old)
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_ground.points, new_ground.points);
+        assert_eq!(old_ground.source_atom_id(0), new_ground.source_atom_id(0));
+    }
+}
+
+#[test]
+fn ordinary_bus_grade_changes_refuse_ambiguity_wrong_angle_and_denied_access() {
+    let common = &[("class", "minor")];
+    let elevated = &[("class", "minor"), ("brunnel", "bridge"), ("layer", "1")];
+    let private = &[("class", "minor"), ("access", "private")];
+    let denied = &[
+        ("class", "minor"),
+        ("brunnel", "bridge"),
+        ("layer", "1"),
+        ("access", "no"),
+    ];
+    let scenarios: Vec<Vec<GradeFixtureLine<'_>>> = vec![
+        vec![
+            (&[[100, 100], [300, 100]], common),
+            (&[[300, 100], [700, 100]], elevated),
+            (&[[300, 100], [300, 300]], private),
+        ],
+        vec![
+            (&[[100, 100], [300, 100]], common),
+            (&[[300, 100], [300, 500]], elevated),
+        ],
+        vec![
+            (&[[100, 100], [300, 100]], common),
+            (&[[300, 100], [700, 100]], denied),
+        ],
+    ];
+    for features in scenarios {
+        let raw = grade_tile(&features);
+        let tile = binding(&raw);
+        let store = EvidenceStore::from_parts(vec![raw_entry(&raw)], vec![tile.clone()]).unwrap();
+        let q = observed_query(&tile, bus_vertex(0, 0), bus_vertex(1, 1));
+        assert!(reconstruct_gameplay_bus_path(&store, &q).unwrap().is_none());
+    }
+}
+
+#[test]
+fn ordinary_bus_same_grade_motorway_seam_carries_connected_approaches_only() {
+    let ground = &[("class", "motorway")];
+    let bridge = &[("class", "motorway"), ("brunnel", "bridge"), ("layer", "1")];
+    let tunnel = &[
+        ("class", "motorway"),
+        ("brunnel", "tunnel"),
+        ("layer", "-1"),
+    ];
+    let wrong_layer = &[("class", "motorway"), ("brunnel", "bridge"), ("layer", "2")];
+    for (end_grade, pass) in [(bridge, true), (tunnel, false), (wrong_layer, false)] {
+        let west = grade_tile(&[
+            (&[[3000, 2010], [3500, 2010]], ground),
+            (&[[3500, 2010], [4200, 2010]], bridge),
+        ]);
+        let east = grade_tile(&[
+            (&[[-104, 2010], [700, 2010]], end_grade),
+            (&[[700, 2010], [900, 2010]], ground),
+        ]);
+        let mut a = binding(&west);
+        let mut b = binding(&east);
+        a.x = 14552;
+        a.canonical_url = a.canonical_url.replace("/14553/", "/14552/");
+        b.x = 14553;
+        let tiles = vec![a, b];
+        let store = EvidenceStore::from_archive_parts(
+            vec![raw_entry(&west), raw_entry(&east)],
+            tiles.clone(),
+        )
+        .unwrap();
+        let mut q = bus_rectangle_query(&tiles, bus_vertex(1, 1), false);
+        q.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+        let path = reconstruct_gameplay_bus_path(&store, &q).unwrap();
+        assert_eq!(path.is_some(), pass);
+        if let Some(path) = path {
+            assert_eq!(path.spans.len(), 4);
+        }
+        q.grade_policy = None;
+        assert!(reconstruct_gameplay_bus_path(&store, &q).unwrap().is_none());
+    }
 }

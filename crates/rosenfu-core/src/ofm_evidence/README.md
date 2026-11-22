@@ -495,3 +495,29 @@ stop presentation/timing; it also considers nearby verified stations and crossin
 This independent first Rosenfu implementation creates the sparse boardable stops
 only, not the street-only layer, stop dwell at drawn-only points, station snapping
 or crossing-based transfer creation.
+
+### Observed-grade road continuation for new Bus proofs
+
+An explicitly chosen `gradePolicy: "observedConnectors"` can follow supported
+road classes (including motorway/trunk) along original bridge, tunnel, layer
+and surface fragments. Omission preserves the original ground-only graph and
+stored geometry/IDs. Denied/private access and unsupported classes/attributes
+remain excluded. There is no road creation or pass-through via implied
+coordinates. Off-ground matches take only exact, unobstructed, same-class and
+subclass endpoint continuations with opposed headings; ground approaches to a
+bridge/tunnel follow that same conservative rule. Tagged layer limits are a
+source distinction, not absolute elevation or a slope calculation.
+
+Seams reuse complete mutual uniqueness and exact rational border cuts with
+matching source grade; different grade at a border never connects. Separately
+resolved structural vertices at the same map XY keep distinct source/grade
+IDs even in the materialized multi-line graph. Legacy surface vertex IDs and
+raw-atom occupancy IDs are unchanged. Ordinary Bus stops keep the existing
+fictional path-occurrence rules; this does not add any entrance, access,
+boarding-equivalence, rail, Tram, high-speed interchange, or federated
+transfer rules.
+
+[TrainsWorld busRoads.ts](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/app/src/map/busRoads.ts#L13-L17)
+uses motorways as well as streets; [roadGraph.ts](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/app/src/map/roadGraph.ts#L701-L705)
+also models bridge/tunnel approaches. Rosenfu intentionally does not copy its
+close-distance snaps or unrestricted junction inference.

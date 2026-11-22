@@ -9,7 +9,7 @@ type Route={id:string;name:string;pattern?:OrdinaryBusPattern;path?:OrdinaryBusP
 type Draft={id:string;pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
 type Input={
  on:boolean;allow:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;
- route?:Route;multiple:boolean;roundTrip:boolean;waypoints?:boolean;autoStopsAvailable?:boolean;closedCapable?:boolean;conflictingGraph:boolean;descriptors:readonly unknown[];
+ route?:Route;multiple:boolean;roundTrip:boolean;waypoints?:boolean;autoStopsAvailable?:boolean;closedCapable?:boolean;observedGrade?:boolean;conflictingGraph:boolean;descriptors:readonly unknown[];
  observe?:RouteTileObserver;read:BusEvidenceReader;token:()=>Promise<string>;
  preview:(query:OrdinaryBusPreviewQuery)=>Promise<OrdinaryBusPreviewReply>;
  commit:(query:OrdinaryBusQuery)=>Promise<unknown>;
@@ -43,7 +43,8 @@ export function useOrdinaryBusDraft(input:Input){
   if((kind==='edit'&&!editing)||(kind==='new'&&input.route&&!input.multiple))return;
   const pattern=editing?editing.pattern:input.roundTrip?'openRoundTrip':undefined;
   cancel();const spec={id:editing?.id??`bus:${crypto.randomUUID()}`,pattern};setDraft(spec);
-  if(input.waypoints)waypoints.start({...spec,savedPath:editing?.path});
+  if(input.waypoints)waypoints.start({...spec,savedPath:editing?.path,
+   gradePolicy:editing?editing.path?.gradePolicy:input.observedGrade?'observedConnectors':undefined});
   setNewRoute(!editing);setAutoStops(!editing&&!!input.autoStopsAvailable);
   setName(editing?.name??'バス系統');
  }

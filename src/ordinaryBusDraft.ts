@@ -9,13 +9,14 @@ type Vertex={feature:number;line:number;vertex:number};
 type Tile={binding:OpenFreeMapEvidenceRequest;lines:OpenFreeMapRoadLine[]};
 export type BusAnchor={point:GeoPoint;raw:Vertex;tile:OpenFreeMapEvidenceRequest};
 type TileProof={tileKey:string;tileRawSha256:string};
+export type OrdinaryBusGradePolicy='observedConnectors';
 export type OrdinaryBusPattern='openRoundTrip'|'closedOneWay';
 export type BusInteriorStop={id:string;name:string;occurrenceKey:string;fractionQ:number};
 export type OrdinaryBusStopView={id:string;stopId:string;name:string;point:GeoPoint;servesReturn:boolean};
 export type BusWaypoint={id:string;anchor:BusAnchor};
 type BusWaypointProof={id:string;tileKey:string;vertex:Vertex};
 export type OrdinaryBusPreviewReply=OrdinaryBusPreview|{points:[];lengthM:0;failedLegIndex:number};
-export type OrdinaryBusPath=TileProof & {respectOneway:boolean;start:Vertex;end:Vertex;pattern?:OrdinaryBusPattern;via?:BusWaypointProof[];interiorStops?:BusInteriorStop[]} & (
+export type OrdinaryBusPath=TileProof & {respectOneway:boolean;start:Vertex;end:Vertex;pattern?:OrdinaryBusPattern;gradePolicy?:OrdinaryBusGradePolicy;via?:BusWaypointProof[];interiorStops?:BusInteriorStop[]} & (
  {rule:'ofm_ground_bus_z14_v1'}|{rule:'ofm_ground_bus_rectangle_z14_v2';endTileKey:string;additionalTiles:TileProof[]});
 type RawTilePair={rawEvidence:RawTileEvidence;tileBinding:TileEvidenceBinding};
 export type RouteTileObserver=(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal)=>Promise<OpenFreeMapEvidenceRequest[]>;
@@ -106,7 +107,7 @@ export function ordinaryBusCells(start:OpenFreeMapEvidenceRequest,end:OpenFreeMa
 
 export async function prepareOrdinaryBusQuery(
  start:BusAnchor,end:BusAnchor,name:string,routeId:string,expectedWorldToken:string,read:BusEvidenceReader,
- descriptors:readonly unknown[],signal?:AbortSignal,observe?:RouteTileObserver,pattern?:OrdinaryBusPattern,via:readonly BusWaypoint[]=[],respectOneway=false,interiorStops:readonly BusInteriorStop[]=[],
+ descriptors:readonly unknown[],signal?:AbortSignal,observe?:RouteTileObserver,pattern?:OrdinaryBusPattern,via:readonly BusWaypoint[]=[],respectOneway=false,interiorStops:readonly BusInteriorStop[]=[],gradePolicy?:OrdinaryBusGradePolicy,
 ):Promise<OrdinaryBusQuery>{
  const anchors=[start,...via.map(w=>w.anchor),end];
  if(pattern==='closedOneWay'?
@@ -115,7 +116,7 @@ export async function prepareOrdinaryBusQuery(
  if(anchors.some((a,i)=>i>0&&samePlace(anchors[i-1].point,a.point)))throw Error('連続する点は別の道路位置を選んでください。');
  if(via.length>30||new Set(via.map(w=>w.id)).size!==via.length||via.some(w=>!/^[-_A-Za-z0-9]{1,80}$/.test(w.id)))throw Error('経由点の指定が不正です。');
  const a=start.tile,b=end.tile;
- const base={...(interiorStops.length?{interiorStops:[...interiorStops]}:{}),tileKey:territory(a),tileRawSha256:a.rawSha256,respectOneway,start:start.raw,end:end.raw,...(pattern?{pattern}:{}),...(via.length?{via:via.map(w=>({id:w.id,tileKey:territory(w.anchor.tile),vertex:w.anchor.raw}))}:{})};
+ const base={...(gradePolicy?{gradePolicy}:{}),...(interiorStops.length?{interiorStops:[...interiorStops]}:{}),tileKey:territory(a),tileRawSha256:a.rawSha256,respectOneway,start:start.raw,end:end.raw,...(pattern?{pattern}:{}),...(via.length?{via:via.map(w=>({id:w.id,tileKey:territory(w.anchor.tile),vertex:w.anchor.raw}))}:{})};
  let refs=[a],path:OrdinaryBusPath={...base,rule:'ofm_ground_bus_z14_v1'};
  if(anchors.some(w=>!sameTile(a,w.tile))){
   if(!observe)throw Error('経由点を含む道路データを確認できません。');

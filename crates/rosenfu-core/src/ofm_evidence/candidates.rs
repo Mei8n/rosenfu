@@ -198,7 +198,7 @@ pub fn boundary_candidates(
     store: &EvidenceStore,
     required_tiles: &[(u32, u32)],
 ) -> Result<Vec<BoundaryCandidate>> {
-    boundary_candidates_impl(store, required_tiles, false)
+    boundary_candidates_impl(store, required_tiles, false, false)
 }
 
 /// Only remove lines that cannot intersect both sides of any required seam.
@@ -207,8 +207,9 @@ pub fn boundary_candidates(
 pub(super) fn boundary_candidates_for_bus(
     store: &EvidenceStore,
     required_tiles: &[(u32, u32)],
+    structured: bool,
 ) -> Result<Vec<BoundaryCandidate>> {
-    boundary_candidates_impl(store, required_tiles, true)
+    boundary_candidates_impl(store, required_tiles, true, structured)
 }
 
 fn crosses_context_boundary(
@@ -237,6 +238,7 @@ fn boundary_candidates_impl(
     store: &EvidenceStore,
     required_tiles: &[(u32, u32)],
     prefilter_interior_only: bool,
+    structured_bus: bool,
 ) -> Result<Vec<BoundaryCandidate>> {
     let required: BTreeSet<_> = required_tiles.iter().copied().collect();
     let available: BTreeSet<_> = store.bindings().map(|b| (b.x, b.y)).collect();
@@ -251,12 +253,21 @@ fn boundary_candidates_impl(
         scoped = store.scope(&keys)?;
         &scoped
     };
+    let grade_context = |l: &TileLine| {
+        super::bus_grade::supported_class(l)
+            && super::bus_grade::grade(l).is_some()
+            && super::bus_grade::one_way(l).is_some()
+            && super::bus_grade::allowed_access(l)
+    };
     let mut lines = Vec::new();
     let mut points = 0;
     for b in store.bindings() {
         for l in &store.decoded(&b.canonical_url)?.lines {
-            if !candidate_class(l)
-                || (prefilter_interior_only && !crosses_context_boundary(l, b, &required))
+            if !(if structured_bus {
+                super::bus_grade::supported_class(l)
+            } else {
+                candidate_class(l)
+            }) || (prefilter_interior_only && !crosses_context_boundary(l, b, &required))
             {
                 continue;
             }
@@ -324,12 +335,24 @@ fn boundary_candidates_impl(
             };
             let ac: Vec<_> = a
                 .iter()
-                .filter(|l| eligible(l.raw))
+                .filter(|l| {
+                    if structured_bus {
+                        grade_context(l.raw)
+                    } else {
+                        eligible(l.raw)
+                    }
+                })
                 .filter_map(|l| clip(l, axis, seam, scale, low, high))
                 .collect();
             let bc: Vec<_> = b
                 .iter()
-                .filter(|l| eligible(l.raw))
+                .filter(|l| {
+                    if structured_bus {
+                        grade_context(l.raw)
+                    } else {
+                        eligible(l.raw)
+                    }
+                })
                 .filter_map(|l| clip(l, axis, seam, scale, low, high))
                 .collect();
             let mut found = Vec::new();
@@ -339,14 +362,17 @@ fn boundary_candidates_impl(
                     if !same(a.line.raw, b.line.raw) {
                         continue;
                     }
-                    if a.line
-                        .raw
-                        .attributes
-                        .get("oneway")
-                        .and_then(number)
-                        .is_some_and(|v| v != 0.)
-                        && a.direction != b.direction
-                    {
+                    let directed = if structured_bus {
+                        super::bus_grade::one_way(a.line.raw).is_some_and(|v| v != 0)
+                    } else {
+                        a.line
+                            .raw
+                            .attributes
+                            .get("oneway")
+                            .and_then(number)
+                            .is_some_and(|v| v != 0.)
+                    };
+                    if directed && a.direction != b.direction {
                         continue;
                     }
                     checked += 1;

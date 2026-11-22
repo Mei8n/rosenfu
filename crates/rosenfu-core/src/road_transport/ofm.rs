@@ -371,8 +371,8 @@ fn project_route(
             longitude: path.points[j][0],
             latitude: path.points[j][1],
         };
-        let from = path.points_grid[i].id();
-        let to = path.points_grid[i + 1].id();
+        let from = path.node_id_at(i).ok_or(InvalidData)?;
+        let to = path.node_id_at(i + 1).ok_or(InvalidData)?;
         if from == to {
             return Err(InvalidData);
         }
@@ -404,7 +404,9 @@ fn project_route(
                 geometry: vec![point(i), point(i + 1)],
                 bus_access: Access::Allowed,
                 tram_access: Access::Unknown,
-                level: Some(InfrastructureLevel::Ground),
+                level: path
+                    .atom_is_ground(i)
+                    .then_some(InfrastructureLevel::Ground),
             },
         )?;
         ids.push(id);
