@@ -97,8 +97,7 @@ def parse_source(source, source_sha, revision, *, require_snapshot_revision=Fals
         else:
             build.require(ident not in relations, 'duplicate raw OSM relation')
             relations.add(ident)
-            if (tags.get('type', '').split(':')[0] == 'restriction'
-                    or any(k.split(':')[0] == 'restriction' for k in tags)):
+            if build.is_turn_restriction(tags):
                 members = el.findall('member')
                 build.require(bool(members), 'restriction relation missing members')
                 for member in members:

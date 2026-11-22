@@ -147,6 +147,11 @@ def read_osm_xml(source, limit, expected_sha=None):
     return raw, xml, root
 
 
+def is_turn_restriction(tags):
+    return (tags.get('type', '').split(':')[0] == 'restriction'
+            or any(k.split(':')[0] == 'restriction' for k in tags))
+
+
 def read_tags(element):
     tags = {}
     for tag in element.findall('tag'):

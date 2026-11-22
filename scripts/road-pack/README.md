@@ -367,3 +367,38 @@ when the bus profile is not selected. No production pin is created.
 Tag sources: [OSM Japan road conventions](https://wiki.openstreetmap.org/wiki/Japan_tagging),
 [OSM oneway conventions](https://wiki.openstreetmap.org/wiki/Key:oneway),
 and [OSM access fallback caveats](https://wiki.openstreetmap.org/wiki/Default_access_restrictions).
+
+### Reusable source stage from a dated OSM PBF
+
+`capture_osm_parent.py` is the operator entry point for preparing the raw
+native-region input. Use the same verified dated public PBF when preparing
+geometry for the crossing pack; do not feed crossing v1 or vector tiles back
+into the native authority path. No downloader, source substitution or
+certification runs as part of this command.
+
+```sh
+python3 scripts/road-pack/capture_osm_parent.py /path/to/region-dated.osm.pbf \
+  --sha256 "$VERIFIED_PARENT_SHA" --halo "$WEST,$SOUTH,$EAST,$NORTH" \
+  --inner "$INNER_WEST,$INNER_SOUTH,$INNER_EAST,$INNER_NORTH" \
+  --out-dir /path/to/new-private-stage
+```
+
+The command requires the same optional PyOsmium 4.3.2 as the crossing PBF
+tooling. The exact dated parent digest is checked before and after bounded
+stream scans; it retains original way node order, all selected raw tags, and
+same-parent restriction dependencies, without a full-parent coordinate index.
+`receipt.json` is written last and binds `halo.staging.osm` to the original
+parent hash, observed replication revision, both bounds, and missing/unknown
+scope diagnostics. A directory without this receipt or with mismatching bytes
+is not a reusable stage. Original object versions are retained; contributor
+metadata fields are not.
+
+The existing `build_native_region.py` consumes `halo.staging.osm` directly:
+use the same XML SHA and revision in its independently reviewed policy and
+coverage. The local synthetic pipeline test invokes both commands with the
+unmodified intermediate XML and checks the directed candidate. No gameplay
+certificate or production pin is created by the source stage; its receipt
+explicitly makes neither claim. It covers observed ways incident on raw halo
+nodes in that parent and may miss an outside-to-outside crossing with no halo
+node. Therefore use the existing geometric PBF extraction for certified
+crossing cells; do not give this node-seeded stage crossing completeness.
