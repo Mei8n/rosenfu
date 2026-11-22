@@ -42,6 +42,75 @@ fn changed_summary_alignment_ids(
         .collect()
 }
 
+// Match the previous exact f64 equality: signed zeros are equal; NaN never
+// matches even itself. Do not round nearby physical crossings to one key.
+fn crossing_key(road_id: &str, point: GeoPoint) -> Option<(&str, u64, u64)> {
+    fn coordinate(value: f64) -> Option<u64> {
+        (!value.is_nan()).then(|| if value == 0.0 { 0 } else { value.to_bits() })
+    }
+
+    Some((
+        road_id,
+        coordinate(point.latitude)?,
+        coordinate(point.longitude)?,
+    ))
+}
+
+fn count_new_crossings<'a>(
+    prior: impl IntoIterator<Item = (&'a str, GeoPoint)>,
+    after: impl IntoIterator<Item = (&'a str, GeoPoint)>,
+) -> usize {
+    let previous: std::collections::HashSet<_> = prior
+        .into_iter()
+        .filter_map(|(road, point)| crossing_key(road, point))
+        .collect();
+    after
+        .into_iter()
+        .filter(|&(road, point)| {
+            crossing_key(road, point).is_none_or(|key| !previous.contains(&key))
+        })
+        .count()
+}
+
+#[cfg(test)]
+#[test]
+fn crossing_summary_index_preserves_exact_equality_and_multiplicity() {
+    let p = |latitude, longitude| GeoPoint {
+        latitude,
+        longitude,
+    };
+    let before = [
+        ("r", p(-0.0, 0.0)),
+        ("r", p(1.0, 2.0)),
+        ("r", p(1.0, 2.0)),
+        ("nan", p(f64::NAN, 2.0)),
+        ("nan2", p(1.0, f64::NAN)),
+    ];
+    let after = [
+        ("r", p(0.0, -0.0)),
+        ("r", p(1.0, 2.0)),
+        ("other", p(1.0, 2.0)),
+        ("r", p(1.0 + f64::EPSILON, 2.0)),
+        ("r", p(1.0, 2.0 + 2.0 * f64::EPSILON)),
+        ("r", p(1.0, 2.0 + 2.0 * f64::EPSILON)),
+        ("nan", p(f64::NAN, 2.0)),
+        ("nan2", p(1.0, f64::NAN)),
+    ];
+
+    let reference = after
+        .iter()
+        .filter(|(road, point)| {
+            !before
+                .iter()
+                .any(|(old_road, old_point)| old_road == road && old_point == point)
+        })
+        .count();
+    assert_eq!(reference, 6);
+    assert_eq!(count_new_crossings(before, after), reference);
+    assert_eq!(count_new_crossings([], after), after.len());
+    assert_eq!(count_new_crossings(before, []), 0);
+}
+
 /// Compact advisory result; no preview world is serialized across IPC.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -912,15 +981,15 @@ impl WorldEditor {
             .iter()
             .any(|(id, a)| changed.contains(id) && (!a.roads_ready || a.unknown_road_height));
         // Endpoint splitting may change IDs or ownership, not the physical asset.
-        let new_crossing_count = assessments
-            .iter()
-            .flat_map(|(_, a)| &a.crossings)
-            .filter(|crossing| {
-                !prior_crossings
-                    .iter()
-                    .any(|old| old.road_id == crossing.road_id && old.point == crossing.point)
-            })
-            .count();
+        let new_crossing_count = count_new_crossings(
+            prior_crossings
+                .iter()
+                .map(|crossing| (crossing.road_id.as_str(), crossing.point)),
+            assessments
+                .iter()
+                .flat_map(|(_, assessment)| &assessment.crossings)
+                .map(|crossing| (crossing.road_id.as_str(), crossing.point)),
+        );
         Ok(ConstructionPreview {
             new_crossing_count: Some(new_crossing_count),
             roads_unverified: Some(roads_unverified),
