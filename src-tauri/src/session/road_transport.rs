@@ -125,7 +125,9 @@ impl WorldEditor {
         }
         let edges = graph
             .native_bus_path(&before, &edit.from, &edit.to)
-            .map_err(|error| format!("承認された停留所間の経路がありません: {error:?}"))?;
+            .map_err(|error| {
+                format!("指定した停車位置をつなぐ通行可能な経路がありません: {error:?}")
+            })?;
         let last = edges.len() - 1;
         let mut stops = vec![];
         for (point, label, edge_index) in [(edit.from, "起点", 0), (edit.to, "終点", last)] {
@@ -133,6 +135,7 @@ impl WorldEditor {
                 s.owner == self.company
                     && s.edge_id == point.edge_id
                     && s.position == point.position
+                    && s.location_kind == point.location_kind
             }) {
                 stop.id.clone()
             } else {
@@ -150,6 +153,7 @@ impl WorldEditor {
                     name: label.into(),
                     edge_id: point.edge_id,
                     position: point.position,
+                    location_kind: point.location_kind,
                 });
                 stop_id
             };

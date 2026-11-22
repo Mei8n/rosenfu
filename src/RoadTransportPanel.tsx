@@ -1,16 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { nearestOnAlignment, pointOnAlignment } from './alignment';
 export interface RoadTransportData {
  evidence?:unknown[];
  nodes: {id:string;point:{latitude:number;longitude:number}}[];
- edges: {id:string;from:string;to:string;source:string;revision:string;geometry:{latitude:number;longitude:number}[];bus_access:string;tram_access:string}[];
- bus_stops:{id:string;owner:string;name:string;edge_id:string;position:number}[];
+ edges: {id:string;from:string;to:string;source:string;revision:string;geometry:{latitude:number;longitude:number}[];bus_access:string;tram_access:string;level?:string|null}[];
+ bus_stops:{id:string;owner:string;name:string;edge_id:string;position:number;location_kind?:StopLocationKind}[];
  bus_routes:{id:string;owner:string;name:string;edges:string[];stops:{stop_id:string;edge_index:number}[]}[];
  tram_sections:{alignment_id:string;placement:{kind:'dedicated'}|{kind:'shared_road';edges:string[]}}[];
 }
 export type RoadTransportMutation = 'replace_road_transport' | 'enable_road_qa_fixture' | 'edit_road_tram' | 'install_native_road_pilot' | 'edit_native_pilot_bus';
-type StopPosition = {edge_id:string;position:number};
-interface NativeRoadRegion {id:string;region:string;origin:string;revision:string;attribution:string;bus_stop_positions:StopPosition[];}
+type StopLocationKind = 'reviewed_reference'|'player_created';
+type StopPosition = {edge_id:string;position:number;location_kind?:StopLocationKind};
+type RoadEdge = RoadTransportData['edges'][number];
+interface NativeRoadRegion {id:string;region:string;origin:string;revision:string;attribution:string;bus_stop_positions:StopPosition[];allows_player_bus_stops?:boolean;}
 type PilotBusEdit = {route_id:string;name:string;expected_route:RoadTransportData['bus_routes'][number]|null;from:StopPosition;to:StopPosition};
 export type RoadTramEdit = {kind:'build';from:string;to:string;name:string;shared:boolean} | {kind:'change_placement';alignment_id:string;from:string;to:string;shared:boolean} | {kind:'remove';alignment_id:string};
 export type RoadMapSelection = {from:string;to:string;revision:number};
@@ -36,6 +39,55 @@ function RoadPathPicker({data,from,to,pick,disabled}:{data:RoadTransportData;fro
        onClick={()=>{if(!disabled)pick(n.id);}} onKeyDown={e=>{if(!disabled&&(e.key==='Enter'||e.key===' ')){e.preventDefault();pick(n.id);}}}/>)}
  </svg>;
 }
+// Choose an explicitly directed edge before setting a position. Overlapping
+// reverse edges are not resolved by nearest geometry or silently interchanged.
+function FictionalStopPicker({label,edges,value,pick,disabled}:{label:string;edges:RoadEdge[];value?:StopPosition;pick:(value:StopPosition|undefined)=>void;disabled:boolean}) {
+ const edge=edges.find(e=>e.id===value?.edge_id);
+ function setPosition(position:number){
+   if(!disabled&&edge&&position>0&&position<1)pick({edge_id:edge.id,position,location_kind:'player_created'});
+ }
+ function direction(e:RoadEdge){
+   const a=e.geometry[0],b=e.geometry[e.geometry.length-1],dy=b.latitude-a.latitude,dx=(b.longitude-a.longitude)*Math.cos((a.latitude+b.latitude)*Math.PI/360);
+   if(dx===0&&dy===0)return '指定方向';
+   return Math.abs(dx)>Math.abs(dy)?(dx>0?'東向き':'西向き'):(dy>0?'北向き':'南向き');
+ }
+ return <div>
+   <label>{label}の道路<select value={edge?.id??''} onChange={e=>{
+     const id=e.target.value;
+     if(!disabled)pick(id?{edge_id:id,position:0.5,location_kind:'player_created'}:undefined);
+   }}><option value="">選択</option>{edges.map((e,i)=><option key={e.id} value={e.id}>道路 {i+1}（{direction(e)}）</option>)}</select></label>
+   {edge&&value&&<>
+     <FictionalStopPreview label={label} edge={edge} position={value.position} pick={setPosition}/>
+     <label>{label}の位置<input type="range" min="1" max="99" step="1" value={Math.round(value.position*100)}
+       onChange={e=>setPosition(Number(e.target.value)/100)}/></label>
+   </>}
+ </div>;
+}
+
+function FictionalStopPreview({label,edge,position,pick}:{label:string;edge:RoadEdge;position:number;pick:(position:number)=>void}) {
+ const points=edge.geometry;
+ const [west,east]=[Math.min(...points.map(p=>p.longitude)),Math.max(...points.map(p=>p.longitude))];
+ const [south,north]=[Math.min(...points.map(p=>p.latitude)),Math.max(...points.map(p=>p.latitude))];
+ const cos=Math.cos((south+north)*Math.PI/360), scale=Math.min(180/Math.max((east-west)*cos,1e-9),74/Math.max(north-south,1e-9));
+ const lon=(east+west)/2,lat=(south+north)/2;
+ const x=(longitude:number)=>110+(longitude-lon)*cos*scale;
+ const y=(latitude:number)=>51-(latitude-lat)*scale;
+ const mark=pointOnAlignment(points,position);
+ return <svg viewBox="0 0 220 102" width="220" height="102" aria-label={`${label}の道路略図`} onClick={e=>{
+   const svg=e.currentTarget, matrix=svg.getScreenCTM?.();
+   if(!matrix)return;
+   const p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;
+   const at=p.matrixTransform(matrix.inverse());
+   const nearest=nearestOnAlignment(points,{latitude:lat+(51-at.y)/scale,longitude:lon+(at.x-110)/(cos*scale)});
+   if(Math.hypot(x(nearest.point.longitude)-at.x,y(nearest.point.latitude)-at.y)>10)return;
+   pick(Math.round(nearest.position*100)/100);
+ }}>
+   <polyline points={points.map(p=>`${x(p.longitude)},${y(p.latitude)}`).join(' ')} fill="none" stroke="currentColor" strokeWidth="3"/>
+   <circle cx={x(points[0].longitude)} cy={y(points[0].latitude)} r="3" fill="currentColor"/>
+   <circle cx={x(mark.longitude)} cy={y(mark.latitude)} r="5" fill="#548cc2" stroke="white" strokeWidth="2"/>
+ </svg>;
+}
+
 export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSelection,onPickOnMap,tramEnabled=false}:{data:RoadTransportData;companyId:string;run:(command:RoadTransportMutation,args:RoadTransportArgs)=>Promise<unknown>;enabled?:boolean;mapSelection?:RoadMapSelection;onPickOnMap?:()=>void;tramEnabled?:boolean}) {
  const [confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const [from,setFrom]=useState(''),[to,setTo]=useState(''),[name,setName]=useState('バス系統');
@@ -43,6 +95,7 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
  const [regions,setRegions]=useState<NativeRoadRegion[]>();
  const [regionsFailed,setRegionsFailed]=useState(false);
  const [pilotFrom,setPilotFrom]=useState(''),[pilotTo,setPilotTo]=useState('');
+ const [playerFrom,setPlayerFrom]=useState<StopPosition>(),[playerTo,setPlayerTo]=useState<StopPosition>();
  const [editing,setEditing]=useState<RoadTransportData['bus_routes'][number]>();
  useEffect(()=>{
    let current=true;
@@ -62,8 +115,12 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
  const hasGraph=data.edges.length>0||data.nodes.length>0||Boolean(data.evidence?.length);
  const stopKey=(point:StopPosition)=>JSON.stringify([point.edge_id,point.position]);
  const boardingChoices=pilot?.bus_stop_positions??[];
- const fromPosition=boardingChoices.find(point=>stopKey(point)===pilotFrom);
- const toPosition=boardingChoices.find(point=>stopKey(point)===pilotTo);
+ const allowsPlayer=pilot?.allows_player_bus_stops===true;
+ const playerEdges=useMemo(()=>allowsPlayer?data.edges.filter(edge=>edge.bus_access==='allowed'&&edge.level==='ground'&&edge.geometry.length>=2):[],[allowsPlayer,data.edges]);
+ const playerChoice=(point:StopPosition|undefined)=>point&&point.position>0&&point.position<1&&playerEdges.some(e=>e.id===point.edge_id)?point:undefined;
+ const fromPosition=playerChoice(playerFrom)??boardingChoices.find(point=>stopKey(point)===pilotFrom);
+ const toPosition=playerChoice(playerTo)??boardingChoices.find(point=>stopKey(point)===pilotTo);
+ const pilotEndpointsValid=!!fromPosition&&!!toPosition&&(fromPosition.edge_id!==toPosition.edge_id||fromPosition.position<toPosition.position);
  const ownRoutes=data.bus_routes.filter(route=>route.owner===companyId);
  useEffect(()=>{if(mapSelection){setFrom(mapSelection.from);setTo(mapSelection.to);}},[mapSelection]);
  function pickInset(id:string){if(!from||to){setFrom(id);setTo('');}else if(id!==from){setTo(id);}}
@@ -76,10 +133,19 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
    const first=data.bus_stops.find(s=>s.id===route.stops[0]?.stop_id);
    const last=data.bus_stops.find(s=>s.id===route.stops.at(-1)?.stop_id);
    setEditing(route);setName(route.name);
-   setPilotFrom(first?stopKey(first):'');setPilotTo(last?stopKey(last):'');
+   const restore=(stop:StopPosition|undefined,setPlayer:(value:StopPosition|undefined)=>void,setReference:(value:string)=>void)=>{
+     const custom=stop?.location_kind==='player_created';
+     setPlayer(custom&&stop?{edge_id:stop.edge_id,position:stop.position,location_kind:'player_created'}:undefined);
+     setReference(stop&&!custom?stopKey(stop):'');
+   };
+   restore(first,setPlayerFrom,setPilotFrom);
+   restore(last,setPlayerTo,setPilotTo);
+ }
+ function clearPilot(){
+   setEditing(undefined);setPilotFrom('');setPilotTo('');setPlayerFrom(undefined);setPlayerTo(undefined);setName('バス系統');
  }
  async function savePilot(){
-   if(!fromPosition||!toPosition||pilotFrom===pilotTo)return;
+   if(!fromPosition||!toPosition||!pilotEndpointsValid)return;
    await mutate('edit_native_pilot_bus',{edit:{route_id:editing?.id??`bus:${crypto.randomUUID()}`,
      name:name.trim(),expected_route:editing??null,from:fromPosition,to:toPosition}});
    setEditing(undefined);
@@ -97,18 +163,23 @@ export function RoadTransportPanel({data,companyId,run:mutate,enabled=true,mapSe
    </div>)}
   {hasGraph&&!pilot&&Boolean(regions?.length)&&<p>このワールドには道路データがあるため、上書きできません。</p>}
  </section>
- {!hasGraph?<><label><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>実在道路ではない検証用データを使用する</label><button disabled={!enabled||!confirmed||busy} onClick={()=>void run(()=>mutate('enable_road_qa_fixture',{confirmedSynthetic:true}))}>検証用道路を追加</button></>:<p role="status">{qa?'検証専用の架空道路。実在の地図・通行可能範囲ではありません。':pilot?'承認された方向・経路・停留所だけを使用します。':'この道路データは参照のみで、経路を作成できません。'}</p>}
+ {!hasGraph?<><label><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>実在道路ではない検証用データを使用する</label><button disabled={!enabled||!confirmed||busy} onClick={()=>void run(()=>mutate('enable_road_qa_fixture',{confirmedSynthetic:true}))}>検証用道路を追加</button></>:<p role="status">{qa?'検証専用の架空道路。実在の地図・通行可能範囲ではありません。':pilot?(allowsPlayer?'確認済み道路の通行方向を使います。ゲーム内停留所は実在の停留所ではありません。':'承認された方向・経路・停留所だけを使用します。'):'この道路データは参照のみで、経路を作成できません。'}</p>}
  {(qa||pilot)&&<>
  {!onPickOnMap&&<RoadPathPicker data={data} from={from} to={to} disabled={!enabled||busy} pick={pickInset}/>}
  {onPickOnMap&&<button type="button" disabled={!enabled||busy} onClick={onPickOnMap}>地図で起点・終点を選ぶ</button>}
  <label>起点<select value={from} onChange={e=>setFrom(e.target.value)}><option value="">選択</option>{data.nodes.map(n=><option key={n.id}>{n.id}</option>)}</select></label>
  <label>終点<select value={to} onChange={e=>setTo(e.target.value)}><option value="">選択</option>{data.nodes.map(n=><option key={n.id}>{n.id}</option>)}</select></label>
- {pilot&&<fieldset disabled={!enabled||busy}><legend>承認済みバス停位置</legend>
-   <label>乗車<select value={pilotFrom} onChange={e=>setPilotFrom(e.target.value)}><option value="">選択</option>{boardingChoices.map(point=><option key={stopKey(point)} value={stopKey(point)}>{point.edge_id} / {point.position*100}%</option>)}</select></label>
-   <label>降車<select value={pilotTo} onChange={e=>setPilotTo(e.target.value)}><option value="">選択</option>{boardingChoices.map(point=><option key={stopKey(point)} value={stopKey(point)}>{point.edge_id} / {point.position*100}%</option>)}</select></label>
+ {pilot&&boardingChoices.length>0&&<fieldset disabled={!enabled||busy}><legend>承認済みバス停位置</legend>
+   <label>乗車<select value={pilotFrom} onChange={e=>{setPilotFrom(e.target.value);setPlayerFrom(undefined);}}><option value="">選択</option>{boardingChoices.map(point=><option key={stopKey(point)} value={stopKey(point)}>{point.edge_id} / {point.position*100}%</option>)}</select></label>
+   <label>降車<select value={pilotTo} onChange={e=>{setPilotTo(e.target.value);setPlayerTo(undefined);}}><option value="">選択</option>{boardingChoices.map(point=><option key={stopKey(point)} value={stopKey(point)}>{point.edge_id} / {point.position*100}%</option>)}</select></label>
+ </fieldset>}
+ {allowsPlayer&&playerEdges.length>0&&<fieldset disabled={!enabled||busy}><legend>ゲーム内停留所を置く</legend>
+   <p>道路の向きを選んで、略図かスライダーで位置を決めます。</p>
+   <FictionalStopPicker label="乗車" edges={playerEdges} disabled={!enabled||busy} value={playerFrom} pick={point=>{setPlayerFrom(point);if(point)setPilotFrom('');}}/>
+   <FictionalStopPicker label="降車" edges={playerEdges} disabled={!enabled||busy} value={playerTo} pick={point=>{setPlayerTo(point);if(point)setPilotTo('');}}/>
  </fieldset>}
  <label>名称<input autoComplete="off" value={name} onChange={e=>setName(e.target.value)}/></label>
- {pilot?<><button disabled={!enabled||busy||!fromPosition||!toPosition||pilotFrom===pilotTo||!name.trim()} onClick={()=>void run(savePilot)}>{editing?'バス系統の変更を適用':'承認済み停留所でバス系統を作成'}</button>{editing&&<button disabled={!enabled||busy} onClick={()=>{setEditing(undefined);setPilotFrom('');setPilotTo('');setName('バス系統');}}>編集をやめる</button>}</>:<button disabled={!enabled||busy||!endpointValid||!name.trim()} onClick={()=>void run(add)}>停留所とバス系統を作成</button>}
+ {pilot?<><button disabled={!enabled||busy||!pilotEndpointsValid||!name.trim()} onClick={()=>void run(savePilot)}>{editing?'バス系統の変更を適用':allowsPlayer?'停留所とバス系統を作成':'承認済み停留所でバス系統を作成'}</button>{editing&&<button disabled={!enabled||busy} onClick={clearPilot}>編集をやめる</button>}</>:<button disabled={!enabled||busy||!endpointValid||!name.trim()} onClick={()=>void run(add)}>停留所とバス系統を作成</button>}
  {ownRoutes.map(route=><div key={route.id}><span>{route.name}（{route.stops.length}停留所）</span>
    {pilot&&route.stops.length===2&&<button disabled={!enabled||busy} onClick={()=>editPilot(route)}>系統を編集</button>}
    <button disabled={!enabled||busy} onClick={()=>void run(async()=>{await save({...data,bus_routes:data.bus_routes.filter(r=>r.id!==route.id)});if(editing?.id===route.id)setEditing(undefined);})}>系統を削除</button></div>)}

@@ -40,6 +40,22 @@ pub struct RoadEdge {
     #[serde(default)]
     pub level: Option<crate::world::InfrastructureLevel>,
 }
+/// Legacy/approved references stay distinct from fictional player construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BusStopLocationKind {
+    /// Historical wire default. In native regions this is an exact listed reference.
+    #[default]
+    ReviewedReference,
+    /// A fictional stop. Its verified road edge is real; the stop need not be.
+    PlayerCreated,
+}
+impl BusStopLocationKind {
+    fn is_reviewed_reference(&self) -> bool {
+        *self == Self::ReviewedReference
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BusStop {
@@ -48,6 +64,11 @@ pub struct BusStop {
     pub name: String,
     pub edge_id: String,
     pub position: f64,
+    #[serde(
+        default,
+        skip_serializing_if = "BusStopLocationKind::is_reviewed_reference"
+    )]
+    pub location_kind: BusStopLocationKind,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -592,6 +613,7 @@ mod tests {
                     name: "Start".into(),
                     edge_id: "ab".into(),
                     position: 0.1,
+                    location_kind: Default::default(),
                 },
                 BusStop {
                     id: "s2".into(),
@@ -599,6 +621,7 @@ mod tests {
                     name: "End".into(),
                     edge_id: "ab".into(),
                     position: 0.9,
+                    location_kind: Default::default(),
                 },
             ],
             bus_routes: vec![BusRoute {
@@ -828,6 +851,7 @@ mod tests {
                 name: id.into(),
                 edge_id: "bc".into(),
                 position,
+                location_kind: Default::default(),
             });
         }
         d.bus_routes[0].edges = vec!["ab".into(), "bc".into()];

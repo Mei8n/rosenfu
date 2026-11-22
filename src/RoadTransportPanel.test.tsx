@@ -94,3 +94,62 @@ it('does not turn editing a route removed in the meantime into creation',async()
  await waitFor(()=>expect(run).toHaveBeenCalledWith('edit_native_pilot_bus',{edit:{route_id:'route',name:'First version',expected_route:route,from,to}}));
  await screen.findByRole('alert');
 });
+
+it('creates and re-edits two fictional interior positions on one verified directed street',async()=>{
+ const street={...native.edges[0],level:'ground'};
+ const roads:RoadTransportData={...native,edges:[
+  street,{...native.edges[1],level:'elevated'},
+  {...street,id:'ambiguous',bus_access:'unknown'},
+  {...street,id:'other-direction',from:street.to,to:street.from,geometry:[...street.geometry].reverse()},
+ ]};
+ vi.mocked(invoke).mockResolvedValue([{...region,bus_stop_positions:[],allows_player_bus_stops:true}]);
+ const run=vi.fn().mockResolvedValue({});
+ const view=render(<RoadTransportPanel data={roads} companyId="1" run={run}/>);
+ const boarding=await screen.findByLabelText('乗車の道路');
+ const alighting=screen.getByLabelText('降車の道路');
+ expect(await screen.findByText(/実在の停留所ではありません/)).toBeTruthy();
+ expect([...boarding.querySelectorAll('option')].map(option=>option.value)).toEqual(['','road-a','other-direction']);
+ fireEvent.change(boarding,{target:{value:'road-a'}});
+ fireEvent.change(alighting,{target:{value:'road-a'}});
+ const create=screen.getByRole<HTMLButtonElement>('button',{name:'停留所とバス系統を作成'});
+ expect(create.disabled).toBe(true);
+ const map=screen.getByLabelText('乗車の道路略図');
+ Object.assign(map,{
+  getScreenCTM:()=>({inverse:()=>({})}),
+  createSVGPoint:()=>({x:0,y:0,matrixTransform(){return this;}}),
+ });
+ fireEvent.click(map,{clientX:56,clientY:51});
+ expect(screen.getByRole<HTMLInputElement>('slider',{name:'乗車の位置'}).value).toBe('20');
+ fireEvent.click(map,{clientX:20,clientY:51}); // don't place exactly on the ambiguous edge boundary
+ expect(screen.getByRole<HTMLInputElement>('slider',{name:'乗車の位置'}).value).toBe('20');
+ const end=screen.getByRole<HTMLInputElement>('slider',{name:'降車の位置'});
+ fireEvent.change(end,{target:{value:'10'}});
+ expect(create.disabled).toBe(true); // wrong direction on the same directed edge
+ fireEvent.change(end,{target:{value:'80'}});
+ fireEvent.click(create);
+ const first={edge_id:'road-a',position:0.2,location_kind:'player_created'} as const;
+ const last={edge_id:'road-a',position:0.8,location_kind:'player_created'} as const;
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('edit_native_pilot_bus',{
+  edit:{route_id:expect.stringMatching(/^bus:/),name:'バス系統',expected_route:null,from:first,to:last},
+ }));
+ const route={id:'local',owner:'1',name:'Inner street',edges:['road-a'],stops:[
+  {stop_id:'s1',edge_index:0},{stop_id:'s2',edge_index:0},
+ ]};
+ const saved={...roads,bus_stops:[{id:'s1',owner:'1',name:'A',...first},{id:'s2',owner:'1',name:'B',...last}],bus_routes:[route]};
+ view.rerender(<RoadTransportPanel data={saved} companyId="1" run={run}/>);
+ fireEvent.click(screen.getByRole('button',{name:'系統を編集'}));
+ expect(screen.getByRole<HTMLInputElement>('slider',{name:'降車の位置'}).value).toBe('80');
+ fireEvent.change(screen.getByRole('slider',{name:'降車の位置'}),{target:{value:'90'}});
+ fireEvent.click(screen.getByText('バス系統の変更を適用'));
+ await waitFor(()=>expect(run).toHaveBeenCalledWith('edit_native_pilot_bus',{
+  edit:{route_id:'local',name:'Inner street',expected_route:route,from:first,to:{...last,position:0.9}},
+ }));
+});
+
+it('does not offer fictional stops on a region without an explicit capability',async()=>{
+ const roads={...native,edges:[{...native.edges[0],level:'ground'},...native.edges.slice(1)]};
+ vi.mocked(invoke).mockResolvedValue([region]);
+ render(<RoadTransportPanel data={roads} companyId="1" run={vi.fn()}/>);
+ await screen.findByLabelText('乗車');
+ expect(screen.queryByText('ゲーム内停留所を置く')).toBeNull();
+});

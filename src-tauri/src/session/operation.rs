@@ -1139,6 +1139,7 @@ mod tests {
                     name: "A".into(),
                     edge_id: "qa:0-1".into(),
                     position: 0.2,
+                    location_kind: Default::default(),
                 },
                 BusStop {
                     id: "B".into(),
@@ -1146,6 +1147,7 @@ mod tests {
                     name: "B".into(),
                     edge_id: "qa:1-2".into(),
                     position: 0.8,
+                    location_kind: Default::default(),
                 },
             ],
             bus_routes: vec![BusRoute {
@@ -1668,6 +1670,7 @@ mod tests {
                     edge_id: "qa:1-2".into(),
                     name: id.into(),
                     position,
+                    location_kind: Default::default(),
                 })
                 .collect();
             roads.bus_routes.push(BusRoute {

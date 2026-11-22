@@ -133,6 +133,12 @@ impl<'a> PilotRoad<'a> {
             } == Access::Allowed
     }
 
+    pub(crate) fn supports_bus_boarding(&self, edge_id: &str) -> bool {
+        self.edges
+            .get(edge_id)
+            .is_some_and(|edge| Self::edge_is_allowed(edge, PilotRoadMode::Bus))
+    }
+
     fn permits(&self, mode: PilotRoadMode, incoming: &str, outgoing: &str) -> bool {
         self.transitions
             .get(&(mode, incoming))
@@ -515,6 +521,7 @@ mod tests {
                 name: id.into(),
                 edge_id: edge_id.into(),
                 position: 0.5,
+                location_kind: Default::default(),
             });
         }
         graph.bus_routes.push(BusRoute {

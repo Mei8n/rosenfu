@@ -28,6 +28,8 @@ struct Asset {
     edges: Vec<RoadEdge>,
     transitions: Vec<Movement>,
     bus_stop_positions: Vec<StopPosition>,
+    #[serde(default)]
+    allows_player_bus_stops: bool,
 }
 
 #[derive(Deserialize)]
@@ -43,6 +45,11 @@ struct Movement {
 pub struct StopPosition {
     pub edge_id: String,
     pub position: f64,
+    #[serde(
+        default,
+        skip_serializing_if = "BusStopLocationKind::is_reviewed_reference"
+    )]
+    pub location_kind: BusStopLocationKind,
 }
 
 /// Authoritative editor request: expected route is an atomic compare, not a replacement graph.
@@ -64,6 +71,8 @@ pub struct NativeRoadRegion {
     revision: String,
     attribution: String,
     bus_stop_positions: Vec<StopPosition>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    allows_player_bus_stops: bool,
 }
 
 struct Approved {
@@ -116,6 +125,7 @@ impl Pin<'_> {
                 revision: asset.revision,
                 attribution: asset.attribution,
                 bus_stop_positions: asset.bus_stop_positions,
+                allows_player_bus_stops: asset.allows_player_bus_stops,
             },
             transitions: asset.transitions,
         };
@@ -123,7 +133,7 @@ impl Pin<'_> {
         let edges = indexed(&approved.graph.edges, |edge| &edge.id)?;
         let mut seen = BTreeSet::new();
         for stop in &approved.region.bus_stop_positions {
-            if !position(stop.position) {
+            if !position(stop.position) || !stop.location_kind.is_reviewed_reference() {
                 return Err(InvalidData);
             }
             let edge = edges.get(stop.edge_id.as_str()).ok_or(MissingReference)?;
@@ -172,18 +182,15 @@ impl Approved {
             &self.region.revision,
             &rules,
         )?;
-        let allowed: BTreeSet<_> = self
-            .region
-            .bus_stop_positions
-            .iter()
-            .map(|stop| (stop.edge_id.as_str(), position_key(stop.position)))
-            .collect();
-        if graph
-            .bus_stops
-            .iter()
-            .any(|stop| !allowed.contains(&(stop.edge_id.as_str(), position_key(stop.position))))
-        {
-            return Err(AccessForbidden);
+        let references = self.reviewed_boarding();
+        for stop in &graph.bus_stops {
+            self.check_boarding(
+                &gate,
+                &references,
+                &stop.edge_id,
+                stop.position,
+                stop.location_kind,
+            )?;
         }
         Ok(gate)
     }
@@ -197,22 +204,51 @@ impl Approved {
         from: &StopPosition,
         to: &StopPosition,
     ) -> Result<Vec<String>, RoadTransportError> {
+        let gate = self.gate(graph, world)?;
+        let references = self.reviewed_boarding();
         for target in [from, to] {
-            if !self
-                .region
-                .bus_stop_positions
-                .iter()
-                .any(|s| s.edge_id == target.edge_id && s.position == target.position)
-            {
-                return Err(AccessForbidden);
-            }
+            self.check_boarding(
+                &gate,
+                &references,
+                &target.edge_id,
+                target.position,
+                target.location_kind,
+            )?;
         }
-        self.gate(graph, world)?.bus_path_between(
-            &from.edge_id,
-            from.position,
-            &to.edge_id,
-            to.position,
-        )
+        gate.bus_path_between(&from.edge_id, from.position, &to.edge_id, to.position)
+    }
+
+    fn reviewed_boarding(&self) -> BTreeSet<(&str, u64)> {
+        self.region
+            .bus_stop_positions
+            .iter()
+            .map(|stop| (stop.edge_id.as_str(), position_key(stop.position)))
+            .collect()
+    }
+
+    fn check_boarding(
+        &self,
+        gate: &PilotRoad<'_>,
+        references: &BTreeSet<(&str, u64)>,
+        edge_id: &str,
+        fraction: f64,
+        kind: BusStopLocationKind,
+    ) -> Result<(), RoadTransportError> {
+        if !position(fraction) {
+            return Err(InvalidData);
+        }
+        let permitted = match kind {
+            BusStopLocationKind::ReviewedReference => {
+                references.contains(&(edge_id, position_key(fraction)))
+            }
+            BusStopLocationKind::PlayerCreated => {
+                self.region.allows_player_bus_stops && 0.0 < fraction && fraction < 1.0
+            }
+        };
+        if !permitted || !gate.supports_bus_boarding(edge_id) {
+            return Err(AccessForbidden);
+        }
+        Ok(())
     }
 }
 
@@ -290,10 +326,14 @@ impl RoadTransport {
             return Ok(());
         }
         if self
-            .edges
+            .bus_stops
             .iter()
-            .any(|e| e.bus_access == Access::Allowed || e.tram_access == Access::Allowed)
-            && !self.has_qa_graph()
+            .any(|s| !s.location_kind.is_reviewed_reference())
+            || (self
+                .edges
+                .iter()
+                .any(|e| e.bus_access == Access::Allowed || e.tram_access == Access::Allowed)
+                && !self.has_qa_graph())
         {
             return Err(AccessForbidden);
         }
@@ -347,7 +387,8 @@ impl RoadTransport {
         Ok(())
     }
 
-    /// Use the reviewed boarding edge, not adjacent nodes or nearest geometry.
+    /// Use the exact verified boarding edge, not adjacent nodes or nearest geometry.
+    /// Region-approved fictional placements do not become reviewed stop references.
     pub fn native_bus_path(
         &self,
         world: &WorldDraft,
@@ -520,6 +561,7 @@ mod tests {
         let unreviewed_stop = StopPosition {
             edge_id: stops[2].edge_id.clone(),
             position: 0.8,
+            location_kind: Default::default(),
         };
         assert_eq!(
             approved.bus_path(&approved.graph, &world, &stops[0], &unreviewed_stop),
@@ -632,6 +674,7 @@ mod tests {
             name: "Test A".into(),
             edge_id: "test:0-1".into(),
             position: 0.25,
+            location_kind: Default::default(),
         });
         assert!(approved.gate(&graph, &world).is_ok());
         graph.bus_stops[0].position = 0.26;
@@ -793,9 +836,74 @@ mod tests {
     }
 
     #[test]
+    fn fictional_boarding_requires_region_opt_in_and_verified_surface_bus_access() {
+        let world = WorldDraft::default();
+        let player = |edge: &str, position| StopPosition {
+            edge_id: edge.into(),
+            position,
+            location_kind: BusStopLocationKind::PlayerCreated,
+        };
+        let from = player("test:0-1", 0.2);
+        let to = player("test:0-1", 0.8);
+        let old_pin = authenticate_value(asset()).unwrap();
+        assert_eq!(
+            old_pin.bus_path(&old_pin.graph, &world, &from, &to),
+            Err(AccessForbidden)
+        );
+        let mut fixture = asset();
+        fixture["allows_player_bus_stops"] = true.into();
+        let approved = authenticate_value(fixture.clone()).unwrap();
+        let route =
+            |a: &StopPosition, b: &StopPosition| approved.bus_path(&approved.graph, &world, a, b);
+        assert_eq!(route(&from, &to), Ok(vec!["test:0-1".into()]));
+        assert_eq!(route(&to, &from), Err(InvalidStopOrder));
+        assert_eq!(route(&from, &from), Err(InvalidStopOrder));
+        let old = r#"{"edge_id":"test:0-1","position":0.25}"#;
+        let reference: StopPosition = serde_json::from_str(old).unwrap();
+        assert_eq!(serde_json::to_string(&reference).unwrap(), old);
+        assert!(route(&reference, &to).is_ok());
+        let false_reference = StopPosition {
+            position: 0.26,
+            ..reference
+        };
+        assert_eq!(route(&false_reference, &to), Err(AccessForbidden));
+        let mut false_pin = fixture.clone();
+        false_pin["bus_stop_positions"][0]["location_kind"] = "player_created".into();
+        assert_eq!(authenticate_value(false_pin).err(), Some(InvalidData));
+        for (edge, position, error) in [
+            ("test:0-1", -0.01, InvalidData),
+            ("test:0-1", 1.01, InvalidData),
+            ("test:0-1", f64::NAN, InvalidData),
+            ("test:0-1", f64::INFINITY, InvalidData),
+            ("test:0-1", 0.0, AccessForbidden),
+            ("test:0-1", 1.0, AccessForbidden),
+            ("missing", 0.5, AccessForbidden),
+        ] {
+            assert_eq!(route(&player(edge, position), &to), Err(error));
+        }
+        for (field, value) in [
+            ("level", serde_json::json!("elevated")),
+            ("level", serde_json::Value::Null),
+            ("bus_access", serde_json::json!("unknown")),
+            ("bus_access", serde_json::json!("forbidden")),
+        ] {
+            let mut denied = fixture.clone();
+            denied["bus_stop_positions"] = serde_json::json!([]);
+            denied["transitions"] = serde_json::json!([]);
+            denied["edges"][0][field] = value;
+            let denied = authenticate_value(denied).unwrap();
+            assert_eq!(
+                denied.bus_path(&denied.graph, &world, &from, &to),
+                Err(AccessForbidden)
+            );
+        }
+    }
+
+    #[test]
     fn injected_registry_drives_world_mutations_and_save_restore_boundary() {
         use crate::world::{World, WorldError};
         let mut fixture = asset();
+        fixture["allows_player_bus_stops"] = true.into();
         fixture["transitions"]
             .as_array_mut()
             .unwrap()
@@ -823,10 +931,12 @@ mod tests {
         let from = StopPosition {
             edge_id: "test:0-1".into(),
             position: 0.25,
+            location_kind: Default::default(),
         };
         let to = StopPosition {
             edge_id: "test:1-2".into(),
             position: 0.75,
+            location_kind: Default::default(),
         };
         let edges = d.road_transport.native_bus_path(&d, &from, &to).unwrap();
         assert_eq!(edges, ["test:0-1", "test:1-2"]);
@@ -857,6 +967,7 @@ mod tests {
                 name: format!("Stop {k}"),
                 edge_id: p.edge_id,
                 position: p.position,
+                location_kind: Default::default(),
             });
         }
         d.road_transport.bus_routes.push(BusRoute {
@@ -911,6 +1022,46 @@ mod tests {
         bad.road_transport.bus_stops[0].position = 0.5;
         assert_eq!(world.replace(bad), Err(WorldError::InvalidRoadTransport));
         assert_eq!(world.snapshot(), &changed);
+        let mut fictional = changed.clone();
+        for (stop, fraction) in fictional
+            .road_transport
+            .bus_stops
+            .iter_mut()
+            .zip([0.2, 0.8])
+        {
+            stop.position = fraction;
+            stop.location_kind = BusStopLocationKind::PlayerCreated;
+        }
+        world.replace(fictional.clone()).unwrap();
+        let wire = serde_json::to_value(&fictional).unwrap();
+        assert_eq!(
+            wire["road_transport"]["bus_stops"][0]["location_kind"],
+            "player_created"
+        );
+        let restored =
+            World::from_saved_draft(serde_json::from_value(wire).unwrap(), Default::default())
+                .unwrap();
+        assert_eq!(restored.snapshot(), &fictional);
+        for (container, field, value) in [
+            ("bus_stops", "position", serde_json::json!(1.2)),
+            ("bus_stops", "edge_id", serde_json::json!("alternate")),
+            (
+                "bus_stops",
+                "location_kind",
+                serde_json::json!("reviewed_reference"),
+            ),
+            ("edges", "revision", serde_json::json!("forged")),
+            ("edges", "source", serde_json::json!("non-pinned-source")),
+        ] {
+            let mut bad = serde_json::to_value(&fictional).unwrap();
+            bad["road_transport"][container][0][field] = value;
+            assert_eq!(
+                world.replace(serde_json::from_value(bad).unwrap()),
+                Err(WorldError::InvalidRoadTransport)
+            );
+            assert_eq!(world.snapshot(), &fictional);
+        }
+        world.replace(changed.clone()).unwrap();
         let decoded: WorldDraft =
             serde_json::from_slice(&serde_json::to_vec(world.snapshot()).unwrap()).unwrap();
         let mut reopened = World::from_saved_draft(decoded, Default::default()).unwrap();
