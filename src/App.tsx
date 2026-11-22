@@ -108,7 +108,7 @@ import { MAP_PROVIDERS } from "./mapProviders";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, FormEvent, CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { invoke as nativeInvoke, isTauri } from "@tauri-apps/api/core";
-import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, viewBounds, mapViewport } from "./map";
+import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, requestedTileCoverage, viewBounds, mapViewport } from "./map";
 import { GsiBackground } from "./GsiBackground";
 import type { Camera } from "./map";
 import type { TileStatus } from "./GsiBackground";
@@ -229,6 +229,8 @@ export function App() {
   const referenceRepository=useMemo(()=>referencePack?createReferenceRepository(referencePack):null,[referencePack]);
   const referenceResult=useMemo(()=>referenceRepository?.query(bounds) ?? {stations:[],total:0},[referenceRepository,bounds]);
   const cameraPending = camera !== requestedCamera;
+  const lastRasterRequestAt=useRef(-Infinity);
+  const rasterCoverageLow=background!=="sample"&&cameraPending&&requestedTileCoverage(requestedTiles,camera,mapSize)<0.6;
   // Anchor the fictional offline scene to the same camera as railway geometry.
   const sampleScale = 2 ** (camera.zoom - DEFAULT_CAMERA.zoom);
   const sampleOrigin = project(DEFAULT_CAMERA.latitude, DEFAULT_CAMERA.longitude, camera);
@@ -237,9 +239,25 @@ export function App() {
     if (!cameraPending) return;
     // Throttle tile requests during movement instead of postponing them until
     // the user stops dragging. Read the newest camera when the window ends.
-    const timer = window.setTimeout(() => setRequestedCamera(cameraRef.current), 250);
+    const timer = window.setTimeout(() => {
+      if(performance.now()-lastRasterRequestAt.current<250)return;
+      lastRasterRequestAt.current=performance.now();
+      setRequestedCamera(cameraRef.current);
+    }, 250);
     return () => window.clearTimeout(timer);
   }, [cameraPending, requestedCamera]);
+  useEffect(() => {
+    if (!rasterCoverageLow) return;
+    // A large jump can uncover most of the old raster footprint. Coalesce
+    // loss for 125 ms, without exceeding the usual rate during sustained motion.
+    const wait=Math.max(125,250-Math.max(0,performance.now()-lastRasterRequestAt.current));
+    const timer=window.setTimeout(()=>{
+      if(performance.now()-lastRasterRequestAt.current<250)return;
+      lastRasterRequestAt.current=performance.now();
+      setRequestedCamera(cameraRef.current);
+    },Math.ceil(wait));
+    return ()=>window.clearTimeout(timer);
+  }, [rasterCoverageLow,requestedCamera]);
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg || typeof ResizeObserver === "undefined") return;
