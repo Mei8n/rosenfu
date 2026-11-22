@@ -29,6 +29,13 @@ MAX_EDGES = 4096
 MAX_TRANSITIONS = 8192
 MAX_STOPS = 4096
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+SIMULATED_TURN_ORIGIN = ' [Rosenfu simulated turns]'
+POLICY_FIELDS = {
+    'format', 'asset_id', 'source_sha256', 'coverage_sha256', 'revision', 'origin', 'region',
+    'bounds', 'modes', 'turns', 'bus_stop_positions',
+}
+JUNCTION_CERTIFICATE = 'simulated_junctions_sha256'
+PLAYER_BUS_STOPS = 'allows_player_bus_stops'
 
 
 def unique_json(pairs):
@@ -119,11 +126,76 @@ def positive_rule(edges, mode, incoming, outgoing):
                   'reviewed movement is not a supported directed access')
 
 
-def project(source, coverage, policy):
-    build.require(isinstance(policy, dict) and set(policy) == {
-        'format', 'asset_id', 'source_sha256', 'coverage_sha256', 'revision', 'origin', 'region',
-        'bounds', 'modes', 'turns', 'bus_stop_positions',
-    } and type(policy['format']) is int and policy['format'] == 1, 'invalid region policy')
+def verify_junction_coverage(path, policy):
+    digest = policy.get(JUNCTION_CERTIFICATE)
+    build.require((path is not None) == (JUNCTION_CERTIFICATE in policy),
+                  'simulated turns require both policy opt-in and a separate junction certificate')
+    if path is None:
+        return False
+    build.require(isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest),
+                  'invalid junction certificate digest')
+    raw = build.read_limited(path, 1024 * 1024)
+    build.require(build.sha(raw) == digest, 'junction certificate digest mismatch')
+    document = json.loads(raw, object_pairs_hook=unique_json)
+    binding = ('source_sha256', 'coverage_sha256', 'revision', 'bounds')
+    fields = {'format', 'incident_ways_complete', 'restriction_relations_complete', *binding}
+    build.require(isinstance(document, dict) and set(document) == fields
+                  and type(document['format']) is int and document['format'] == 1
+                  and document['incident_ways_complete'] is True
+                  and document['restriction_relations_complete'] is True,
+                  'missing affirmative incident-way or turn-restriction coverage')
+    build.require(all(build.encoded(document[k]) == build.encoded(policy[k]) for k in binding),
+                  'junction certificate does not bind the exact region snapshot')
+    return True
+
+
+def simulated_junction_rules(edges, accepted_ways, nodes, ways, incident, blocked_nodes):
+    """Candidate gameplay rules, never an assertion of legal turns or real access."""
+    incoming, outgoing = defaultdict(list), defaultdict(list)
+    for edge in edges.values():
+        incoming[edge['to'][4:]].append(edge)
+        outgoing[edge['from'][4:]].append(edge)
+    rules = set()
+    for node in incoming.keys() & outgoing.keys():
+        raw_ways = incident[node]
+        if not (2 <= len(raw_ways) <= 3 and raw_ways <= accepted_ways):
+            continue
+        arms = []
+        for way in raw_ways:
+            refs, _ = ways[way]  # accepted ways have unique node refs
+            index = refs.index(node)
+            arms.extend(refs[max(0, index-1):index])
+            arms.extend(refs[index+1:index+2])
+        if (len(arms) != 3 or len(set(arms)) != 3 or blocked_nodes.intersection(arms)
+                or len({nodes[n] for n in [node, *arms]}) != 4):
+            continue
+        centre = nodes[node]
+        vectors = [(nodes[a][0]-centre[0], nodes[a][1]-centre[1]) for a in arms]
+        # Same-side collinear arms can be overlapping ways or a split lane
+        # representation, not the bounded simple junction supported here.
+        if any(a[0]*b[1] == a[1]*b[0] and a[0]*b[0] + a[1]*b[1] > 0
+               for i, a in enumerate(vectors) for b in vectors[i+1:]):
+            continue
+        for mode in MODES:
+            # Even a third arm with unknown mode permission defeats automatic
+            # calculation for this mode. Road classifications alone prove none.
+            if not all(ways[way][1].get(mode) in POSITIVE for way in raw_ways):
+                continue
+            access = f'{mode}_access'
+            for a in incoming[node]:
+                for b in outgoing[node]:
+                    if a['from'] != b['to'] and a[access] == b[access] == 'allowed':
+                        rules.add((mode, a['id'], b['id']))
+                        build.require(len(rules) <= MAX_TRANSITIONS, 'native movement limit')
+    return rules
+
+
+def project(source, coverage, policy, *, junction_coverage=None):
+    build.require(isinstance(policy, dict)
+                  and POLICY_FIELDS <= set(policy) <= POLICY_FIELDS | {JUNCTION_CERTIFICATE, PLAYER_BUS_STOPS}
+                  and type(policy['format']) is int and policy['format'] == 1, 'invalid region policy')
+    allows_player_bus_stops = policy.get(PLAYER_BUS_STOPS, False)
+    build.require(type(allows_player_bus_stops) is bool, 'player bus stop opt-in must be boolean')
     asset_id, revision = policy['asset_id'], policy['revision']
     build.require(isinstance(asset_id, str) and re.fullmatch(r'[a-z0-9-]{1,64}', asset_id), 'invalid candidate asset ID')
     build.require(isinstance(revision, str) and len(revision) <= 64, 'invalid source revision')
@@ -148,8 +220,14 @@ def project(source, coverage, policy):
     turns, stops = policy['turns'], policy['bus_stop_positions']
     build.require(isinstance(turns, list) and len(turns) <= MAX_TRANSITIONS
                   and isinstance(stops, list) and len(stops) <= MAX_STOPS, 'region policy limits')
+    simulate = verify_junction_coverage(junction_coverage, policy)
+    origin = policy['origin'] + (SIMULATED_TURN_ORIGIN if simulate else '')
+    build.require(len(origin) <= 128, 'origin plus simulated-turn label exceeds limit')
     nodes, ways, incident, blocked_nodes, blocked_ways = parse_source(source, policy['source_sha256'], revision)
-    edges, used_nodes, sequences = {}, set(), []
+    if simulate:
+        build.require(blocked_nodes <= nodes.keys() and blocked_ways <= ways.keys(),
+                      'junction coverage contains an unresolved restriction member')
+    edges, used_nodes, sequences, accepted_ways = {}, set(), [], set()
     for wid, (refs, tags) in sorted(ways.items()):
         if wid in blocked_ways or not supported(tags) or len(set(refs)) != len(refs):
             continue
@@ -161,6 +239,7 @@ def project(source, coverage, policy):
         if any(not (west < nodes[ref][0] < east and south < nodes[ref][1] < north)
                for ref in refs):
             continue
+        accepted_ways.add(wid)
         directed = list(zip(refs, refs[1:]))
         for direction in ('forward', 'reverse'):
             if tags['oneway'] == ('-1' if direction == 'forward' else 'yes'):
@@ -197,6 +276,8 @@ def project(source, coverage, policy):
         positive_rule(edges, mode, a, b)
         build.require((mode, a, b) not in rules, 'duplicate movement')
         rules.add((mode, a, b))
+    if simulate:
+        rules |= simulated_junction_rules(edges, accepted_ways, nodes, ways, incident, blocked_nodes)
     build.require(len(rules) <= MAX_TRANSITIONS, 'native movement limit')
     reviewed_stops = set()
     for stop in stops:
@@ -208,14 +289,17 @@ def project(source, coverage, policy):
                       'boarding location is not on a supported bus edge')
         build.require((key, fraction) not in reviewed_stops, 'duplicate boarding location')
         reviewed_stops.add((key, fraction))
-    return {
-        'format': 1, 'asset_id': asset_id, 'revision': revision, 'origin': policy['origin'],
+    asset = {
+        'format': 1, 'asset_id': asset_id, 'revision': revision, 'origin': origin,
         'region': policy['region'], 'attribution': '© OpenStreetMap contributors (ODbL-1.0)',
         'nodes': sorted(({'id': f'osm:{n}', 'point': point_dto(nodes[n])} for n in used_nodes), key=lambda n: n['id']),
         'edges': [edges[key] for key in sorted(edges)],
         'transitions': [{'mode': mode, 'incoming': a, 'outgoing': b} for mode, a, b in sorted(rules)],
         'bus_stop_positions': [{'edge_id': key, 'position': fraction} for key, fraction in sorted(reviewed_stops)],
     }
+    if allows_player_bus_stops:
+        asset[PLAYER_BUS_STOPS] = True
+    return asset
 
 
 def main():
@@ -223,12 +307,13 @@ def main():
     p.add_argument('source', type=Path)
     p.add_argument('--coverage', required=True, type=Path)
     p.add_argument('--policy', required=True, type=Path)
+    p.add_argument('--junction-coverage', type=Path, help='separate simulated-junction coverage certificate')
     p.add_argument('--output', required=True, type=Path)
     args = p.parse_args()
     try:
         policy_bytes = build.read_limited(args.policy, 1024 * 1024)
         policy = json.loads(policy_bytes, object_pairs_hook=unique_json)
-        asset = project(args.source, args.coverage, policy)
+        asset = project(args.source, args.coverage, policy, junction_coverage=args.junction_coverage)
         payload = build.encoded(asset)
         build.require(len(payload) <= MAX_OUTPUT_BYTES, 'native asset byte limit')
         # A successful output never changes an existing artifact. Root validates
@@ -237,10 +322,16 @@ def main():
             staged = Path(temp) / 'asset.json'
             staged.write_bytes(payload)
             os.link(staged, args.output)  # publish complete bytes without replacing an existing file
-        print(json.dumps({'sha256': build.sha(payload), 'source_sha256': policy['source_sha256'],
-                          'coverage_sha256': policy['coverage_sha256'], 'policy_sha256': build.sha(policy_bytes),
-                          'revision': asset['revision'], 'edges': len(asset['edges']),
-                          'movements': len(asset['transitions']), 'candidate_only': True}))
+        receipt = {'sha256': build.sha(payload), 'source_sha256': policy['source_sha256'],
+                   'coverage_sha256': policy['coverage_sha256'], 'policy_sha256': build.sha(policy_bytes),
+                   'revision': asset['revision'], 'edges': len(asset['edges']),
+                   'movements': len(asset['transitions']), 'candidate_only': True}
+        if args.junction_coverage is not None:
+            receipt.update(movement_policy='simulated-simple-at-grade-v1',
+                           simulated_junctions_sha256=policy[JUNCTION_CERTIFICATE])
+        if asset.get(PLAYER_BUS_STOPS):
+            receipt[PLAYER_BUS_STOPS] = True
+        print(json.dumps(receipt))
     except (OSError, ValueError, KeyError, ET.ParseError) as error:
         p.exit(2, f'Native candidate rejected: {error}\n')
 

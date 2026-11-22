@@ -270,3 +270,57 @@ a digest pin in the native registry, which this tool never touches. The initial
 fixture's three boarding positions permit different routes from one region;
 the same graph cannot be widened by a save or frontend request. Source refresh
 or loading more than one region in a world is outside this increment.
+
+### Opt-in simulated simple junctions
+
+The default stays strict, including byte-identical existing output. A separate
+gameplay policy can generate movements once per **region**, not per play route.
+It does not make a legal-turn determination or establish actual operator access.
+
+First independently verify that the exact extraction has **every incident raw
+way** (including ways this projection would otherwise discard) and **every
+potentially applicable mapped restriction relation with all its members** across
+the entire candidate bounds. A polygon, a clipped or filtered tile, a local
+coordinate match, and a lack of restriction rows do not establish this. Keep
+the extraction method and evidence with the review. If completeness is not
+affirmative, omit the opt-in and keep the junction closed to implicit turns.
+
+Record the independently reviewed regional attestation in a separate JSON file:
+
+- format 1; `source_sha256`, `coverage_sha256`, `revision`, and `bounds` must bind
+  the exact existing policy values;
+- `incident_ways_complete` and `restriction_relations_complete` must both be
+  literal `true`.
+
+Add the attestation's own byte digest as `simulated_junctions_sha256` to the
+region policy and pass `--junction-coverage PATH` along with the existing
+inputs. Neither input alone opts in. The generator checks the binding, not the
+truth of the independently reviewed attestation. Never use a fictional or
+unverifiable attestation to register a real asset.
+
+For this policy, only genuine, nondegenerate three-arm raw nodes on wholly
+interior eligible at-grade ways can emit automatic turns. Degree-two and more
+complex multiway joins remain strict, including coincident IDs that are not
+actually the same node. An affected restriction relation, barrier, unsupported
+or conditional tag/structure, duplicate or overlapping arm, or unknown mode
+on any arm blocks automatic turns for the applicable junction/mode. No
+U-turn or travel against the directed way order is added. The unchanged native
+gate still checks the explicit per-mode ordered movements, including on
+restore. Ordinary tram vertical limits and actual street rules are not
+certified by this topology policy.
+
+The candidate asset marks its origin `[Rosenfu simulated turns]`; the build
+receipt identifies `simulated-simple-at-grade-v1` and the attestation digest.
+No file is added to the native pin registry automatically.
+
+### Independent opt-in for in-game bus stops
+
+A regional policy may independently set `"allows_player_bus_stops": true`.
+The generator then emits the same field in the native digest-pinned asset and
+in the build receipt. A missing or explicit false value leaves the field absent
+and does not change the candidate bytes. Non-boolean values are rejected.
+
+This is a gameplay option to choose stops on already approved, directed bus
+edges. It creates no real stops, does not grant mode access, and never adds
+routing transitions. The simulated-junction policy does not enable player stop
+placement, and player stop placement does not enable simulated junctions.
