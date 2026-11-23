@@ -123,3 +123,84 @@ fn construction_summary_timings() {
         assert_eq!(editor.lock().unwrap().snapshot(), before);
     }
 }
+
+/// In a fresh process, measure an editor overwrite and a cold editor reopen of
+/// that same slot. The data are synthetic and preloaded; OS caches are not reset.
+#[test]
+#[ignore = "headless edit/save/reopen measurements only"]
+fn construction_edit_save_reopen_timings() {
+    let n = match std::env::var("ROSENFU_EDIT_BENCH_ALIGNMENTS").as_deref() {
+        Ok("100") => 100,
+        Ok("1000") | Err(std::env::VarError::NotPresent) => 1_000,
+        Ok("10000") => 10_000,
+        _ => panic!("ROSENFU_EDIT_BENCH_ALIGNMENTS must be 100, 1000 or 10000"),
+    };
+    let request = serde_json::json!({
+        "name": "benchmark edit", "points":[point(-0.01,0.01), point(0.01,0.01)],
+        "trackType":"normal", "stations":[]
+    });
+    let view = rosenfu_core::world::ViewState {
+        latitude: 35.02,
+        longitude: 139.03,
+        zoom: 12.,
+    };
+    for sample in 0..7 {
+        // Set up an established slot on each sample, outside timed work.
+        let root = tempfile::tempdir().unwrap();
+        let (mut editor, _) = fixture(n);
+        assert!(
+            editor
+                .save_active_slot(root.path(), None, None)
+                .unwrap()
+                .saved
+        );
+        let slot = editor
+            .list_save_slots(root.path())
+            .unwrap()
+            .active_slot_id
+            .unwrap();
+        let path = editor.active_save_path(root.path()).unwrap();
+        let plan = serde_json::from_value(request.clone()).unwrap();
+
+        let overall = Instant::now();
+        let build = Instant::now();
+        let mut reply = editor.build_construction_plan(vec![plan], vec![]).unwrap();
+        let build_ms = build.elapsed().as_secs_f64() * 1000.;
+        let encode = Instant::now();
+        let reply_bytes = serde_json::to_vec(&reply).unwrap().len();
+        let encode_ms = encode.elapsed().as_secs_f64() * 1000.;
+        let save = Instant::now();
+        let saved = editor
+            .save_active_slot(root.path(), None, Some(view))
+            .unwrap();
+        let save_ms = save.elapsed().as_secs_f64() * 1000.;
+        // A fresh session, not a disk cache flush. Drop the first editor as
+        // it would be when the app closes before reopening this same slot.
+        drop(editor);
+        let reopen = Instant::now();
+        let reopened = WorldEditor::new()
+            .load_save_slot(root.path(), slot)
+            .unwrap();
+        let reopen_ms = reopen.elapsed().as_secs_f64() * 1000.;
+        let total_ms = overall.elapsed().as_secs_f64() * 1000.;
+        let save_bytes = std::fs::metadata(&path).unwrap().len();
+
+        assert!(saved.saved, "edit never reached the archive");
+        assert_eq!(reply.alignments.len(), n + 1);
+        reply.view_state = Some(view);
+        assert_eq!(reopened, reply, "save/reopen changed the edited world");
+        println!("n={n} sample={sample} build_ms={build_ms:.3} reply_encode_ms={encode_ms:.3} overwrite_ms={save_ms:.3} reopen_ms={reopen_ms:.3} total_ms={total_ms:.3} response_bytes={reply_bytes} save_bytes={save_bytes}");
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(peak) = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("VmHWM:").map(str::trim))
+                .map(str::to_owned)
+        })
+    {
+        println!("n={n} whole_process_peak_rss={peak}");
+    }
+}

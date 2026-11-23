@@ -487,3 +487,101 @@ fn spur_or_spatial_overlap_still_reject_candidate_and_freeze_an_existing_refuge(
         );
     }
 }
+
+#[test]
+fn repeated_refuge_calendar_compares_completed_trains_without_changing_nominal_offers() {
+    const BEFORE_DRAIN_MS: u64 = 600_000;
+    const DRAIN_MS: u64 = 3_600_000;
+    const BUDGET: usize = 256;
+    let observe = |headway_ms, different_branch| {
+        let (mut world, mut configs, _) = fixture(different_branch, false, 1., 80.);
+        for c in &mut configs {
+            c.timetable.headway_ms = headway_ms;
+            c.timetable.last_departure_ms = 3 * headway_ms;
+        }
+        let local = configs[0].service_id.0.to_string();
+        let express = configs[1].service_id.0.to_string();
+        world.configure_operation(configs).unwrap();
+        let rt = &world.operation().unwrap().runtime;
+        assert_eq!(rt.save().format, 7);
+        let save_before_replay = world.operation_save();
+        let plans = rt.passenger_offers();
+        let report = rt.preview_passenger_replay(DRAIN_MS, BUDGET).unwrap();
+        assert!(report.complete);
+        assert_eq!(world.operation_save(), save_before_replay);
+
+        // Count final served arrivals, not two arrivals for each local and
+        // not nominal offers or a passenger-demand multiplier.
+        let finished = report.completed_legs.iter().filter(|leg| {
+            (leg.train.service_id == local && leg.sequence == 1)
+                || (leg.train.service_id == express && leg.sequence == 0)
+        });
+        let expected: BTreeSet<_> = [&local, &express]
+            .into_iter()
+            .flat_map(|id| (0..4).map(move |i| (id.clone(), i * headway_ms)))
+            .collect();
+        let mut observed = BTreeSet::new();
+        let mut early = 0;
+        let mut max_origin_wait = 0;
+        for leg in finished {
+            assert!(observed.insert((leg.train.service_id.clone(), leg.train.scheduled_ms)));
+            early += usize::from(leg.arrived_ms < BEFORE_DRAIN_MS);
+        }
+        for leg in report.completed_legs.iter().filter(|leg| leg.sequence == 0) {
+            max_origin_wait = max_origin_wait.max(leg.entered_ms - leg.train.scheduled_ms);
+        }
+        assert_eq!(observed, expected);
+
+        let advance = |world: &mut World, time| {
+            let step = world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(time, BUDGET)
+                .unwrap();
+            assert!(step.reached_target);
+            step
+        };
+        let mid = advance(&mut world, BEFORE_DRAIN_MS);
+        let bytes = rosenfu_storage::encode(&world).unwrap();
+        let mut reopened = rosenfu_storage::decode(&bytes).unwrap();
+        assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), bytes);
+        let tail = advance(&mut world, DRAIN_MS);
+        assert_eq!(tail, advance(&mut reopened, DRAIN_MS));
+        assert_eq!(world.operation_save(), reopened.operation_save());
+        assert_eq!(world.operation().unwrap().runtime.trains().count(), 0);
+        assert_eq!(mid.arrivals.len() + tail.arrivals.len(), 12);
+        assert_eq!(report.completed_legs.len(), 12);
+        let live: BTreeSet<_> = mid
+            .arrivals
+            .into_iter()
+            .chain(tail.arrivals)
+            .map(|a| (a.train, a.station_id, a.at_ms))
+            .collect();
+        let replay: BTreeSet<_> = report
+            .completed_legs
+            .into_iter()
+            .map(|l| (l.train, l.to, l.arrived_ms))
+            .collect();
+        assert_eq!(live, replay);
+        (plans, early, max_origin_wait)
+    };
+    for headway_ms in [120_000, 300_000] {
+        let (same_offers, same_early, same_wait) = observe(headway_ms, false);
+        let (refuge_offers, refuge_early, refuge_wait) = observe(headway_ms, true);
+        // The configured frequency stays fixed; path running times and
+        // enough ready-to-arrival observations may legitimately differ.
+        let nominal = |offers: Vec<rosenfu_core::operation::PassengerOffer>| {
+            offers
+                .into_iter()
+                .map(|o| o.headway_seconds)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(nominal(same_offers), nominal(refuge_offers));
+        assert_eq!((same_early, refuge_early), (1, 2));
+        assert!(refuge_wait < same_wait);
+        println!(
+            "headway={headway_ms}ms: arrivals before 600s same={same_early}/8 refuge={refuge_early}/8; max origin wait same={same_wait}ms refuge={refuge_wait}ms"
+        );
+    }
+}
