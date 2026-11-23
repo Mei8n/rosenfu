@@ -230,7 +230,14 @@ function vehicleStatus(train:Train,now:number,invalidated:boolean,bus:boolean){
  const {state}=train;
  if(invalidated)return {status:'運行停止中',delayMs:train.delay_ms};
  if(bus)return {status:state.state==='waiting'?'待機中':'走行中',delayMs:train.delay_ms};
- if(state.state==='moving')return {status:now>=state.arrival_ms?'到着済み':'走行中',delayMs:train.delay_ms};
+ if(state.state==='moving'){
+  const arrived=now>=state.arrival_ms,remaining=state.release_ms-now;
+  // This is the current leg's trailing-clearance event, not a promise
+  // that every reservation is released (through/terminal leases can remain).
+  const detail=arrived&&Number.isSafeInteger(state.release_ms)&&remaining>0
+   ?`この区間の後部通過まで ${Math.ceil(remaining/1000)}秒`:undefined;
+  return {status:arrived?'到着済み':'走行中',detail,delayMs:train.delay_ms};
+ }
  if(now<state.ready_ms)return {status:train.leg>0?'停車中':'発車待ち',delayMs:train.delay_ms};
  // The native clock has already attempted dispatch at ready_ms. The engine
  // books the wait on entry, so accrue it in the view only while waiting.
@@ -239,15 +246,18 @@ function vehicleStatus(train:Train,now:number,invalidated:boolean,bus:boolean){
   ?train.wait_scope==='held_across_connections'?'相手列車が、接続部をまたぐ進路を確保中'
    :train.wait_scope==='needs_across_connections'?'次の停車駅まで、接続部をまたぐ進路が空くのを待っています':undefined
   :undefined;
- return {status:reason?`進路待ち（${reason}）`:'進路待ち',detail,delayMs:train.delay_ms+(now-state.ready_ms)};
+ const waited=now-state.ready_ms;
+ return {status:reason?`進路待ち（${reason}）`:'進路待ち',detail,
+  currentWait:reason&&Number.isSafeInteger(waited)&&waited>0?`今回の進路待ち ${Math.ceil(waited/1000)}秒`:undefined,
+  delayMs:train.delay_ms+waited};
 }
 
 function ActiveVehicles({trains,configured,now,invalidated,bus=false}:{trains:Train[];configured:boolean;now:number;invalidated:boolean;bus?:boolean}){
  const label=bus?"バス":"列車";
  return <div className="operation-trains">
   {trains.length?<ul aria-label={`運行中・待機中の${label}`}>{trains.map(train=>{
-   const {status,detail,delayMs}=vehicleStatus(train,now,invalidated,bus);
-   return <li key={train.key.scheduled_ms}><span>{scheduleTime(train.key.scheduled_ms)} 発</span><strong>{status}</strong>{detail&&<small>{detail}</small>}{delayMs>0&&<span>遅れ {Math.ceil(delayMs/1000)}秒</span>}</li>;
+   const {status,detail,currentWait,delayMs}=vehicleStatus(train,now,invalidated,bus);
+   return <li key={train.key.scheduled_ms}><span>{scheduleTime(train.key.scheduled_ms)} 発</span><strong>{status}</strong>{detail&&<small>{detail}</small>}{currentWait&&<small>{currentWait}</small>}{delayMs>0&&<span>遅れ {Math.ceil(delayMs/1000)}秒</span>}</li>;
   })}</ul>:<p>{configured?`現在、運行中・待機中の${label}はありません。`:'この系統のダイヤは未設定です。'}</p>}
  </div>;
 }
