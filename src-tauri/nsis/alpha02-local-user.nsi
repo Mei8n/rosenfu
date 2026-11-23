@@ -320,7 +320,7 @@ Section Install
   Call UserRequireToken
   Call UserRequireNoForeignInstall
   Call UserReadRegistration
-  !insertmacro VerifyUserPath user_install
+  !insertmacro VerifyUserPath user_install_path
   StrCpy $Refusal "指定フォルダーと登録済みの QA 版が一致しないか、指定先を使用できません。"
   ${If} $CanUsePath != 1
     Call UserRefuse
