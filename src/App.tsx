@@ -1656,7 +1656,7 @@ export function App() {
         const from=observedTramRoadAnchor(snapshot,result.from),to=observedTramRoadAnchor(snapshot,result.to);
         const start=draftPoints.at(-1);
         if(!start||distanceM(from.anchor.point,start)>.01)throw Error("起点を道路上の点に置き直すか、Ctrlで自由に敷設してください。");
-        if(distanceM(destination?.point??point,to.anchor.point)>20.01||(destination&&distanceM(destination.point,to.anchor.point)>.01))throw Error("道路上の点を選び直してください。");
+        if(distanceM(destination?.point??point,to.anchor.point)>20.01)throw Error("道路上の点を選び直してください。");
         const expected=await invoke<string>("ofm_world_token");
         if(!currentTask())return;
         const q=await prepareOrdinaryBusQuery(from.anchor,to.anchor,"軌道の参考経路","authored-tram-guide",expected,automaticRoad.readTileEvidenceBatch,world?.road_evidence_descriptors??[]);
@@ -1669,7 +1669,12 @@ export function App() {
            ||distanceM(points[0],from.anchor.point)>.01||distanceM(points[points.length-1],to.anchor.point)>.01)throw Error("道路に沿う軌道の経路を確認できません。");
         // Preserve the same approved displayed endpoints across quantization.
         points[0]=start;points[points.length-1]=to.anchor.point;
-        result={kind:"route",point:to.anchor.point,line:fitRoadFollow(points),roadSnap:result.to};
+        const line=fitRoadFollow(points);
+        // Only the road portion was proved above. An explicitly chosen built
+        // endpoint can have a short authored lead, independently checked as
+        // part of the full construction candidate below.
+        if(destination&&distanceM(to.anchor.point,destination.point)>.01)line.push(destination.point);
+        result={kind:"route",point:to.anchor.point,line,roadSnap:result.to};
       }catch(e){if(!currentTask())return;result={kind:"error",error:String(e)};}
       finally{clearTimeout(waiting);if(anchorPlacementToken.current===task){anchorPlacementPending.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);}}
     }

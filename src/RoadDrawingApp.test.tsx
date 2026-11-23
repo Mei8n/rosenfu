@@ -314,6 +314,64 @@ test('ordinary authored tram follows a cached raw T junction on click without in
  expect(document.querySelector('.parked-plan')).toBeNull();
 });
 
+test('a native-verified tram road junction can connect to a nearby built tram endpoint through an explicit lead',async()=>{
+ vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
+ const f=tramFixture,bytes=Uint8Array.from(f.raw),tile=await decodeOpenFreeMapRoadTile(bytes,f.x,f.y,f.revision,1);
+ mock.snapshot={...tile,tileSnapshots:[tile]};
+ const [[startLon,startLat],[jointLon,jointLat]]=tile.tileLines[0].coordinates;
+ const [endLon,endLat]=tile.tileLines[1].coordinates[1];
+ const start={latitude:startLat+(jointLat-startLat)*.25,longitude:startLon+(jointLon-startLon)*.25};
+ const junction={latitude:jointLat,longitude:jointLon};
+ const roadEnd={latitude:endLat,longitude:endLon};
+ const bearing={latitude:endLat-jointLat,longitude:endLon-jointLon};
+ const scale=.00006/Math.hypot(bearing.latitude,bearing.longitude);
+ const terminal={latitude:endLat+bearing.latitude*scale,longitude:endLon+bearing.longitude*scale};
+ const continuation={latitude:endLat+bearing.latitude*scale*6,longitude:endLon+bearing.longitude*scale*6};
+ const mapCamera={...junction,zoom:16};
+ const target={id:'10',owner:'2',name:'既設トラム',track_type:'tram',points:[terminal,continuation]};
+ const loaded={...world,view_state:mapCamera,alignments:[target]};
+ const binding={z:14,x:f.x,y:f.y,revision:f.revision,rawSha256:f.tileRawSha256,decoderRule:OFM_EVIDENCE_RULE,
+  key:f.tileKey,url:f.tileKey,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION};
+ mock.read.mockResolvedValue({status:'ready',evidence:{rawTiles:[{sha256:f.tileRawSha256,bytes}],bindings:[binding]}});
+ let wrongRoadEnd=true,refuse=true;
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'tram-terminal-lead',authored_tram_road_guide_enabled:true};
+  if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='ofm_world_token')return 'tram-terminal-token';
+  if(command==='preview_authored_tram_road_guide')return [start,junction,wrongRoadEnd?terminal:roadEnd];
+  if(command==='preview_construction_plan')return {validationError:refuse&&(args as {validationOnly?:boolean})?.validationOnly?'敷設できない区間です':null,newCrossingCount:0};
+  return loaded;
+ });
+ render(<App/>);await screen.findByText(/tram-terminal-lead/);
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ const map=screen.getByRole('img',{name:/^駅配置用/});map.getBoundingClientRect=()=>new DOMRect(0,0,1000,600);
+ const click=async(p:typeof start)=>{const xy=project(p.latitude,p.longitude,mapCamera);await act(async()=>fireEvent.click(map,{clientX:xy.x,clientY:xy.y,detail:1}));};
+ await click(start);await waitFor(()=>expect(document.querySelector('.draft-anchor')).toBeTruthy());
+ await click(terminal);
+ await screen.findByText(/道路に沿う軌道の経路を確認できません/);
+ expect(vi.mocked(invoke).mock.calls.some(([c,args])=>c==='preview_construction_plan'&&(args as {validationOnly?:boolean})?.validationOnly)).toBe(false);
+ wrongRoadEnd=false;await click(terminal);
+ await screen.findByText(/敷設できない区間です/);
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ expect(invoke).toHaveBeenCalledWith('preview_authored_tram_road_guide',expect.objectContaining({
+  expectedWorldToken:'tram-terminal-token',guide:expect.objectContaining({tileKey:f.tileKey,endFractionQ:1_000_000}),
+ }));
+ refuse=false;await click(terminal);
+ await waitFor(()=>expect(document.querySelector('.confirmed-draft')).toBeTruthy());
+ const validation=vi.mocked(invoke).mock.calls.filter(([c,args])=>c==='preview_construction_plan'&&(args as {validationOnly?:boolean})?.validationOnly).at(-1)?.[1] as {
+  alignments:{trackType:string;points:typeof start[];ofmPath?:unknown;destination:unknown}[]
+ };
+ const path=validation.alignments[0];
+ expect(path.destination).toEqual({alignmentId:'10',endpoint:'start'});
+ expect(path.trackType).toBe('tram');
+ expect(path.points.at(-2)).toEqual(roadEnd);
+ expect(path.points.at(-1)).toEqual(terminal);
+ expect(path.ofmPath).toBeUndefined();
+ expect(invoke).not.toHaveBeenCalledWith('build_plan',expect.anything());
+ expect(target.points).toEqual([terminal,continuation]);
+});
+
 test.each(['confirmed-road-snap','free-on-road','undo-road-snap'] as const)('Tram missing old cell %s accepts only matching road snap proof',async(kind)=>{
  vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
  const revision='rosenfu_webview_fixture_16';
