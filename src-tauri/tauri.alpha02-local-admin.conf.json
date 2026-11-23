@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "skip",
+        "silent": null
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "template": "nsis/alpha02-local-admin.nsi"
+      }
+    }
+  }
+}
