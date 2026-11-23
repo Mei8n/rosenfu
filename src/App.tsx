@@ -2562,7 +2562,7 @@ export function App() {
             {ordinaryBusStops.active?<OrdinaryBusStopsPanel state={ordinaryBusStops}/>:<OrdinaryBusPanel state={{...ordinaryBus,start:kind=>{
               if(cameraRef.current.zoom<16)changeCamera(cameraAt(cameraRef.current.latitude,cameraRef.current.longitude,16));
               ordinaryBus.start(kind);
-            }}} route={ordinaryRoute} routes={ordinaryRoutes} multiple={ordinaryBusMultiple}
+            }}} route={ordinaryRoute} routes={ordinaryRoutes} multiple={ordinaryBusMultiple} roadSource={automaticRoad}
              onSelect={id=>setOrdinarySelection({epoch:worldEpoch,id})} blocked={ordinaryBusBlocked} enabled={ordinaryBusEnabled}/>}
             {busStopsAvailable&&ordinaryRouteProof&&!ordinaryBusStops.active&&!ordinaryBus.draft&&!ordinaryBus.deleting&&
              <button type="button" disabled={!ordinaryBusEnabled||ordinaryBusBlocked} onClick={()=>void ordinaryBusStops.start()}>停留所を編集</button>}

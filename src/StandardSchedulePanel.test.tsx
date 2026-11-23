@@ -11,7 +11,7 @@ const plain={configurationToken:'cfg',serviceId:'3',canApply:true,activeElsewher
  authored:null,departureCount:null,origin:{id:'4',name:'A駅'},destinations:[{id:'5',name:'B駅'}]};
 const bounds=[0,360,600,960,1200,1440];
 const rates={earlyMorning:null,morningRush:6,midday:null,eveningRush:null,lateNight:null};
-const panel=(canApply=true)=><StandardSchedulePanel service="3" revision="cfg" operationToken="edit" enabled canApply={canApply} apply={apply}/>;
+const panel=(canApply=true,currentHeadwayMs=600_000)=><StandardSchedulePanel service="3" revision="cfg" operationToken="edit" currentHeadwayMs={currentHeadwayMs} enabled canApply={canApply} apply={apply}/>;
 
 beforeEach(()=>{ipc.mockReset();apply.mockClear();});
 afterEach(cleanup);
@@ -60,4 +60,18 @@ test('warns before Apply and after reopening a Standard+bus save, but never auto
  expect(screen.getByText(/適用前のセーブを別の場所に残してください/)).toBeTruthy();
  expect(screen.queryByRole('button',{name:'時間帯ダイヤを適用'})).toBeNull();
  expect(apply).not.toHaveBeenCalled();
+});
+
+test.each([330_000,14_460_000,0])('does not round or silently replace unsupported original headway %s',async currentHeadwayMs=>{
+ ipc.mockResolvedValueOnce(plain);
+ render(panel(true,currentHeadwayMs));
+ const base=await screen.findByLabelText('基本の間隔（分）') as HTMLInputElement;
+ expect(base.value).toBe('');
+ expect(screen.getByText(/従来ダイヤの間隔をそのまま引き継げないため/)).toBeTruthy();
+ fireEvent.submit(base.closest('form')!);
+ expect(apply).not.toHaveBeenCalled();
+ fireEvent.change(base,{target:{value:'7'}});
+ fireEvent.click(screen.getByRole('button',{name:'時間帯ダイヤを適用'}));
+ expect(apply).toHaveBeenCalledWith({service:'3',expected:'edit',baseMinutes:7,
+  overrides:{earlyMorning:null,morningRush:null,midday:null,eveningRush:null,lateNight:null},boundariesMinutes:bounds});
 });
