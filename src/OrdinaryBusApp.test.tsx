@@ -149,8 +149,14 @@ test('switching tools retires an outstanding native preview',async()=>{
 
 test('ordinary bus crosses an adjacent boundary using the complete shared-cache native rectangle',async()=>{
  const map=(await setup({rectangle:true,preview:async()=>({points:[left,bend,b],lengthM:705})}))!;
+ fireEvent.click(screen.getByText('バス経路のデータ上限'));
+ expect(screen.getByText(/元データ1タイル最大5 MiB.*1回の転送合計最大8 MiB/)).toBeTruthy();
  map.from();await screen.findByText('道路上の終点を選択');
+ expect(screen.getByText('選択点から必要な確認範囲: 1 / 16 タイル')).toBeTruthy();
+ expect(observe).not.toHaveBeenCalled();
+ expect(read).not.toHaveBeenCalled();
  map.to();await screen.findByText('道路経路 705 m・停留所2か所');
+ expect(screen.getByText('選択点から必要な確認範囲: 2 / 16 タイル')).toBeTruthy();
  expect(observe).toHaveBeenCalledWith([[14551,6452],[14552,6452]],'r1',expect.any(AbortSignal));
  const previewArgs=vi.mocked(invoke).mock.calls.find(c=>c[0]==='preview_gameplay_ofm_bus')?.[1];
  expect(previewArgs).toMatchObject({

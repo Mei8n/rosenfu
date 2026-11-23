@@ -3,7 +3,8 @@ import {useOrdinaryBusInteraction} from './useOrdinaryBusInteraction';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
-import {prepareOrdinaryBusQuery,snapOrdinaryBusVertex,verifyOrdinaryBusPreview,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
+import {OFM_EVIDENCE_LIMITS,OFM_LIMITS} from './openFreeMapRoadData';
+import {ordinaryBusTileFootprint,prepareOrdinaryBusQuery,snapOrdinaryBusVertex,verifyOrdinaryBusPreview,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
 
 type Route={id:string;name:string;pattern?:OrdinaryBusPattern;path?:OrdinaryBusPath};
 type Draft={id:string;respectOneway:boolean;pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
@@ -113,10 +114,22 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
  onSelect:(id:string)=>void;multiple:boolean;blocked:boolean;enabled:boolean;
 }){
  const {draft,waiting,error}=state,disabled=!enabled||waiting;
+ const tileLimit=state.rectangle?OFM_EVIDENCE_LIMITS.batchTiles:1;
+ const chosen=state.waypoints?state.controls.map(({anchor})=>anchor.tile):[draft?.start?.tile,draft?.end?.tile].filter(tile=>tile!==undefined);
+ let tileFootprint:number|undefined;
+ if(chosen.length){
+  try{tileFootprint=ordinaryBusTileFootprint(chosen[0],chosen.at(-1)!,chosen.slice(1,-1)).count;}
+  catch{/* Unknown or inconsistent source: never estimate the footprint. */}
+ }
  return <section aria-label="バス系統の建設">
   <h3>バス</h3>
   <p>地図の道路を使ってゲーム内の系統を作ります。実際の通行可否は示しません。</p>
   {blocked?<p>このワールドの別の道路交通データは上書きできません。</p>:<>
+   <details>
+    <summary>バス経路のデータ上限</summary>
+    <p>選択点を囲む道路の確認範囲は最大 {tileLimit} タイル。元データ1タイル最大{OFM_LIMITS.bytes/2**20} MiB、1回の転送合計最大{OFM_EVIDENCE_LIMITS.batchBytes/2**20} MiBです。</p>
+    <p>タイル数は取得済みの件数ではありません。経路が成立するか、転送上限に収まるかは別に確認します。</p>
+   </details>
    {!draft&&!state.deleting&&(!route||multiple)&&<>
     <label><input type="checkbox" style={{width:"auto"}} checked={state.respectOneway} disabled={disabled}
      onChange={event=>state.setRespectOneway(event.target.checked)}/>地図データの一方通行に従う</label>
@@ -129,6 +142,7 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
     <button type="button" disabled={disabled} onClick={()=>state.selectDeleting(true)}>系統を削除</button>
    </>}
    {draft&&<>
+    {tileFootprint!==undefined&&<p>選択点から必要な確認範囲: {tileFootprint} / {tileLimit} タイル</p>}
     <label>バス系統名<input maxLength={120} autoComplete="off" value={state.name} disabled={disabled} onChange={e=>state.setName(e.target.value)}/></label>
     {draft.respectOneway&&<p>地図データの一方通行に従います</p>}
     {state.showAuto&&<label>停留所の配置<select value={state.autoStops?'auto':'manual'} disabled={disabled} onChange={event=>state.setAutoStops(event.target.value==='auto')}>

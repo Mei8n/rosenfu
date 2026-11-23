@@ -1,4 +1,4 @@
-import {useRef,useState,useEffect,useCallback} from 'react';
+import {useRef,useState,useEffect,useLayoutEffect,useCallback} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {RouteCandidatePreview,type Candidate,type Membership} from './RouteCandidatePreview';
 import {resolveServicePath,referenceKey,sameSegment,sameOccurrence,type ServicePath,type PathWorld,type PathPreview} from './servicePaths';
@@ -11,15 +11,18 @@ export function ServiceMapEditor(props:Props){
  const [stopOverrides,setStopOverrides]=useState<Record<string,boolean>>({});
  const selectedCandidate=useRef<Candidate|null>(null);
  const candidateChanged=useCallback((candidate:Candidate|null)=>{selectedCandidate.current=candidate;props.onCandidateChange(candidate);},[props.onCandidateChange]);
- const current=useRef(world);current.current=world;
+ const editEpoch=useRef(0);
+ // A native preview is not permission to apply after retiring this editor or
+ // briefly disabling editing. Include the committed scope, not only world identity.
+ useLayoutEffect(()=>()=>{editEpoch.current++;},[world,service.id,path,binding,enabled]);
  useEffect(()=>()=>{onDirty(false);onMapPick(null);},[]);
  let original:ReturnType<typeof resolveServicePath>;
  try{original=resolveServicePath(service.start,path.legs,world);}catch{return <p>保存済み経路を確認できません。</p>;}
  const repeated=new Set(original.map(o=>o.station_id)).size!==original.length;
  async function save(name:string,membership:Membership){
-  const before=world,segments=membership.path.segments,start=membership.path.stations[0];
+  const before=editEpoch.current,segments=membership.path.segments,start=membership.path.stations[0];
   const preview=await invoke<PathPreview>('preview_service_path_replacement',{serviceId:service.id,start,segments});
-  if(current.current!==before)throw Error('ワールドが変更されました。編集を取り消してやり直してください');
+  if(editEpoch.current!==before)throw Error('編集中の状態が変わったため、適用しませんでした。入力は保持しています。');
   const expected=resolveServicePath(start,preview.legs,world);
   if(preview.legs.length!==segments.length||preview.legs.some((l,i)=>l.key!==String(BigInt(path.next_leg_key)+BigInt(i))||!sameSegment(l.segment,segments[i]))||preview.occurrences.length!==expected.length||expected.some((o,i)=>!sameOccurrence(o,preview.occurrences[i])))throw Error('経路を確認できませんでした');
   if(new Set(expected.map(o=>o.station_id)).size!==expected.length)throw Error('同じ駅を複数回通る経路の地図編集には未対応です');

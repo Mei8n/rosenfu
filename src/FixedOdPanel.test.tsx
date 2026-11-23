@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import {afterEach,expect,test,vi} from 'vitest';
-import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,within} from '@testing-library/react';
 import {invoke} from '@tauri-apps/api/core';
 import {FixedOdPanel} from './FixedOdPanel';
 import {OperationProvider} from './OperationsPanel';
@@ -111,6 +111,38 @@ test('observed allocation is an explicit rail-only request and shows physical el
  expect(screen.getByText('37人',{selector:'dd'})).toBeTruthy();
  expect(screen.getByText('観測開始: 1日目 00:00')).toBeTruthy();
  expect(invoke).toHaveBeenCalledExactlyOnceWith('preview_observed_fixed_od',{query:{originStationId:'1',destinationStationId:'2',trips:100,alternativeSeconds:1560}});
+});
+
+test.each(['input','world'])('keeps separate timetable and actual-operation trial results; clears both for a different %s',async change=>{
+ const replay={status:'reached',potential_trips:100,rail_trips:37,alternative_trips:63,unresolved_trips:0,
+  itinerary:{ready_ms:0,arrival_ms:1740000,platform_wait_ms:600000,onboard_ms:1140000}};
+ let scheduledRequests=0;
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='preview_observed_fixed_od')return replay;
+  return ++scheduledRequests===1?result:{...result,rail:[{...result.rail[0],trips:72}],alternative_trips:28};
+ });
+ const view=render(panel());enter();
+ expect(await screen.findByText('75人',{selector:'dd'})).toBeTruthy();
+ expect(vi.mocked(invoke).mock.calls.map(([command])=>command)).toEqual(['preview_fixed_od']);
+ fireEvent.click(screen.getByRole('button',{name:'運行の遅れを含めて試算'}));
+ expect(await screen.findByText('37人',{selector:'dd'})).toBeTruthy();
+ expect(screen.queryByText('75人',{selector:'dd'})).not.toBeNull();
+ const scheduled=within(screen.getByRole('region',{name:'ダイヤを使った需要試算結果'}));
+ const observed=within(screen.getByRole('region',{name:'遅れを含む需要試算結果'}));
+ expect(scheduled.getByText('75人',{selector:'dd'})).toBeTruthy();
+ expect(observed.getByText('37人')).toBeTruthy();
+ expect(screen.getByText(/人数の差は遅れだけによるものではありません/)).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'需要を試算'}));
+ expect(await screen.findByText('72人',{selector:'dd'})).toBeTruthy();
+ expect(observed.getByText('37人')).toBeTruthy();
+ expect(vi.mocked(invoke).mock.calls.map(([command])=>command)).toEqual([
+  'preview_fixed_od','preview_observed_fixed_od','preview_fixed_od',
+ ]);
+ if(change==='world')view.rerender(panel(2));
+ else fireEvent.change(screen.getByLabelText('移動需要（人）'),{target:{value:'50'}});
+ expect(screen.queryByText('72人',{selector:'dd'})).toBeNull();
+ expect(screen.queryByText('37人',{selector:'dd'})).toBeNull();
+ expect(screen.queryByText(/人数の差は遅れだけによるものではありません/)).toBeNull();
 });
 
 test('observed partial or finite-window no arrival does not allocate substitute trips',async()=>{

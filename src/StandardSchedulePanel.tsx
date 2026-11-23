@@ -16,7 +16,7 @@ function clockMinutes(m:number){return `${String(Math.floor(m/60)).padStart(2,'0
 function number(raw:string,min:number,max:number){const n=Number(raw);return /^[0-9]+$/.test(raw)&&Number.isSafeInteger(n)&&n>=min&&n<=max?n:null;}
 const bandNames=[...frequencyBands.map(row=>row[1]),'深夜の終了'];
 
-export function StandardSchedulePanel({service,revision,operationToken,enabled,canApply,apply}:{service:string;revision:string;operationToken:string;enabled:boolean;canApply:boolean;apply:(args:ApplyStandardSchedule)=>Promise<void>}){
+export function StandardSchedulePanel({service,revision,operationToken,enabled,canApply,applyBlocker,apply}:{service:string;revision:string;operationToken:string;enabled:boolean;canApply:boolean;applyBlocker?:string|null;apply:(args:ApplyStandardSchedule)=>Promise<void>}){
  const [status,setStatus]=useState<Status|null>(null),[error,setError]=useState('');
  const [draft,setDraft]=useState<FrequencyDraft>({baseMinutes:'10',overrides:{}});
  const [bounds,setBounds]=useState<string[]>(provisional);
@@ -55,7 +55,7 @@ export function StandardSchedulePanel({service,revision,operationToken,enabled,c
     {bounds.map((value,i)=><label key={i}>{bandNames[i]}（分）<input type="number" min="0" max="2879" step="1" value={value} onChange={e=>setBounds(old=>old.map((b,j)=>j===i?e.target.value:b))}/></label>)}
    </details>
    <p>この系統の従来ダイヤを置き換えます。運行開始前は、この鉄道系統だけにダイヤがあれば適用できます。</p>
-   {!canApply&&<p>すでに運行を始めた場合は、全車両の運行が終わってから一時停止してください。</p>}
+   {!canApply&&<p role="status">{applyBlocker??'車両がいない状態で運行を一時停止してください。'}</p>}
    <button type="submit" disabled={!enabled||!canApply}>時間帯ダイヤを適用</button>
   </form>:status?<p>この系統ではまだ利用できません。対応する往復系統を従来方式で設定してください。</p>:!error&&<p>利用条件を確認中…</p>}
  </section>;
