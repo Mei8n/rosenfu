@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import './fixedOdPanel.css';
+import {OperationObservationMinute} from './OperationsPanel';
 type Named={id:string;name:string};
 export type FixedOdScenario={origin_station_id:string;destination_station_id:string;trips:number|null;alternative_seconds:number|null};
 export type FixedOdScenarioView={token:string;scenario:FixedOdScenario|null};
@@ -46,6 +47,7 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
  latest.current={worldVersion,enabled};
  const result=settled?.world===worldVersion?settled?.result:null;
  const observed=settledObserved?.world===worldVersion?settledObserved?.result:null;
+ const observationStart=observed?.itinerary?.ready_ms;
  const error=failure?.world===worldVersion?failure?.message:null;
  const stops=busStops.map(stop=>({...stop,id:`bus:${stop.id}`}));
  const stationNames=new Map([...stations,...stops].map(s=>[s.id,s.name]));
@@ -157,7 +159,8 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
    <dt>未確定</dt><dd>{quantity(result.unresolved_trips)}人</dd>
   </dl>:<p role="status">探索上限に達しました。{quantity(result.unresolved_trips)}人は未確定で、利用人数には含めません。</p>)}
   {observed&&<section aria-label="遅れを含む需要試算結果">
-   <p>今の時刻からの最早到着1経路と、指定した代替手段を比較しています。ダイヤ全体の利用予測ではありません。</p>
+   {typeof observationStart==='number'&&Number.isSafeInteger(observationStart)&&observationStart>=0&&<OperationObservationMinute observedMs={observationStart}/>}
+    <p>観測開始時点に出発駅に着いた場合の最早到着1経路と、指定した代替手段を比較します。ダイヤ全体の利用予測ではありません。</p>
    {observed.status!=='reached'?<p role="status">
     {observed.status==='no_arrival_within_window'?'30分以内に鉄道で到着できる経路を確認できませんでした。':'運行の再現が試算上限に達しました。'}
     {observed.potential_trips===null?'需要人数は不明で、配分していません。':`移動需要 ${quantity(observed.unresolved_trips)}人は未確定です。`}

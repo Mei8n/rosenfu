@@ -90,6 +90,12 @@ function scheduleTime(ms:number){
  return `${Math.floor(ms/day)+1}日目 ${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;
 }
 
+export function OperationObservationMinute({observedMs}:{observedMs:number}){
+ const now=useContext(Context)?.view?.now_ms;
+ const clockAdvanced=now!==undefined&&Math.floor(now/minute)>Math.floor(observedMs/minute);
+ return <p>観測開始: {scheduleTime(observedMs)} <span role="status">{clockAdvanced?'時刻が進みました。最新の時刻で見るには再試算してください。':null}</span></p>;
+}
+
 export function OperationClock(){
  const state=useContext(Context);const [confirmReset,setConfirmReset]=useState(false);if(!state)return null;
  const {view,busy,blocked,error,refresh,send}=state;
