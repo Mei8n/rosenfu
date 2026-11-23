@@ -8,6 +8,7 @@ import {fitRoadFollow} from './roadFollowFit';
 export type RoadDrawingQuery={point:GraphPoint;start?:GraphPoint;radiusM:number;authoredTramCue?:boolean;resolveAuthoredSeam?:boolean};
 export type RoadDrawingPick=TilePathPick & {point:GraphPoint};
 export type RoadDrawingResult={kind:'junction';from:RoadDrawingPick;to:RoadDrawingPick}|{kind:'seam';point:GraphPoint}|{kind:'free'}|{kind:'point';point:GraphPoint}|{kind:'route';point:GraphPoint;line:GraphPoint[]}|{kind:'error';error:string};
+const ROAD_SECTION_LIMIT_HINT = '一度に道路に沿って敷設できる区間の上限です。手前の道路上まで敷設し、そこからの延伸を試してください。';
 export function createRoadDrawingEngine(bundle:ReferenceGraphBundle,tileLines:readonly TileRoadLine[]=[]){
  const graph=eligibleRoadGraph(bundle),nodes=new Map(graph.nodes.map(n=>[n.osmId,n])),repository=createReferenceGraphRepository(graph),route=createRoadFollowRouter(bundle);
  const allowedWays=new Set(graph.edges.map(edge=>edge.osmWayId)),allowedTiles=tileLines.filter(line=>allowedWays.has(line.id));
@@ -52,7 +53,7 @@ export function createRoadDrawingEngine(bundle:ReferenceGraphBundle,tileLines:re
      line[0]=query.start;return {kind:'route',point,line:fitRoadFollow(line)};
     }
     const lo=start.edge.segmentIndex+start.fraction,hi=end.edge.segmentIndex+end.fraction;
-    if(coveredSourceSegments(lo,hi)>256)throw Error('区間を短くして道路の点を選び直してください。');
+    if(coveredSourceSegments(lo,hi)>256)return {kind:'error',error:ROAD_SECTION_LIMIT_HINT};
     if(lo===hi)return {kind:'point',point};
     const line=[query.start];
     const append=(i:number)=>{const [longitude,latitude]=l.coordinates[i];line.push({longitude,latitude});};
@@ -70,6 +71,9 @@ export function createRoadDrawingEngine(bundle:ReferenceGraphBundle,tileLines:re
    // Existing rail endpoints and manually placed anchors remain exact. The short
    // lead onto the nearby road is drawn explicitly, never changes a built rail.
    path.points[0]=query.start;return {kind:'route',point,line:fitRoadFollow(path.points)};
-  }catch(error){const message=error instanceof Error?error.message:String(error);return {kind:'error',error:/^[\x00-\x7f]*$/.test(message)?'道路のつながりを確認できません。区間を短くして選び直してください':message};}
+  }catch(error){const message=error instanceof Error?error.message:String(error);
+   if(message==='join-segment-limit')return {kind:'error',error:'この道路の境界をまたいで敷設できません。別の道路を選ぶか、境界の手前まで敷設してください。'};
+   if(message==='segment-limit'||message==='source-segment-limit')return {kind:'error',error:ROAD_SECTION_LIMIT_HINT};
+   return {kind:'error',error:/^[\x00-\x7f]*$/.test(message)?'道路のつながりを確認できません。区間を短くして選び直してください':message};}
  };
 }

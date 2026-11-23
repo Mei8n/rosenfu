@@ -27,7 +27,7 @@ function join(a:TileRoadLine,b:TileRoadLine):TilePathJoin{
  const ar:[number,number]=[location(a,axis,start),location(a,axis,end)],br:[number,number]=[location(b,axis,start),location(b,axis,end)];
  const values=new Set<number>([0,1]);for(let i=1;i<20;i++)values.add(i/20);
  for(const l of [a,b])for(const p of l.coordinates){const t=(p[axis]-start)/(end-start);if(t>0&&t<1)values.add(t);}
- if(values.size>257)fail('segment-limit');let maximum=0;const points:P[]=[];
+ if(values.size>257)fail('join-segment-limit');let maximum=0;const points:P[]=[];
  for(const t of [...values].sort((a,b)=>a-b)){
   const v=start+(end-start)*t,pa=at(a,location(a,axis,v)),pb=at(b,location(b,axis,v));
   const distance=Math.hypot((pa[0]-pb[0])*sx,(pa[1]-pb[1])*sy);if(distance>.8+1e-7)fail('correction-limit');maximum=Math.max(maximum,distance);
