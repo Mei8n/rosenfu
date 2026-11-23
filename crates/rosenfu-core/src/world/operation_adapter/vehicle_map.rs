@@ -89,33 +89,42 @@ impl World {
                     now.checked_sub(entered_ms)?,
                     duration,
                 )?;
-                let (edge, position) = if let [resource] = section.resources.as_slice() {
-                    let (edge, from, to) = roads.gameplay_bus_leg_chord(
-                        route_id,
-                        train.leg,
-                        leg.from.strip_prefix("bus:")?,
-                        leg.to.strip_prefix("bus:")?,
-                        resource.strip_prefix("road:edge:")?,
-                    )?;
-                    if !(0.0..=1.0).contains(&from) || !(0.0..=1.0).contains(&to) || from >= to {
+                let outward = || {
+                    let (edge, position) = if let [resource] = section.resources.as_slice() {
+                        let (edge, from, to) = roads.gameplay_bus_leg_chord(
+                            route_id,
+                            train.leg,
+                            leg.from.strip_prefix("bus:")?,
+                            leg.to.strip_prefix("bus:")?,
+                            resource.strip_prefix("road:edge:")?,
+                        )?;
+                        if !(0.0..=1.0).contains(&from) || !(0.0..=1.0).contains(&to) || from >= to
+                        {
+                            return None;
+                        }
+                        (edge, from + (to - from) * fraction)
+                    } else {
+                        self.data.gameplay_bus_live_outward_chord(
+                            route_id, train.leg, leg, section, fraction,
+                        )?
+                    };
+                    let [edge_start, edge_end] = edge.geometry.as_slice() else {
+                        return None;
+                    };
+                    if edge.level != Some(InfrastructureLevel::Ground) || edge_start == edge_end {
                         return None;
                     }
-                    (edge, from + (to - from) * fraction)
-                } else {
-                    self.data.gameplay_bus_live_outward_chord(
-                        route_id, train.leg, leg, section, fraction,
-                    )?
+                    Some((*edge_start, *edge_end, position))
                 };
-                let [edge_start, edge_end] = edge.geometry.as_slice() else {
-                    return None;
-                };
-                if edge.level != Some(InfrastructureLevel::Ground) || edge_start == edge_end {
-                    return None;
-                }
+                let (edge_start, edge_end, position) = outward().or_else(|| {
+                    self.data.gameplay_bus_live_direct_return_chord(
+                        route_id, train.leg, spec, section, fraction,
+                    )
+                })?;
                 Some(LiveBusMarker {
                     key: train.key.clone(),
-                    edge_start: *edge_start,
-                    edge_end: *edge_end,
+                    edge_start,
+                    edge_end,
                     position,
                 })
             })

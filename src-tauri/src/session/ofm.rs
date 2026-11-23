@@ -691,9 +691,16 @@ mod tests {
             .trains()
             .any(|train| train.key.service_id == "bus:compete"
                 && matches!(train.state, TrainState::Waiting { .. })));
-        // The running return uses other directed streets; the pending bus
-        // must also not be drawn as if it is already travelling.
-        assert!(shadow.operation_snapshot().bus_markers.is_empty());
+        // The trace shows the actual independent return, not a reversal
+        // on outbound. The waiting bus must not be drawn as moving.
+        let return_marks = shadow.operation_snapshot().live.bus_markers;
+        assert_eq!(return_marks.len(), 1);
+        assert_eq!(return_marks[0].key.service_id, "bus:B2");
+        assert_eq!(
+            [return_marks[0].edge_start, return_marks[0].edge_end],
+            returned.points[..2]
+        );
+        assert_eq!(return_marks[0].position, 0.0);
         let finished = shadow
             .world
             .operation_mut()
@@ -1479,7 +1486,23 @@ mod tests {
         assert_eq!(at_terminal.len(), 1);
         assert!((at_terminal[0].position - 1.0).abs() < 1e-5);
         advance(&mut reopened, arrives[2].at_ms - 1);
-        assert!(marker(&reopened).is_empty()); // independent real return; never project reversed outbound
+        let on_return = marker(&reopened);
+        assert_eq!(on_return.len(), 1);
+        assert_eq!(
+            [on_return[0].edge_start, on_return[0].edge_end],
+            home.points[1..]
+        );
+        assert_ne!(on_return[0].edge_start, strict.points[1]);
+        assert!((on_return[0].position - 1.0).abs() < 1e-5);
+        assert_eq!(on_return[0].key, initial[0].key);
+        let return_save = folder.path().join("multiedge-bus-marker-return.rosenfu");
+        let bytes = rosenfu_storage::encode(&reopened.world).unwrap();
+        assert!(!std::str::from_utf8(&bytes).unwrap().contains("bus_markers"));
+        reopened.save(&return_save).unwrap();
+        let mut fresh = WorldEditor::new();
+        fresh.load(&return_save).unwrap();
+        assert_eq!(rosenfu_storage::encode(&fresh.world).unwrap(), bytes);
+        assert_eq!(marker(&fresh), on_return);
     }
 
     fn verify_ordinary_bus_turnaround(
@@ -1588,6 +1611,7 @@ mod tests {
         );
         assert_eq!(waiting.delay_ms, 0);
         runtime.set_paused(true);
+        assert!(editor.operation_snapshot().bus_markers.is_empty());
         let saved = editor.world.operation_save().unwrap();
         let mut reopened = reopen(&mut editor, "new.rosenfu");
         assert_eq!(reopened.world.operation_save().unwrap(), saved);
@@ -1603,6 +1627,9 @@ mod tests {
         assert!(matches!(moving.state, TrainState::Moving { entered_ms, .. }
             if entered_ms == arrival_ms + 120_000));
         assert_eq!(moving.delay_ms, 0);
+        // This return has its own intermediate stop and therefore is not
+        // the direct terminal-origin visual subset.
+        assert!(reopened.operation_snapshot().bus_markers.is_empty());
     }
 
     #[test]

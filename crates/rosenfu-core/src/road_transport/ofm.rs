@@ -808,6 +808,94 @@ impl WorldDraft {
         None
     }
 
+    /// The last direct return leg is proved by the compiled service plus
+    /// its retained independently solved path. Outward road/stop rows do
+    /// not describe a return detour. Missing proof is a display omission.
+    pub(crate) fn gameplay_bus_live_direct_return_chord(
+        &self,
+        route_id: &str,
+        leg_index: usize,
+        spec: &crate::operation::ServiceRunSpec,
+        section: &crate::operation::Section,
+        fraction: f64,
+    ) -> Option<(GeoPoint, GeoPoint, f64)> {
+        const MAX_RETURN_ATOMS: usize = 16;
+        let binding = self.ofm_gameplay_bus_routes.get(route_id)?;
+        if binding.pattern != Some(BusPattern::OpenRoundTrip)
+            || !(1..=MAX_RETURN_ATOMS).contains(&section.resources.len())
+            || leg_index.checked_add(1)? != spec.legs.len()
+        {
+            return None;
+        }
+        let roads = &self.road_transport;
+        let index = roads
+            .bus_routes
+            .binary_search_by(|r| r.id.as_str().cmp(route_id))
+            .ok()?;
+        let route = roads.bus_routes.get(index)?;
+        let leg = spec.legs.get(leg_index)?;
+        // The number of outward intervals comes from its exact stop
+        // occurrences. Reject *all* return legs when a stop serves return.
+        if leg_index == 0
+            || leg_index.checked_add(1)? != route.stops.len()
+            || leg.from.strip_prefix("bus:")? != route.stops.last()?.stop_id
+            || leg.to.strip_prefix("bus:")? != route.stops.first()?.stop_id
+        {
+            return None;
+        }
+
+        let outward = self
+            .runtime_road_evidence
+            .peek_stored_gameplay_bus_path(binding)?;
+        let return_binding = Self::gameplay_bus_return_binding(&outward).ok()?;
+        let path = self
+            .runtime_road_evidence
+            .peek_stored_gameplay_bus_path(&return_binding)?;
+        let lengths = &path.atom_operation_micrometres;
+        if !Self::gameplay_bus_return_is_valid(&outward, &path)
+            || lengths.len() != section.resources.len()
+            || lengths.len() != path.steps.len()
+            || path.points.len() != lengths.len().checked_add(1)?
+            || lengths.iter().any(|&length| length == 0)
+            || !(0..lengths.len()).all(|i| path.atom_is_ground(i))
+            || !section.resources.iter().enumerate().all(|(i, resource)| {
+                resource
+                    .strip_prefix("road:edge:")
+                    .is_some_and(|id| path.source_atom_id(i).as_deref() == Some(id))
+            })
+        {
+            return None;
+        }
+        let total_um = lengths.iter().map(|&n| u128::from(n)).sum::<u128>();
+        let total_mm = (total_um + 500) / 1000;
+        if total_mm == 0
+            || total_mm != u128::from(path.operation_length_mm)
+            || total_mm as f64 / 1000. != section.length_m
+        {
+            return None;
+        }
+        let distance_mm = fraction * total_mm as f64;
+        let mut prefix_um = 0;
+        for (i, &len) in lengths.iter().enumerate() {
+            let lo = (prefix_um + 500) / 1000;
+            prefix_um += u128::from(len);
+            let hi = (prefix_um + 500) / 1000;
+            if hi > lo && distance_mm <= hi as f64 {
+                let position = ((distance_mm - lo as f64) / (hi - lo) as f64).clamp(0., 1.);
+                let point = |i: usize| {
+                    let &[longitude, latitude] = path.points.get(i)?;
+                    Some(GeoPoint {
+                        latitude,
+                        longitude,
+                    })
+                };
+                let (start, end) = (point(i)?, point(i + 1)?);
+                return (start != end).then_some((start, end, position));
+            }
+        }
+        None
+    }
+
     /// Generate addressed candidate stops in existing manual gaps. This is
     /// read only; the ordinary route Confirm is the only persistence path.
     pub fn gameplay_bus_auto_stop_suggestions(
@@ -933,21 +1021,34 @@ impl WorldDraft {
         self.checked_gameplay_bus_return(&outbound)
     }
 
+    fn gameplay_bus_return_binding(
+        outward: &BusPath,
+    ) -> Result<BusPathBinding, RoadTransportError> {
+        let mut reversed = outward
+            .binding
+            .swapped_endpoints()
+            .map_err(|_| StaleSnapshot)?;
+        // For strict one-way travel, a forward shaping control can be
+        // impossible to visit on the independent return. It is not a stop.
+        if reversed.respect_oneway {
+            reversed.via.clear();
+        }
+        Ok(reversed)
+    }
+
+    fn gameplay_bus_return_is_valid(outward: &BusPath, path: &BusPath) -> bool {
+        outward.points_grid.first() == path.points_grid.last()
+            && outward.points_grid.last() == path.points_grid.first()
+            && path.steps.len() <= MAX_EDGES_PER_PATH
+            && (outward.binding.pattern.is_none()
+                || (outward.operation_length_mm != 0 && path.operation_length_mm != 0))
+    }
+
     fn checked_gameplay_bus_return(
         &self,
         outbound: &BusPath,
     ) -> Result<Option<std::sync::Arc<BusPath>>, RoadTransportError> {
-        let mut reversed = outbound
-            .binding
-            .swapped_endpoints()
-            .map_err(|_| StaleSnapshot)?;
-        // Strict direction: geometry controls author the outbound shape only.
-        // Requiring them again could send an otherwise simple return around
-        // an entire extra loop to reach a one-way waypoint in reverse order.
-        // There are not yet intermediate passenger stop obligations on return.
-        if reversed.respect_oneway {
-            reversed.via.clear();
-        }
+        let reversed = Self::gameplay_bus_return_binding(outbound)?;
         let result = if reversed.pattern.is_some() {
             self.runtime_road_evidence
                 .stored_gameplay_bus_path(&reversed)
@@ -959,13 +1060,10 @@ impl WorldDraft {
             Err(_) => return Err(StaleSnapshot),
             Ok(found) => found,
         };
-        if returned.as_ref().is_some_and(|path| {
-            outbound.points_grid.first() != path.points_grid.last()
-                || outbound.points_grid.last() != path.points_grid.first()
-                || path.steps.len() > MAX_EDGES_PER_PATH
-                || (outbound.binding.pattern.is_some()
-                    && (outbound.operation_length_mm == 0 || path.operation_length_mm == 0))
-        }) {
+        if returned
+            .as_ref()
+            .is_some_and(|path| !Self::gameplay_bus_return_is_valid(outbound, path))
+        {
             return Err(InvalidData);
         }
         Ok(returned)
