@@ -64,7 +64,7 @@ impl World {
         if op.invalidated
             || op.pending_target.is_some()
             || !op.runtime.paused()
-            || !op.runtime.has_started()
+            || (!op.runtime.has_started() && (op.configs.len() != 1 || !op.bus_configs.is_empty()))
             || op.runtime.trains().next().is_some()
             || op.runtime.rail_timetable_handoff_in_progress()
             || op.runtime.has_standard_timetable()

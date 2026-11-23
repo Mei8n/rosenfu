@@ -54,7 +54,8 @@ export function StandardSchedulePanel({service,revision,operationToken,enabled,c
    <details><summary>時間帯の境界（検証用の仮設定）</summary><p>ゲーム内の0時からの分数。既定の境界は仮設定で、現実の時刻表に基づきません。指定の外は基本間隔です。</p>
     {bounds.map((value,i)=><label key={i}>{bandNames[i]}（分）<input type="number" min="0" max="2879" step="1" value={value} onChange={e=>setBounds(old=>old.map((b,j)=>j===i?e.target.value:b))}/></label>)}
    </details>
-   {!canApply&&<p>従来方式で運行を一度開始し、全車両の運行が終わったところで一時停止すると適用できます。</p>}
+   <p>この系統の従来ダイヤを置き換えます。運行開始前は、この鉄道系統だけにダイヤがあれば適用できます。</p>
+   {!canApply&&<p>すでに運行を始めた場合は、全車両の運行が終わってから一時停止してください。</p>}
    <button type="submit" disabled={!enabled||!canApply}>時間帯ダイヤを適用</button>
   </form>:status?<p>この系統ではまだ利用できません。対応する往復系統を従来方式で設定してください。</p>:!error&&<p>利用条件を確認中…</p>}
  </section>;

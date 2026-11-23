@@ -209,7 +209,8 @@ export function ServiceOperations({serviceId,enabled,standardEnabled=false}:{ser
   <h4>運行</h4>
   {standardEnabled&&state.crossingPlanningToken&&<StandardSchedulePanel key={serviceId+':'+state.crossingPlanningToken}
    service={serviceId} revision={state.crossingPlanningToken} operationToken={view.timetable_edit_token}
-   enabled={enabled&&!busy&&!blocked&&!view.invalidated} canApply={!!config&&view.paused&&!blocker&&view.now_ms>0}
+   enabled={enabled&&!busy&&!blocked&&!view.invalidated}
+   canApply={!!config&&view.paused&&!blocker&&(view.now_ms>0||(view.services.length===1&&!view.bus_services?.length))}
    apply={args=>send('apply_standard_schedule',args)}/>}
   {view.standard_schedule_active?<p>時間帯ダイヤを使用中のため、従来のダイヤ編集と編成試算は利用できません。</p>:
    standardEnabled?<details><summary>時刻・車両の設定（従来方式）</summary>{advanced}</details>:advanced}

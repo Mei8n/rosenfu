@@ -337,3 +337,20 @@ test('rail describes certified multi-connection waiting without exposing identif
  expect(rows[3].textContent).not.toContain('またぐ');
  expect([...rows].map(r=>r.textContent).join(' ')).not.toMatch(/held_across_connections|needs_across_connections|rail:/u);
 });
+
+test.each(['rail only','second rail','bus','catch-up'] as const)('Standard cold Apply does not require a dummy run: %s',async kind=>{
+ const bus={route_id:'other',timetable:config.timetable,vehicle:config.vehicle,dwell_ms:30000,assumed_speed_kmh:20};
+ const view={...snapshot,configuration_token:'cold',services:kind==='second rail'?[config,{...config,service_id:'13'}]:[config],
+  bus_services:kind==='bus'?[bus]:[],catching_up:kind==='catch-up',
+  timetable_edit_blocker:kind==='catch-up'?'未処理の運行が残っています。':null};
+ vi.mocked(invoke).mockImplementation(async command=>command==='standard_schedule_status'
+  ?{configurationToken:'cold',serviceId:'12',canApply:true,activeElsewhere:false,authored:null,departureCount:null,destinations:[]}
+  :view);
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}><ServiceOperations serviceId="12" enabled standardEnabled/></OperationProvider>);
+ const apply=await screen.findByRole('button',{name:'時間帯ダイヤを適用'});
+ expect((apply as HTMLButtonElement).disabled).toBe(kind!=='rail only');
+ expect(screen.getByText(/この系統の従来ダイヤを置き換えます/)).toBeTruthy();
+ fireEvent.click(apply);
+ expect(vi.mocked(invoke).mock.calls.some(([which])=>which==='apply_standard_schedule')).toBe(kind==='rail only');
+ expect(vi.mocked(invoke).mock.calls.some(([which])=>which==='set_operation_clock'||which==='advance_operation')).toBe(false);
+});

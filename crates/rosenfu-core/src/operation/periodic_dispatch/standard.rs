@@ -178,7 +178,26 @@ impl OperationRuntime {
             cutover_ms: self.now_ms,
             authored,
         });
-        self.bind_periodic_schedule(&source, false)
+        if self.started {
+            return self.bind_periodic_schedule(&source, false);
+        }
+        // Cold Apply replaces this one provisional rail timetable before
+        // dispatch. Process only its empty time-zero boundary: no unrelated
+        // cursor may be discarded and the new grid still begins in the
+        // future. Preserve the existing started-format reader contract.
+        if self.now_ms != 0
+            || self.services.len() != 1
+            || !self.paused
+            || !self.trains.is_empty()
+            || !self.occupied.is_empty()
+        {
+            return Err(OperationError::InvalidClock);
+        }
+        let mut cold = self.clone();
+        cold.started = true;
+        cold.bind_periodic_schedule(&source, false)?;
+        *self = cold;
+        Ok(())
     }
 
     pub(crate) fn saved_standard_timetable(&self) -> Option<&StandardDailyV1> {
