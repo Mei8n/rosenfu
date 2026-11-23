@@ -224,6 +224,9 @@ pub struct OperationRuntime {
     #[cfg(feature = "standard-periodic-rail")]
     standard_timetable: Option<periodic_dispatch::standard::StandardDailyV1>,
     rail_admission: RailAdmissionModel,
+    // Re-derived from checked World geometry on configuration/restore. The
+    // public runtime alone has no authority to choose this exact-meet tie.
+    preferred_opposing_birth: Option<TrainKey>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -801,6 +804,7 @@ impl OperationRuntime {
             #[cfg(feature = "standard-periodic-rail")]
             standard_timetable: None,
             rail_admission,
+            preferred_opposing_birth: None,
         })
     }
     pub(crate) fn progressive_rail(&self) -> bool {
@@ -975,6 +979,18 @@ impl OperationRuntime {
 
     pub(crate) fn admission_model(&self) -> RailAdmissionModel {
         self.rail_admission
+    }
+
+    pub(crate) fn set_preferred_opposing_birth(&mut self, key: Option<TrainKey>) {
+        self.preferred_opposing_birth = key;
+    }
+
+    /// A siding train already moving or dwelling after this approved tie
+    /// must not lose its physical clearance proof during a world edit.
+    pub(crate) fn active_preferred_opposing_birth(&self) -> Option<&TrainKey> {
+        let key = self.preferred_opposing_birth.as_ref()?;
+        let train = self.trains.get(key)?;
+        (train.leg > 0 || matches!(train.state, TrainState::Moving { .. })).then_some(key)
     }
 
     /// Verify neither the admission model nor another service's run changes.
@@ -1287,6 +1303,7 @@ impl OperationRuntime {
                 started: self.started,
                 time_margin_ms: self.time_margin_ms,
                 rail_admission: self.rail_admission,
+                preferred_opposing_birth: self.preferred_opposing_birth.clone(),
                 // Replay does not serialize or validate historical births.
                 timetable_handoffs: BTreeMap::new(),
                 #[cfg(feature = "standard-periodic-rail")]
@@ -1499,6 +1516,27 @@ impl OperationRuntime {
                 })
                 .collect();
             waiting.sort();
+            if let [(first_ready, first), (second_ready, second)] = waiting.as_slice() {
+                // Only a proved two-train birth tie. Never jump the queue,
+                // preempt locks, or swap already-waiting/returning trains.
+                if self.preferred_opposing_birth.as_ref() == Some(second)
+                    && self.rail_admission == RailAdmissionModel::Fixed
+                    && self.services.len() == 2
+                    && self.trains.len() == 2
+                    && self.occupied.is_empty()
+                    && *first_ready == at
+                    && *second_ready == at
+                    && [first, second].into_iter().all(|k| {
+                        k.scheduled_ms == at
+                            && self
+                                .trains
+                                .get(k)
+                                .is_some_and(|t| t.leg == 0 && t.delay_ms == 0)
+                    })
+                {
+                    waiting.swap(0, 1);
+                }
+            }
             for (ready, key) in waiting {
                 let t = &self.trains[&key];
                 let c = &self.services[&key.service_id].legs[t.leg];

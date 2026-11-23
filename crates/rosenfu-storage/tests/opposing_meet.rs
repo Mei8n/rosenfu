@@ -198,8 +198,43 @@ fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_
                 reference = Some(routes);
             }
             world.configure_operation(configs.to_vec()).unwrap();
-            let ids = configs.map(|c| c.service_id.0.to_string());
-            let rt = &mut world.operation_mut().unwrap().runtime;
+            let ids = configs.each_ref().map(|c| c.service_id.0.to_string());
+            let native_format2 = world.operation_save().unwrap();
+            let ready = rosenfu_storage::encode(&world).unwrap();
+            let mut reopened = rosenfu_storage::decode(&ready).unwrap();
+            assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), ready);
+            for candidate in [&mut world, &mut reopened] {
+                let live = &mut candidate.operation_mut().unwrap().runtime;
+                live.advance_to(0, 64).unwrap();
+                let by_direction = ids.each_ref().map(|id| {
+                    &live
+                        .trains()
+                        .find(|t| &t.key.service_id == id)
+                        .unwrap()
+                        .state
+                });
+                assert!(matches!(
+                    by_direction[1],
+                    TrainState::Moving { entered_ms: 0, .. }
+                ));
+                if through {
+                    assert_eq!(by_direction[0], &TrainState::Waiting { ready_ms: 0 });
+                } else {
+                    assert!(matches!(
+                        by_direction[0],
+                        TrainState::Moving { entered_ms: 0, .. }
+                    ));
+                }
+            }
+            assert_eq!(reopened.operation_save(), world.operation_save());
+
+            // Run legacy tie order independently to preserve the comparison
+            // baseline and the exact handling of already active old saves.
+            let mut legacy = rosenfu_core::operation::OperationRuntime::new(
+                native_format2.runtime.services.clone(),
+            )
+            .unwrap();
+            let rt = &mut legacy;
             assert_eq!(rt.save().format, 2);
             let specs = ids.each_ref().map(|key| rt.service_spec(key).unwrap());
             assert_eq!(
@@ -245,6 +280,41 @@ fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_
             } else {
                 assert!(matches!(
                     train(1 - first).state,
+                    TrainState::Moving { entered_ms: 0, .. }
+                ));
+            }
+
+            if through && !west_first {
+                let mut old_active = native_format2;
+                old_active.runtime = rt.save();
+                let mut old = World::new(world.snapshot().clone()).unwrap();
+                old.restore_operation(Some(old_active.clone())).unwrap();
+                assert_eq!(old.operation_save(), Some(old_active));
+                assert!(matches!(
+                    old.operation()
+                        .unwrap()
+                        .runtime
+                        .trains()
+                        .next()
+                        .unwrap()
+                        .state,
+                    TrainState::Moving { entered_ms: 0, .. }
+                ));
+                // More than one birth is deliberately not prioritized.
+                let mut repeating = configs.clone();
+                for c in &mut repeating {
+                    c.timetable.last_departure_ms = 60_000;
+                }
+                let mut recurring = World::new(world.snapshot().clone()).unwrap();
+                recurring.configure_operation(repeating.to_vec()).unwrap();
+                let runtime = &mut recurring.operation_mut().unwrap().runtime;
+                runtime.advance_to(0, 64).unwrap();
+                assert!(matches!(
+                    runtime
+                        .trains()
+                        .find(|t| t.key.service_id == ids[0])
+                        .unwrap()
+                        .state,
                     TrainState::Moving { entered_ms: 0, .. }
                 ));
             }
