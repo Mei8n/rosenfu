@@ -551,29 +551,33 @@ impl WorldEditor {
     }
 
     fn advance_operation_state_at(&mut self, instant: std::time::Instant) -> Result<(), String> {
-        let elapsed = self
-            .operation_tick
-            .map(|t| instant.saturating_duration_since(t).as_millis())
-            .unwrap_or(0);
-        self.operation_tick = Some(instant);
+        let previous = self.operation_tick.unwrap_or(instant);
+        let instant = instant.max(previous);
         let Some(o) = self.world.operation_mut() else {
+            self.operation_tick = Some(instant);
             return Ok(());
         };
-        if o.invalidated {
+        if o.invalidated || o.runtime.paused() {
+            self.operation_tick = Some(instant);
             return Ok(());
         }
-        if o.runtime.paused() {
-            return Ok(());
-        }
-        let delta = u64::try_from(elapsed)
-            .map_err(|_| "時計の範囲を超えました。")?
-            .checked_mul(o.runtime.speed() as u64)
-            .ok_or("時計の範囲を超えました。")?;
+        // The permitted speeds (1, 2, 4, 8, 16) divide one millisecond
+        // exactly. Carry any wall time shorter than one game-ms to the next
+        // poll at this speed, regardless of the number of viewers/polls.
+        let quantum_ns = 1_000_000 / u128::from(o.runtime.speed());
+        let elapsed_ns = instant.duration_since(previous).as_nanos();
+        let delta =
+            u64::try_from(elapsed_ns / quantum_ns).map_err(|_| "時計の範囲を超えました。")?;
+        let remaining_ns = (elapsed_ns % quantum_ns) as u64;
         let target = o
             .pending_target
             .unwrap_or(o.runtime.now_ms())
             .checked_add(delta)
             .ok_or("時計の範囲を超えました。")?;
+        // Repeated polls at the same instant still drain existing debt but
+        // cannot add time. Clock commands explicitly reset this wall anchor
+        // after settling whole game milliseconds at their old speed.
+        self.operation_tick = Some(instant - std::time::Duration::from_nanos(remaining_ns));
         let result = o
             .runtime
             .advance_to(target, 128)
@@ -2646,6 +2650,53 @@ mod tests {
             .unwrap();
         assert_eq!(e.operation_snapshot().now_ms, frozen);
     }
+    #[test]
+    fn native_clock_is_independent_of_sub_millisecond_polls() {
+        use std::time::{Duration, Instant};
+
+        for speed in [1, 2, 4, 8, 16] {
+            let start = Instant::now();
+            let mut one = editor();
+            let mut many = editor();
+            one.set_operation_clock_at(false, speed, start).unwrap();
+            many.set_operation_clock_at(false, speed, start).unwrap();
+            one.advance_operation_at(start + Duration::from_millis(2))
+                .unwrap();
+            for n in 1..=80 {
+                let stamp = start + Duration::from_micros(25 * n);
+                many.advance_operation_at(stamp).unwrap();
+                many.advance_operation_at(stamp).unwrap();
+            }
+            assert_eq!(many.operation_snapshot().now_ms, 2 * u64::from(speed));
+            assert_eq!(many.world.operation_save(), one.world.operation_save());
+        }
+    }
+
+    #[test]
+    fn clock_command_does_not_carry_fraction_into_a_new_speed_or_through_pause() {
+        use std::time::{Duration, Instant};
+
+        let mut e = editor();
+        let start = Instant::now();
+        e.set_operation_clock_at(false, 1, start).unwrap();
+        e.advance_operation_at(start + Duration::from_micros(750))
+            .unwrap();
+        let faster = start + Duration::from_micros(900);
+        e.set_operation_clock_at(false, 16, faster).unwrap();
+        assert_eq!(e.operation_snapshot().now_ms, 0);
+        let paused = faster + Duration::from_micros(125);
+        e.set_operation_clock_at(true, 16, paused).unwrap();
+        assert_eq!(e.operation_snapshot().now_ms, 2);
+
+        let resumed = paused + Duration::from_secs(60);
+        e.advance_operation_at(resumed).unwrap();
+        assert_eq!(e.operation_snapshot().now_ms, 2);
+        e.set_operation_clock_at(false, 16, resumed).unwrap();
+        e.advance_operation_at(resumed + Duration::from_micros(125))
+            .unwrap();
+        assert_eq!(e.operation_snapshot().now_ms, 4);
+    }
+
     #[test]
     fn transitions_settle_old_speed_without_losing_interval() {
         let mut e = editor();
