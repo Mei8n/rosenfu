@@ -300,7 +300,7 @@ Function RosenfuReadRegistration
   StrCpy $RosenfuExisting 0
   ReadRegStr $0 HKCU "${UNINSTKEY}" "DisplayName"
   ${If} $0 == "${PRODUCTNAME}"
-    StrCpy $R9 "Windows の設定で旧ユーザー用 QA 版を先にアンインストールしてください。アプリのデータは削除しないでください。"
+    StrCpy $R9 "旧ユーザー用 QA 版の登録が残っています。元の Windows ユーザーで Windows の設定から旧版をアンインストールしてください。$\r$\nアンインストーラーが見つからない場合は、先にセーブをバックアップし、手順書の「旧 QA の登録だけが残っている場合」を確認してください。このセットアップは旧版の登録やセーブを変更しません。"
     Call RosenfuRefuse
   ${EndIf}
   ReadRegStr $0 HKLM "${UNINSTKEY}" "RosenfuLocalLayout"
@@ -349,12 +349,6 @@ Function RosenfuValidateTarget
   ${IfThen} $INSTDIR != "${ROSENFU_LOCAL_DIR}" ${|} Return ${|}
   StrCpy $0 "$INSTDIR" 2 1
   ${IfThen} $0 != ":\" ${|} Return ${|}
-  ClearErrors
-  GetFullPathName $7 "$INSTDIR"
-  ${If} ${Errors}
-  ${OrIf} $7 != $INSTDIR
-    Return
-  ${EndIf}
   StrCpy $6 "$INSTDIR" 3
   ${IfThen} $6 == $INSTDIR ${|} Return ${|}
   System::Call 'kernel32::GetDriveTypeW(w r6) i .r1'
@@ -372,6 +366,20 @@ Function RosenfuValidateTarget
     StrCpy $0 "$3"
     Goto rosenfu_ancestor
   rosenfu_leaf:
+  ; NSIS 3.13 GetFullPathName looks up its final component and reports
+  ; an error for a missing name. Canonicalize the now-checked existing
+  ; parent for a fresh install; the fixed product leaf must not exist.
+  ${If} $RosenfuExisting == 0
+    ${GetParent} "$INSTDIR" $0
+  ${Else}
+    StrCpy $0 "$INSTDIR"
+  ${EndIf}
+  ClearErrors
+  GetFullPathName $7 "$0"
+  ${If} ${Errors}
+  ${OrIf} $7 != $0
+    Return
+  ${EndIf}
   StrCpy $0 "$INSTDIR"
   System::Call 'kernel32::GetFileAttributesW(w r0) i .r1 ?e'
   Pop $2
