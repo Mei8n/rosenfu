@@ -268,8 +268,12 @@ mod tests {
         // Another normal editor publishes its recovery file after our check.
         let mut other = WorldEditor::new();
         other.load_save_slot(root.path(), id.clone()).unwrap();
-        other.rename_company("recovery from second editor".into()).unwrap();
-        other.autosave_active_slot(root.path(), &id, None, None).unwrap();
+        other
+            .rename_company("recovery from second editor".into())
+            .unwrap();
+        other
+            .autosave_active_slot(root.path(), &id, None, None)
+            .unwrap();
         let external = bytes(&auto);
         let before = editor.snapshot();
         let view = ViewState {
