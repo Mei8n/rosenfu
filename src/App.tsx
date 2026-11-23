@@ -1705,6 +1705,12 @@ export function App() {
     setAlignmentId("");setSelectedPlanPath(null);setTrackDeleteConfirm(false);
   }
 
+  function clearStationSelection() {
+    if(activeTool!=="station-management"||selected===null||!enabled||busyRef.current||stationSettingsDirty||stationResizePending||pendingStation||pendingDelete)return false;
+    setSelected(null);setEditStationName("");
+    return true;
+  }
+
   function mapClick(event: MouseEvent<SVGSVGElement>) {
     if(anchorPlacementPending.current){const at=pendingPlacementPoint.current;if(event.detail>=2&&at&&Math.hypot(event.clientX-at.x,event.clientY-at.y)<=8){finishPendingPlacement.current=true;if(roadFollowing)roadFinishAfterPlacement.current=true;}return;}
     smoothZoom.cancel();
@@ -1712,7 +1718,8 @@ export function App() {
     // Track hit targets stop propagation in selection mode. A background click
     // clears only the highlight, without consuming drawing/placement clicks.
     clearTrackSelection();
-    if (suppressMapClick.current || mapMode === "move") return;
+    if (suppressMapClick.current) return;
+    if (mapMode === "move") {clearStationSelection();return;}
     const rect = event.currentTarget.getBoundingClientRect();
     const rawCoordinates = coordinatesFromClient(event.clientX, event.clientY, rect, camera);
     if (!rawCoordinates) return;
@@ -1923,6 +1930,7 @@ export function App() {
       }
       if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
       if (event.key === "Escape" && (event.defaultPrevented || event.isComposing || event.keyCode === 229 || document.querySelector('dialog[open], [role="dialog"]'))) return;
+      if(event.key==="Escape"&&clearStationSelection()){event.preventDefault();return;}
       if (event.key === "Escape") {clearTrackSelection();roadDrawing.cancel();cancelParallel(); if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);

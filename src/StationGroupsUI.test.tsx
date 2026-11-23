@@ -68,3 +68,53 @@ test("crossing preview reports actual distance without inventing passenger data"
 
 });
 
+
+test("blank map or Escape closes the clean station inspector without touching its group",async()=>{
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"station-deselect-test"}:world);
+ render(<App/>);await screen.findByText(/station-deselect-test/);
+ fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+ const row=screen.getByRole("button",{name:/交差駅/});
+ fireEvent.click(document.querySelector(".station-marker")!);
+ expect(row.getAttribute("aria-pressed")).toBe("true");
+ const homes=screen.getByLabelText("編集するホーム") as HTMLSelectElement;
+ fireEvent.change(homes,{target:{value:"6"}});
+ expect(homes.value).toBe("6");
+ expect(document.querySelectorAll(".station-marker.selected")).toHaveLength(1);
+ const calls=vi.mocked(invoke).mock.calls.length;
+ fireEvent.click(screen.getByRole("img",{name:"駅配置用OpenStreetMap"}));
+ expect(screen.queryByText("駅の詳細")).toBeNull();
+ expect(row.getAttribute("aria-pressed")).toBe("false");
+ expect(document.querySelectorAll(".station-marker.selected")).toHaveLength(0);
+ expect(document.querySelectorAll("[data-group-platform]")).toHaveLength(2);
+
+ fireEvent.click(row);
+ expect(screen.getByText("駅の詳細")).toBeTruthy();
+ fireEvent.keyDown(window,{key:"Escape"});
+ expect(screen.queryByText("駅の詳細")).toBeNull();
+ expect(row.getAttribute("aria-pressed")).toBe("false");
+ expect(vi.mocked(invoke).mock.calls.slice(calls)).toEqual([]);
+});
+
+test("trying to deselect does not discard station name, length or pending removal",async()=>{
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"station-deselect-drafts"}:world);
+ render(<App/>);await screen.findByText(/station-deselect-drafts/);
+ fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+ fireEvent.click(screen.getByRole("button",{name:/交差駅/}));
+ const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});
+ const name=screen.getByLabelText("選択駅の名前") as HTMLInputElement;
+ fireEvent.change(name,{target:{value:"変更途中"}});
+ fireEvent.click(map);fireEvent.keyDown(window,{key:"Escape"});
+ expect(name.value).toBe("変更途中");
+ fireEvent.click(screen.getByRole("button",{name:"駅名下書きを破棄"}));
+ const length=screen.getByLabelText("選択駅の長さ") as HTMLInputElement;
+ fireEvent.change(length,{target:{value:"1"}});
+ fireEvent.click(map);fireEvent.keyDown(window,{key:"Escape"});
+ expect(length.value).toBe("1");
+ expect(screen.getByText("2〜20両で入力してください")).toBeTruthy();
+ fireEvent.click(screen.getByRole("button",{name:"ホーム長の下書きを破棄"}));
+ fireEvent.click(screen.getByRole("button",{name:"選択ホームを撤去"}));
+ fireEvent.click(map);fireEvent.keyDown(window,{key:"Escape"});
+ expect(screen.getByRole("button",{name:"削除を確定"})).toBeTruthy();
+ expect(screen.getByText("駅の詳細")).toBeTruthy();
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>["rename_station","update_station_placement","delete_station"].includes(c))).toBe(false);
+});
