@@ -117,7 +117,7 @@ impl World {
                     Some((*edge_start, *edge_end, position))
                 };
                 let (edge_start, edge_end, position) = outward().or_else(|| {
-                    self.data.gameplay_bus_live_direct_return_chord(
+                    self.data.gameplay_bus_live_return_chord(
                         route_id, train.leg, spec, section, fraction,
                     )
                 })?;

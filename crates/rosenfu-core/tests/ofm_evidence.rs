@@ -2142,3 +2142,152 @@ fn authored_tram_uses_exact_ground_junction_without_treating_motor_direction_as_
             .is_none()
     ); // unknown/denied third arm is not ignored
 }
+
+#[test]
+fn ordinary_bus_markers_follow_both_verified_return_intervals_at_an_interior_stop() {
+    use rosenfu_core::ofm_evidence::{BusInteriorStop, BusPattern};
+    use rosenfu_core::operation::{Timetable, Vehicle};
+    use rosenfu_core::world::{BusOperationConfig, GeoPoint, World};
+
+    let cells: &[(u32, u32, &[BusFixtureLine<'_>])] = &[
+        (14552, 6451, &[(&[[3200, 2010], [4200, 2010]], None)]),
+        (14553, 6451, &[(&[[-104, 2010], [4200, 2010]], None)]),
+        (14554, 6451, &[(&[[-104, 2010], [896, 2010]], None)]),
+    ];
+    let (tiles, store) = bus_rectangle(cells);
+    let mut request = bus_rectangle_query(&tiles, bus_vertex(0, 1), false);
+    request.pattern = Some(BusPattern::OpenRoundTrip);
+    let outbound = reconstruct_gameplay_bus_path(&store, &request)
+        .unwrap()
+        .unwrap();
+    let keys = outbound.stop_occurrence_keys();
+    assert_eq!(keys.len(), 3);
+    request.interior_stops.push(BusInteriorStop {
+        id: "middle".into(),
+        name: "途中".into(),
+        occurrence_key: keys[1].clone(),
+        fraction_q: 370_000,
+    });
+    let mut world = World::default();
+    let player = world.add_player("P".into()).unwrap();
+    let owner = world.add_company(player, "Bus".into()).unwrap();
+    let evidence = cells
+        .iter()
+        .zip(tiles)
+        .map(|((_, _, lines), tile)| (raw_entry(&bus_fixture_raw(lines)), tile))
+        .collect();
+    let mut world = world
+        .candidate_with_gameplay_ofm_bus(
+            owner,
+            "test".into(),
+            "往復".into(),
+            request.clone(),
+            evidence,
+        )
+        .unwrap();
+    let returned = world
+        .snapshot()
+        .gameplay_bus_return_path(&request)
+        .unwrap()
+        .unwrap();
+    let config = BusOperationConfig {
+        route_id: "test".into(),
+        timetable: Timetable {
+            first_departure_ms: 0,
+            last_departure_ms: 0,
+            headway_ms: 60_000,
+        },
+        vehicle: Vehicle {
+            max_speed_kmh: 72.,
+            acceleration_mps2: 1.,
+            braking_mps2: 1.,
+            length_m: 12.,
+        },
+        assumed_speed_kmh: 72.,
+        dwell_ms: 10_000,
+        turnaround_ms: None,
+    };
+    world
+        .configure_all_operation(vec![], vec![config.clone()])
+        .unwrap();
+
+    let operation = world.operation().unwrap();
+    let spec = operation.runtime.service_spec("bus:test").unwrap();
+    assert_eq!(spec.legs.len(), 4); // two outward and two independently proved return intervals
+    assert_eq!(spec.legs[2].to, spec.legs[3].from);
+    assert_eq!(spec.legs[1].to, spec.legs[2].from);
+    assert_eq!(spec.legs[3].to, spec.legs[0].from);
+    assert_eq!(spec.legs[0].to, spec.legs[2].to);
+    assert_eq!(spec.legs[2].sections[0].resources.len(), 2);
+    assert_eq!(spec.legs[3].sections[0].resources.len(), 2);
+    let observed = operation
+        .runtime
+        .preview_passenger_replay(900_000, 128)
+        .unwrap();
+    assert!(observed.complete);
+    assert_eq!(observed.completed_legs.len(), 4);
+
+    let advance = |world: &mut World, at| {
+        let result = world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(at, 128)
+            .unwrap();
+        assert!(result.reached_target);
+    };
+    let point = |i: usize| {
+        let [longitude, latitude] = returned.points[i];
+        GeoPoint {
+            latitude,
+            longitude,
+        }
+    };
+    for (sequence, atom, initial_position, end_position) in [(2, 0, 0., 0.63), (3, 1, 0.63, 1.)] {
+        let leg = &observed.completed_legs[sequence];
+        assert_eq!(leg.sequence, sequence);
+        advance(&mut world, leg.entered_ms + 1_000);
+        let committed = world.operation_save();
+        let markers = world.live_straight_bus_markers();
+        assert_eq!(markers.len(), 1, "return interval {sequence}");
+        let marker = &markers[0];
+        assert_eq!(marker.key, leg.train);
+        assert_eq!(marker.edge_start, point(atom));
+        assert_eq!(marker.edge_end, point(atom + 1));
+        assert!(marker.position > initial_position && marker.position < initial_position + 0.01);
+        assert_eq!(world.operation_save(), committed);
+
+        advance(&mut world, leg.arrived_ms - 1_000);
+        let traversed = world.live_straight_bus_markers();
+        assert_eq!(traversed.len(), 1);
+        assert_eq!(traversed[0].edge_start, point(atom + 1));
+        assert_eq!(traversed[0].edge_end, point(atom + 2));
+        assert!(
+            traversed[0].position < end_position && traversed[0].position > end_position - 0.01
+        );
+
+        advance(&mut world, leg.arrived_ms + 1);
+        assert!(world.live_straight_bus_markers().is_empty());
+    }
+
+    request.interior_stops.clear();
+    let mut direct = world
+        .candidate_with_gameplay_ofm_bus(owner, "test".into(), "直接往復".into(), request, vec![])
+        .unwrap();
+    direct
+        .configure_all_operation(vec![], vec![config])
+        .unwrap();
+    let observed = direct
+        .operation()
+        .unwrap()
+        .runtime
+        .preview_passenger_replay(900_000, 128)
+        .unwrap();
+    assert!(observed.complete);
+    assert_eq!(observed.completed_legs.len(), 2);
+    advance(&mut direct, observed.completed_legs[1].entered_ms + 1_000);
+    let direct_markers = direct.live_straight_bus_markers();
+    assert_eq!(direct_markers.len(), 1);
+    assert_eq!(direct_markers[0].edge_start, point(0));
+    assert_eq!(direct_markers[0].edge_end, point(1));
+}
