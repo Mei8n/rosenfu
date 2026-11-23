@@ -1,0 +1,45 @@
+name: Windows local setup overlays (compile only)
+
+on:
+  pull_request:
+    branches: [dev/alpha-0.2-integration]
+    paths:
+      - '.github/workflows/windows-local-overlays-compile.yml'
+      - 'scripts/check-windows-local-overlays.ps1'
+      - 'src-tauri/tauri.alpha02-*.conf.json'
+      - 'src-tauri/nsis/alpha02-local-*.nsi'
+
+permissions:
+  contents: read
+
+jobs:
+  compile-local-setups:
+    if: >-
+      github.repository == 'Mei8n/rosenfu' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'work/alpha02-playtest'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: .
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Install pinned dependencies and Windows Rust target
+        run: |
+          rustup target add --toolchain stable x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust target installation failed' }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+        env:
+          RUSTUP_TOOLCHAIN: stable
+      - name: Compile and distinguish both NSIS setup executables without launching them
+        run: ./scripts/check-windows-local-overlays.ps1
+        env:
+          RUSTUP_TOOLCHAIN: stable

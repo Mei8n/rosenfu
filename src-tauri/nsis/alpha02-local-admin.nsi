@@ -294,15 +294,25 @@ Function .onInit
   ${IfThen} $R8 != 1 ${|} Call RosenfuRefuse ${|}
 FunctionEnd
 
-; HKCU is informational about the user whose hive setup sees. An alternate
-; admin login cannot be assumed to see a different user's per-user entry.
-Function RosenfuReadRegistration
-  StrCpy $RosenfuExisting 0
-  ReadRegStr $0 HKCU "${UNINSTKEY}" "DisplayName"
-  ${If} $0 == "${PRODUCTNAME}"
-    StrCpy $R9 "旧ユーザー用 QA 版の登録が残っています。元の Windows ユーザーで Windows の設定から旧版をアンインストールしてください。$\r$\nアンインストーラーが見つからない場合は、先にセーブをバックアップし、手順書の「旧 QA の登録だけが残っている場合」を確認してください。このセットアップは旧版の登録やセーブを変更しません。"
+; Read only the exact QA keys in the effective user's HKCU. A credentials
+; prompt may select a different account; this does not inspect other hives.
+!macro RosenfuRequireNoCurrentUserQa key flags
+  System::Call 'advapi32::RegOpenKeyExW(p 0x80000001, w "${key}", i 0, i ${flags}, *p .r0) i .r1'
+  ${If} $1 = 0
+    System::Call 'advapi32::RegCloseKey(p r0)'
+  ${EndIf}
+  ${If} $1 != 2
+    StrCpy $R9 "現在のユーザーに別の QA 版が登録されているか、確認できません。元の QA 版とセーブを確認してください。旧 QA の登録だけが残っている場合は手順書を参照してください。このセットアップは旧版に触れません。"
     Call RosenfuRefuse
   ${EndIf}
+!macroend
+
+Function RosenfuReadRegistration
+  StrCpy $RosenfuExisting 0
+  !insertmacro RosenfuRequireNoCurrentUserQa "${UNINSTKEY}" 0x20119
+  !insertmacro RosenfuRequireNoCurrentUserQa "${UNINSTKEY}" 0x20219
+  !insertmacro RosenfuRequireNoCurrentUserQa "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLEID}" 0x20119
+  !insertmacro RosenfuRequireNoCurrentUserQa "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLEID}" 0x20219
   ReadRegStr $0 HKLM "${UNINSTKEY}" "RosenfuLocalLayout"
   ReadRegStr $1 HKLM "${UNINSTKEY}" "UninstallString"
   ReadRegStr $2 HKLM "${UNINSTKEY}" "DisplayName"
@@ -339,6 +349,35 @@ Function RosenfuRefuse
     MessageBox MB_ICONSTOP|MB_OK "$R9"
   SetErrorLevel 2
   Quit
+FunctionEnd
+
+; The machine installer keeps its fixed Program Files path and stock
+; payload writer. In the owned directory, refuse either installed file
+; if the opened object is not an ordinary single-link file.
+Function RosenfuCheckUniqueInstalledFile
+  StrCpy $R8 0
+  ; FILE_READ_ATTRIBUTES, share read/write/delete, OPEN_EXISTING,
+  ; FILE_FLAG_OPEN_REPARSE_POINT. Inspect the object, not a link target.
+  System::Call 'kernel32::CreateFileW(w r0, i 128, i 7, p 0, i 3, i 0x200000, p 0) p .r3'
+  StrCmp $3 -1 unique_check_done
+  System::Alloc 52
+  Pop $4
+  StrCmp $4 0 unique_check_close
+  StrCmp $4 "" unique_check_close
+  System::Call 'kernel32::GetFileInformationByHandle(p r3, p r4) i .r1'
+  StrCmp $1 0 unique_check_free
+  ; BY_HANDLE_FILE_INFORMATION has 13 DWORD words. nNumberOfLinks is
+  ; word 11 (ten words precede it). Read attributes from the same handle.
+  System::Call '*$4(i .r2, i, i, i, i, i, i, i, i, i, i .r5)'
+  IntOp $2 $2 & 0x410
+  StrCmp $2 0 0 unique_check_free
+  StrCmp $5 1 0 unique_check_free
+  StrCpy $R8 1
+  unique_check_free:
+    System::Free $4
+  unique_check_close:
+    System::Call 'kernel32::CloseHandle(p r3)'
+  unique_check_done:
 FunctionEnd
 
 ; Validated fresh installs require a new directory; even an empty existing
@@ -395,13 +434,10 @@ Function RosenfuValidateTarget
   IntOp $2 $1 & 0x410
   ${IfThen} $2 != 16 ${|} Return ${|}
   StrCpy $0 "$INSTDIR\${MAINBINARYNAME}.exe"
-  System::Call 'kernel32::GetFileAttributesW(w r0) i .r1'
-  IntOp $2 $1 & 0x410
-  ${IfThen} $2 != 0 ${|} Return ${|}
+  Call RosenfuCheckUniqueInstalledFile
+  ${IfThen} $R8 != 1 ${|} Return ${|}
   StrCpy $0 "$INSTDIR\uninstall.exe"
-  System::Call 'kernel32::GetFileAttributesW(w r0) i .r1'
-  IntOp $2 $1 & 0x410
-  ${IfThen} $2 == 0 ${|} StrCpy $R8 1 ${|}
+  Call RosenfuCheckUniqueInstalledFile
   rosenfu_invalid:
 FunctionEnd
 
