@@ -124,3 +124,169 @@ fn ordinary_single_track_serializes_opposing_arrivals_even_with_distinct_bays() 
         assert_eq!(live, observed);
     }
 }
+
+// A B waypoint in the stored path is distinct from a service calling at B.
+// Ordinary format 2 can admit both approaches when both calls split their
+// resource scopes. A through run still needs the far throat at admission.
+#[test]
+fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_throat() {
+    use rosenfu_core::operation::RailWaitReason;
+    use std::collections::BTreeSet;
+
+    for west_first in [false, true] {
+        let mut reference = None;
+        let mut main_center_to_end_m = 0.0;
+        for through in [false, true] {
+            let (mut world, mut configs, [west, east, _, _], [start, main, side, end]) =
+                meeting_loop(true);
+            if west_first {
+                configs.swap(0, 1);
+            }
+            // Configure the same explicit center waypoint the planner exposes
+            // to callers; toggling its selected stop must never reroute it.
+            let mut routes = Vec::new();
+            for ((from, mid, to, skip, name), config) in [
+                (start, main, end, through, "East"),
+                (end, side, start, false, "West"),
+            ]
+            .into_iter()
+            .zip(&configs)
+            {
+                let owner = world.snapshot().companies[0].id;
+                let service = config.service_id;
+                let expected = world
+                    .snapshot()
+                    .service_paths
+                    .iter()
+                    .find(|p| p.service_id == service)
+                    .unwrap()
+                    .clone();
+                let candidates = world.route_candidates_via(from, to, &[mid]).unwrap();
+                assert!(!candidates.truncated);
+                let route = candidates
+                    .candidates
+                    .into_iter()
+                    .find(|r| r.stations == [from, mid, to])
+                    .unwrap()
+                    .segments;
+                let preview = world
+                    .preview_service_path_replacement(owner, service, from, route.clone())
+                    .unwrap();
+                let stops = preview
+                    .occurrences
+                    .into_iter()
+                    .filter(|p| !skip || p.station_id != mid)
+                    .map(|p| p.reference)
+                    .collect::<Vec<_>>();
+                assert_eq!(stops.len(), if skip { 2 } else { 3 });
+                routes.push(route.clone());
+                world
+                    .replace_service_path(
+                        owner,
+                        service,
+                        expected,
+                        name.to_owned(),
+                        from,
+                        route,
+                        stops,
+                    )
+                    .unwrap();
+            }
+            if through {
+                assert_eq!(reference.as_ref(), Some(&routes), "not a reroute");
+            } else {
+                reference = Some(routes);
+            }
+            world.configure_operation(configs.to_vec()).unwrap();
+            let ids = configs.map(|c| c.service_id.0.to_string());
+            let rt = &mut world.operation_mut().unwrap().runtime;
+            assert_eq!(rt.save().format, 2);
+            let specs = ids.each_ref().map(|key| rt.service_spec(key).unwrap());
+            assert_eq!(
+                specs.map(|s| s.legs.len()),
+                [if through { 1 } else { 2 }, 2]
+            );
+            let main_max_mps = specs[0].vehicle.max_speed_kmh / 3.6;
+            if !through {
+                main_center_to_end_m = specs[0].legs[1].sections.iter().map(|s| s.length_m).sum();
+                assert!(main_center_to_end_m > 0.0);
+            }
+            let lockset = specs.map(|spec| {
+                spec.legs[0]
+                    .sections
+                    .iter()
+                    .flat_map(|s| s.resources.iter().cloned())
+                    .collect::<BTreeSet<_>>()
+            });
+            assert!(lockset[0].contains(&format!("rail:join:{}:End", west.0)));
+            assert_eq!(
+                lockset[0].contains(&format!("rail:join:{}:Start", east.0)),
+                through
+            );
+            assert_eq!(lockset[0].is_disjoint(&lockset[1]), !through);
+            rt.advance_to(0, 64).unwrap();
+            let train = |id: usize| rt.trains().find(|t| t.key.service_id == ids[id]).unwrap();
+            let first = usize::from(west_first);
+            let release = match train(first).state {
+                TrainState::Moving {
+                    entered_ms: 0,
+                    release_ms,
+                    ..
+                } => release_ms,
+                ref state => panic!("priority train failed to leave: {state:?}"),
+            };
+            if through {
+                let waiter = train(1 - first);
+                assert_eq!(waiter.state, TrainState::Waiting { ready_ms: 0 });
+                assert_eq!(
+                    rt.rail_wait_reason(&waiter.key),
+                    Some(RailWaitReason::Junction)
+                );
+            } else {
+                assert!(matches!(
+                    train(1 - first).state,
+                    TrainState::Moving { entered_ms: 0, .. }
+                ));
+            }
+
+            let replay = rt.preview_passenger_replay(1_000_000, 64).unwrap();
+            assert!(replay.complete);
+            assert_eq!(replay.completed_legs.len(), if through { 3 } else { 4 });
+            let leg = |i, sequence| {
+                replay
+                    .completed_legs
+                    .iter()
+                    .find(|r| r.train.service_id == ids[i] && r.sequence == sequence)
+                    .unwrap()
+            };
+            let e = leg(0, 0);
+            let w = leg(1, 0);
+            assert_eq!(e.to, (if through { end } else { main }).0.to_string());
+            assert_eq!(w.to, side.0.to_string());
+            if !through {
+                assert!(
+                    e.arrived_ms.max(w.arrived_ms) < leg(0, 1).entered_ms.min(leg(1, 1).entered_ms),
+                    "both trains must be stationary in different bays for a nonempty interval"
+                );
+            } else if west_first {
+                assert_eq!(e.entered_ms, release);
+                // A head moving at no more than vehicle max cannot reach the
+                // terminal sooner than this after passing the center. Round the
+                // bound outwards to avoid tying it to simulator ms rounding.
+                let remaining_ms = (main_center_to_end_m / main_max_mps * 1000.0).floor() as u64;
+                let center_pass_latest_ms = e.arrived_ms - remaining_ms + 1;
+                assert!(w.arrived_ms < e.entered_ms && e.entered_ms <= center_pass_latest_ms);
+                assert!(
+                    center_pass_latest_ms < leg(1, 1).entered_ms,
+                    "the through train passes the center while the local is parked"
+                );
+            } else {
+                assert_eq!(w.entered_ms, release);
+                assert!(
+                    e.arrived_ms < w.entered_ms,
+                    "the local cannot enter before the through train clears"
+                );
+            }
+        }
+    }
+}
