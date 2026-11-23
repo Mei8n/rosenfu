@@ -6,7 +6,7 @@ use crate::operation::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 mod vehicle_map;
-pub use vehicle_map::LiveRailMarker;
+pub use vehicle_map::{LiveBusMarker, LiveRailMarker};
 #[cfg(feature = "periodic-world-qa")]
 pub mod periodic_qa;
 #[cfg(feature = "standard-periodic-rail")]

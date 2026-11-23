@@ -558,6 +558,7 @@ mod tests {
                 &editor.operation_snapshot().timetable_edit_token,
             )
             .unwrap();
+        assert!(editor.operation_snapshot().bus_markers.is_empty());
         let runtime = &mut editor.world.operation_mut().unwrap().runtime;
         let spec = runtime.service_spec("bus:B2").unwrap();
         assert_eq!(spec.legs.len(), 2);
@@ -572,6 +573,14 @@ mod tests {
         assert!(spec.legs[1].sections[0].length_m > spec.legs[0].sections[0].length_m);
         assert!((spec.legs[1].sections[0].length_m - returned.length_m).abs() < 0.1);
         runtime.advance_to(1000, 100).unwrap();
+        let marker = editor.operation_snapshot().live.bus_markers;
+        assert_eq!(marker.len(), 1);
+        assert_eq!(marker[0].key.service_id, "bus:B2");
+        assert_eq!(
+            [marker[0].edge_start, marker[0].edge_end],
+            preview.points.as_slice()
+        );
+        assert!(marker[0].position > 0.0 && marker[0].position < 1.0);
         let active = editor.world.operation_save().unwrap();
         let selected = |feature, vertex| BusVertex {
             feature,
@@ -589,7 +598,7 @@ mod tests {
         let one = editor
             .put_gameplay_ofm_bus(
                 &token,
-                "independent".into(),
+                "A-independent".into(),
                 "別区間".into(),
                 other_proof.clone(),
                 vec![],
@@ -600,7 +609,7 @@ mod tests {
         let with_other = editor
             .put_gameplay_ofm_bus(
                 &token,
-                "independent".into(),
+                "A-independent".into(),
                 "別区間".into(),
                 other_proof,
                 vec![],
@@ -609,9 +618,23 @@ mod tests {
         assert_ne!(one.road_transport.edges, with_other.road_transport.edges);
         assert!(!editor.operation_snapshot().invalidated);
         assert_eq!(editor.world.operation_save().unwrap(), active);
+        assert_eq!(with_other.road_transport.bus_routes[0].id, "A-independent");
         assert_eq!(
-            with_other.road_transport.bus_routes[0],
+            with_other.road_transport.bus_routes[1],
             accepted.road_transport.bus_routes[0]
+        );
+        assert_eq!(editor.operation_snapshot().bus_markers, marker);
+        let token = editor.operation_snapshot().configuration_token.clone();
+        let compact = serde_json::to_value(
+            editor
+                .advance_operation_with_configuration(Some(&token))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(compact.get("bus_services").is_none());
+        assert_eq!(
+            compact["bus_markers"],
+            serde_json::to_value(&marker).unwrap()
         );
 
         // A separately authored outbound path along the return streets must
@@ -668,7 +691,16 @@ mod tests {
             .trains()
             .any(|train| train.key.service_id == "bus:compete"
                 && matches!(train.state, TrainState::Waiting { .. })));
-        let finished = runtime.advance_to(400_000, 100).unwrap();
+        // The running return uses other directed streets; the pending bus
+        // must also not be drawn as if it is already travelling.
+        assert!(shadow.operation_snapshot().bus_markers.is_empty());
+        let finished = shadow
+            .world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(400_000, 100)
+            .unwrap();
         assert!(finished
             .arrivals
             .iter()
@@ -689,6 +721,12 @@ mod tests {
         editor.load(&file).unwrap();
         assert_eq!(editor.snapshot(), with_other);
         assert_eq!(editor.world.operation_save().unwrap(), saved);
+        assert_eq!(editor.operation_snapshot().bus_markers, marker);
+        let clock = editor.world.operation_mut().unwrap();
+        clock.runtime.advance_to(2000, 100).unwrap();
+        let progressed = editor.operation_snapshot().live.bus_markers;
+        assert_eq!(progressed[0].key, marker[0].key);
+        assert!(progressed[0].position > marker[0].position);
         let finished = editor
             .world
             .operation_mut()

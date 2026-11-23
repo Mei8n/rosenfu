@@ -1,4 +1,4 @@
-//! Verified train-head positions at the committed simulation time.
+//! Verified moving vehicle positions at the committed simulation time.
 //! Unsupported geometry is omitted, not guessed.
 use super::*;
 use crate::operation::{TrainKey, TrainState};
@@ -13,6 +13,15 @@ pub struct LiveRailMarker {
     pub alignment_start: GeoPoint,
     pub alignment_end: GeoPoint,
     /// Authoritative distance fraction on that chord at the committed clock.
+    pub position: f64,
+}
+
+/// A committed native position on one verified directed roadway chord.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LiveBusMarker {
+    pub key: TrainKey,
+    pub edge_start: GeoPoint,
+    pub edge_end: GeoPoint,
     pub position: f64,
 }
 
@@ -32,6 +41,87 @@ struct Candidate<'a> {
 }
 
 impl World {
+    /// A small visual subset of ordinary authored, moving bus legs. Look up
+    /// the exact committed stop occurrences and directed edge, not the
+    /// nearest visible road. Rendering never loads data or reroutes a bus.
+    pub fn live_straight_bus_markers(&self) -> Vec<LiveBusMarker> {
+        let Some(op) = self
+            .operation()
+            .filter(|o| !o.invalidated && !o.bus_configs.is_empty())
+        else {
+            return Vec::new();
+        };
+        let roads = &self.data.road_transport;
+        let now = op.runtime.now_ms();
+        op.runtime
+            .trains()
+            .take(MAX_TRAINS)
+            .filter_map(|train| {
+                let route_id = train.key.service_id.strip_prefix("bus:")?;
+                if !self.data.ofm_gameplay_bus_routes.contains_key(route_id) {
+                    return None;
+                }
+                let TrainState::Moving {
+                    entered_ms,
+                    arrival_ms,
+                    ..
+                } = train.state
+                else {
+                    return None;
+                };
+                if now >= arrival_ms {
+                    return None;
+                }
+                let spec = op.runtime.service_spec(&train.key.service_id)?;
+                let leg = spec.legs.get(train.leg)?;
+                let [section] = leg.sections.as_slice() else {
+                    return None;
+                };
+                let [resource] = section.resources.as_slice() else {
+                    return None;
+                };
+                let edge_id = resource.strip_prefix("road:edge:")?;
+                let (duration, _) = op
+                    .runtime
+                    .unblocked_leg_timing(&train.key.service_id, train.leg)?;
+                if entered_ms.checked_add(duration) != Some(arrival_ms) {
+                    return None;
+                }
+                let fraction = uniform_position(
+                    section,
+                    &spec.vehicle,
+                    now.checked_sub(entered_ms)?,
+                    duration,
+                )?;
+                let (edge, from, to) = roads.gameplay_bus_leg_chord(
+                    route_id,
+                    train.leg,
+                    leg.from.strip_prefix("bus:")?,
+                    leg.to.strip_prefix("bus:")?,
+                    edge_id,
+                )?;
+                let [edge_start, edge_end] = edge.geometry.as_slice() else {
+                    return None;
+                };
+                if edge.level != Some(InfrastructureLevel::Ground)
+                    || edge_start == edge_end
+                    || !(0.0..=1.0).contains(&from)
+                    || !(0.0..=1.0).contains(&to)
+                    || from >= to
+                {
+                    return None;
+                }
+                Some(LiveBusMarker {
+                    key: train.key.clone(),
+                    edge_start: *edge_start,
+                    edge_end: *edge_end,
+                    position: from + (to - from) * fraction,
+                })
+            })
+            .take(MAX_MARKERS)
+            .collect()
+    }
+
     /// Bounded render subset of moving trains on a verified direct, ground,
     /// isolated single-track Normal rail section. Waiting, released and unsupported
     /// movements are omitted. No clock or save state is changed.

@@ -615,6 +615,52 @@ fn retain_existing_points(
 }
 
 impl RoadTransport {
+    /// Look up one outward stop-to-stop span in the validated ordinary OFM
+    /// projection. Edges and routes are sorted by ID; stop rows are appended
+    /// in occurrence order for each route. No geometry is reconstructed here.
+    pub(crate) fn gameplay_bus_leg_chord(
+        &self,
+        route_id: &str,
+        leg: usize,
+        from_id: &str,
+        to_id: &str,
+        edge_id: &str,
+    ) -> Option<(&RoadEdge, f64, f64)> {
+        if self.bus_routes.len() > MAX_ORDINARY_ROUTES || self.edges.len() > MAX_TOTAL_ROUTE_EDGES {
+            return None;
+        }
+        let index = self
+            .bus_routes
+            .binary_search_by(|r| r.id.as_str().cmp(route_id))
+            .ok()?;
+        let route = &self.bus_routes[index];
+        let next = leg.checked_add(1)?;
+        let from = route.stops.get(leg)?;
+        let to = route.stops.get(next)?;
+        if from.stop_id != from_id
+            || to.stop_id != to_id
+            || from.edge_index != to.edge_index
+            || route.edges.get(from.edge_index)?.as_str() != edge_id
+        {
+            return None;
+        }
+        let offset = self.bus_routes[..index]
+            .iter()
+            .map(|r| r.stops.len())
+            .sum::<usize>();
+        let from = self.bus_stops.get(offset.checked_add(leg)?)?;
+        let to = self.bus_stops.get(offset.checked_add(next)?)?;
+        if from.id != from_id || to.id != to_id || from.edge_id != edge_id || to.edge_id != edge_id
+        {
+            return None;
+        }
+        let index = self
+            .edges
+            .binary_search_by(|e| e.id.as_str().cmp(edge_id))
+            .ok()?;
+        Some((&self.edges[index], from.position, to.position))
+    }
+
     pub(super) fn validate_ofm_gameplay_bus(
         &self,
         world: &WorldDraft,

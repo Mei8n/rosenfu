@@ -1,7 +1,7 @@
 use super::*;
 use rosenfu_core::operation::{RailWaitReason, Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
-use rosenfu_core::world::{LiveRailMarker, OperationServiceConfig};
+use rosenfu_core::world::{LiveBusMarker, LiveRailMarker, OperationServiceConfig};
 #[path = "operation/bus_transfers.rs"]
 mod bus_transfers;
 #[path = "operation/crossing_planning.rs"]
@@ -55,6 +55,8 @@ pub struct OperationLiveView {
     pub trains: Vec<OperationLiveTrain>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rail_markers: Vec<LiveRailMarker>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bus_markers: Vec<LiveBusMarker>,
 }
 
 #[derive(serde::Serialize)]
@@ -258,6 +260,7 @@ impl WorldEditor {
                 .is_some_and(|op| op.runtime.rail_timetable_handoff_in_progress()),
             configuration_token,
             rail_markers: self.world.live_straight_rail_markers(),
+            bus_markers: self.world.live_straight_bus_markers(),
             #[cfg(feature = "standard-periodic-rail")]
             standard_schedule_active: self.world.has_standard_timetable(),
             trains: o

@@ -14,7 +14,7 @@ type Config={timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type ServiceConfig=Config&{service_id:string};
 type BusConfig=Config&{route_id:string;assumed_speed_kmh:number;turnaround_ms?:number};
 type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'track';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
-export type OperationView={standard_schedule_active?:boolean;now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown};
+export type OperationView={standard_schedule_active?:boolean;now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown;bus_markers?:unknown};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
 type Commands={apply_standard_schedule:ApplyStandardSchedule;reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
 type OperationContext={view:OperationView|null;crossingPlanningToken?:string;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
@@ -115,7 +115,10 @@ export function OperationVehicleLayer({camera,scale}:{camera:Camera;scale:number
  const state=useContext(Context);
  const view=state?.view;
  if(!state?.crossingPlanningToken||state.blocked||!view||view.invalidated)return null;
- return <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale}/>;
+ return <>
+  <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale}/>
+  <OperationMapMarkers markers={view.bus_markers} camera={camera} scale={scale} mode="bus"/>
+ </>;
 }
 
 export function CrossingOperations({enabled}:{enabled:boolean}){
