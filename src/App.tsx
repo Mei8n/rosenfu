@@ -1448,7 +1448,7 @@ export function App() {
 
   function storeTramRoadSnap(point:GeoPoint,proof:AcceptedTramRoadSnap|undefined,path=activePathId){
     if(proof&&distanceM(point,proof.pick.point)<=.01)
-      lastTramRoadSnap.current={proof,point,world,epoch:worldEpoch,plan:activePlanId,path};
+      tramRoadSnaps.current.set(point,{proof,world,epoch:worldEpoch,plan:activePlanId,path});
   }
   async function placeTrackPoint(coordinates:GeoPoint,rect:{width:number;height:number},event:{detail:number;ctrlKey:boolean;clientX?:number;clientY?:number},roadSnap?:AcceptedTramRoadSnap) {
       const offered=coordinates;
@@ -1552,8 +1552,8 @@ export function App() {
     // A confirmed click can recover one old source cell that disappeared
     // from the current viewport; hover and known disconnections never fetch.
     const previousRoadPoint=!draftFinished&&draftPoints.at(-1);
-    const remembered=lastTramRoadSnap.current;
-    if(result.kind==="free"&&nativeTramGuide&&previousRoadPoint&&remembered?.point===previousRoadPoint&&
+    const remembered=previousRoadPoint?tramRoadSnaps.current.get(previousRoadPoint):undefined;
+    if(result.kind==="free"&&nativeTramGuide&&previousRoadPoint&&remembered&&
        remembered.world===world&&remembered.epoch===worldEpoch&&remembered.plan===activePlanId&&remembered.path===activePathId&&
        roadDrawingBundle===automaticRoad.snapshot?.bundle){
       const task=++anchorPlacementToken.current;
@@ -1696,11 +1696,9 @@ export function App() {
   const anchorPlacementPending=useRef(false);
   const anchorPlacementToken=useRef(0);
   const tramReacquireAbort=useRef<AbortController|null>(null);
-  const lastTramRoadSnap=useRef<{proof:AcceptedTramRoadSnap;point:GeoPoint;world:unknown;epoch:number;plan:number;path:number}|null>(null);
-  useEffect(()=>{
-    const prior=lastTramRoadSnap.current;
-    if(prior&&(prior.point!==draftPoints.at(-1)||prior.world!==world||prior.epoch!==worldEpoch||prior.plan!==activePlanId||prior.path!==activePathId))lastTramRoadSnap.current=null;
-  },[draftPoints,world,worldEpoch,activePlanId,activePathId]);
+  // Undo and Redo restore the original point objects; keep receipts only for
+  // live in-memory anchors, never for a new click at identical coordinates.
+  const tramRoadSnaps=useRef(new WeakMap<GeoPoint,{proof:AcceptedTramRoadSnap;world:unknown;epoch:number;plan:number;path:number}>());
   const finishPendingPlacement=useRef(false);
   const pendingPlacementPoint=useRef<{x:number;y:number}|null>(null);
   // Preserve intent by reference, without serializing full geometry on every hover.

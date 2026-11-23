@@ -314,7 +314,7 @@ test('ordinary authored tram follows a cached raw T junction on click without in
  expect(document.querySelector('.parked-plan')).toBeNull();
 });
 
-test.each(['confirmed-road-snap','free-on-road'] as const)('Tram missing old cell %s never trusts a coincident free point',async(kind)=>{
+test.each(['confirmed-road-snap','free-on-road','undo-road-snap'] as const)('Tram missing old cell %s accepts only matching road snap proof',async(kind)=>{
  vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
  const revision='rosenfu_webview_fixture_16';
  const tile=(x:number)=>`${OFM_METADATA}/${revision}/14/${x}/6452.pbf`;
@@ -354,6 +354,33 @@ test.each(['confirmed-road-snap','free-on-road'] as const)('Tram missing old cel
  const map=document.querySelector('svg[role=img]')!;
  map.getBoundingClientRect=()=>new DOMRect(0,0,1000,600);
  const gesture=(p:typeof start)=>{const xy=project(p.latitude,p.longitude,mapCamera);return {clientX:xy.x,clientY:xy.y,detail:1};};
+ if(kind==='undo-road-snap'){
+  const [[x1,y1],[x2,y2]]=startTile.tileSnapshots[0].tileLines[0].coordinates;
+  const leftPoint=(f:number)=>({latitude:y1+(y2-y1)*f,longitude:x1+(x2-x1)*f});
+  const a=leftPoint(.04),b=leftPoint(.48),c=leftPoint(.96);
+  nativeReject=false;
+  for(const p of [a,b,c])await act(async()=>fireEvent.click(map,gesture(p)));
+  const three=document.querySelector('.confirmed-draft')?.getAttribute('d');
+  expect(three).toBeTruthy();
+  fireEvent.keyDown(window,{key:'z',ctrlKey:true});
+  const two=document.querySelector('.confirmed-draft')?.getAttribute('d');
+  expect(two).toBeTruthy(); expect(two).not.toBe(three);
+  mock.snapshot=endTile;rerender(<App/>);
+  // Undo leaves a completed plan; clicking its endpoint resumes that path.
+  const follow=screen.getByRole("button",{name:"道路に合わせる"});
+  if(follow.getAttribute("aria-pressed")==="false")fireEvent.click(follow);
+  await act(async()=>fireEvent.click(map,gesture(b)));
+  await act(async()=>fireEvent.click(map,gesture(end)));
+  await waitFor(()=>expect(observeWaiting).toBeTruthy());
+  expect(mock.observe).toHaveBeenCalledTimes(1);
+  await act(async()=>observeWaiting!());
+  await waitFor(()=>expect(document.querySelector('.confirmed-draft')?.getAttribute('d')).not.toBe(two));
+  const validation=vi.mocked(invoke).mock.calls.filter(([command,args])=>command==='preview_construction_plan'&&(args as {validationOnly?:boolean})?.validationOnly).at(-1)![1] as {alignments:{points:typeof start[]}[]};
+  const last=validation.alignments[0].points.at(-1);
+  expect(last?.longitude).toBeCloseTo(end.longitude,9);
+  expect(last?.latitude).toBeCloseTo(end.latitude,9);
+  return;
+ }
  await act(async()=>fireEvent.click(map,{...gesture(start),ctrlKey:kind==='free-on-road'}));
  expect(document.querySelector('.draft-endpoint')).toBeTruthy();
  expect(mock.snapshot).toBe(startTile);
