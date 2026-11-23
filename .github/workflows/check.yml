@@ -86,6 +86,15 @@ jobs:
           if ($bundles.Count -ne 1 -or $bundles[0].Length -lt 65536) {
             throw 'Expected one nonempty Windows NSIS installer'
           }
+          $qaConfig = Get-Content -LiteralPath src-tauri/tauri.alpha02-qa.conf.json -Raw | ConvertFrom-Json
+          $normalConfig = Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $packageConfig = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          $productVersion = $qaConfig.version
+          if ($productVersion -isnot [string] -or $productVersion -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?(?:\+[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?\z' -or
+              $productVersion -cne $normalConfig.version -or $productVersion -cne $packageConfig.version) {
+            throw 'Windows QA, normal Tauri and npm product versions must match'
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value "ROSENFU_QA_PRODUCT_VERSION=$productVersion"
           $short = $source.Substring(0, 12)
           $kind = if ($env:GITHUB_EVENT_NAME -eq 'push') { 'integration' } else { 'preview' }
           $stage = New-Item -ItemType Directory -Path qa-artifact
@@ -102,7 +111,7 @@ jobs:
           Set-Content -LiteralPath (Join-Path $stage.FullName 'SHA256SUMS.txt') -Encoding ascii -Value "$digest  $name"
           Set-Content -LiteralPath (Join-Path $stage.FullName 'BUILD.txt') -Encoding ascii -Value @(
             "commit=$source", "ref=$env:GITHUB_REF", "kind=$kind", "run=$env:GITHUB_RUN_ID", "attempt=$env:GITHUB_RUN_ATTEMPT",
-            'audience=internal-QA-only', 'native-installer-notices-review=pending'
+            "product_version=$productVersion", 'audience=internal-QA-only', 'native-installer-notices-review=pending'
           )
           if ($kind -eq 'preview') {
             Add-Content -LiteralPath (Join-Path $stage.FullName 'BUILD.txt') -Encoding ascii -Value 'Packaging verification only; not a test-play release.'
@@ -111,7 +120,7 @@ jobs:
         run: node scripts/windows-qa-notices.mjs qa-artifact/data-and-notices/software
       - name: Smoke the staged Windows installer
         shell: pwsh
-        run: ./scripts/Smoke-WindowsAlpha02.ps1 -ArtifactDirectory qa-artifact -TimeoutSeconds 60
+        run: ./scripts/Smoke-WindowsAlpha02.ps1 -ArtifactDirectory qa-artifact -TimeoutSeconds 60 -ExpectedProductVersion $env:ROSENFU_QA_PRODUCT_VERSION
       - name: Build and reverify the Windows QA ZIP
         shell: pwsh
         run: |
@@ -127,4 +136,5 @@ jobs:
           $digest = (($checksum -join [Environment]::NewLine).Trim() -split '  ', 2)[0]
           if ($digest -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid verified ZIP digest' }
           # Public repo: emit only the minimal result, never store binary/ZIP artifacts.
+          Write-Output "Windows QA product_version=$env:ROSENFU_QA_PRODUCT_VERSION"
           Write-Output "Windows QA verified: kind=$kind source=$env:GITHUB_SHA run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT zip_sha256=$digest"

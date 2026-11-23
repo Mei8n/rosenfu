@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string]$ArtifactDirectory,
-    [ValidateRange(20, 180)] [int]$TimeoutSeconds = 90
+    [ValidateRange(20, 180)] [int]$TimeoutSeconds = 90,
+    [ValidateNotNullOrEmpty()] [string]$ExpectedProductVersion
 )
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64' -or
@@ -45,6 +46,14 @@ if (-not $artifact.StartsWith($workspace.TrimEnd('\') + '\', [StringComparison]:
 $setup = @(Get-ChildItem -LiteralPath $artifact -File -Filter '*-windows-x64-setup.exe')
 if ($setup.Count -ne 1) { throw 'Expected one staged installer' }
 $installerFile = Require-PlainFile $setup[0].FullName
+if ($PSBoundParameters.ContainsKey('ExpectedProductVersion')) {
+    # Tauri's NSIS template stamps this exact string (including prerelease),
+    # separately from the numeric Win32 file-version tuple.
+    $installerVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($installerFile.FullName).ProductVersion
+    if ($installerVersion -cne $ExpectedProductVersion) {
+        throw "Installer product version ($installerVersion) does not match source ($ExpectedProductVersion)"
+    }
+}
 $sumFile = Require-PlainFile (Join-Path $artifact 'SHA256SUMS.txt')
 $sum = (Get-Content -LiteralPath $sumFile.FullName -Raw).Trim()
 $hash = (Get-FileHash -LiteralPath $installerFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -157,6 +166,13 @@ try {
         })
     if ($registry.Count -ne 1) { throw 'Expected one matching current-user QA uninstall registration' }
     $registryPath = $registry[0].PSPath
+    if ($PSBoundParameters.ContainsKey('ExpectedProductVersion')) {
+        $installedVersion = (Get-ItemProperty -LiteralPath $registryPath).DisplayVersion
+        if ($installedVersion -cne $ExpectedProductVersion) {
+            throw "Installed product version ($installedVersion) does not match source ($ExpectedProductVersion)"
+        }
+        Write-Host "Installed product version verified: $installedVersion"
+    }
 
     $app = Start-Process -FilePath $appPath -PassThru
     $name = 'CI Release Smoke ' + [guid]::NewGuid().ToString('N').Substring(0, 12)
