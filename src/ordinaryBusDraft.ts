@@ -109,13 +109,19 @@ export function observedTramRoadAnchor(
 const sameRawAnchor=(a:BusAnchor,b:BusAnchor)=>sameTile(a.tile,b.tile)&&a.raw.feature===b.raw.feature&&a.raw.line===b.raw.line&&a.raw.vertex===b.raw.vertex;
 const samePlace=(a:GeoPoint,b:GeoPoint)=>Math.abs(a.latitude-b.latitude)<1e-12&&Math.abs(a.longitude-b.longitude)<1e-12;
 
-export function ordinaryBusCells(start:OpenFreeMapEvidenceRequest,end:OpenFreeMapEvidenceRequest,via:readonly OpenFreeMapEvidenceRequest[]=[]):[number,number][]{
+export function ordinaryBusTileFootprint(start:OpenFreeMapEvidenceRequest,end:OpenFreeMapEvidenceRequest,via:readonly OpenFreeMapEvidenceRequest[]=[]){
  const anchors=[start,...via,end];
  if(anchors.some(t=>t.revision!==start.revision))throw Error('道路の版が変わりました。位置を選び直してください。');
  if(anchors.some(t=>!validIdx(t.x)||!validIdx(t.y)||t.z!==14))throw Error('道路の位置が不正です。');
  const xs=anchors.map(t=>t.x),ys=anchors.map(t=>t.y);
  const west=Math.min(...xs),east=Math.max(...xs),north=Math.min(...ys),south=Math.max(...ys);
- if((east-west+1)*(south-north+1)>OFM_EVIDENCE_LIMITS.batchTiles)throw Error('バス経路の確認範囲が広すぎます。近くの道路を選び直してください。');
+ return {west,east,north,south,count:(east-west+1)*(south-north+1)};
+}
+
+export function ordinaryBusCells(start:OpenFreeMapEvidenceRequest,end:OpenFreeMapEvidenceRequest,via:readonly OpenFreeMapEvidenceRequest[]=[]):[number,number][]{
+ const {west,east,north,south,count}=ordinaryBusTileFootprint(start,end,via);
+ const limit=OFM_EVIDENCE_LIMITS.batchTiles;
+ if(count>limit)throw Error(`バス経路の確認範囲が広すぎます（${count} タイル必要・上限 ${limit} タイル）。起点・終点・経由点を近づけてください。`);
  const cells:[number,number][]=[];
  for(let x=west;x<=east;x++)for(let y=north;y<=south;y++)cells.push([x,y]);
  return cells;

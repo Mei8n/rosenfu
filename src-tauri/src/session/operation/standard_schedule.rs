@@ -79,10 +79,12 @@ impl WorldEditor {
         let departure_count = operation
             .and_then(|o| o.runtime.standard_departure_grid(&key))
             .map(|grid| grid.departure_count(grid.active_window()));
+        // The panel caches this structural eligibility by configuration token.
+        // Backlog/vehicle/pause readiness comes from live ticks and is checked
+        // again during Apply; don't cache a transient backlog as unsupported.
         let can_apply = active.is_none()
             && operation.is_some_and(|o| {
                 !o.invalidated
-                    && o.pending_target.is_none()
                     && o.runtime
                         .preview_nominal_fleet(
                             &key,

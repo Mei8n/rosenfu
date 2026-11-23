@@ -2978,9 +2978,28 @@ mod tests {
                 ..
             }
         ));
+        use crate::operation::RailWaitReason;
+        let follower_reason = |w: &World| {
+            let runtime = &w.operation().unwrap().runtime;
+            let train = runtime
+                .trains()
+                .find(|t| t.key.service_id == ids[1])
+                .unwrap();
+            runtime.rail_wait_reason(&train.key)
+        };
+        advance(&mut world, arrival_ms - 1);
+        assert_eq!(follower_reason(&world), Some(RailWaitReason::Track));
+        advance(&mut world, arrival_ms);
+        assert_eq!(follower_reason(&world), Some(RailWaitReason::Platform));
         advance(&mut world, arrival_ms + dwell - 1);
         assert!(matches!(state(&world, &ids[1]), TrainState::Waiting { .. }));
+        let saved = world.operation_save();
+        let mut reopened = World::new(world.snapshot().clone()).unwrap();
+        reopened.restore_operation(saved.clone()).unwrap();
+        assert_eq!(reopened.operation_save(), saved);
+        assert_eq!(follower_reason(&reopened), Some(RailWaitReason::Platform));
         advance(&mut world, arrival_ms + dwell);
+        assert_eq!(follower_reason(&world), None);
         assert!(matches!(
             state(&world, &ids[1]),
             TrainState::Moving { entered_ms, .. } if entered_ms == arrival_ms+dwell

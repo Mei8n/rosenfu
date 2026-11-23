@@ -128,6 +128,7 @@ pub struct Train {
 pub enum RailWaitReason {
     Crossing,
     Junction,
+    Platform,
     Track,
 }
 
@@ -863,13 +864,21 @@ impl OperationRuntime {
             .iter()
             .find(|key_resource| self.reservation_blocks(key_resource, key))?;
         let reason = RailWaitReason::of_resource(resource)?;
+        let owner = || {
+            self.occupied
+                .get(resource)
+                .and_then(|owner| self.trains.get(owner))
+        };
+        if reason == RailWaitReason::Track
+            && self.inline_terminal_dwell()
+            && owner().is_some_and(|owner| self.is_reached_terminal_lane(owner, resource))
+        {
+            return Some((RailWaitReason::Platform, None));
+        }
         let scope = if self.rail_admission == RailAdmissionModel::Fixed
             && reason == RailWaitReason::Junction
         {
-            let owner_spans = self
-                .occupied
-                .get(resource)
-                .and_then(|owner| self.trains.get(owner))
+            let owner_spans = owner()
                 .filter(|owner| matches!(owner.state, TrainState::Moving { .. }))
                 .and_then(|owner| {
                     self.services
@@ -889,6 +898,22 @@ impl OperationRuntime {
             None
         };
         Some((reason, scope))
+    }
+
+    /// In the certified terminal-dwell model, identify the exact lane of
+    /// the blocking train's reached berth. Don't infer it from an approach,
+    /// a station name, or another mode's less specific lock scope.
+    fn is_reached_terminal_lane(&self, owner: &Train, resource: &str) -> bool {
+        if inline_lane_key(resource).is_none()
+            || !matches!(owner.state, TrainState::Moving { arrival_ms, .. } if arrival_ms <= self.now_ms)
+        {
+            return false;
+        }
+        self.services
+            .get(&owner.key.service_id)
+            .and_then(|service| service.spec.legs.get(owner.leg))
+            .and_then(|leg| leg.sections.last())
+            .is_some_and(|section| section.resources.iter().any(|key| key == resource))
     }
 
     /// Transfer only an idle clock to a freshly compiled timetable. Departures

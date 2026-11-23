@@ -10,13 +10,13 @@ vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn()}));
 afterEach(()=>{cleanup();vi.resetAllMocks();});
 const world={station_placements:['0','1','2','3','4'].map((station_id,i)=>({station_id,alignment_id:'a',position:i/4}))};
 const path:ServicePath={service_id:'s',next_leg_key:'9',legs:[{key:'7',segment:{kind:'alignment',alignment_id:'a',from:'1',to:'3'}}],stops:[{kind:'start'},{kind:'on_leg',leg_key:'7',station_id:'3'}]};
-function setup(candidateGate?:Promise<void>){
+function setup(candidateGate?:Promise<void>,applyGate?:Promise<void>){
  let pick:((id:string)=>void)|undefined;const onSave=vi.fn().mockResolvedValue(undefined);
  vi.mocked(invoke).mockImplementation(async(command,args)=>{
   const a=args as {start:string;end:string;segments:Segment[];viaStationIds?:string[]};
   if(command==='preview_route_candidates'){await candidateGate;const ids=[a.start,...(a.viaStationIds??[]),a.end];const segments=ids.slice(1).map((to,i)=>({kind:'alignment',alignment_id:'a',from:ids[i],to}));return {status:'unique',candidates:[{stations:ids,segments}],truncated:false,shortest_candidate_index:0};}
   if(command==='preview_route_membership')return {path:{stations:[a.start,...a.segments.map(s=>s.to)],segments:a.segments},member_stations:[a.start,...a.segments.map(s=>s.to)],excluded_stations:[]};
-  if(command==='preview_service_path_replacement'){const legs=a.segments.map((segment,i)=>({key:String(9+i),segment}));return {legs,occurrences:resolveServicePath(a.start,legs,world),requires_stop_selection:true};}
+  if(command==='preview_service_path_replacement'){await applyGate;const legs=a.segments.map((segment,i)=>({key:String(9+i),segment}));return {legs,occurrences:resolveServicePath(a.start,legs,world),requires_stop_selection:true};}
   throw Error(command);
  });
  const props={service:{id:'s',name:'急行',start:'1'},path,binding:{kind:'routes' as const,route_ids:['r1','r2']},world,stations:['0','1','2','3','4'].map(id=>({id,name:`駅${id}`})),enabled:true,candidateLength:(p:{stations:string[]})=>p.stations.slice(1).reduce((sum,id,i)=>sum+Math.abs(Number(id)-Number(p.stations[i])),0),onDirty:vi.fn(),onSave,onCandidateChange:vi.fn(),onSelectionChange:vi.fn(),onMapPick:(_t:unknown,cb?:((id:string)=>void))=>{pick=cb;},mapPickTarget:'sequence' as const};
@@ -79,4 +79,44 @@ test('disconnected series endpoint can be retried without changing stop override
  expect(h.props.onSave.mock.calls[0][0]).toMatchObject({
   start:'1',sourceRouteIds:['r1','r2'],stops:[{kind:'start'},{kind:'on_leg',leg_key:'9',station_id:'2'}],
  });
+});
+
+
+test('a retired saved-series preflight does not apply after leaving the editor',async()=>{
+ let resolve!:()=>void;const gate=new Promise<void>(done=>{resolve=done;});
+ const h=setup(undefined,gate);
+ fireEvent.click(screen.getByText('編集終了'));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_service_path_replacement',expect.objectContaining({serviceId:'s'})));
+ h.unmount();
+ await act(async()=>resolve());
+ expect(h.props.onSave).not.toHaveBeenCalled();
+});
+
+test('disabling a pending saved-series edit retires its preflight but keeps explicit retries',async()=>{
+ let resolve!:()=>void;const gate=new Promise<void>(done=>{resolve=done;});
+ const h=setup(undefined,gate);
+ fireEvent.change(screen.getByRole('textbox',{name:'系統名'}),{target:{value:'急行の変更'}});
+ await h.click('2');
+ const finish=()=>fireEvent.click(screen.getByText('編集終了'));
+ finish();
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_service_path_replacement',expect.objectContaining({serviceId:'s'})));
+ // Native validation is not a write. Even when enabled again with identical
+ // props, the earlier preflight must not authorize a later apply.
+ h.rerender(<ServiceMapEditor {...h.props} enabled={false}/>);
+ h.rerender(<ServiceMapEditor {...h.props}/>);
+ await act(async()=>resolve());
+ expect(h.props.onSave).not.toHaveBeenCalled();
+ expect((await screen.findByRole('alert')).textContent).toMatch(/入力は保持/);
+ expect(screen.getByRole<HTMLInputElement>('textbox',{name:'系統名'}).value).toBe('急行の変更');
+ h.props.onSave.mockRejectedValueOnce(Error('別の編集と競合しました'));
+ finish();
+ await screen.findByText(/別の編集と競合しました/);
+ expect(screen.getByRole<HTMLInputElement>('textbox',{name:'系統名'}).value).toBe('急行の変更');
+ finish();
+ await waitFor(()=>expect(h.props.onSave).toHaveBeenCalledTimes(2));
+ for(const [saved] of h.props.onSave.mock.calls)expect(saved).toMatchObject({
+  name:'急行の変更',sourceRouteIds:['r1','r2'],
+  stops:[{kind:'start'},{kind:'on_leg',leg_key:'9',station_id:'2'},{kind:'on_leg',leg_key:'9',station_id:'3'}],
+ });
+ await screen.findByText('地図で系統を編集');
 });

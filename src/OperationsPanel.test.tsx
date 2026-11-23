@@ -143,6 +143,26 @@ test('a train entering after a wait does not count the same delay twice',async()
  expect(screen.queryByText('進路待ち')).toBeNull();
 });
 
+test('a certified occupied platform has a visible rail wait reason until it clears',async()=>{
+ const key={service_id:'12',scheduled_ms:1000};
+ const stopped={...snapshot,now_ms:10000,paused:false,services:[config],trains:[
+  {key,leg:0,delay_ms:0,waiting_for:'platform',state:{state:'waiting',ready_ms:1000}},
+ ]} satisfies OperationView;
+ const moving={...stopped,now_ms:10500,trains:[
+  {key,leg:0,delay_ms:9500,state:{state:'moving',entered_ms:10500,arrival_ms:90000,release_ms:92000}},
+ ]} satisfies OperationView;
+ vi.useFakeTimers();
+ vi.mocked(invoke).mockImplementation(async command=>command==='advance_operation'?moving:stopped);
+ render(operation());
+ await act(async()=>{});
+ expect(screen.getByText('進路待ち（ホームにいる別の列車）')).toBeTruthy();
+ expect(screen.getByText('遅れ 9秒')).toBeTruthy();
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(screen.getByText('走行中')).toBeTruthy();
+ expect(screen.queryByText(/ホームにいる別の列車/)).toBeNull();
+ expect(screen.getByText('遅れ 10秒')).toBeTruthy();
+});
+
 test('invalidated rail does not show active path wait or add unbooked delay',async()=>{
  vi.mocked(invoke).mockResolvedValue({...snapshot,now_ms:5600,services:[config],invalidated:true,trains:[
   {key:{service_id:'12',scheduled_ms:1000},leg:0,delay_ms:1000,state:{state:'waiting',ready_ms:2000}},
@@ -353,4 +373,31 @@ test.each(['rail only','second rail','bus','catch-up'] as const)('Standard cold 
  fireEvent.click(apply);
  expect(vi.mocked(invoke).mock.calls.some(([which])=>which==='apply_standard_schedule')).toBe(kind==='rail only');
  expect(vi.mocked(invoke).mock.calls.some(([which])=>which==='set_operation_clock'||which==='advance_operation')).toBe(false);
+});
+
+test('the Standard form follows live catch-up and pause without renewing cached eligibility',async()=>{
+ vi.useFakeTimers();
+ const pending={...snapshot,now_ms:60000,paused:false,catching_up:true,configuration_token:'same',services:[config],
+  timetable_edit_blocker:'ダイヤを変更するには先に運行を一時停止してください。'};
+ const caughtUp={...pending,now_ms:60500,catching_up:false};
+ vi.mocked(invoke).mockImplementation(async command=>command==='standard_schedule_status'
+  ?{configurationToken:'same',serviceId:'12',canApply:true,activeElsewhere:false,authored:null,departureCount:null,destinations:[]}
+  :command==='advance_operation'?caughtUp:command==='set_operation_clock'
+  ?{...caughtUp,paused:true,timetable_edit_token:'paused-token',timetable_edit_blocker:null}:pending);
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}>
+  <OperationClock/><ServiceOperations serviceId="12" enabled standardEnabled/>
+ </OperationProvider>);
+ await act(async()=>{});
+ const form=screen.getByRole('region',{name:'標準の時間帯ダイヤ'});
+ const status=()=>form.querySelector('[role="status"]')?.textContent;
+ const apply=()=>screen.getByRole('button',{name:'時間帯ダイヤを適用'}) as HTMLButtonElement;
+ expect(status()).toContain('運行が時刻に追いついてから');
+ expect(apply().disabled).toBe(true);
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(status()).toBe(pending.timetable_edit_blocker);
+ expect(apply().disabled).toBe(true);
+ await act(async()=>fireEvent.click(screen.getByRole('button',{name:'一時停止'})));
+ expect(status()).toBeUndefined();
+ expect(apply().disabled).toBe(false);
+ expect(vi.mocked(invoke).mock.calls.filter(([which])=>which==='standard_schedule_status')).toHaveLength(1);
 });

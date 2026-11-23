@@ -1981,6 +1981,16 @@ mod tests {
         let queued = &mut e.world.operation_mut().unwrap().pending_target;
         *queued = Some(1_010_000);
         let blocked = rosenfu_storage::encode(&e.world).unwrap();
+        let cached = serde_json::to_value(
+            e.standard_schedule_status(service, &state.configuration_token)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cached["canApply"], true,
+            "catch-up is not structural incompatibility"
+        );
+        assert!(e.operation_snapshot().catching_up);
         assert!(apply(&mut e, &state.timetable_edit_token).is_err());
         assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), blocked);
         e.world.operation_mut().unwrap().pending_target = None;

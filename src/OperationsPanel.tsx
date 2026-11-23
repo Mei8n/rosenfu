@@ -13,7 +13,7 @@ type Vehicle={max_speed_kmh:number;acceleration_mps2:number;braking_mps2:number;
 type Config={timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type ServiceConfig=Config&{service_id:string};
 type BusConfig=Config&{route_id:string;assumed_speed_kmh:number;turnaround_ms?:number};
-type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'track';wait_scope?:'held_across_connections'|'needs_across_connections';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
+type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'platform'|'track';wait_scope?:'held_across_connections'|'needs_across_connections';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
 export type OperationView={standard_schedule_active?:boolean;now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown;bus_markers?:unknown};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
 type Commands={apply_standard_schedule:ApplyStandardSchedule;reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
@@ -197,6 +197,13 @@ export function ServiceOperations({serviceId,enabled,standardEnabled=false}:{ser
  const {view,busy,blocked,send,error}=state;
  const config=view.services.find(row=>row.service_id===serviceId);
  const blocker=view.timetable_edit_blocker;
+ const standardBlocker=view.invalidated?'線路や系統の変更で運行を停止しました。運行設定を確認してください。'
+  :view.catching_up
+  ?(view.paused?'運行を再開して時刻に追いついてから、一時停止してください。':'運行が時刻に追いついてから、一時停止してください。')
+  :blocker??(!view.paused?'運行を一時停止してください。'
+   :view.now_ms===0&&(view.services.length>1||!!view.bus_services?.length)
+   ?'運行開始前は、この鉄道系統だけにダイヤを設定してください。複数のダイヤがある場合は、運行を開始し、車両がいないときに一時停止すると適用できます。'
+   :null);
  const trains=view.trains.filter(train=>train.key.service_id===serviceId);
  const scheduleOnly=!!config&&view.paused&&!view.invalidated&&!view.catching_up&&view.rail_timetable_handoff_available===true;
  const advanced=<>
@@ -210,7 +217,7 @@ export function ServiceOperations({serviceId,enabled,standardEnabled=false}:{ser
   {standardEnabled&&state.crossingPlanningToken&&<StandardSchedulePanel key={serviceId+':'+state.crossingPlanningToken}
    service={serviceId} revision={state.crossingPlanningToken} operationToken={view.timetable_edit_token}
    enabled={enabled&&!busy&&!blocked&&!view.invalidated}
-   canApply={!!config&&view.paused&&!blocker&&(view.now_ms>0||(view.services.length===1&&!view.bus_services?.length))}
+   canApply={!!config&&!standardBlocker} applyBlocker={standardBlocker}
    apply={args=>send('apply_standard_schedule',args)}/>}
   {view.standard_schedule_active?<p>時間帯ダイヤを使用中のため、従来のダイヤ編集と編成試算は利用できません。</p>:
    standardEnabled?<details><summary>時刻・車両の設定（従来方式）</summary>{advanced}</details>:advanced}
@@ -227,7 +234,7 @@ function vehicleStatus(train:Train,now:number,invalidated:boolean,bus:boolean){
  if(now<state.ready_ms)return {status:train.leg>0?'停車中':'発車待ち',delayMs:train.delay_ms};
  // The native clock has already attempted dispatch at ready_ms. The engine
  // books the wait on entry, so accrue it in the view only while waiting.
- const reason=train.waiting_for==='crossing'?'平面交差':train.waiting_for==='junction'?'分岐・接続':train.waiting_for==='track'?'線路':null;
+ const reason=train.waiting_for==='crossing'?'平面交差':train.waiting_for==='junction'?'分岐・接続':train.waiting_for==='platform'?'ホームにいる別の列車':train.waiting_for==='track'?'線路':null;
  const detail=train.waiting_for==='junction'
   ?train.wait_scope==='held_across_connections'?'相手列車が、接続部をまたぐ進路を確保中'
    :train.wait_scope==='needs_across_connections'?'次の停車駅まで、接続部をまたぐ進路が空くのを待っています':undefined

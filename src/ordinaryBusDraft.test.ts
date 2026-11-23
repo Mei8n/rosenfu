@@ -81,6 +81,26 @@ it('requests and verifies the exact complete same-revision v2 rectangle and comp
  expect(read).toHaveBeenCalledTimes(1);
 });
 
+it('reports exact enclosing tile count and refuses 17 before any observation or bytes',async()=>{
+ const origin=start(),destination=end();
+ const tiles=Array.from({length:17},(_,i)=>({...origin.tile,x:origin.tile.x+i}));
+ const descriptors=tiles.map(tile=>({binding:{canonical_url:`${base}/${tile.x}/${tile.y}.pbf`,raw_sha256:tile.rawSha256}}));
+ const read=vi.fn(),observe=vi.fn();
+ const request=(n:number)=>prepareOrdinaryBusQuery(origin,{...destination,tile:tiles[n-1]},'bus','B','token',
+  read,descriptors,undefined,observe);
+ for(const count of [15,16]){
+  observe.mockResolvedValueOnce(tiles.slice(0,count));
+  const query=await request(count);
+  expect(query.path.rule).toBe('ofm_ground_bus_rectangle_z14_v2');
+  if(query.path.rule!=='ofm_ground_bus_rectangle_z14_v2')throw Error('rectangle expected');
+  expect(query.path.additionalTiles).toHaveLength(count-1);
+  expect(observe.mock.calls.at(-1)?.[0]).toHaveLength(count);
+ }
+ await expect(request(17)).rejects.toThrow('17 タイル必要・上限 16 タイル');
+ expect(observe).toHaveBeenCalledTimes(2);
+ expect(read).not.toHaveBeenCalled(); // both accepted scopes were already retained
+});
+
 it('accepts only a matching native return or explicit reason for a requested round trip',()=>{
  const out={points:[a,b],lengthM:310};
  expect(()=>verifyOrdinaryBusPreview(out,start(),end(),'openRoundTrip')).toThrow('一致');
