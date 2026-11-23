@@ -1113,7 +1113,7 @@ export function App() {
     if (busyRef.current||roadMapFrom!==null||roadPlayerMapPick) return;
     if ((mainTab === "routes" || mainTab === "services") && routeMapSelect.current) {
       if (!enabled || !stationsById.has(id)) return;
-      const select=routeMapSelect.current;if(routeMapPick!=="sequence")cancelRouteMapPick();select(id);return;
+      const select=routeMapSelect.current;if(routeMapPick==="via")cancelRouteMapPick();select(id);return;
     }
     clearTrackSelection();
     if (stationSettingsDirty && id !== selected) { setPendingStation({ id }); return; }

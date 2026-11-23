@@ -231,3 +231,48 @@ test('changed route retains excluded intermediate stations but promotes a new en
  expect(onSave).not.toHaveBeenCalled();await act(async()=>fireEvent.click(screen.getByText('編集終了')));
  expect(onSave.mock.calls[0][1].excluded_stations).toEqual([]);
 });
+
+test('rejected saved-route endpoint keeps the chosen side active for a direct retry', async()=>{
+ let pick:((id:string)=>void)|undefined;
+ const onMapPick=vi.fn((_target:unknown,cb?:((id:string)=>void))=>{pick=cb;});
+ const edited:Candidate={stations:['2','3'],segments:[{kind:'alignment',alignment_id:'a',from:'2',to:'3'}]};
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='preview_route_membership')return {path:edited,member_stations:edited.stations,excluded_stations:[]};
+  const a=args as {start:string};
+  return a.start==='2'?{status:'unique',candidates:[edited],truncated:false}:{status:'no_path',candidates:[],truncated:false};
+ });
+ const onSave=vi.fn().mockResolvedValue(undefined);
+ render(<RouteCandidatePreview editRoute={{id:'r',name:'本線',path}} stations={[...stations,{id:'4',name:'別線'}]} worldVersion={world} enabled canApply onSave={onSave} startSequenceKey={1} onMapPick={onMapPick}/>);
+ await act(async()=>pick?.('1')); // choose the existing start on the map
+ await act(async()=>pick?.('4')); // disconnected
+ expect((await screen.findByRole('alert')).textContent).toMatch(/元の編集内容を保持/);
+ expect(screen.getByText('所属駅: 始発 → 中間 → 終点')).toBeTruthy();
+ expect(onMapPick.mock.lastCall?.[0]).toBe('start');
+ await act(async()=>pick?.('2')); // retry without clicking start again
+ expect(invoke).toHaveBeenLastCalledWith('preview_route_membership',{start:'2',segments:edited.segments,excludedStations:[]});
+ expect(screen.getByText('所属駅: 中間 → 終点')).toBeTruthy();
+ expect(onMapPick.mock.lastCall?.[0]).toBe('sequence');
+ expect(onSave).not.toHaveBeenCalled();
+});
+
+test('cancelled endpoint mode ignores a late connected candidate and does not rearm station picks',async()=>{
+ let pick:((id:string)=>void)|undefined;
+ let resolve!:(r:Candidates)=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(r=>{resolve=r;}));
+ const onMapPick=vi.fn((_target:unknown,cb?:((id:string)=>void))=>{pick=cb;});
+ const onCandidateChange=vi.fn();
+ const props={editRoute:{id:'r',name:'本線',path},stations,worldVersion:world,enabled:true,canApply:true,
+  startSequenceKey:1,onMapPick,onCandidateChange};
+ const h=render(<RouteCandidatePreview {...props} mapPickTarget="sequence"/>);
+ await act(async()=>pick?.('3'));
+ h.rerender(<RouteCandidatePreview {...props} mapPickTarget="end"/>);
+ await act(async()=>pick?.('2'));
+ expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'2'});
+ h.rerender(<RouteCandidatePreview {...props} mapPickTarget={null}/>); // parent Escape or context change
+ const calls=onMapPick.mock.calls.length;
+ await act(async()=>resolve(unique));
+ expect(invoke).toHaveBeenCalledTimes(1);
+ expect(onMapPick.mock.calls).toHaveLength(calls);
+ expect(onCandidateChange).toHaveBeenLastCalledWith(path);
+ expect(screen.queryByText('経路を確認中…')).toBeNull();
+});
