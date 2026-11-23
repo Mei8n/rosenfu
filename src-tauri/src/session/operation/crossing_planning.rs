@@ -61,6 +61,10 @@ impl WorldEditor {
             self.world
                 .preview_planned_crossing_delay(start)
                 .map_err(|err| match err {
+                    #[cfg(feature = "standard-periodic-rail")]
+                    PlannedCrossingDelayError::StandardTimetableUnsupported => {
+                        "時間帯ダイヤの平面交差試算は未対応です。"
+                    }
                     PlannedCrossingDelayError::WindowOverflow => "集計時間が時刻の上限を超えます。",
                     PlannedCrossingDelayError::WorkBudgetExceeded => {
                         "運行設定が大きすぎるため、この計画試算はできません。"

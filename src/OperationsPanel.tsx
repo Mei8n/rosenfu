@@ -6,15 +6,17 @@ import {CrossingPlanningInspector} from './CrossingPlanningInspector';
 import {OperationMapMarkers} from './OperationMapMarkers';
 import type {Camera} from './map';
 
+import {StandardSchedulePanel,type ApplyStandardSchedule} from './StandardSchedulePanel';
+
 type Timetable={first_departure_ms:number;last_departure_ms:number;headway_ms:number};
 type Vehicle={max_speed_kmh:number;acceleration_mps2:number;braking_mps2:number;length_m:number};
 type Config={timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type ServiceConfig=Config&{service_id:string};
 type BusConfig=Config&{route_id:string;assumed_speed_kmh:number;turnaround_ms?:number};
 type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'track';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
-export type OperationView={now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown};
+export type OperationView={standard_schedule_active?:boolean;now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
-type Commands={reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
+type Commands={apply_standard_schedule:ApplyStandardSchedule;reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
 type OperationContext={view:OperationView|null;crossingPlanningToken?:string;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
 const Context=createContext<OperationContext|null>(null);
 const speeds=[1,2,4,8,16] as const;
@@ -119,6 +121,7 @@ export function OperationVehicleLayer({camera,scale}:{camera:Camera;scale:number
 export function CrossingOperations({enabled}:{enabled:boolean}){
  const state=useContext(Context);
  if(!state?.view)return null;
+ if(state.view.standard_schedule_active)return <p>時間帯ダイヤの平面交差試算は未対応です。</p>;
  return <CrossingPlanningInspector enabled={enabled&&!state.blocked&&!state.busy} configurationToken={state.crossingPlanningToken} nowMs={state.view.now_ms}/>;
 }
 
@@ -180,19 +183,27 @@ export function ServicePathChangeNotice({serviceId}:{serviceId:string}){
  return <p className="muted">運行に影響する経路・停車駅の変更は、全車両の運行が終わってから一時停止して適用してください。元に戻す・やり直すときも同じ条件です。名前だけの変更は運行中でもできます。</p>;
 }
 
-export function ServiceOperations({serviceId,enabled}:{serviceId:string;enabled:boolean}){
+export function ServiceOperations({serviceId,enabled,standardEnabled=false}:{serviceId:string;enabled:boolean;standardEnabled?:boolean}){
  const state=useContext(Context);if(!state||!state.view)return null;
  const {view,busy,blocked,send,error}=state;
  const config=view.services.find(row=>row.service_id===serviceId);
  const blocker=view.timetable_edit_blocker;
  const trains=view.trains.filter(train=>train.key.service_id===serviceId);
  const scheduleOnly=!!config&&view.paused&&!view.invalidated&&!view.catching_up&&view.rail_timetable_handoff_available===true;
- return <section className="service-operations" aria-label="系統の運行">
-  <h4>運行</h4>
+ const advanced=<>
   <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={!enabled||busy||blocked||(!!blocker&&!scheduleOnly)} scheduleOnly={scheduleOnly} send={send} expectedOperationToken={view.timetable_edit_token}/>
   {scheduleOnly?<p>すでに発車した車両の運行はそのままです。現在より後の発車時刻だけ変更できます。</p>:blocker?<p>{blocker}</p>:view.now_ms>0&&<p>現在の時刻と他のダイヤはそのままです。変更後の過去の便は走りません。</p>}
   {config&&view.configuration_token&&<TrainsetPlanning serviceId={serviceId} configurationToken={view.configuration_token}
    currentHeadwayMs={config.timetable.headway_ms} enabled={enabled&&!blocked&&!view.invalidated}/>}
+ </>;
+ return <section className="service-operations" aria-label="系統の運行">
+  <h4>運行</h4>
+  {standardEnabled&&state.crossingPlanningToken&&<StandardSchedulePanel key={serviceId+':'+state.crossingPlanningToken}
+   service={serviceId} revision={state.crossingPlanningToken} operationToken={view.timetable_edit_token}
+   enabled={enabled&&!busy&&!blocked&&!view.invalidated} canApply={!!config&&view.paused&&!blocker&&view.now_ms>0}
+   apply={args=>send('apply_standard_schedule',args)}/>}
+  {view.standard_schedule_active?<p>時間帯ダイヤを使用中のため、従来のダイヤ編集と編成試算は利用できません。</p>:
+   standardEnabled?<details><summary>時刻・車両の設定（従来方式）</summary>{advanced}</details>:advanced}
   <ActiveVehicles trains={trains} configured={!!config} now={view.now_ms} invalidated={view.invalidated}/>
   {error&&<p role="status">時刻欄の運行エラーを確認してください。</p>}
  </section>;

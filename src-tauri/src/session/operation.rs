@@ -7,6 +7,9 @@ mod bus_transfers;
 #[path = "operation/crossing_planning.rs"]
 mod crossing_planning;
 pub use crossing_planning::CrossingPlanningView;
+#[cfg(feature = "standard-periodic-rail")]
+#[path = "operation/standard_schedule.rs"]
+mod standard_schedule;
 /// Case-specific payload. Transfer/walking options belong only to scheduled OD.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,6 +50,8 @@ pub struct OperationLiveView {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub rail_timetable_handoff_in_progress: bool,
     pub configuration_token: String,
+    #[cfg(feature = "standard-periodic-rail")]
+    pub standard_schedule_active: bool,
     pub trains: Vec<OperationLiveTrain>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rail_markers: Vec<LiveRailMarker>,
@@ -215,7 +220,7 @@ impl WorldEditor {
             candidate.operation_tick = None;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.publish_reconciled_edit_with_service_path(candidate, false, history_service);
+        self.publish_reconciled_edit_with_service_path(candidate, false, history_service)?;
         Ok(self.snapshot())
     }
 
@@ -253,6 +258,8 @@ impl WorldEditor {
                 .is_some_and(|op| op.runtime.rail_timetable_handoff_in_progress()),
             configuration_token,
             rail_markers: self.world.live_straight_rail_markers(),
+            #[cfg(feature = "standard-periodic-rail")]
+            standard_schedule_active: self.world.has_standard_timetable(),
             trains: o
                 .map(|o| {
                     o.runtime
@@ -464,9 +471,7 @@ impl WorldEditor {
     }
     /// Explicit destructive operation-clock reset, never invoked by edit Undo.
     pub fn reset_operation(&mut self) -> Result<OperationView, String> {
-        self.world
-            .configure_all_operation(vec![], vec![])
-            .map_err(|e| format!("{e:?}"))?;
+        self.world.reset_operation().map_err(|e| format!("{e:?}"))?;
         self.operation_tick = None;
         self.update_operation_revision();
         Ok(self.operation_snapshot())
@@ -772,9 +777,14 @@ impl WorldEditor {
         if operation.invalidated {
             return Err("運行経路の更新が必要です。".into());
         }
-        let legs = operation
+        #[cfg(feature = "standard-periodic-rail")]
+        let offers = operation
             .runtime
-            .passenger_offers()
+            .checked_scalar_passenger_offers()
+            .map_err(|_| "時間帯ダイヤの固定ODは「系統」の時間指定試算を使ってください。")?;
+        #[cfg(not(feature = "standard-periodic-rail"))]
+        let offers = operation.runtime.passenger_offers();
+        let legs = offers
             .into_iter()
             .map(|l| PassengerLeg {
                 leg_id: l.leg_id,
@@ -998,6 +1008,231 @@ mod tests {
         .unwrap();
         e
     }
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn standard_player_loop_applies_dispatches_saves_and_uses_an_explicit_od_window() {
+        use super::standard_schedule::StandardOdRequest;
+        use rosenfu_core::operation::periodic_dispatch::standard::NamedBandOverrides;
+        let mut e = editor();
+        let config = e.operation_snapshot().services[0].clone();
+        e.world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1_000_000, 128)
+            .unwrap();
+        let before = e.operation_snapshot();
+        assert!(before.trains.is_empty());
+        assert!(before.paused);
+        let old = rosenfu_storage::encode(&e.world).unwrap();
+        assert_eq!(
+            rosenfu_storage::encode(&rosenfu_storage::decode(&old).unwrap()).unwrap(),
+            old
+        );
+        let rates = NamedBandOverrides {
+            early_morning: None,
+            morning_rush: Some(6),
+            midday: None,
+            evening_rush: Some(8),
+            late_night: None,
+        };
+        let bounds = [0, 360, 600, 960, 1200, 1440];
+        assert!(e
+            .apply_standard_schedule(config.service_id, "stale", 10, rates.clone(), bounds)
+            .is_err());
+        assert!(e
+            .apply_standard_schedule(
+                config.service_id,
+                &before.timetable_edit_token,
+                0,
+                rates.clone(),
+                bounds
+            )
+            .is_err());
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), old);
+        let after = e
+            .apply_standard_schedule(
+                config.service_id,
+                &before.timetable_edit_token,
+                10,
+                rates,
+                bounds,
+            )
+            .unwrap();
+        assert!(after.standard_schedule_active);
+        let status = serde_json::to_value(
+            e.standard_schedule_status(config.service_id, &after.configuration_token)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["authored"]["overrides"]["morningRush"], 6);
+        let revision = &after.configuration_token;
+        let origin = status["origin"]["id"].as_str().unwrap().to_owned();
+        let destination = status["destinations"][0]["id"].as_str().unwrap().to_owned();
+        let query = |start, end| StandardOdRequest {
+            origin: origin.clone(),
+            destination: destination.clone(),
+            trips: 100.,
+            alternative_seconds: Some(1_000.),
+            start_ms: start,
+            end_ms: end,
+        };
+        let result = serde_json::to_value(
+            e.preview_standard_schedule_od(
+                config.service_id,
+                revision,
+                query(21_660_000, 22_860_000),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["status"], "scheduled");
+        assert_eq!(result["first_departure_ms"], 21_960_000);
+        assert_eq!(result["scheduled_departures"], 3);
+        assert!(result["assignment"]["rail"][0]["trips"].as_f64().unwrap() > 0.);
+        let unknown = serde_json::to_value(
+            e.preview_standard_schedule_od(config.service_id, revision, query(0, 60_000))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unknown["status"], "unverified_schedule");
+        assert_eq!(unknown["assignment"]["unresolved_trips"], 100.);
+        assert!(e
+            .preview_standard_schedule_od(
+                config.service_id,
+                &before.configuration_token,
+                query(21_660_000, 22_860_000)
+            )
+            .is_err());
+        assert!(e
+            .preview_fixed_od(origin, destination, Some(100.), None)
+            .unwrap_err()
+            .contains("時間指定"));
+        assert!(e
+            .preview_crossing_planning(revision, "0")
+            .err()
+            .unwrap()
+            .contains("未対応"));
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("standard.rosenfu");
+        e.save(&file).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&file).unwrap();
+        let exact = std::fs::read(&file).unwrap();
+        assert_eq!(rosenfu_storage::encode(&reopened.world).unwrap(), exact);
+        let key = config.service_id.0.to_string();
+        let runtime = &mut reopened.world.operation_mut().unwrap().runtime;
+        let first = runtime
+            .standard_departure_grid(&key)
+            .unwrap()
+            .cursor_after(None)
+            .next_departure()
+            .unwrap();
+        runtime.advance_to(first - 1, 128).unwrap();
+        assert!(runtime.trains().next().is_none());
+        runtime.advance_to(first, 128).unwrap();
+        assert_eq!(
+            runtime
+                .trains()
+                .filter(|t| t.key.scheduled_ms == first)
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn standard_rejects_incompatible_native_track_edit_before_history_and_can_reset_explicitly() {
+        use rosenfu_core::operation::periodic_dispatch::standard::NamedBandOverrides;
+        let mut e = editor();
+        let setup = e.operation_snapshot();
+        let id = setup.services[0].service_id;
+        e.world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1_000_000, 128)
+            .unwrap();
+        e.apply_standard_schedule(
+            id,
+            &e.operation_edit_token(),
+            10,
+            NamedBandOverrides {
+                early_morning: None,
+                morning_rush: Some(6),
+                midday: None,
+                evening_rush: None,
+                late_night: None,
+            },
+            [0, 360, 600, 960, 1200, 1440],
+        )
+        .unwrap();
+
+        // Independent metadata remains editable/exportable, including history.
+        e.rename_company("運行保存確認".into()).unwrap();
+        let world = e.snapshot();
+        let history = serde_json::to_value(e.world_edit_history()).unwrap();
+        let op = serde_json::to_value(e.operation_snapshot()).unwrap();
+        let bytes = rosenfu_storage::encode(&e.world).unwrap();
+        let line = world.alignments[0].clone();
+        assert_eq!(line.section_infrastructure(0).unwrap().track_count, 1);
+        let plans = || {
+            serde_json::from_value(serde_json::json!({
+                "version":1,"plans":[{"id":1,"name":"計画"}],"parkedPaths":[],"activePathId":1,
+                "activePlanId":1,"draftPoints":[],"redoPoints":[],"draftExtension":null,
+                "trackType":"normal","designSpeedKmh":120,"roadFollowing":false,
+                "plannedStations":[],"draftFinished":false
+            }))
+            .unwrap()
+        };
+        let change = |e: &mut WorldEditor| {
+            e.update_alignment_section_infrastructure(
+                vec![AlignmentSectionSelection {
+                    alignment_id: line.id,
+                    section_indices: vec![0],
+                }],
+                vec![line.clone()],
+                Some(2),
+                None,
+                plans(),
+            )
+        };
+        let error = change(&mut e).unwrap_err();
+        assert!(
+            error.contains("時間帯ダイヤの運行を維持できない"),
+            "{error}"
+        );
+        assert_eq!(e.snapshot(), world);
+        assert_eq!(
+            serde_json::to_value(e.world_edit_history()).unwrap(),
+            history
+        );
+        assert_eq!(serde_json::to_value(e.operation_snapshot()).unwrap(), op);
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), bytes);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("after-refused-edit.rosenfu");
+        e.save(&path).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&path).unwrap();
+        assert_eq!(rosenfu_storage::encode(&reopened.world).unwrap(), bytes);
+        let before_reset = reopened.snapshot();
+        let reset = reopened.reset_operation().unwrap();
+        assert!(!reset.standard_schedule_active);
+        assert!(
+            reset.services.is_empty() && reset.bus_services.is_empty() && reset.trains.is_empty()
+        );
+        assert_eq!(reset.now_ms, 0);
+        assert_eq!(reopened.snapshot(), before_reset);
+        assert_eq!(
+            change(&mut reopened).unwrap().alignments[0]
+                .section_infrastructure(0)
+                .unwrap()
+                .track_count,
+            2
+        );
+    }
+
     #[test]
     fn committed_ground_construction_keeps_marker_in_full_and_compact_operation_views() {
         let mut e = WorldEditor::new();
@@ -1431,7 +1666,7 @@ mod tests {
             .world
             .add_station(e.company, "Unrelated".into(), 35.05, 139.05)
             .unwrap();
-        e.commit_edit(ordinary, false);
+        e.commit_edit(ordinary, false).unwrap();
         dispatch(&mut e, 2_001_000);
         e.undo_world_edit(e.snapshot()).unwrap();
         assert!(has_b(&e));
@@ -1526,7 +1761,7 @@ mod tests {
         };
         let mut candidate = e.clone();
         candidate.world.replace(d).unwrap();
-        e.commit_edit(candidate, false);
+        e.commit_edit(candidate, false).unwrap();
         e.configure_bus_operation(
             "R".into(),
             timetable,
@@ -2274,7 +2509,7 @@ mod tests {
             .world
             .add_station(e.company, "independent".into(), 35.1, 139.1)
             .unwrap();
-        e.commit_edit(candidate, false);
+        e.commit_edit(candidate, false).unwrap();
         e.undo_world_edit(e.snapshot()).unwrap();
         assert_eq!(e.operation_snapshot().now_ms, 1234);
         let file = tempfile::NamedTempFile::new().unwrap();

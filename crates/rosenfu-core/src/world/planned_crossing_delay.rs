@@ -12,6 +12,8 @@ const SCAN_BUDGET: usize = 100_000;
 pub enum PlannedCrossingDelayError {
     WindowOverflow,
     WorkBudgetExceeded,
+    #[cfg(feature = "standard-periodic-rail")]
+    StandardTimetableUnsupported,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +57,10 @@ impl World {
         &self,
         start_ms: u64,
     ) -> Result<PlannedCrossingDelayPreview, PlannedCrossingDelayError> {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.has_standard_timetable() {
+            return Err(PlannedCrossingDelayError::StandardTimetableUnsupported);
+        }
         let end_ms = start_ms
             .checked_add(HOUR_MS)
             .ok_or(PlannedCrossingDelayError::WindowOverflow)?;

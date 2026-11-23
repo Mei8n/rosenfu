@@ -1,5 +1,7 @@
 //! Provisional alpha JSON storage. One authoritative writer per save path is required.
 mod evidence;
+#[cfg(feature = "periodic-world-qa")]
+pub mod periodic_qa;
 use evidence::{BorrowedEvidenceEnvelope, EvidenceEnvelope};
 use rosenfu_core::world::{World, WorldDraft, WorldError};
 use serde::{
@@ -359,6 +361,15 @@ fn restore_document<W: Into<WorldDraft>>(
     {
         return Err(StorageError::InvalidHeader);
     }
+    #[cfg(feature = "standard-periodic-rail")]
+    if version == 26
+        && document
+            .operation
+            .as_ref()
+            .is_some_and(|o| o.has_standard_timetable())
+    {
+        return Err(StorageError::InvalidHeader);
+    }
     let draft = document.world.into();
     if version == 26 && !draft.ofm_gameplay_bus_routes.is_empty() {
         return Err(StorageError::InvalidHeader);
@@ -456,6 +467,12 @@ impl<W: Write> Write for HashingWriter<W> {
 
 fn checked_save_document(world: &World) -> Result<BorrowedSaveDocument<'_>, StorageError> {
     world.snapshot().validate()?;
+    #[cfg(feature = "standard-periodic-rail")]
+    if world.has_standard_timetable() && world.operation().is_some_and(|o| o.invalidated) {
+        // The normal loader cannot reopen a periodic source whose exact
+        // physical specification no longer exists. Never write such a file.
+        return Err(StorageError::InvalidHeader);
+    }
     Ok(save_document(world))
 }
 

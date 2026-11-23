@@ -14,6 +14,7 @@ struct EngineSessionInfo {
     engine: rosenfu_core::EngineInfo,
     company_setup_required: bool,
     operation_enabled: bool,
+    standard_schedule_enabled: bool,
     crossing_planning_enabled: bool,
     fixed_od_enabled: bool,
     rail_journey_replay_enabled: bool,
@@ -37,6 +38,7 @@ fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInf
     Ok(EngineSessionInfo {
         engine: rosenfu_core::engine_info(),
         operation_enabled: true,
+        standard_schedule_enabled: cfg!(feature = "standard-periodic-rail"),
         crossing_planning_enabled: true,
         fixed_od_enabled: true,
         rail_journey_replay_enabled: true,
@@ -921,6 +923,9 @@ fn main() {
         .manage(Mutex::new(editor))
         .invoke_handler(tauri::generate_handler![
             operation_commands::operation_snapshot,
+            operation_commands::standard_schedule_status,
+            operation_commands::apply_standard_schedule,
+            operation_commands::preview_standard_schedule_od,
             operation_commands::preview_crossing_planning,
             operation_commands::preview_fixed_od,
             operation_commands::preview_observed_fixed_od,

@@ -15,3 +15,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 [features]
 # Local debug source build only; intentionally absent from default features.
 dev-road-lab = []
+# Separate isolated QA codec, never a default World save mode.
+periodic-world-qa = []
+# Explicit opt-in native binding; desktop/default builds do not enable this.
+standard-periodic-rail = []

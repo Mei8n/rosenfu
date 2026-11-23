@@ -1,7 +1,14 @@
 //! Alpha 0.2 fixed-OD reference assignment. Synthetic inputs, not population data.
 //! No mutation, charging or capacity simulation occurs here. Recompute after network changes.
 mod observed_fixed_od;
+mod scheduled_corridor;
 pub use observed_fixed_od::{ObservedFixedOd, ObservedFixedOdStatus};
+#[cfg(feature = "standard-periodic-rail")]
+pub(crate) use scheduled_corridor::scheduled_od_span;
+pub use scheduled_corridor::{
+    assign_scheduled_corridor, ScheduledBoarding, ScheduledCorridorAssignment,
+    ScheduledCorridorStatus,
+};
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -161,7 +168,7 @@ struct Edge {
     to: String,
     service: Option<String>,
     seconds: f64,
-    headway: f64,
+    boarding_wait: f64,
     through: f64,
 }
 #[derive(Clone, Copy)]
@@ -217,8 +224,8 @@ pub fn assign_fixed_od(
         walks,
         weights,
         max_states_per_od,
-        MAX_BATCH_WORK,
-        MAX_BATCH_OUTPUT_ENTRIES,
+        (MAX_BATCH_WORK, MAX_BATCH_OUTPUT_ENTRIES),
+        None,
     )
 }
 
@@ -228,8 +235,8 @@ fn assign_fixed_od_budgeted(
     walks: &[WalkLink],
     weights: &ChoiceWeights,
     max_states_per_od: usize,
-    mut batch_work: usize,
-    mut batch_output: usize,
+    (mut batch_work, mut batch_output): (usize, usize),
+    corridor_wait: Option<f64>,
 ) -> Result<Vec<OdAssignment>, String> {
     if ods.len() > MAX_OD_ROWS
         || legs.len().saturating_add(walks.len()) > MAX_GRAPH_EDGES
@@ -270,8 +277,8 @@ fn assign_fixed_od_budgeted(
             || leg.from == leg.to
             || !nonnegative(leg.ride_seconds)
             || !nonnegative(leg.through_seconds)
-            || !leg.headway_seconds.is_finite()
-            || leg.headway_seconds <= 0.0
+            || (corridor_wait.is_none()
+                && (!leg.headway_seconds.is_finite() || leg.headway_seconds <= 0.0))
         {
             return Err("invalid passenger leg".into());
         }
@@ -291,7 +298,8 @@ fn assign_fixed_od_budgeted(
             return Err("duplicate service sequence".into());
         }
         checked_cost((leg.ride_seconds + leg.through_seconds) * weights.ride)?;
-        checked_cost(leg.headway_seconds * 0.5 * weights.wait)?;
+        let boarding_wait = corridor_wait.unwrap_or(leg.headway_seconds * 0.5);
+        checked_cost(boarding_wait * weights.wait)?;
         graph.entry(leg.from.clone()).or_default().push(Edge {
             leg_id: Some(leg.leg_id.clone()),
             sequence: leg.sequence,
@@ -300,7 +308,7 @@ fn assign_fixed_od_budgeted(
             to: leg.to.clone(),
             service: Some(leg.service_id.clone()),
             seconds: leg.ride_seconds,
-            headway: leg.headway_seconds,
+            boarding_wait,
             through: leg.through_seconds,
         });
     }
@@ -332,7 +340,7 @@ fn assign_fixed_od_budgeted(
             to: link.to.clone(),
             service: None,
             seconds: link.seconds,
-            headway: 0.0,
+            boarding_wait: 0.0,
             through: 0.0,
         });
     }
@@ -502,8 +510,8 @@ fn assign_fixed_od_budgeted(
                         next.cost += ride * weights.ride;
                         next.time.ride_seconds += ride;
                         if !continuation {
-                            next.cost += edge.headway * 0.5 * weights.wait;
-                            next.time.wait_seconds += edge.headway * 0.5;
+                            next.cost += edge.boarding_wait * weights.wait;
+                            next.time.wait_seconds += edge.boarding_wait;
                             if !state.services.is_empty() {
                                 next.cost += weights.transfer_penalty_seconds;
                                 next.time.transfers += 1;
@@ -1089,7 +1097,8 @@ mod tests {
         let weights = ChoiceWeights::default();
         for (work, output) in [(1_000, 8), (32, 1_000)] {
             let results =
-                assign_fixed_od_budgeted(&ods, &legs, &[], &weights, 1_000, work, output).unwrap();
+                assign_fixed_od_budgeted(&ods, &legs, &[], &weights, 1_000, (work, output), None)
+                    .unwrap();
             assert!(results[0].search_complete);
             assert!(!results[1].search_complete);
             assert_eq!(results[1].unresolved_trips, 100.0);

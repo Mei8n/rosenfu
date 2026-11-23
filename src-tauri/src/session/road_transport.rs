@@ -177,7 +177,7 @@ impl WorldEditor {
         candidate.world.replace(draft).map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let result = candidate.snapshot();
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(result)
     }
     pub fn preview_authored_tram_road_guide(
@@ -230,7 +230,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&world).map_err(|e| e.to_string())?;
         let mut candidate = self.clone();
         candidate.world = world;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
 
@@ -760,7 +760,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         candidate.deleted_alignment = None;
         let after = candidate.snapshot();
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(after)
     }
 }

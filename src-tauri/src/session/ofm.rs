@@ -108,7 +108,7 @@ impl WorldEditor {
             .stage_ofm_construction_plans(plans, raw, bindings)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
 
