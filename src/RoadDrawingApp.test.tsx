@@ -7,10 +7,10 @@ import {createRoadDrawingEngine} from './roadDrawingEngine';
 import {alignmentLength} from './alignment';
 import {sampledGeometry} from './editedGeometry';
 import {provisionalCurveSpeed} from './circularAlignment';
-import {decodeOpenFreeMapRoadTile,OFM_ATTRIBUTION,OFM_EVIDENCE_RULE} from './openFreeMapRoadData';
+import {createOpenFreeMapRoadRepository,decodeOpenFreeMapRoadTile,OFM_ATTRIBUTION,OFM_EVIDENCE_RULE,OFM_METADATA} from './openFreeMapRoadData';
 import tramFixture from '../crates/rosenfu-core/tests/fixtures/ofm_authored_tram_synthetic.json';
-const mock=vi.hoisted(()=>({snapshot:null as any,read:vi.fn()}));
-vi.mock('./useAutomaticRoad',()=>({useAutomaticRoad:()=>({status:'ready',snapshot:mock.snapshot,message:'fixture',retry:vi.fn(),ensureCurrent:vi.fn(async()=>({status:'unavailable',reason:'fixture'})),readTileEvidenceBatch:mock.read})}));
+const mock=vi.hoisted(()=>({snapshot:null as any,read:vi.fn(),observe:vi.fn()}));
+vi.mock('./useAutomaticRoad',()=>({useAutomaticRoad:()=>({status:'ready',snapshot:mock.snapshot,message:'fixture',retry:vi.fn(),ensureCurrent:vi.fn(async()=>({status:'unavailable',reason:'fixture'})),readTileEvidenceBatch:mock.read,observeRouteTiles:mock.observe})}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
 class RoadWorker {
  static delay=false;static queued:(()=>void)[]=[];
@@ -312,4 +312,90 @@ test('ordinary authored tram follows a cached raw T junction on click without in
  const fresh={latitude:jointLat+(endLat-jointLat)*.95,longitude:endLon};
  await act(async()=>{fireEvent.click(map,gesture(fresh));await new Promise(r=>setTimeout(r,0));});
  expect(document.querySelector('.parked-plan')).toBeNull();
+});
+
+test.each(['confirmed-road-snap','free-on-road'] as const)('Tram missing old cell %s never trusts a coincident free point',async(kind)=>{
+ vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
+ const revision='rosenfu_webview_fixture_16';
+ const tile=(x:number)=>`${OFM_METADATA}/${revision}/14/${x}/6452.pbf`;
+ const start={latitude:35.6740144226818,longitude:139.74504232406616};
+ const end={latitude:35.67362222198714,longitude:139.75226283073425};
+ const left='GkoKDnRyYW5zcG9ydGF0aW9ueAIogCASFxIEAAABARgCIg0J+DyIBBKMAbQBzAMAGgVjbGFzcyIHCgVtaW5vchoGb25ld2F5IgIgAQ==';
+ const right='GkYKDnRyYW5zcG9ydGF0aW9ueAIogCASExIEAAABARgCIgkJzwG8BQrMEwAaBWNsYXNzIgcKBW1pbm9yGgZvbmV3YXkiAiAB';
+ const fetcher=vi.fn(async(url:unknown)=>url===OFM_METADATA?
+  Response.json({maxzoom:14,tiles:[`${OFM_METADATA}/${revision}/{z}/{x}/{y}.pbf`]}):
+  url===tile(14551)||url===tile(14552)?new Response(Uint8Array.from(atob(url===tile(14551)?left:right),c=>c.charCodeAt(0))):new Response(null,{status:404}));
+ const repo=createOpenFreeMapRoadRepository(fetcher);
+ const around=({latitude,longitude}:typeof start)=>({west:longitude-.0001,east:longitude+.0001,south:latitude-.0001,north:latitude+.0001});
+ mock.snapshot=await repo.load(around(start));
+ const startTile=mock.snapshot;
+ const endTile=await repo.load(around(end));
+ let observeWaiting:undefined|(()=>void);
+ mock.observe.mockImplementation(async(...args:Parameters<typeof repo.observeTiles>)=>{
+  const refs=await repo.observeTiles(...args);
+  if(observeWaiting===undefined)await new Promise<void>(resolve=>{observeWaiting=resolve;});
+  return refs;
+ });
+ mock.read.mockImplementation(async(...args:Parameters<typeof repo.readTileEvidenceBatch>)=>({status:'ready',evidence:await repo.readTileEvidenceBatch(...args)}));
+ const mapCamera={latitude:35.6738,longitude:139.748,zoom:16};
+ const loaded={...world,view_state:mapCamera};
+ let nativeReject=true;
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'tram-rescope',authored_tram_road_guide_enabled:true};
+  if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='preview_construction_plan'&&(args as {validationOnly?:boolean})?.validationOnly===true)
+    return {validationError:nativeReject?'試験の勾配拒否':null,newCrossingCount:0};
+  if(command==='preview_construction_plan')return {validationError:null,newCrossingCount:0};
+  return loaded;
+ });
+ const {rerender}=render(<App/>);await screen.findByText(/tram-rescope/);
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ const map=document.querySelector('svg[role=img]')!;
+ map.getBoundingClientRect=()=>new DOMRect(0,0,1000,600);
+ const gesture=(p:typeof start)=>{const xy=project(p.latitude,p.longitude,mapCamera);return {clientX:xy.x,clientY:xy.y,detail:1};};
+ await act(async()=>fireEvent.click(map,{...gesture(start),ctrlKey:kind==='free-on-road'}));
+ expect(document.querySelector('.draft-endpoint')).toBeTruthy();
+ expect(mock.snapshot).toBe(startTile);
+ // Publish successor viewport snapshot: the worker is rebuilt with just the
+ // end tile; connector still has the old bytes from the first anchor.
+ mock.snapshot=endTile;rerender(<App/>);
+ await act(async()=>fireEvent.pointerMove(map,gesture(end)));
+ expect(mock.observe).not.toHaveBeenCalled();
+ expect(mock.read).not.toHaveBeenCalled();
+ await act(async()=>fireEvent.click(map,gesture(end)));
+ if(kind==='free-on-road'){
+  await screen.findByText(/道路の位置を確認できません/);
+  expect(mock.observe).not.toHaveBeenCalled();
+  expect(mock.read).not.toHaveBeenCalled();
+  expect(document.querySelector('.confirmed-draft')).toBeNull();
+  return;
+ }
+ await waitFor(()=>expect(observeWaiting).toBeTruthy());
+ expect(mock.observe).toHaveBeenCalledTimes(1);
+ const signal=mock.observe.mock.calls[0][2] as AbortSignal;
+ expect(mock.observe.mock.calls[0].slice(0,2)).toEqual([[[14551,6452]],revision]);
+ fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
+ expect(signal.aborted).toBe(true);
+ await act(async()=>observeWaiting!());
+ expect(mock.read).not.toHaveBeenCalled();
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
+ await act(async()=>fireEvent.click(map,gesture(end)));
+ await screen.findByText(/試験の勾配拒否/);
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ nativeReject=false;
+ await act(async()=>fireEvent.click(map,gesture(end)));
+ await waitFor(()=>expect(document.querySelector('.confirmed-draft')).toBeTruthy());
+ const native=vi.mocked(invoke).mock.calls.filter(([c,a])=>c==='preview_construction_plan'&&(a as {validationOnly?:boolean})?.validationOnly===true).at(-1)![1] as {alignments:{points:typeof start[];ofmPath?:unknown;trackType:string}[]};
+ const placed=native.alignments[0];
+ expect(placed.trackType).toBe('tram');
+ expect(placed.points.length).toBeGreaterThan(4);
+ expect(placed.points[0].latitude).toBeCloseTo(start.latitude,9);
+ expect(placed.points[0].longitude).toBeCloseTo(start.longitude,9);
+ expect(placed.points.at(-1)?.latitude).toBeCloseTo(end.latitude,9);
+ expect(placed.points.at(-1)?.longitude).toBeCloseTo(end.longitude,9);
+ expect(placed.ofmPath).toBeUndefined();
+ expect(fetcher.mock.calls.map(([url])=>url)).toEqual([OFM_METADATA,tile(14551),tile(14552)]);
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>c.startsWith('build_'))).toBe(false);
 });
