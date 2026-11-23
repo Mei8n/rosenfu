@@ -800,7 +800,7 @@ pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskReque
 
 mod operation_adapter;
 pub use operation_adapter::{
-    BusOperationConfig, OperationServiceConfig, WorldOperation, WorldOperationSave,
+    BusOperationConfig, LiveRailMarker, OperationServiceConfig, WorldOperation, WorldOperationSave,
 };
 
 mod planned_crossing_delay;

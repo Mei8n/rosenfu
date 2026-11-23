@@ -5,6 +5,8 @@ use crate::operation::{
     OperationRuntime, RailAdmissionModel, RunLeg, Section, ServiceRunSpec, Timetable, Vehicle,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod vehicle_map;
+pub use vehicle_map::LiveRailMarker;
 
 type RailCrossings = BTreeMap<AlignmentId, Vec<(f64, String)>>;
 const MAX_CROSSING_PAIR_CHECKS: usize = 32_768;

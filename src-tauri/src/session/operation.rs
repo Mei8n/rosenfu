@@ -1,7 +1,7 @@
 use super::*;
 use rosenfu_core::operation::{RailWaitReason, Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
-use rosenfu_core::world::OperationServiceConfig;
+use rosenfu_core::world::{LiveRailMarker, OperationServiceConfig};
 #[path = "operation/bus_transfers.rs"]
 mod bus_transfers;
 #[path = "operation/crossing_planning.rs"]
@@ -48,6 +48,8 @@ pub struct OperationLiveView {
     pub rail_timetable_handoff_in_progress: bool,
     pub configuration_token: String,
     pub trains: Vec<OperationLiveTrain>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rail_markers: Vec<LiveRailMarker>,
 }
 
 #[derive(serde::Serialize)]
@@ -250,6 +252,7 @@ impl WorldEditor {
             rail_timetable_handoff_in_progress: o
                 .is_some_and(|op| op.runtime.rail_timetable_handoff_in_progress()),
             configuration_token,
+            rail_markers: self.world.live_straight_rail_markers(),
             trains: o
                 .map(|o| {
                     o.runtime
@@ -995,6 +998,86 @@ mod tests {
         .unwrap();
         e
     }
+    #[test]
+    fn committed_ground_construction_keeps_marker_in_full_and_compact_operation_views() {
+        let mut e = WorldEditor::new();
+        e.company_setup_required = false;
+        let planned: PlannedAlignment = serde_json::from_value(serde_json::json!({
+            "name":"straight","points":[{"longitude":139.55,"latitude":35.7},{"longitude":139.57,"latitude":35.7}],
+            "trackType":"normal","infrastructure":{"track_count":1,"level":"ground"},"stations":[]
+        })).unwrap();
+        let draft = e
+            .build_construction_plan(vec![planned], Vec::new())
+            .unwrap();
+        let alignment = draft.alignments[0].id;
+        let from = e
+            .world
+            .place_station_on_alignment(e.company, "A".into(), alignment, 0.1, 80., 10.)
+            .unwrap();
+        let to = e
+            .world
+            .place_station_on_alignment(e.company, "B".into(), alignment, 0.9, 80., 10.)
+            .unwrap();
+        let segments = vec![rosenfu_core::world::RouteSegment::Alignment {
+            alignment_id: alignment,
+            from,
+            to,
+        }];
+        let stops = e
+            .world
+            .preview_service_path(from, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|visit| visit.reference)
+            .collect();
+        let service = e
+            .world
+            .add_service_path(e.company, "run".into(), from, segments, stops)
+            .unwrap();
+        let first = e
+            .configure_operation_service(
+                service,
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 36.,
+                    acceleration_mps2: 2.,
+                    braking_mps2: 1.,
+                    length_m: 20.,
+                },
+                5_000,
+                &e.operation_edit_token(),
+            )
+            .unwrap();
+        assert!(first.rail_markers.is_empty());
+        assert!(serde_json::to_value(first).unwrap()["rail_markers"].is_null());
+        e.world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(5_000, 64)
+            .unwrap();
+        let full = e.operation_snapshot();
+        assert_eq!(full.rail_markers.len(), 1);
+        assert_eq!(full.rail_markers[0].key, full.trains[0].train.key);
+        let current_config = full.configuration_token.clone();
+        let op = e.operation_tick_view(Some(&current_config));
+        let OperationTickView::Live(live) = op else {
+            panic!("expected compact operation view")
+        };
+        assert_eq!(live.rail_markers, full.rail_markers);
+        let compact = serde_json::to_value(live).unwrap();
+        assert!(compact["services"].is_null());
+        let marker = &compact["rail_markers"][0];
+        assert_eq!(marker["alignment_start"]["latitude"], 35.7);
+        assert_eq!(marker["alignment_end"]["longitude"], 139.57);
+        assert!(marker["position"].as_f64().unwrap() > 0.1);
+    }
+
     #[test]
     fn nominal_fleet_uses_the_existing_authoritative_round_trip_without_editing() {
         use rosenfu_core::operation::service_planning::FleetPlanningRequest;
