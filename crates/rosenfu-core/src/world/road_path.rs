@@ -41,8 +41,13 @@ fn same_points(a: &[GeoPoint], b: &[GeoPoint]) -> bool {
         })
 }
 impl WorldDraft {
-    pub(super) fn validate_road_path_provenance(&self) -> Result<(), WorldError> {
-        let plan_paths = self.construction_plans.as_ref().map_or(0, |p| {
+    /// Saved parked paths share the budget and immutable source evidence of
+    /// the already-built paths. Used by both whole-world and metadata edits.
+    pub(super) fn validate_parked_road_paths(
+        &self,
+        plans: Option<&ConstructionPlans>,
+    ) -> Result<(), WorldError> {
+        let plan_paths = plans.map_or(0, |p| {
             p.parked_paths
                 .iter()
                 .filter(|p| p.ofm_path.is_some())
@@ -51,7 +56,7 @@ impl WorldDraft {
         if self.road_path_provenance.len() + plan_paths > MAX_PATHS {
             return Err(WorldError::InvalidRoadEvidence);
         }
-        if let Some(plans) = &self.construction_plans {
+        if let Some(plans) = plans {
             for p in &plans.parked_paths {
                 if let Some(path) = &p.ofm_path {
                     let actual = generated(&self.runtime_road_evidence, path)?;
@@ -65,6 +70,11 @@ impl WorldDraft {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub(super) fn validate_road_path_provenance(&self) -> Result<(), WorldError> {
+        self.validate_parked_road_paths(self.construction_plans.as_ref())?;
         let mut ranges: std::collections::BTreeMap<AlignmentId, Vec<(usize, usize)>> =
             std::collections::BTreeMap::new();
         for p in &self.alignment_provenance {

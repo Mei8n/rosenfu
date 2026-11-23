@@ -2223,6 +2223,100 @@ mod tests {
     }
 
     #[test]
+    fn metadata_only_save_refuses_unproven_parked_paths_before_publication() {
+        use rosenfu_core::world::{TrackType, ViewState, WorldError};
+
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let plans = editor.snapshot().construction_plans.unwrap();
+        let proof = plans.parked_paths[0].ofm_path.as_ref().unwrap();
+        // The combined count must include built proofs, even though this API
+        // is allowed to replace only the parked portion.
+        editor
+            .world
+            .build_alignment_from_road_path(
+                editor.company,
+                "既設".into(),
+                TrackType::Normal,
+                proof.clone(),
+            )
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        editor.save(&path).unwrap();
+        let shared_before = editor.world.shared_snapshot();
+        let bytes = std::fs::read(&path).unwrap();
+        let backup = rosenfu_storage::backup_path(&path);
+        assert!(!backup.exists());
+
+        let mut missing = plans.clone();
+        missing.parked_paths[0]
+            .ofm_path
+            .as_mut()
+            .unwrap()
+            .required_binding_keys
+            .clear();
+        let mut wrong = plans.clone();
+        wrong.parked_paths[0]
+            .ofm_path
+            .as_mut()
+            .unwrap()
+            .start
+            .fragment_id
+            .push_str("-wrong");
+        let mut wrong_geometry = plans.clone();
+        wrong_geometry.parked_paths[0].points[0].longitude += 0.0001;
+        let mut cap = plans.clone();
+        cap.parked_paths = (2..=33)
+            .map(|id| {
+                let mut parked = plans.parked_paths[0].clone();
+                parked.id = id;
+                parked
+            })
+            .collect();
+        let updated_view = ViewState {
+            latitude: 35.,
+            longitude: 139.,
+            zoom: 12.,
+        };
+        for (invalid, expected) in [
+            (missing, WorldError::InvalidRoadEvidence),
+            (wrong, WorldError::InvalidRoadEvidence),
+            (wrong_geometry, WorldError::InvalidConstructionPlans),
+            (cap, WorldError::InvalidRoadEvidence),
+        ] {
+            invalid.validate().unwrap(); // The existing evidence is needed.
+            let mut candidate = editor.world.clone();
+            assert_eq!(
+                candidate.update_save_metadata(Some(invalid.clone()), Some(updated_view)),
+                Err(expected)
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &shared_before,
+                &candidate.shared_snapshot()
+            ));
+            assert!(editor
+                .save_with_view(&path, Some(invalid), Some(updated_view), false)
+                .is_err());
+            assert!(std::sync::Arc::ptr_eq(
+                &shared_before,
+                &editor.world.shared_snapshot()
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(!backup.exists());
+        }
+        editor
+            .save_with_view(&path, Some(plans), Some(updated_view), false)
+            .unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+        assert_eq!(
+            rosenfu_storage::load_world(&path).unwrap().snapshot(),
+            editor.world.snapshot()
+        );
+        assert_eq!(editor.world.snapshot().view_state, Some(updated_view));
+    }
+
+    #[test]
     fn unsupported_old_save_leaves_file_and_session_unchanged() {
         let mut editor = WorldEditor::new();
         stage(&mut editor);

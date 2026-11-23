@@ -358,6 +358,44 @@ impl World {
     pub fn snapshot(&self) -> &WorldDraft {
         &self.data
     }
+    /// Update only the local editor metadata of an already valid world.
+    /// Reuse whole-world validation for supplied metadata, including its
+    /// parked path references to retained evidence and the shared path cap.
+    /// Omitted metadata preserves the stored value. Validation precedes
+    /// mutation. Geometry, road evidence, operation and demand stay untouched.
+    pub fn update_save_metadata(
+        &mut self,
+        plans: Option<ConstructionPlans>,
+        view: Option<ViewState>,
+    ) -> Result<(), WorldError> {
+        if let Some(view) = view {
+            view.validate()?;
+        }
+        if let Some(plans) = &plans {
+            plans.validate()?;
+            self.data.validate_parked_road_paths(Some(plans))?;
+        }
+        let view = view.filter(|new| {
+            !self.data.view_state.is_some_and(|old| {
+                old.latitude.to_bits() == new.latitude.to_bits()
+                    && old.longitude.to_bits() == new.longitude.to_bits()
+                    && old.zoom.to_bits() == new.zoom.to_bits()
+            })
+        });
+        if plans.is_none() && view.is_none() {
+            return Ok(());
+        }
+        let data = self.data_mut();
+        // Preserve supplied plan data exactly: e.g. signed zero in a fraction
+        // compares equal as f64 but may serialize to different bytes.
+        if let Some(plans) = plans {
+            data.construction_plans = Some(plans);
+        }
+        if let Some(view) = view {
+            data.view_state = Some(view);
+        }
+        Ok(())
+    }
     /// Retain exactly this immutable snapshot without deep-copying map assets.
     /// Validated replacements publish a new allocation; scoped mutations are
     /// copy-on-write. Operation clock and scenario state are held separately.
