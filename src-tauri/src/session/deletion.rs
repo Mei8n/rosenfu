@@ -114,7 +114,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(after)
     }
 
@@ -265,7 +265,7 @@ impl WorldEditor {
             rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
             let after = candidate.snapshot();
             candidate.deleted_alignment = Some((before, after.clone()));
-            self.commit_edit(candidate, true);
+            self.commit_edit(candidate, true)?;
             return Ok(after);
         }
         let mut after = before.clone();
@@ -294,7 +294,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(after)
     }
 
@@ -385,7 +385,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(after)
     }
 
@@ -437,7 +437,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(after)
     }
 
@@ -821,7 +821,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(after)
     }
 
@@ -841,7 +841,7 @@ impl WorldEditor {
         candidate.delete_station(id)?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(after)
     }
 }

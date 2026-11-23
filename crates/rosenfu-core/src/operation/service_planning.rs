@@ -1,7 +1,8 @@
 //! Nominal circulation only; this does not change dispatch, buy trains or prove capacity.
 use super::{rail_lane, OperationRuntime, RunLeg, Section};
+pub mod periodic;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(
     tag = "mode",
     rename_all = "camelCase",
@@ -33,7 +34,7 @@ pub enum FleetPlanningError {
 
 // Exact milliseconds on the JSON side too. This is a calculator bound,
 // not a new restriction on persisted timetable intervals or the simulation.
-const MAX_SAFE_MS: u64 = 9_007_199_254_740_991;
+pub(super) const MAX_SAFE_MS: u64 = 9_007_199_254_740_991;
 const MAX_LEGS: usize = 128;
 
 fn endpoint_lane(section: Option<&Section>) -> Option<&str> {
@@ -123,11 +124,11 @@ impl OperationRuntime {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::operation::{ServiceRunSpec, Timetable, Vehicle};
 
-    fn run(dwell_ms: u64) -> ServiceRunSpec {
+    pub(crate) fn run(dwell_ms: u64) -> ServiceRunSpec {
         let leg = |from: &str, to: &str| RunLeg {
             from: from.into(),
             to: to.into(),

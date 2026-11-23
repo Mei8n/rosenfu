@@ -5,6 +5,16 @@ use crate::operation::{
     OperationRuntime, RailAdmissionModel, RunLeg, Section, ServiceRunSpec, Timetable, Vehicle,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod vehicle_map;
+pub use vehicle_map::LiveRailMarker;
+#[cfg(feature = "periodic-world-qa")]
+pub mod periodic_qa;
+#[cfg(feature = "standard-periodic-rail")]
+mod standard_demand;
+#[cfg(feature = "standard-periodic-rail")]
+mod standard_timetable;
+#[cfg(feature = "standard-periodic-rail")]
+use standard_timetable::StandardWorldSchedule;
 
 type RailCrossings = BTreeMap<AlignmentId, Vec<(f64, String)>>;
 const MAX_CROSSING_PAIR_CHECKS: usize = 32_768;
@@ -856,6 +866,9 @@ pub struct WorldOperationSave {
     pub runtime: crate::operation::OperationSave,
     pub invalidated: bool,
     pub pending_target: Option<u64>,
+    #[cfg(feature = "standard-periodic-rail")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    standard_timetable: Option<StandardWorldSchedule>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldOperation {
@@ -864,6 +877,8 @@ pub struct WorldOperation {
     pub runtime: crate::operation::OperationRuntime,
     pub invalidated: bool,
     pub pending_target: Option<u64>,
+    #[cfg(feature = "standard-periodic-rail")]
+    standard_owner: Option<(PlayerId, CompanyId)>,
 }
 impl World {
     pub fn operation(&self) -> Option<&WorldOperation> {
@@ -889,7 +904,18 @@ impl World {
         configs: Vec<OperationServiceConfig>,
         bus_configs: Vec<BusOperationConfig>,
     ) -> Result<(), OperationError> {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.has_standard_timetable() {
+            return Err(OperationError::InvalidTimetable);
+        }
         self.operation = Some(self.compile_all_operation(configs, bus_configs, None)?);
+        Ok(())
+    }
+
+    /// Deliberate player reset. Unlike a generic timetable/geometry edit,
+    /// this is allowed to stop and remove an activated Standard timetable.
+    pub fn reset_operation(&mut self) -> Result<(), OperationError> {
+        self.operation = Some(self.compile_all_operation(Vec::new(), Vec::new(), None)?);
         Ok(())
     }
 
@@ -910,6 +936,10 @@ impl World {
         &mut self,
         request: OperationServiceConfig,
     ) -> Result<(), OperationError> {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.has_standard_timetable() {
+            return Err(OperationError::InvalidTimetable);
+        }
         let operation = self.operation.as_mut().ok_or(OperationError::InvalidPath)?;
         if operation.invalidated || operation.pending_target.is_some() {
             return Err(OperationError::InvalidClock);
@@ -957,6 +987,10 @@ impl World {
         edited_service: &str,
         preserve_unstarted_admission: bool,
     ) -> Result<(), OperationError> {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.has_standard_timetable() {
+            return Err(OperationError::InvalidTimetable);
+        }
         let old = self.operation.as_ref();
         if old.is_some_and(|op| {
             !op.runtime.paused()
@@ -1050,6 +1084,8 @@ impl World {
             runtime,
             invalidated: false,
             pending_target: None,
+            #[cfg(feature = "standard-periodic-rail")]
+            standard_owner: None,
         })
     }
     pub fn operation_save(&self) -> Option<WorldOperationSave> {
@@ -1069,6 +1105,17 @@ impl World {
             runtime: o.runtime.save(),
             invalidated: o.invalidated,
             pending_target: o.pending_target,
+            #[cfg(feature = "standard-periodic-rail")]
+            standard_timetable: o
+                .standard_owner
+                .zip(o.runtime.saved_standard_timetable())
+                .map(
+                    |((player, company), source)| StandardWorldSchedule::StandardDailyV1 {
+                        player,
+                        company,
+                        source: source.clone(),
+                    },
+                ),
         })
     }
     pub fn restore_operation(
@@ -1242,6 +1289,18 @@ impl World {
         {
             return Err(OperationError::InvalidClock);
         }
+        #[cfg(feature = "standard-periodic-rail")]
+        if let Some((runtime, player, company)) = self.restore_standard_timetable(&saved)? {
+            self.operation = Some(WorldOperation {
+                configs: saved.configs,
+                bus_configs: saved.bus_configs,
+                runtime,
+                invalidated: false,
+                pending_target: saved.pending_target,
+                standard_owner: Some((player, company)),
+            });
+            return Ok(());
+        }
         let mut runtime = if holding {
             crate::operation::OperationRuntime::restore_with_terminal_hold(saved.runtime)?
         } else if refuge_qualified {
@@ -1264,6 +1323,8 @@ impl World {
             runtime,
             invalidated: saved.invalidated,
             pending_target: saved.pending_target,
+            #[cfg(feature = "standard-periodic-rail")]
+            standard_owner: None,
         });
         Ok(())
     }
@@ -1878,6 +1939,8 @@ impl World {
             runtime,
             invalidated: false,
             pending_target: None,
+            #[cfg(feature = "standard-periodic-rail")]
+            standard_owner: None,
         });
         Ok(())
     }
@@ -2436,6 +2499,8 @@ mod tests {
             runtime: legacy_runtime.save(),
             invalidated: false,
             pending_target: None,
+            #[cfg(feature = "standard-periodic-rail")]
+            standard_timetable: None,
         };
         w.restore_operation(Some(saved.clone())).unwrap();
         assert_eq!(w.operation_save(), Some(saved.clone()));

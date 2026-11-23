@@ -48,22 +48,56 @@ impl WorldEditor {
         self.edit_history.revision = self.edit_history.revision.saturating_add(1);
     }
     /// One outer transaction supersedes any intermediate candidate transactions.
-    pub(super) fn commit_edit(&mut self, mut candidate: Self, final_edit: bool) {
+    pub(super) fn commit_edit(
+        &mut self,
+        mut candidate: Self,
+        final_edit: bool,
+    ) -> Result<(), String> {
         candidate.world.retain_operation_from(&self.world);
         candidate.world.retain_fixed_od_scenario_from(&self.world);
-        self.publish_reconciled_edit(candidate, final_edit);
+        self.publish_reconciled_edit(candidate, final_edit)
     }
-    /// Publish a validated candidate whose runtime and fixed OD were reconciled
-    /// to this same live baseline. Does not perform any fallible work.
-    pub(super) fn publish_reconciled_edit(&mut self, candidate: Self, final_edit: bool) {
-        self.publish_reconciled_edit_with_service_path(candidate, final_edit, None);
+
+    // Standard archives require a still-valid source and runtime. Validate the
+    // reconciled candidate, not the earlier input draft, before touching the
+    // live world or its history. Legacy edits retain their existing checks.
+    fn ensure_retained_standard(&self, candidate: &World) -> Result<(), String> {
+        self.check_standard_source_retained(candidate)?;
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.world.has_standard_timetable() {
+            rosenfu_storage::ensure_world_saveable(candidate).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn check_standard_source_retained(&self, candidate: &World) -> Result<(), String> {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.world.has_standard_timetable() {
+            if !candidate.has_standard_timetable()
+                || candidate.validate_retained_standard_timetable().is_err()
+            {
+                return Err("時間帯ダイヤの運行を維持できないため、変更していません。".into());
+            }
+        }
+        #[cfg(not(feature = "standard-periodic-rail"))]
+        let _ = candidate;
+        Ok(())
+    }
+
+    pub(super) fn publish_reconciled_edit(
+        &mut self,
+        candidate: Self,
+        final_edit: bool,
+    ) -> Result<(), String> {
+        self.publish_reconciled_edit_with_service_path(candidate, final_edit, None)
     }
     pub(super) fn publish_reconciled_edit_with_service_path(
         &mut self,
         mut candidate: Self,
         final_edit: bool,
         guarded_service_path: Option<ServiceId>,
-    ) {
+    ) -> Result<(), String> {
+        self.ensure_retained_standard(&candidate.world)?;
         let before_source = self.world.shared_snapshot();
         let before = self
             .edit_history
@@ -96,6 +130,7 @@ impl WorldEditor {
             candidate.deleted_alignment = self.deleted_alignment.clone();
         }
         *self = candidate;
+        Ok(())
     }
     pub fn undo_world_edit(&mut self, expected_world: WorldDraft) -> Result<WorldDraft, String> {
         self.restore_world_edit(expected_world, false)
@@ -148,6 +183,7 @@ impl WorldEditor {
             restored.retain_fixed_od_scenario_from(&self.world);
             false
         };
+        self.check_standard_source_retained(&restored)?;
         rosenfu_storage::ensure_world_saveable(&restored).map_err(|e| e.to_string())?;
         self.world = restored;
         if rebuilt_operation {

@@ -26,6 +26,89 @@ pub fn preview_crossing_planning(
         .preview_crossing_planning(&expected_configuration_token, &start_ms)
 }
 #[tauri::command]
+pub fn standard_schedule_status(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service: ServiceId,
+    revision: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "standard-periodic-rail")]
+    {
+        let status = editor
+            .lock()
+            .map_err(|_| "world state unavailable")?
+            .standard_schedule_status(service, &revision)?;
+        serde_json::to_value(status).map_err(|_| "時間帯ダイヤを読み取れませんでした。".into())
+    }
+    #[cfg(not(feature = "standard-periodic-rail"))]
+    {
+        let _ = (editor, service, revision);
+        Err("このビルドでは時間帯ダイヤを利用できません。".into())
+    }
+}
+
+#[tauri::command]
+pub fn apply_standard_schedule(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service: ServiceId,
+    expected: String,
+    base_minutes: u16,
+    overrides: serde_json::Value,
+    boundaries_minutes: [u16; 6],
+) -> Result<OperationView, String> {
+    #[cfg(feature = "standard-periodic-rail")]
+    {
+        let overrides = serde_json::from_value(overrides)
+            .map_err(|_| "時間帯ごとの間隔を確認してください。")?;
+        editor
+            .lock()
+            .map_err(|_| "world state unavailable")?
+            .apply_standard_schedule(
+                service,
+                &expected,
+                base_minutes,
+                overrides,
+                boundaries_minutes,
+            )
+    }
+    #[cfg(not(feature = "standard-periodic-rail"))]
+    {
+        let _ = (
+            editor,
+            service,
+            expected,
+            base_minutes,
+            overrides,
+            boundaries_minutes,
+        );
+        Err("このビルドでは時間帯ダイヤを利用できません。".into())
+    }
+}
+
+#[tauri::command]
+pub fn preview_standard_schedule_od(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service: ServiceId,
+    revision: String,
+    query: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "standard-periodic-rail")]
+    {
+        let query =
+            serde_json::from_value(query).map_err(|_| "時間指定の固定ODを確認してください。")?;
+        let result = editor
+            .lock()
+            .map_err(|_| "world state unavailable")?
+            .preview_standard_schedule_od(service, &revision, query)?;
+        serde_json::to_value(result).map_err(|_| "時間指定の固定ODを読み取れませんでした。".into())
+    }
+    #[cfg(not(feature = "standard-periodic-rail"))]
+    {
+        let _ = (editor, service, revision, query);
+        Err("このビルドでは時間帯ダイヤを利用できません。".into())
+    }
+}
+
+#[tauri::command]
 pub fn configure_operation_service(
     editor: State<'_, Mutex<WorldEditor>>,
     service_id: ServiceId,

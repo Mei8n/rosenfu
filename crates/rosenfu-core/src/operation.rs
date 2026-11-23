@@ -2,6 +2,8 @@
 //! distances, caps and shared resource IDs; the renderer never owns this clock.
 use serde::{Deserialize, Serialize};
 mod passenger_replay;
+pub mod periodic_dispatch;
+use periodic_dispatch::{DepartureSource, ScheduleSource};
 pub mod service_planning;
 pub use passenger_replay::{ReplayItinerary, ReplayItineraryStatus, ReplayRide};
 use std::collections::{BTreeMap, BTreeSet};
@@ -172,6 +174,7 @@ struct CompiledService {
     spec: ServiceRunSpec,
     legs: Vec<CompiledLeg>,
     journey_ms: u64,
+    departure_source: DepartureSource,
     next_departure: Option<u64>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +211,8 @@ pub struct OperationRuntime {
     trains: BTreeMap<TrainKey, Train>,
     occupied: BTreeMap<String, TrainKey>,
     timetable_handoffs: BTreeMap<String, TimetableHandoff>,
+    #[cfg(feature = "standard-periodic-rail")]
+    standard_timetable: Option<periodic_dispatch::standard::StandardDailyV1>,
     rail_admission: RailAdmissionModel,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -756,6 +761,7 @@ impl OperationRuntime {
                     spec,
                     legs,
                     journey_ms: journey,
+                    departure_source: DepartureSource::Absolute,
                     next_departure,
                 },
             );
@@ -770,6 +776,8 @@ impl OperationRuntime {
             trains: BTreeMap::new(),
             occupied: BTreeMap::new(),
             timetable_handoffs: BTreeMap::new(),
+            #[cfg(feature = "standard-periodic-rail")]
+            standard_timetable: None,
             rail_admission,
         })
     }
@@ -835,10 +843,7 @@ impl OperationRuntime {
         self.speed = previous.speed;
         self.started = previous.started;
         for service in self.services.values_mut() {
-            service.next_departure = service
-                .spec
-                .timetable
-                .next_unprocessed_departure(self.started, self.now_ms);
+            service.next_departure = service.next_unprocessed_departure(self.started, self.now_ms);
         }
         Ok(())
     }
@@ -876,6 +881,9 @@ impl OperationRuntime {
             .services
             .get_mut(id)
             .ok_or(OperationError::InvalidPath)?;
+        if service.departure_source.is_periodic() {
+            return Err(OperationError::InvalidTimetable);
+        }
         if service.spec.timetable == timetable {
             return Ok(());
         }
@@ -1198,13 +1206,7 @@ impl OperationRuntime {
             .values()
             .filter(|service| keep(&service.spec.service_id))
         {
-            let t = &service.spec.timetable;
-            let end = t.last_departure_ms.min(until_ms);
-            if let Some(next) = service.next_departure.filter(|&next| next <= end) {
-                trains = trains
-                    .saturating_add((end - next) / t.headway_ms)
-                    .saturating_add(1);
-            }
+            trains = trains.saturating_add(service.future_births_through(until_ms));
             if trains > MAX_TRAINS || service.spec.service_id.len() > 128 {
                 return Err(PassengerReplayError::OutsideBudget);
             }
@@ -1232,6 +1234,8 @@ impl OperationRuntime {
                 rail_admission: self.rail_admission,
                 // Replay does not serialize or validate historical births.
                 timetable_handoffs: BTreeMap::new(),
+                #[cfg(feature = "standard-periodic-rail")]
+                standard_timetable: None,
                 services: self
                     .services
                     .iter()
@@ -1422,9 +1426,7 @@ impl OperationRuntime {
                                 state: TrainState::Waiting { ready_ms: at },
                             },
                         );
-                        s.next_departure = at
-                            .checked_add(s.spec.timetable.headway_ms)
-                            .filter(|n| *n <= s.spec.timetable.last_departure_ms);
+                        s.next_departure = s.next_unprocessed_departure(true, at);
                     }
                     if let Some(next) = s.next_departure {
                         departure = Some(departure.map_or(next, |previous| previous.min(next)));
@@ -1564,6 +1566,14 @@ impl OperationRuntime {
         saved: OperationSave,
         admitted: Option<RailAdmissionModel>,
     ) -> Result<Self, OperationError> {
+        Self::restore_checked_with_source(saved, admitted, None)
+    }
+
+    pub(crate) fn restore_checked_with_source(
+        saved: OperationSave,
+        admitted: Option<RailAdmissionModel>,
+        periodic: Option<&ScheduleSource>,
+    ) -> Result<Self, OperationError> {
         let rail_admission = match saved.format {
             2 => RailAdmissionModel::Fixed,
             3 if cfg!(test) || admitted == Some(RailAdmissionModel::Progressive) => {
@@ -1590,6 +1600,12 @@ impl OperationRuntime {
         runtime.set_speed(saved.speed)?;
         runtime.now_ms = saved.now_ms;
         runtime.started = saved.started;
+        if let Some(schedule) = periodic {
+            if !saved.timetable_handoffs.is_empty() {
+                return Err(OperationError::InvalidTimetable);
+            }
+            runtime.bind_periodic_schedule(schedule, true)?;
+        }
         if saved.next_departures.len() != runtime.services.len() {
             return Err(OperationError::InvalidTimetable);
         }
@@ -1602,17 +1618,7 @@ impl OperationRuntime {
                 .services
                 .get_mut(&id)
                 .ok_or(OperationError::InvalidTimetable)?;
-            let table = &service.spec.timetable;
-            if let Some(t) = next {
-                if t < table.first_departure_ms
-                    || t > table.last_departure_ms
-                    || (t - table.first_departure_ms) % table.headway_ms != 0
-                    || (saved.started && t <= saved.now_ms)
-                {
-                    return Err(OperationError::InvalidTimetable);
-                }
-            }
-            let expected = table.next_unprocessed_departure(saved.started, saved.now_ms);
+            let expected = service.next_unprocessed_departure(saved.started, saved.now_ms);
             if next != expected {
                 return Err(OperationError::InvalidTimetable);
             }
@@ -1655,12 +1661,16 @@ impl OperationRuntime {
                 .legs
                 .get(train.leg)
                 .ok_or(OperationError::InvalidPath)?;
-            let table = runtime
+            let birth = train.key.scheduled_ms;
+            let authorized = runtime
                 .timetable_handoffs
                 .get(&train.key.service_id)
-                .filter(|handoff| train.key.scheduled_ms <= handoff.cutover_ms)
-                .map_or(&service.spec.timetable, |handoff| &handoff.previous);
-            if train.key.scheduled_ms > saved.now_ms || !table.contains(train.key.scheduled_ms) {
+                .filter(|handoff| birth <= handoff.cutover_ms)
+                .map_or_else(
+                    || service.scheduled(birth),
+                    |handoff| handoff.previous.contains(birth),
+                );
+            if birth > saved.now_ms || !authorized {
                 return Err(OperationError::InvalidTimetable);
             }
             // Inline-terminal services have only their first leg. Their initial

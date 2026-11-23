@@ -799,8 +799,10 @@ mod water_national;
 pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskRequest};
 
 mod operation_adapter;
+#[cfg(feature = "periodic-world-qa")]
+pub use operation_adapter::periodic_qa;
 pub use operation_adapter::{
-    BusOperationConfig, OperationServiceConfig, WorldOperation, WorldOperationSave,
+    BusOperationConfig, LiveRailMarker, OperationServiceConfig, WorldOperation, WorldOperationSave,
 };
 
 mod planned_crossing_delay;

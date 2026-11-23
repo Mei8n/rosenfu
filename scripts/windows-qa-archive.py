@@ -47,13 +47,18 @@ def ci_build_context(environment):
     event = environment["GITHUB_EVENT_NAME"]
     if event not in ("push", "pull_request"):
         raise ValueError("Unsupported QA build event")
-    return {
+    context = {
         "commit": environment["GITHUB_SHA"],
         "kind": "integration" if event == "push" else "preview",
         "ref": environment["GITHUB_REF"],
         "run": environment["GITHUB_RUN_ID"],
         "attempt": environment["GITHUB_RUN_ATTEMPT"],
     }
+    # The public packaging job pins this to the checked-out Tauri configuration.
+    # Existing pinned QA callers without this field retain their original contract.
+    if "ROSENFU_QA_PRODUCT_VERSION" in environment:
+        context["product_version"] = environment["ROSENFU_QA_PRODUCT_VERSION"]
+    return context
 
 
 def zip_entry(name):
@@ -109,6 +114,10 @@ def build(stage, output, expected):
         raise ValueError("Invalid QA audience")
     if any(metadata[key] != expected[key] for key in ("commit", "kind", "ref", "run", "attempt")):
         raise ValueError("Build metadata does not match the GitHub workflow context")
+    if "product_version" in expected and (
+        not expected["product_version"] or metadata.get("product_version") != expected["product_version"]
+    ):
+        raise ValueError("Build metadata does not match the expected product version")
     if any(key.lower().endswith(".exe") for key in files.keys() - {name}):
         raise ValueError("Unexpected executable in QA payload")
     if (stage / "SHA256SUMS.txt").read_text(encoding="ascii").strip() != f"{files[name]}  {name}":

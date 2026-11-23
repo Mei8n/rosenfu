@@ -4,7 +4,8 @@ import {prepareOrdinaryBusQuery,observedTramRoadAnchor,type OrdinaryBusPath,type
 import {fitRoadFollow} from './roadFollowFit';
 import {isRoadFollowEdgeEligible} from './roadFollowing';
 import type {RoadDrawingResult} from './roadDrawingEngine';
-import {BusOperations,CrossingOperations,OperationClock,OperationProvider,ServiceOperations,ServicePathChangeNotice} from "./OperationsPanel";
+import {bindTramRoadSnap,reacquireTramRoadSeam,type AcceptedTramRoadSnap} from './reacquireTramRoadSeam';
+import {BusOperations,CrossingOperations,OperationClock,OperationProvider,OperationVehicleLayer,ServiceOperations,ServicePathChangeNotice} from "./OperationsPanel";
 import {RoadTransportPanel,type RoadTransportData,type RoadTransportMutation,type RoadTransportArgs,type RoadMapSelection,type RoadPlayerMapRequest,type RoadPlayerMapSelection} from "./RoadTransportPanel";
 import {RailJourneyReplayPanel} from "./RailJourneyReplayPanel";
 import {FixedOdPanel,type FixedOdScenario,type FixedOdScenarioView} from "./FixedOdPanel";
@@ -124,7 +125,7 @@ type GeoPoint = { latitude: number; longitude: number };
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { crossing_planning_enabled?: boolean; authored_tram_road_guide_enabled?: boolean; ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; ordinary_ofm_bus_interior_stops_enabled?: boolean; ordinary_ofm_bus_auto_stops_enabled?: boolean; ordinary_ofm_bus_closed_loop_enabled?: boolean; ordinary_ofm_bus_observed_grade_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
+type EngineInfo = { standard_schedule_enabled?: boolean; crossing_planning_enabled?: boolean; authored_tram_road_guide_enabled?: boolean; ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; ordinary_ofm_bus_interior_stops_enabled?: boolean; ordinary_ofm_bus_auto_stops_enabled?: boolean; ordinary_ofm_bus_closed_loop_enabled?: boolean; ordinary_ofm_bus_observed_grade_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
@@ -565,7 +566,7 @@ export function App() {
     if(discard)discardPlanStations(activePathId);
     if(current)parkAnchorHistory();
     setParkedPaths(paths=>current?[...paths,current]:paths);
-    setDraftAnchorLevels(undefined);setRedoAnchorLevels([]);setHeightAnchor(null);setDraftJunctionSource(undefined);setStartLevel(undefined);setDraftFinished(false);setActivePathId(nextPathId.current++);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);changeMapMode(activeTool==="stations"?"place":"draw");
+    setDraftAnchorLevels(undefined);setRedoAnchorLevels([]);setHeightAnchor(null);setDraftJunctionSource(undefined);setStartLevel(undefined);setDraftFinished(false);const id=nextPathId.current++;setActivePathId(id);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);setDraftPoints([]);setDraftEditedGeometry(undefined);setAnchorUndo([]);setAnchorRedo([]);setRedoPoints([]);setHoverPoint(null);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);changeMapMode(activeTool==="stations"?"place":"draw");return id;
   }
   function newIndependentPlan() {
     if (!enabled || referenceCopy.active) return;
@@ -1445,7 +1446,12 @@ export function App() {
         return true;
   }
 
-  async function placeTrackPoint(coordinates:GeoPoint,rect:{width:number;height:number},event:{detail:number;ctrlKey:boolean;clientX?:number;clientY?:number}) {
+  function storeTramRoadSnap(point:GeoPoint,proof:AcceptedTramRoadSnap|undefined,path=activePathId){
+    if(proof&&distanceM(point,proof.pick.point)<=.01)
+      lastTramRoadSnap.current={proof,point,world,epoch:worldEpoch,plan:activePlanId,path};
+  }
+  async function placeTrackPoint(coordinates:GeoPoint,rect:{width:number;height:number},event:{detail:number;ctrlKey:boolean;clientX?:number;clientY?:number},roadSnap?:AcceptedTramRoadSnap) {
+      const offered=coordinates;
       if(parallelMode){if(event.detail<2)placeParallel(coordinates);return;}
       if(referenceCopy.active){void referenceCopy.click(coordinates);return;}
       if(roadFollowingBlocked)return;
@@ -1485,7 +1491,7 @@ export function App() {
         const junction=nearestJunctionSource(alignments as JunctionSource['expectedAlignment'][],coordinates,camera,mapViewport(rect.width,rect.height).scale,world?.companies[0]?.id,infrastructure.level);
         if(junction){if(draftFinished)newPath(true);setDraftJunctionSource(junction.source);setStartLevel(infrastructure.level);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);setDraftAnchorLevels([infrastructure.level]);setRedoAnchorLevels([]);setDraftPoints([junction.point]);setRedoPoints([]);setDraftFinished(false);setHoverPoint(null);return;}
         setDraftJunctionSource(undefined);setDraftExtension(null);setDraftDestination(undefined);setDraftRedoDestination(undefined);
-        if(draftFinished){newPath(true);setStartLevel(infrastructure.level);setDraftAnchorLevels([infrastructure.level]);setRedoAnchorLevels([]);setDraftPoints([coordinates]);return;}
+        if(draftFinished){const newId=newPath(true);storeTramRoadSnap(coordinates,roadSnap,newId);setStartLevel(infrastructure.level);setDraftAnchorLevels([infrastructure.level]);setRedoAnchorLevels([]);setDraftPoints([coordinates]);return;}
       }
       if(snappedEndpoint(coordinates,rect.width,rect.height)){
         if(draftPoints.length>=2&&!draftInvalid){setDraftFinished(true);setHoverPoint(null);}
@@ -1512,6 +1518,7 @@ export function App() {
         if(!await validatePlannedPlacement(request,event.detail>=2))return;
       }
       if((roadFollowing&&roadFinishAfterPlacement.current)||finishPendingPlacement.current){setDraftFinished(true);roadFinishAfterPlacement.current=false;finishPendingPlacement.current=false;}
+      if(!destination&&coordinates===offered)storeTramRoadSnap(coordinates,roadSnap);
       setDraftAnchorLevels(nextLevels);setRedoAnchorLevels([]);setHeightAnchor(null);
       setAnchorUndo(items=>[...items,{kind:"point" as const,id:activePathId,before:{anchorLevels:priorLevels,redoAnchorLevels:[...redoAnchorLevels,nextLevel],points:draftPoints,geometry:draftEditedGeometry,redo:[...redoPoints,coordinates],destination:draftDestination,redoDestination:targetRef??draftRedoDestination},after:{anchorLevels:nextLevels,redoAnchorLevels:[],points:[...draftPoints,coordinates],geometry:editedForAppend,redo:[],destination:targetRef}}].slice(-50));setAnchorRedo([]);setDraftDestination(targetRef);setDraftRedoDestination(undefined);if(targetRef)setDraftFinished(true);setDraftEditedGeometry(editedForAppend);setDraftPoints((points) => [...points, coordinates]); setRedoPoints([]); setHoverPoint(null); return;
   }
@@ -1542,6 +1549,32 @@ export function App() {
     };
     if(!stillCurrent())return;
     if(!result){finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;return;}
+    // A confirmed click can recover one old source cell that disappeared
+    // from the current viewport; hover and known disconnections never fetch.
+    const previousRoadPoint=!draftFinished&&draftPoints.at(-1);
+    const remembered=lastTramRoadSnap.current;
+    if(result.kind==="free"&&nativeTramGuide&&previousRoadPoint&&remembered?.point===previousRoadPoint&&
+       remembered.world===world&&remembered.epoch===worldEpoch&&remembered.plan===activePlanId&&remembered.path===activePathId&&
+       roadDrawingBundle===automaticRoad.snapshot?.bundle){
+      const task=++anchorPlacementToken.current;
+      const controller=new AbortController();tramReacquireAbort.current=controller;
+      anchorPlacementPending.current=true;setAnchorPlacementInProgress(true);
+      const waiting=setTimeout(()=>{if(anchorPlacementToken.current===task)setAnchorPlacementWaiting(true);},300);
+      const currentTask=()=>anchorPlacementToken.current===task&&stillCurrent()&&!controller.signal.aborted;
+      try{
+        const recovered=await reacquireTramRoadSeam(automaticRoad.snapshot,previousRoadPoint,remembered.proof,destination?.point??point,!!destination,automaticRoad,currentTask,controller.signal);
+        if(!currentTask())return;
+        if(recovered)result=recovered;
+      }catch(e){
+        if(!currentTask())return;
+        const message=detail(e);
+        result={kind:"error",error:/^[\x00-\x7f]*$/.test(message)?"道路のつながりを確認できません。区間を短くして選び直してください。":message};
+      }finally{
+        clearTimeout(waiting);
+        if(tramReacquireAbort.current===controller)tramReacquireAbort.current=null;
+        if(anchorPlacementToken.current===task){anchorPlacementPending.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);}
+      }
+    }
     if(result.kind==="junction"){
       const task=++anchorPlacementToken.current;
       anchorPlacementPending.current=true;setAnchorPlacementInProgress(true);
@@ -1566,7 +1599,7 @@ export function App() {
            ||distanceM(points[0],from.anchor.point)>.01||distanceM(points[points.length-1],to.anchor.point)>.01)throw Error("道路に沿う軌道の経路を確認できません。");
         // Preserve the same approved displayed endpoints across quantization.
         points[0]=start;points[points.length-1]=to.anchor.point;
-        result={kind:"route",point:to.anchor.point,line:fitRoadFollow(points)};
+        result={kind:"route",point:to.anchor.point,line:fitRoadFollow(points),roadSnap:result.to};
       }catch(e){if(!currentTask())return;result={kind:"error",error:String(e)};}
       finally{clearTimeout(waiting);if(anchorPlacementToken.current===task){anchorPlacementPending.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);}}
     }
@@ -1577,7 +1610,7 @@ export function App() {
       if(nativeTramGuide){reject("道路の位置を確認できません。Ctrlで自由に敷設するか、道路に合わせる設定をオフにしてください。");return;}
       placeTrackPoint(point,rect,{...event,ctrlKey:true});return;
     }
-    if(result.kind==='point'){placeTrackPoint(result.point,rect,{...event,ctrlKey:true});return;}
+    if(result.kind==='point'){placeTrackPoint(result.point,rect,{...event,ctrlKey:true},nativeTramGuide&&roadDrawingBundle===automaticRoad.snapshot?.bundle?bindTramRoadSnap(automaticRoad.snapshot,result.roadSnap):undefined);return;}
     const end=destination?.point??result.point,line=[...draftLine,...result.line.slice(1)];line[line.length-1]=end;
     const points=[...draftPoints,end],geometry:EditedGeometry={version:1,anchors:points,line};
     const targetRef=destination?{alignmentId:destination.alignment.id,endpoint:destination.endpoint}:undefined;
@@ -1594,6 +1627,7 @@ export function App() {
     if(!accepted){finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;return;}
     const before={points:draftPoints,geometry:draftEditedGeometry,redo:redoPoints,anchorLevels:draftAnchorLevels,redoAnchorLevels,extension:draftExtension,destination:draftDestination,redoDestination:draftRedoDestination};
     const after={points,geometry,redo:[],anchorLevels:[...levels,nextLevel],redoAnchorLevels:[],extension:draftExtension,destination:targetRef,redoDestination:undefined};
+    if(!destination&&nativeTramGuide&&roadDrawingBundle===automaticRoad.snapshot?.bundle)storeTramRoadSnap(end,bindTramRoadSnap(automaticRoad.snapshot,result.roadSnap));
     applyAnchorEdit(activePathId,after);setAnchorUndo(history=>[...history,{kind:'point' as const,id:activePathId,before,after}].slice(-50));setAnchorRedo([]);setDraftFinished(!!targetRef||roadFinishAfterPlacement.current||finishPendingPlacement.current);roadFinishAfterPlacement.current=false;finishPendingPlacement.current=false;setHoverPoint(null);setError('');roadDrawing.cancel();
   }
 
@@ -1661,6 +1695,12 @@ export function App() {
   const [anchorPlacementInProgress,setAnchorPlacementInProgress]=useState(false);
   const anchorPlacementPending=useRef(false);
   const anchorPlacementToken=useRef(0);
+  const tramReacquireAbort=useRef<AbortController|null>(null);
+  const lastTramRoadSnap=useRef<{proof:AcceptedTramRoadSnap;point:GeoPoint;world:unknown;epoch:number;plan:number;path:number}|null>(null);
+  useEffect(()=>{
+    const prior=lastTramRoadSnap.current;
+    if(prior&&(prior.point!==draftPoints.at(-1)||prior.world!==world||prior.epoch!==worldEpoch||prior.plan!==activePlanId||prior.path!==activePathId))lastTramRoadSnap.current=null;
+  },[draftPoints,world,worldEpoch,activePlanId,activePathId]);
   const finishPendingPlacement=useRef(false);
   const pendingPlacementPoint=useRef<{x:number;y:number}|null>(null);
   // Preserve intent by reference, without serializing full geometry on every hover.
@@ -1668,6 +1708,7 @@ export function App() {
   const anchorPlacementContext=useRef<{world:unknown;key:unknown}>({world,key:placementContextKey});
   anchorPlacementContext.current={world,key:placementContextKey};
   useEffect(()=>{anchorPlacementPending.current=false;anchorPlacementToken.current++;finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);},[world,placementContextKey]);
+  useEffect(()=>()=>{tramReacquireAbort.current?.abort();},[world,placementContextKey]);
   useEffect(()=>()=>{anchorPlacementContext.current={world:null,key:'unmounted'};},[]);
 
   function commitAlignment() {
@@ -2299,6 +2340,7 @@ export function App() {
               {parallelMode&&parallelStart&&(()=>{const q=project(parallelStart.point.latitude,parallelStart.point.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
               {parallelMode&&parallelPreview&&<TrackStroke d={drawInfrastructurePath(parallelPreview.line,infrastructure)} data-track-count={infrastructure.track_count} className="draft-path candidate-draft" pointerEvents="none"/>}
               {parallelMode&&parallelCandidate&&!parallelStart&&(()=>{const line=offsetTrack(parallelCandidate.source.points,parallelCandidate.projection!.offset),p=line&&hoverPoint&&parallelProjection(line,hoverPoint)?.point;if(!p)return null;const q=project(p.latitude,p.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
+              <OperationVehicleLayer camera={camera} scale={viewport.scale}/>
               <JunctionPoints key={worldEpoch} lines={alignments} connections={world?.alignment_connections??[]} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"&&!roadMapPicking}/>
               {parkedPaths.map(plan=><g key={plan.id} className={plan.planId===activePlanId?undefined:"inactive-plan"}><TrackStroke d={drawInfrastructurePath(plan.line,plan.infrastructure)} data-track-count={plan.infrastructure?.track_count??1} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"&&!roadMapPicking){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
@@ -2494,7 +2536,7 @@ export function App() {
             <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null&&!serviceCreating&&!routeServiceDirty} onDirty={setPathServiceDirty} onSave={createPathService}/></details>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
-            {serviceId&&selectedServicePath&&<ServiceOperations key={`${worldEpoch}-${serviceId}`} serviceId={serviceId} enabled={enabled&&!unapplied}/>}
+            {serviceId&&selectedServicePath&&<ServiceOperations key={`${worldEpoch}-${serviceId}`} serviceId={serviceId} enabled={enabled&&!unapplied} standardEnabled={info?.standard_schedule_enabled===true}/>}
             {info?.crossing_planning_enabled===true&&mainTab==="services"&&<CrossingOperations key={worldEpoch} enabled={enabled&&!unapplied}/>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
             {serviceId&&selectedServicePath&&world&&<ServiceDelete key={`delete-${serviceId}-${worldEpoch}`} name={world.services.find(s=>s.id===serviceId)?.name??""} enabled={enabled} hasEdits={serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty} onDelete={async()=>{

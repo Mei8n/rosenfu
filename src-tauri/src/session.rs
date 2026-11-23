@@ -268,7 +268,7 @@ impl WorldEditor {
             .set_service_appearance(candidate.company, service_id, color, shape, symbol)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     pub fn set_service_color(
@@ -292,7 +292,7 @@ impl WorldEditor {
             .set_service_color(candidate.company, service_id, color)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     /// Delete only the selected service and its own metadata, atomically.
@@ -333,7 +333,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(after)
     }
 
@@ -370,7 +370,7 @@ impl WorldEditor {
             .duplicate_service(candidate.company, service_id, name)
             .map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     pub fn set_service_route_binding(
@@ -387,7 +387,7 @@ impl WorldEditor {
                     .to_owned()
             })?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     pub fn preview_service_path(
@@ -453,7 +453,7 @@ impl WorldEditor {
                 .map_err(|e| e.to_string())?;
         }
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     pub fn update_service_path(
@@ -695,7 +695,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(self.snapshot())
     }
     fn add_station_unchecked(
@@ -754,7 +754,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(self.snapshot())
     }
     fn build_alignment_from_reference_typed_unchecked(
@@ -824,7 +824,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(self.snapshot())
     }
 
@@ -848,7 +848,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(self.snapshot())
     }
     /// Publish the alignment and all planned stations together, or change nothing.
@@ -1040,7 +1040,7 @@ impl WorldEditor {
             rosenfu_storage::ensure_world_saveable(&candidate.world)
                 .map_err(|error| error.to_string())?;
         }
-        self.publish_reconciled_edit(candidate, true);
+        self.publish_reconciled_edit(candidate, true)?;
         Ok(self.snapshot())
     }
     pub fn road_assessments(&self) -> Vec<(AlignmentId, rosenfu_core::world::RoadAssessment)> {
@@ -1054,7 +1054,7 @@ impl WorldEditor {
         let mut candidate = self.prepared_construction_clone(alignments, stations)?;
         // Construction is final. Only a successful atomic commit ends prior history.
         candidate.deleted_alignment = None;
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(self.snapshot())
     }
 
@@ -1835,7 +1835,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(self.snapshot())
     }
     fn place_station_on_alignment_unchecked(
@@ -1871,7 +1871,7 @@ impl WorldEditor {
         self.water_model
             .validate(self.world.snapshot(), candidate.world.snapshot())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, true);
+        self.commit_edit(candidate, true)?;
         Ok(self.snapshot())
     }
     fn update_station_placement_unchecked(
@@ -1901,7 +1901,7 @@ impl WorldEditor {
         let mut candidate = self.clone();
         candidate.rename_station_unchecked(station_id, name)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     fn rename_station_unchecked(
@@ -1932,7 +1932,7 @@ impl WorldEditor {
         let mut candidate = self.clone();
         candidate.delete_station_unchecked(station_id)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     fn delete_station_unchecked(&mut self, station_id: StationId) -> Result<WorldDraft, String> {
@@ -1983,7 +1983,7 @@ impl WorldEditor {
         draft.construction_plans = Some(plans);
         candidate.world.replace(draft).map_err(|e| e.to_string())?;
         let result = candidate.delete_alignment(id)?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(result)
     }
     /// Delete one whole alignment, never its dependent equipment or services.
@@ -2044,7 +2044,7 @@ impl WorldEditor {
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
         let after = candidate.snapshot();
         candidate.deleted_alignment = Some((before, after.clone()));
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(after)
     }
 
@@ -2069,7 +2069,7 @@ impl WorldEditor {
         let mut candidate = self.clone();
         candidate.rename_company_unchecked(name)?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     fn rename_company_unchecked(&mut self, name: String) -> Result<WorldDraft, String> {
@@ -2112,7 +2112,7 @@ impl WorldEditor {
         route.name = name.trim().to_owned();
         candidate.world.replace(draft).map_err(|e| e.to_string())?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
 
@@ -2133,7 +2133,7 @@ impl WorldEditor {
             excluded_stations,
         )?;
         rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
-        self.commit_edit(candidate, false);
+        self.commit_edit(candidate, false)?;
         Ok(self.snapshot())
     }
     fn save_planned_route_unchecked(
@@ -6387,7 +6387,7 @@ mod road_snapshot_transaction_tests {
         outer.build_construction_plan(alignments, vec![])?;
         rosenfu_storage::ensure_world_saveable(&outer.world).map_err(|e| e.to_string())?;
         outer.deleted_alignment = None;
-        editor.commit_edit(outer, true);
+        editor.commit_edit(outer, true)?;
         Ok(editor.snapshot())
     }
 

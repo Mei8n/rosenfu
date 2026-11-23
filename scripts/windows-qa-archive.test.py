@@ -8,7 +8,9 @@ import tempfile
 import unittest
 import zipfile
 
-build = runpy.run_path(str(Path(__file__).with_name("windows-qa-archive.py")))["build"]
+script = runpy.run_path(str(Path(__file__).with_name("windows-qa-archive.py")))
+build = script["build"]
+ci_build_context = script["ci_build_context"]
 COMMIT = "a" * 40
 EXPECTED = {"commit": COMMIT, "kind": "integration", "ref": "refs/heads/dev/alpha-0.2-integration", "run": "123", "attempt": "1"}
 BUILD = "".join(f"{key}={value}\n" for key, value in EXPECTED.items()) + "audience=internal-QA-only\n"
@@ -43,6 +45,26 @@ class QaArchive(unittest.TestCase):
         with zipfile.ZipFile(self.zip) as archive:
             self.assertEqual(archive.read(INSTALLER), b"fixture")
             self.assertIn(INSTALLER, archive.read("PACKAGE-SHA256SUMS.txt").decode("ascii"))
+
+    def test_checks_product_version_when_workflow_expects_it(self):
+        env = {
+            "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": COMMIT,
+            "GITHUB_REF": EXPECTED["ref"], "GITHUB_RUN_ID": EXPECTED["run"],
+            "GITHUB_RUN_ATTEMPT": EXPECTED["attempt"], "ROSENFU_QA_PRODUCT_VERSION": "0.2.1",
+        }
+        expected = ci_build_context(env)
+        self.assertEqual(expected["product_version"], "0.2.1")
+        path = self.stage / "BUILD.txt"
+        for metadata in (BUILD, BUILD + "product_version=0.2.0-alpha.1\n"):
+            path.write_text(metadata)
+            with self.assertRaisesRegex(ValueError, "expected product version"):
+                build(self.stage, self.zip, expected)
+            self.assertFalse(self.zip.exists())
+        path.write_text(BUILD + "product_version=0.2.1\n")
+        with contextlib.redirect_stdout(StringIO()):
+            build(self.stage, self.zip, expected)
+        with zipfile.ZipFile(self.zip) as archive:
+            self.assertIn(b"product_version=0.2.1", archive.read("BUILD.txt"))
 
     def test_repeat_is_byte_stable(self):
         with contextlib.redirect_stdout(StringIO()):
