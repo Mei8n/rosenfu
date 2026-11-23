@@ -77,10 +77,6 @@ impl World {
                 let [section] = leg.sections.as_slice() else {
                     return None;
                 };
-                let [resource] = section.resources.as_slice() else {
-                    return None;
-                };
-                let edge_id = resource.strip_prefix("road:edge:")?;
                 let (duration, _) = op
                     .runtime
                     .unblocked_leg_timing(&train.key.service_id, train.leg)?;
@@ -93,29 +89,34 @@ impl World {
                     now.checked_sub(entered_ms)?,
                     duration,
                 )?;
-                let (edge, from, to) = roads.gameplay_bus_leg_chord(
-                    route_id,
-                    train.leg,
-                    leg.from.strip_prefix("bus:")?,
-                    leg.to.strip_prefix("bus:")?,
-                    edge_id,
-                )?;
+                let (edge, position) = if let [resource] = section.resources.as_slice() {
+                    let (edge, from, to) = roads.gameplay_bus_leg_chord(
+                        route_id,
+                        train.leg,
+                        leg.from.strip_prefix("bus:")?,
+                        leg.to.strip_prefix("bus:")?,
+                        resource.strip_prefix("road:edge:")?,
+                    )?;
+                    if !(0.0..=1.0).contains(&from) || !(0.0..=1.0).contains(&to) || from >= to {
+                        return None;
+                    }
+                    (edge, from + (to - from) * fraction)
+                } else {
+                    self.data.gameplay_bus_live_outward_chord(
+                        route_id, train.leg, leg, section, fraction,
+                    )?
+                };
                 let [edge_start, edge_end] = edge.geometry.as_slice() else {
                     return None;
                 };
-                if edge.level != Some(InfrastructureLevel::Ground)
-                    || edge_start == edge_end
-                    || !(0.0..=1.0).contains(&from)
-                    || !(0.0..=1.0).contains(&to)
-                    || from >= to
-                {
+                if edge.level != Some(InfrastructureLevel::Ground) || edge_start == edge_end {
                     return None;
                 }
                 Some(LiveBusMarker {
                     key: train.key.clone(),
                     edge_start: *edge_start,
                     edge_end: *edge_end,
-                    position: from + (to - from) * fraction,
+                    position,
                 })
             })
             .take(MAX_MARKERS)

@@ -425,6 +425,49 @@ impl EvidenceStore {
     ) -> Result<Option<Arc<super::BusPath>>> {
         self.gameplay_bus_path_cached(proposed, true)
     }
+    /// Derived display only: never load a tile, solve a graph, promote a
+    /// preview or change the LRU. A cold/contended cache returns no marker.
+    pub(crate) fn peek_stored_gameplay_bus_path(
+        &self,
+        proposed: &super::BusPathBinding,
+    ) -> Option<Arc<super::BusPath>> {
+        use super::BusPathBinding;
+        let BusPathBinding {
+            rule,
+            grade_policy,
+            tile_key,
+            tile_raw_sha256,
+            respect_oneway,
+            start,
+            end,
+            additional_tiles,
+            end_tile_key,
+            pattern,
+            via,
+            interior_stops: _,
+        } = proposed;
+        self.cache
+            .try_lock()
+            .ok()?
+            .bus_paths
+            .iter()
+            .find(|p| {
+                let b = &p.binding;
+                b.rule == *rule
+                    && b.grade_policy == *grade_policy
+                    && b.tile_key == *tile_key
+                    && b.tile_raw_sha256 == *tile_raw_sha256
+                    && b.respect_oneway == *respect_oneway
+                    && b.start == *start
+                    && b.end == *end
+                    && b.additional_tiles == *additional_tiles
+                    && b.end_tile_key == *end_tile_key
+                    && b.pattern == *pattern
+                    && b.via == *via
+            })
+            .cloned()
+    }
+
     fn gameplay_bus_path_cached(
         &self,
         proposed: &super::BusPathBinding,

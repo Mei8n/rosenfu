@@ -1393,7 +1393,7 @@ mod tests {
                 occurrence_key: targets.stop_occurrence_keys[0].clone(),
                 fraction_q: 500_000,
             });
-        let only_out = preview(detour_stop);
+        let only_out = preview(detour_stop.clone());
         assert!(only_out.return_path.is_some());
         assert!(!only_out.interior_stops[0].serves_return);
         let mut default = proof;
@@ -1403,6 +1403,83 @@ mod tests {
             relaxed.return_path.unwrap().points,
             relaxed.points.into_iter().rev().collect::<Vec<_>>()
         );
+
+        // Stop halfway along the second atom: the moving first leg must
+        // switch onto that real chord and end at its actual interior cut.
+        detour_stop.interior_stops[0].occurrence_key = targets.stop_occurrence_keys[1].clone();
+        let partial = preview(detour_stop.clone());
+        assert_eq!(partial.interior_stops.len(), 1);
+        assert!(!partial.interior_stops[0].serves_return);
+        let accepted = editor
+            .put_gameplay_ofm_bus(&token, "B1".into(), "折り返し".into(), detour_stop, cache())
+            .unwrap();
+        assert_eq!(accepted.road_transport.bus_routes[0].edges.len(), 2);
+        use rosenfu_core::operation::{Timetable, Vehicle};
+        editor
+            .configure_bus_operation(
+                "B1".into(),
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 60.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.,
+                    length_m: 12.,
+                },
+                30.,
+                1_000,
+                None,
+                &editor.operation_snapshot().timetable_edit_token,
+            )
+            .unwrap();
+        let mut predicted = editor.world.operation().unwrap().runtime.clone();
+        predicted.set_paused(false);
+        let arrives = predicted.advance_to(1_000_000, 100).unwrap().arrivals;
+        assert_eq!(arrives.len(), 3);
+        let advance = |editor: &mut WorldEditor, time| {
+            let runtime = &mut editor.world.operation_mut().unwrap().runtime;
+            runtime.set_paused(false);
+            runtime.advance_to(time, 100).unwrap();
+            runtime.set_paused(true);
+        };
+        let marker = |editor: &WorldEditor| editor.operation_snapshot().live.bus_markers;
+        advance(&mut editor, 0);
+        let initial = marker(&editor);
+        assert_eq!(initial.len(), 1);
+        assert_eq!(
+            [initial[0].edge_start, initial[0].edge_end],
+            strict.points[..2]
+        );
+        assert_eq!(initial[0].position, 0.0);
+        advance(&mut editor, arrives[0].at_ms - 1);
+        let before_stop = marker(&editor);
+        assert_eq!(before_stop.len(), 1);
+        assert_eq!(
+            [before_stop[0].edge_start, before_stop[0].edge_end],
+            strict.points[1..]
+        );
+        assert!((before_stop[0].position - 0.5).abs() < 1e-5);
+        assert_eq!(before_stop[0].key, initial[0].key);
+        let bytes = rosenfu_storage::encode(&editor.world).unwrap();
+        assert!(!std::str::from_utf8(&bytes).unwrap().contains("bus_markers"));
+        let folder = tempfile::tempdir().unwrap();
+        let save = folder.path().join("multiedge-bus-marker.rosenfu");
+        editor.save(&save).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&save).unwrap();
+        assert_eq!(rosenfu_storage::encode(&reopened.world).unwrap(), bytes);
+        assert_eq!(marker(&reopened), before_stop);
+        advance(&mut reopened, arrives[0].at_ms);
+        assert!(marker(&reopened).is_empty()); // actual intermediate dwell
+        advance(&mut reopened, arrives[1].at_ms - 1);
+        let at_terminal = marker(&reopened);
+        assert_eq!(at_terminal.len(), 1);
+        assert!((at_terminal[0].position - 1.0).abs() < 1e-5);
+        advance(&mut reopened, arrives[2].at_ms - 1);
+        assert!(marker(&reopened).is_empty()); // independent real return; never project reversed outbound
     }
 
     fn verify_ordinary_bus_turnaround(

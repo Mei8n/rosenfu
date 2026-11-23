@@ -615,17 +615,15 @@ fn retain_existing_points(
 }
 
 impl RoadTransport {
-    /// Look up one outward stop-to-stop span in the validated ordinary OFM
-    /// projection. Edges and routes are sorted by ID; stop rows are appended
-    /// in occurrence order for each route. No geometry is reconstructed here.
-    pub(crate) fn gameplay_bus_leg_chord(
+    /// Edges/routes are sorted by ID in the validated ordinary OFM
+    /// projection. Stop rows are appended in occurrence order per route.
+    fn gameplay_bus_leg_span(
         &self,
         route_id: &str,
         leg: usize,
         from_id: &str,
         to_id: &str,
-        edge_id: &str,
-    ) -> Option<(&RoadEdge, f64, f64)> {
+    ) -> Option<(&[String], usize, f64, f64)> {
         if self.bus_routes.len() > MAX_ORDINARY_ROUTES || self.edges.len() > MAX_TOTAL_ROUTE_EDGES {
             return None;
         }
@@ -637,28 +635,48 @@ impl RoadTransport {
         let next = leg.checked_add(1)?;
         let from = route.stops.get(leg)?;
         let to = route.stops.get(next)?;
-        if from.stop_id != from_id
-            || to.stop_id != to_id
-            || from.edge_index != to.edge_index
-            || route.edges.get(from.edge_index)?.as_str() != edge_id
-        {
+        if from.stop_id != from_id || to.stop_id != to_id {
             return None;
         }
+        let edge_ids = route.edges.get(from.edge_index..=to.edge_index)?;
         let offset = self.bus_routes[..index]
             .iter()
             .map(|r| r.stops.len())
             .sum::<usize>();
-        let from = self.bus_stops.get(offset.checked_add(leg)?)?;
-        let to = self.bus_stops.get(offset.checked_add(next)?)?;
-        if from.id != from_id || to.id != to_id || from.edge_id != edge_id || to.edge_id != edge_id
+        let a = self.bus_stops.get(offset.checked_add(leg)?)?;
+        let z = self.bus_stops.get(offset.checked_add(next)?)?;
+        if a.id != from_id
+            || z.id != to_id
+            || &a.edge_id != edge_ids.first()?
+            || &z.edge_id != edge_ids.last()?
         {
             return None;
         }
+        Some((edge_ids, from.edge_index, a.position, z.position))
+    }
+
+    fn gameplay_bus_edge(&self, edge_id: &str) -> Option<&RoadEdge> {
         let index = self
             .edges
             .binary_search_by(|e| e.id.as_str().cmp(edge_id))
             .ok()?;
-        Some((&self.edges[index], from.position, to.position))
+        self.edges.get(index)
+    }
+
+    pub(crate) fn gameplay_bus_leg_chord(
+        &self,
+        route_id: &str,
+        leg: usize,
+        from_id: &str,
+        to_id: &str,
+        edge_id: &str,
+    ) -> Option<(&RoadEdge, f64, f64)> {
+        let (edges, _, from, to) = self.gameplay_bus_leg_span(route_id, leg, from_id, to_id)?;
+        let [only] = edges else { return None };
+        if only != edge_id {
+            return None;
+        }
+        Some((self.gameplay_bus_edge(edge_id)?, from, to))
     }
 
     pub(super) fn validate_ofm_gameplay_bus(
@@ -698,6 +716,98 @@ impl RoadTransport {
 }
 
 impl WorldDraft {
+    /// Project one part of a short, validated outward bus leg. Bus scheduling
+    /// uses integer millimetres at these same absolute atom cuts; a haversine
+    /// approximation could choose the wrong displayed edge near a junction.
+    pub(crate) fn gameplay_bus_live_outward_chord(
+        &self,
+        route_id: &str,
+        leg_index: usize,
+        leg: &crate::operation::RunLeg,
+        section: &crate::operation::Section,
+        fraction: f64,
+    ) -> Option<(&RoadEdge, f64)> {
+        const MAX_OUTWARD_ATOMS: usize = 16;
+        let binding = self.ofm_gameplay_bus_routes.get(route_id)?;
+        if binding.pattern != Some(BusPattern::OpenRoundTrip) {
+            return None;
+        }
+        let (edges, first, from, to) = self.road_transport.gameplay_bus_leg_span(
+            route_id,
+            leg_index,
+            leg.from.strip_prefix("bus:")?,
+            leg.to.strip_prefix("bus:")?,
+        )?;
+        if !(2..=MAX_OUTWARD_ATOMS).contains(&edges.len())
+            || section.resources.len() != edges.len()
+            || !section
+                .resources
+                .iter()
+                .zip(edges)
+                .all(|(resource, edge)| resource.strip_prefix("road:edge:") == Some(edge))
+        {
+            return None;
+        }
+        let path = self
+            .runtime_road_evidence
+            .peek_stored_gameplay_bus_path(binding)?;
+        let lengths = &path.atom_operation_micrometres;
+        if lengths.len() > MAX_OUTWARD_ATOMS || lengths.len() != path.steps.len() {
+            return None;
+        }
+        let last = first.checked_add(edges.len() - 1)?;
+        // Convert the same saved fractions projected from integer stop cuts.
+        let q = |v: f64| {
+            if !(0.0..=1.0).contains(&v) {
+                return None;
+            }
+            let q = (v * f64::from(BUS_STOP_DENOMINATOR)).round() as u32;
+            (f64::from(q) / f64::from(BUS_STOP_DENOMINATOR) == v).then_some(q)
+        };
+        let (from_q, to_q) = (q(from)?, q(to)?);
+        let mut abs = [0u128; MAX_OUTWARD_ATOMS + 1];
+        for (i, &length) in lengths.iter().enumerate() {
+            abs[i + 1] = abs[i] + u128::from(length);
+        }
+        let cut = |i: usize, fraction_q: u32| {
+            Some(
+                (abs.get(i)?
+                    + u128::from(*lengths.get(i)?) * u128::from(fraction_q)
+                        / u128::from(BUS_STOP_DENOMINATOR)
+                    + 500)
+                    / 1000,
+            )
+        };
+        let start = cut(first, from_q)?;
+        let end = cut(last, to_q)?;
+        let mm = end.checked_sub(start)?;
+        if mm == 0
+            || mm as f64 / 1000. != section.length_m
+            || !(first..=last).all(|i| path.atom_is_ground(i))
+        {
+            return None;
+        }
+        let travelled = fraction * mm as f64;
+        for (index, edge) in edges.iter().enumerate() {
+            let atom = first + index;
+            let a = if atom == first { from_q } else { 0 };
+            let z = if atom == last {
+                to_q
+            } else {
+                BUS_STOP_DENOMINATOR
+            };
+            let lower = cut(atom, a)?.checked_sub(start)?;
+            let upper = cut(atom, z)?.checked_sub(start)?;
+            if travelled <= upper as f64 && upper > lower {
+                let progress = ((travelled - lower as f64) / (upper - lower) as f64).clamp(0., 1.);
+                let position =
+                    (f64::from(a) + f64::from(z - a) * progress) / f64::from(BUS_STOP_DENOMINATOR);
+                return Some((self.road_transport.gameplay_bus_edge(edge)?, position));
+            }
+        }
+        None
+    }
+
     /// Generate addressed candidate stops in existing manual gaps. This is
     /// read only; the ordinary route Confirm is the only persistence path.
     pub fn gameplay_bus_auto_stop_suggestions(
