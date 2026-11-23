@@ -16,6 +16,10 @@ use tempfile::NamedTempFile;
 
 pub const FORMAT: &str = "rosenfu-world";
 pub const SCHEMA_VERSION: u64 = 27;
+// Use a separate outer tag only for the new mixed capability. Older readers
+// classify unsupported outer schemas as non-repairable, unlike a known
+// schema whose unfamiliar runtime merely appears invalid.
+const MIXED_STANDARD_BUS_SCHEMA: u64 = 28;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -77,6 +81,21 @@ impl From<WorldError> for StorageError {
     fn from(e: WorldError) -> Self {
         Self::InvalidWorld(e)
     }
+}
+
+fn current_wire_schema(version: u64) -> bool {
+    version == SCHEMA_VERSION
+        || (cfg!(feature = "standard-periodic-rail") && version == MIXED_STANDARD_BUS_SCHEMA)
+}
+
+fn operation_wire_schema(operation: Option<&rosenfu_core::world::WorldOperationSave>) -> u64 {
+    #[cfg(feature = "standard-periodic-rail")]
+    if operation.is_some_and(|op| op.has_standard_timetable() && !op.bus_configs.is_empty()) {
+        return MIXED_STANDARD_BUS_SCHEMA;
+    }
+    #[cfg(not(feature = "standard-periodic-rail"))]
+    let _ = operation;
+    SCHEMA_VERSION
 }
 
 #[derive(Serialize, Deserialize)]
@@ -164,7 +183,7 @@ impl<'de> Deserialize<'de> for CurrentSave {
 
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
                 let save = SaveDocument::deserialize(de::value::MapAccessDeserializer::new(map))?;
-                if save.schema_version != SCHEMA_VERSION || save.format != FORMAT {
+                if !current_wire_schema(save.schema_version) || save.format != FORMAT {
                     return Err(de::Error::custom("not a current Rosenfu save"));
                 }
                 Ok(CurrentSave(save))
@@ -268,7 +287,8 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
     }
     if let Ok(CurrentSave(document)) = serde_json::from_slice(bytes) {
         if serde_json::from_slice::<CheckedJson>(bytes).is_ok() {
-            return restore_document(document, SCHEMA_VERSION);
+            let version = document.schema_version;
+            return restore_document(document, version);
         }
     }
     decode_document(serde_json::from_slice(bytes)?)
@@ -286,7 +306,7 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or(StorageError::InvalidHeader)?;
-    if version != 26 && version != SCHEMA_VERSION {
+    if version != 26 && !current_wire_schema(version) {
         return Err(StorageError::UnsupportedVersion(version));
     }
     if version == 26 && value.get("fixed_od_scenario").is_some() {
@@ -368,6 +388,9 @@ fn restore_document<W: Into<WorldDraft>>(
             .as_ref()
             .is_some_and(|o| o.has_standard_timetable())
     {
+        return Err(StorageError::InvalidHeader);
+    }
+    if version != 26 && operation_wire_schema(document.operation.as_ref()) != version {
         return Err(StorageError::InvalidHeader);
     }
     let draft = document.world.into();
@@ -478,12 +501,13 @@ fn checked_save_document(world: &World) -> Result<BorrowedSaveDocument<'_>, Stor
 
 fn save_document(world: &World) -> BorrowedSaveDocument<'_> {
     let data = world.snapshot();
+    let operation = world.operation_save();
     BorrowedSaveDocument {
         format: FORMAT,
-        schema_version: SCHEMA_VERSION,
+        schema_version: operation_wire_schema(operation.as_ref()),
         world: data,
         road_evidence: BorrowedEvidenceEnvelope::from_store(&data.runtime_road_evidence),
-        operation: world.operation_save(),
+        operation,
         fixed_od_scenario: world.fixed_od_scenario(),
     }
 }
@@ -740,7 +764,8 @@ fn prepare_backup_file(
     let typed = parse_save_temp::<CurrentSave>(&temp)?;
     let restored_typed = if let Some(CurrentSave(document)) = typed {
         if parse_save_temp::<CheckedJson>(&temp)?.is_some() {
-            restore_document(document, SCHEMA_VERSION)?;
+            let version = document.schema_version;
+            restore_document(document, version)?;
             true
         } else {
             false

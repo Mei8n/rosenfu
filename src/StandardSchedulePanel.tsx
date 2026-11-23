@@ -6,7 +6,7 @@ type Overrides=Record<FrequencyBand,number|null>;
 export type ApplyStandardSchedule={service:string;expected:string;baseMinutes:number;overrides:Overrides;boundariesMinutes:number[]};
 type Setup={baseMinutes:number;overrides:Overrides;boundariesMinutes:number[];startMs:number;endMs:number};
 type Stop={id:string;name:string};
-type Status={configurationToken:string;serviceId:string;canApply:boolean;activeElsewhere:boolean;authored:Setup|null;departureCount:number|null;origin:Stop|null;destinations:Stop[]};
+type Status={configurationToken:string;serviceId:string;canApply:boolean;activeElsewhere:boolean;hasBusConfigs?:boolean;authored:Setup|null;departureCount:number|null;origin:Stop|null;destinations:Stop[]};
 type Od={status:'scheduled'|'no_departure_in_window'|'unverified_schedule';first_departure_ms:number|null;scheduled_departures:number|null;
  assignment:{rail:{trips:number;time:{wait_seconds:number;ride_seconds:number}}[];alternative_trips:number;unserved_trips:number;unresolved_trips:number}};
 const minute=60_000,day=1440*minute;
@@ -42,6 +42,7 @@ export function StandardSchedulePanel({service,revision,operationToken,enabled,c
  return <section aria-label="標準の時間帯ダイヤ">
   <h5>時間帯ダイヤ</h5>
   {error&&<p role="alert">{error}</p>}
+  {status?.hasBusConfigs&&(status.canApply||status.authored)&&<p className="field-hint">既存のバスダイヤはそのままです。バスと時間帯ダイヤを組み合わせたセーブは旧0.2.1では開けません。適用前のセーブを別の場所に残してください。</p>}
   {status?.authored?<><p>この系統の起点発車：{clock(status.authored.startMs)} ～ {clock(status.authored.endMs)}（終了時刻を含まない）。有効期間内に{status.departureCount}本。終了後に自動で延長しません。</p><p>従来のダイヤに戻すには時刻欄の「運行をリセット」を使います。時刻、運行中の車両、鉄道・バスの全ダイヤが消去されます。線路・駅・停留所・路線・系統と固定OD設定は残ります。</p>
    <ul>{frequencyBands.map(([id,label],i)=><li key={id}>{label} {clockMinutes(status.authored!.boundariesMinutes[i])}～{clockMinutes(status.authored!.boundariesMinutes[i+1])}：{status.authored!.overrides[id]??status.authored!.baseMinutes}分おき</li>)}</ul>
    <p>表示は設定ダイヤです。遅れや実際の輸送人数は含みません。</p>

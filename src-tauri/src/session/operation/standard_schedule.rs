@@ -18,6 +18,7 @@ pub struct StandardScheduleStatus {
     service_id: String,
     can_apply: bool,
     active_elsewhere: bool,
+    has_bus_configs: bool,
     authored: Option<StandardIntervals>,
     departure_count: Option<u64>,
     origin: Option<NamedStop>,
@@ -82,7 +83,6 @@ impl WorldEditor {
             && operation.is_some_and(|o| {
                 !o.invalidated
                     && o.pending_target.is_none()
-                    && o.bus_configs.is_empty()
                     && o.runtime
                         .preview_nominal_fleet(
                             &key,
@@ -90,9 +90,10 @@ impl WorldEditor {
                         )
                         .is_ok()
             })
-            && self.world.operation_save().is_some_and(|saved| {
-                matches!(saved.runtime.format, 2 | 4) && saved.configs.len() <= 4
-            });
+            && self
+                .world
+                .operation_save()
+                .is_some_and(|saved| saved.supports_standard_scope());
         let named = |id: &str| {
             let id_num = id.parse::<u64>().ok()?;
             self.world
@@ -121,6 +122,7 @@ impl WorldEditor {
             service_id: key,
             can_apply,
             active_elsewhere,
+            has_bus_configs: operation.is_some_and(|o| !o.bus_configs.is_empty()),
             authored,
             departure_count,
             origin,

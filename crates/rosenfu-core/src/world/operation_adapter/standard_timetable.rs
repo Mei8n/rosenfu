@@ -94,19 +94,15 @@ impl World {
         saved: &WorldOperationSave,
         target: ServiceId,
     ) -> Result<RailAdmissionModel, OperationError> {
-        let model = match saved.runtime.format {
-            2 => RailAdmissionModel::Fixed,
-            4 => RailAdmissionModel::TurnbackHold,
-            _ => return Err(OperationError::ReservationScopeChanged),
-        };
-        if saved.invalidated
-            || !saved.bus_configs.is_empty()
-            || !(1..=4).contains(&saved.configs.len())
-            || !saved.configs.iter().any(|c| c.service_id == target)
-        {
-            return Err(OperationError::ReservationScopeChanged);
-        }
-        let exact = self.compile_all_operation(saved.configs.clone(), Vec::new(), Some(model))?;
+        let model = saved
+            .standard_admission()
+            .filter(|_| !saved.invalidated && saved.configs.iter().any(|c| c.service_id == target))
+            .ok_or(OperationError::ReservationScopeChanged)?;
+        let exact = self.compile_all_operation(
+            saved.configs.clone(),
+            saved.bus_configs.clone(),
+            Some(model),
+        )?;
         if exact.runtime.save().services != saved.runtime.services {
             return Err(OperationError::ReservationScopeChanged);
         }
@@ -142,6 +138,25 @@ impl World {
 }
 
 impl WorldOperationSave {
+    /// One supported Standard rail origin may coexist with already configured
+    /// absolute services. Only the existing Fixed format admits buses; do not
+    /// change admission or widen the validation budget for mixed worlds.
+    fn standard_admission(&self) -> Option<RailAdmissionModel> {
+        let total = self.configs.len().saturating_add(self.bus_configs.len());
+        if self.configs.is_empty() || total > 4 {
+            return None;
+        }
+        match self.runtime.format {
+            2 => Some(RailAdmissionModel::Fixed),
+            4 if self.bus_configs.is_empty() => Some(RailAdmissionModel::TurnbackHold),
+            _ => None,
+        }
+    }
+
+    pub fn supports_standard_scope(&self) -> bool {
+        self.standard_admission().is_some()
+    }
+
     pub fn has_standard_timetable(&self) -> bool {
         self.standard_timetable.is_some()
     }

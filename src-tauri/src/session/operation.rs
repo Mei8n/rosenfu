@@ -1781,6 +1781,176 @@ mod tests {
         )
         .unwrap();
     }
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn standard_fixed_rail_preserves_absolute_bus_births_and_mixed_reopen() {
+        use rosenfu_core::operation::periodic_dispatch::standard::NamedBandOverrides;
+
+        let mut e = editor();
+        add_test_bus(
+            &mut e,
+            Timetable {
+                first_departure_ms: 1_140_000,
+                last_departure_ms: 1_440_000,
+                headway_ms: 300_000,
+            },
+        );
+        e.world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1_000_000, 64)
+            .unwrap();
+        let service = e.operation_snapshot().services[0].service_id;
+        let state = e.operation_snapshot();
+        assert!(state.paused && state.trains.is_empty());
+        assert_eq!(state.bus_services.len(), 1);
+        let before = e.world.operation_save().unwrap();
+        assert_eq!(before.runtime.format, 2);
+        let status = serde_json::to_value(
+            e.standard_schedule_status(service, &state.configuration_token)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["canApply"], true);
+        let bus_cursor = |save: &rosenfu_core::world::WorldOperationSave| {
+            save.runtime
+                .next_departures
+                .iter()
+                .find(|(id, _)| id == "bus:R")
+                .unwrap()
+                .1
+        };
+        assert_eq!(bus_cursor(&before), Some(1_140_000));
+        let rates = NamedBandOverrides {
+            early_morning: None,
+            morning_rush: Some(2),
+            midday: None,
+            evening_rush: Some(2),
+            late_night: None,
+        };
+        let bounds = [0, 360, 600, 960, 1200, 1440];
+        let apply = |e: &mut WorldEditor, token: &str| {
+            e.apply_standard_schedule(service, token, 1, rates.clone(), bounds)
+        };
+        let prior_bytes = rosenfu_storage::encode(&e.world).unwrap();
+        assert!(!before.has_standard_timetable());
+        let ordinary_doc: serde_json::Value = serde_json::from_slice(&prior_bytes).unwrap();
+        assert_eq!(ordinary_doc["schema_version"], 27);
+        let mut falsely_mixed = ordinary_doc.clone();
+        falsely_mixed["schema_version"] = 28.into();
+        assert!(matches!(
+            rosenfu_storage::decode(&serde_json::to_vec(&falsely_mixed).unwrap()),
+            Err(rosenfu_storage::StorageError::InvalidHeader)
+        ));
+        assert_eq!(
+            rosenfu_storage::encode(&rosenfu_storage::decode(&prior_bytes).unwrap()).unwrap(),
+            prior_bytes
+        );
+        assert!(apply(&mut e, "stale-token").is_err());
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), prior_bytes);
+        let queued = &mut e.world.operation_mut().unwrap().pending_target;
+        *queued = Some(1_010_000);
+        let blocked = rosenfu_storage::encode(&e.world).unwrap();
+        assert!(apply(&mut e, &state.timetable_edit_token).is_err());
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), blocked);
+        e.world.operation_mut().unwrap().pending_target = None;
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), prior_bytes);
+
+        let mixed = apply(&mut e, &state.timetable_edit_token).unwrap();
+        assert!(mixed.standard_schedule_active);
+        assert_eq!(mixed.bus_services, state.bus_services);
+        let after = e.world.operation_save().unwrap();
+        assert_eq!(after.runtime.now_ms, before.runtime.now_ms);
+        assert_eq!(after.runtime.format, before.runtime.format);
+        assert_eq!(after.configs, before.configs);
+        assert_eq!(after.bus_configs, before.bus_configs);
+        assert_eq!(after.runtime.services, before.runtime.services);
+        assert_eq!(bus_cursor(&after), bus_cursor(&before));
+        let op = e.world.operation_mut().unwrap();
+        op.runtime.advance_to(1_140_000, 64).unwrap();
+        let bus = op
+            .runtime
+            .trains()
+            .find(|t| t.key.service_id == "bus:R")
+            .unwrap();
+        assert!(matches!(
+            bus.state,
+            rosenfu_core::operation::TrainState::Moving {
+                entered_ms: 1_140_000,
+                ..
+            }
+        ));
+        assert!(op
+            .runtime
+            .trains()
+            .any(|t| t.key.service_id == service.0.to_string()
+                && t.key.scheduled_ms == 1_080_000
+                && matches!(t.state, rosenfu_core::operation::TrainState::Moving { .. })));
+        let running = rosenfu_storage::encode(&e.world).unwrap();
+        let mixed_doc: serde_json::Value = serde_json::from_slice(&running).unwrap();
+        assert_eq!(mixed_doc["schema_version"], 28);
+        for version in [26, 27] {
+            let mut wrong = mixed_doc.clone();
+            wrong["schema_version"] = version.into();
+            assert!(matches!(
+                rosenfu_storage::decode(&serde_json::to_vec(&wrong).unwrap()),
+                Err(rosenfu_storage::StorageError::InvalidHeader)
+            ));
+        }
+        let mut missing_source = mixed_doc;
+        missing_source["operation"]
+            .as_object_mut()
+            .unwrap()
+            .remove("standard_timetable");
+        assert!(matches!(
+            rosenfu_storage::decode(&serde_json::to_vec(&missing_source).unwrap()),
+            Err(rosenfu_storage::StorageError::InvalidHeader)
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("standard-fixed-plus-bus.rosenfu");
+        e.save(&file).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&file).unwrap();
+        assert_eq!(rosenfu_storage::encode(&reopened.world).unwrap(), running);
+        assert_eq!(
+            bus_cursor(&reopened.world.operation_save().unwrap()),
+            Some(1_440_000)
+        );
+        let advance = |world: &mut World| {
+            world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(1_500_000, 256)
+                .unwrap()
+        };
+        assert_eq!(advance(&mut e.world), advance(&mut reopened.world));
+        assert_eq!(
+            rosenfu_storage::encode(&e.world).unwrap(),
+            rosenfu_storage::encode(&reopened.world).unwrap()
+        );
+        reopened.save(&file).unwrap();
+        assert_eq!(
+            std::fs::read(rosenfu_storage::backup_path(&file)).unwrap(),
+            running
+        );
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            rosenfu_storage::encode(&reopened.world).unwrap()
+        );
+        // The portable Fixed-bus proof never opens format 4 with bus or a
+        // configuration scope bigger than the original four absolute specs.
+        let mut invalid = before;
+        invalid.runtime.format = 4;
+        assert!(!invalid.supports_standard_scope());
+        invalid.runtime.format = 2;
+        for _ in 0..3 {
+            invalid.bus_configs.push(invalid.bus_configs[0].clone());
+        }
+        assert!(!invalid.supports_standard_scope());
+    }
+
     #[test]
     fn bus_operation_uses_partial_edges_namespaced_stops_and_shared_od() {
         let mut e = editor();
