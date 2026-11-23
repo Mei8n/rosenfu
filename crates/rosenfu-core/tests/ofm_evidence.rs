@@ -2190,6 +2190,37 @@ fn ordinary_bus_markers_follow_both_verified_return_intervals_at_an_interior_sto
         .gameplay_bus_return_path(&request)
         .unwrap()
         .unwrap();
+    // The ordinary stop editor uses this same native candidate, keeping
+    // the exact stop identity while changing only its location on the route.
+    let original = world
+        .snapshot()
+        .gameplay_bus_interior_stop_views("test", &request, Some(&returned))
+        .unwrap();
+    let mut relocated = request.clone();
+    relocated.interior_stops[0].fraction_q = 570_000;
+    let relocated_world = world
+        .candidate_with_gameplay_ofm_bus(
+            owner,
+            "test".into(),
+            "往復".into(),
+            relocated.clone(),
+            vec![], // no new source: the saved raw evidence is sufficient
+        )
+        .unwrap();
+    let relocated_stops = relocated_world
+        .snapshot()
+        .gameplay_bus_interior_stop_views("test", &relocated, Some(&returned))
+        .unwrap();
+    assert_eq!(relocated_stops[0].id, original[0].id);
+    assert_eq!(relocated_stops[0].stop_id, original[0].stop_id);
+    assert_eq!(relocated_stops[0].name, original[0].name);
+    assert!(relocated_stops[0].serves_return);
+    assert_ne!(relocated_stops[0].point, original[0].point);
+    assert_eq!(
+        world.snapshot().ofm_gameplay_bus_routes["test"].interior_stops[0].fraction_q,
+        370_000
+    );
+
     let config = BusOperationConfig {
         route_id: "test".into(),
         timetable: Timetable {

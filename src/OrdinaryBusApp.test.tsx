@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import {afterEach,expect,test,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {invoke} from '@tauri-apps/api/core';
 import {App} from './App';
 import {project} from './map';
@@ -453,6 +453,54 @@ test('ordinary buses place and rename an on-route stop; no world writes before e
  })));
  const put=vi.mocked(invoke).mock.calls.find(c=>c[0]==='put_gameplay_ofm_bus')?.[1];
  expect(put).not.toHaveProperty('requestStopTargets');
+});
+
+test('an intermediate stop moves on its confirmed route without changing its identity',async()=>{
+ let holdMove=false,releaseMove:(()=>void)|undefined;
+ const occurrenceKey='a'.repeat(64),requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {map}=(await setup({waypoints:true,interiorStops:true,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
+  if(holdMove)await new Promise<void>(resolve=>{releaseMove=resolve;});
+  const req=requests().at(-1)![1] as {path:{interiorStops?:{id:string;name:string;fractionQ:number}[]}};
+  return {points:[a,b],lengthM:370,stopOccurrenceKeys:[occurrenceKey],interiorStops:req.path.interiorStops?.map(stop=>({
+   id:stop.id,stopId:'native:'+stop.id,name:stop.name,servesReturn:false,
+   point:{latitude:a.latitude,longitude:a.longitude+(b.longitude-a.longitude)*stop.fractionQ/1_000_000},
+  }))};
+ }}))!;
+ fireEvent.click(screen.getByRole('button',{name:'停留所を編集'}));
+ const route=await screen.findByLabelText('停留所を置くバス経路');
+ const [x0,y0,x1,y1]=route.querySelector('path')!.getAttribute('d')!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+ const onRoute=(fraction:number,offset=0)=>fireEvent.click(map,{clientX:x0+(x1-x0)*fraction,clientY:y0+(y1-y0)*fraction+offset});
+ onRoute(.25);await screen.findByRole('textbox',{name:'停留所名 1'});
+ const oldMarker=screen.getByLabelText('停留所 1').getAttribute('cx');
+ const one=(requests().at(-1)![1] as {path:{interiorStops:{id:string}[]}}).path.interiorStops[0].id;
+ onRoute(.75);await screen.findByRole('textbox',{name:'停留所名 2'});
+ fireEvent.change(screen.getByRole('textbox',{name:'停留所名 1'}),{target:{value:'中央'}});
+ const before=requests().length;
+ const selectMove=()=>fireEvent.click(screen.getByRole('button',{name:'停留所 1 の位置を変更'}));
+ selectMove();
+ onRoute(.5,30);
+ expect(screen.getByText(/経路上の、駅や交差点から少し離れた位置/)).toBeTruthy();
+ onRoute(.75);
+ expect(screen.getByText('ここにはすでに停留所があります。')).toBeTruthy();
+ expect(requests()).toHaveLength(before);
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.queryByText(/停留所の移動先を/)).toBeNull();
+ expect(screen.getByRole<HTMLInputElement>('textbox',{name:'停留所名 1'}).value).toBe('中央');
+ holdMove=true;selectMove();onRoute(.5);
+ await waitFor(()=>expect(releaseMove).toBeTypeOf('function'));
+ fireEvent.keyDown(window,{key:'Escape'});
+ holdMove=false;await act(async()=>releaseMove!());
+ expect(screen.getByLabelText('停留所 1').getAttribute('cx')).toBe(oldMarker);
+ expect(screen.queryByText(/停留所の移動先を/)).toBeNull();
+ selectMove();onRoute(.5);
+ await waitFor(()=>expect(screen.queryByText(/停留所の移動先を/)).toBeNull());
+ expect(requests().at(-1)![1]).toMatchObject({expectedWorldToken:'world-exact',routeId:'owned-a',rawEvidence:null,requestStopTargets:true,
+  path:{interiorStops:[{id:one,name:'中央',occurrenceKey,fractionQ:500000},{name:'停留所 2',fractionQ:750000}]}});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'停留所の編集を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({routeId:'owned-a',
+  path:expect.objectContaining({interiorStops:[{id:one,name:'中央',occurrenceKey,fractionQ:500000},
+   expect.objectContaining({name:'停留所 2',fractionQ:750000})]})})));
 });
 
 test('overlapping stops require an explicit occurrence and Escape discards the unconfirmed stop draft',async()=>{

@@ -1891,7 +1891,7 @@ export function App() {
       if(seamMutationPending.current)return;
       if(slotDialog||slotPicker||confirmLoad)return;
       if(event.key==="Escape"&&ordinaryBusStops.active&&!ordinaryBusStops.mutating()&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){
-        event.preventDefault();if(ordinaryBusStops.choices.length)ordinaryBusStops.cancelChoice();else ordinaryBusStops.cancel();return;
+        event.preventDefault();if(ordinaryBusStops.choices.length)ordinaryBusStops.cancelChoice();else if(ordinaryBusStops.movingStopId)ordinaryBusStops.cancelMove();else ordinaryBusStops.cancel();return;
       }
       if(event.key==="Escape"&&ordinaryBusActive&&(ordinaryBus.draft||ordinaryBus.deleting)&&!ordinaryBus.mutating()&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();if(!ordinaryBus.exitExtension())ordinaryBus.cancel();return;}
       if(event.key==="Escape"&&(roadMapFrom!==null||roadPlayerMapPick)&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();cancelRoadMapPick();return;}
