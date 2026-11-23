@@ -426,3 +426,100 @@ test.each(['confirmed-road-snap','free-on-road','undo-road-snap'] as const)('Tra
  expect(fetcher.mock.calls.map(([url])=>url)).toEqual([OFM_METADATA,tile(14551),tile(14552)]);
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c.startsWith('build_'))).toBe(false);
 });
+
+function branchFixture(){
+ const p=(offset:number)=>({latitude,longitude:longitude+offset});
+ const a=p(-.0008),b=p(.0008);
+ const west={id:'10',owner:'2',name:'西側の本線',track_type:'normal',points:[p(-.0015),a]};
+ const main={id:'11',owner:'2',name:'既存の中央線',track_type:'normal',points:[a,b]};
+ const east={id:'12',owner:'2',name:'東側の本線',track_type:'normal',points:[b,p(.0015)]};
+ const end=(alignment_id:string,endpoint:'start'|'end')=>({alignment_id,endpoint});
+ const alignment_connections=[{a:end('10','end'),b:end('11','start')},{a:end('11','end'),b:end('12','start')}];
+ const snapshot={...world,alignments:[west,main,east],alignment_connections};
+ return {snapshot,alignment_connections,main,end};
+}
+function selectBranch(){
+ fireEvent.click(screen.getByRole('button',{name:'分岐として接続'}));
+ fireEvent.change(screen.getByLabelText('分岐の起点'),{target:{value:'10:end'}});
+ fireEvent.change(screen.getByLabelText('分岐の終点'),{target:{value:'12:start'}});
+ fireEvent.click(screen.getByRole('button',{name:'選んだ端点で分岐を計画'}));
+}
+test('an existing join still blocks ordinary drawing; explicit stem selection uses native preview and build',async()=>{
+ const {snapshot,alignment_connections,main,end}=branchFixture();
+ const h=await start(snapshot,undefined,false);
+ await h.click(-.0008);
+ expect(screen.getByText(/この端点は接続済みです/)).toBeTruthy();
+ selectBranch();
+ expect(screen.getByText(/分岐の終点: 東側の本線/)).toBeTruthy();
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+ const original=vi.mocked(invoke).getMockImplementation()!;
+ let deny=true;
+ const built={...snapshot,alignments:[...snapshot.alignments,{...main,id:'13',name:'分岐'}],
+  alignment_connections:[...alignment_connections,{a:end('10','end'),b:end('13','start')},{a:end('13','end'),b:end('12','start')}]};
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='preview_construction_plan'&&args&&'alignments' in args&&(args.alignments as any[]).some(path=>path.destination))
+    return {validationError:deny?'native branch refused':null,newCrossingCount:0};
+  if(command==='build_plan')return built;
+  return original(command,args);
+ });
+ await h.click(.0008);
+ expect(screen.getByText(/native branch refused/)).toBeTruthy();
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ deny=false;
+ await h.click(.00055);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+ // Roughly 6px from both the selected destination and the last anchor:
+ // the explicit terminal has precedence over ordinary finish-on-last-anchor.
+ await h.click(.000675);
+ expect(document.querySelector('.confirmed-draft')).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_plan')).toBe(true));
+ const [,args]=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan'&&!!c)!;
+ expect(args).toMatchObject({alignments:[{extension:{alignmentId:'10',endpoint:'end'},
+   destination:{alignmentId:'12',endpoint:'start'},anchorLevels:['ground','ground','ground'],
+   infrastructure:{track_count:1,level:'ground'}}]});
+ await waitFor(()=>expect(screen.queryByText(/分岐の終点: 東側の本線/)).toBeNull());
+ fireEvent.click(screen.getByRole('button',{name:'分岐として接続'}));
+ const pick=screen.getByLabelText('分岐の起点') as HTMLSelectElement;
+ expect(Array.from(pick.options).map(option=>option.value)).toEqual(['']);
+});
+
+test('clearing an approved branch restores ordinary placement on the same path number and permits deliberate reselection',async()=>{
+ const {snapshot}=branchFixture(),h=await start(snapshot,undefined,false);
+ selectBranch();
+ await h.click(.00055);
+ expect(screen.getByText(/分岐の終点: 東側の本線/)).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'下書きを消去'}));
+ expect(screen.queryByText(/分岐の終点: 東側の本線/)).toBeNull();
+ vi.mocked(invoke).mockClear();
+ await h.click(.0025);await h.click(.0035);
+ const plans=vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='preview_construction_plan')
+   .flatMap(([,args])=>args&&'alignments' in args?args.alignments as Array<{extension?:unknown;destination?:unknown;points:unknown[]}>:[]);
+ expect(plans.some(plan=>plan.points.length>=2&&!plan.extension&&!plan.destination)).toBe(true);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'下書きを消去'}));
+ selectBranch();
+ expect(screen.getByText(/分岐の終点: 東側の本線/)).toBeTruthy();
+ await h.click(.0008);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('local park and return keep a branch permit but a restored draft requires deliberate reselection',async()=>{
+ const {snapshot}=branchFixture(),h=await start(snapshot,undefined,false);
+ selectBranch();await h.click(.0008);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
+ expect(screen.queryByText(/分岐の終点: 東側の本線/)).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'計画 1 を編集'}));
+ expect(screen.getByText(/分岐の終点: 東側の本線/)).toBeTruthy();
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('tab',{name:'セーブデータ'}));
+ fireEvent.click(screen.getByRole('button',{name:'ワールドを保存'}));
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world')).toBe(true));
+ const plans=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as any).constructionPlans;
+ cleanup();await start({...snapshot,construction_plans:JSON.parse(JSON.stringify(plans))},undefined,false);
+ expect(screen.queryByText(/分岐の終点: 東側の本線/)).toBeNull();
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+ selectBranch();
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});
