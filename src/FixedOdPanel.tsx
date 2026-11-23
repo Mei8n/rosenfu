@@ -91,7 +91,7 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
    setFailure({world:worldVersion,message:'徒歩乗り換えには駅・バス停と1〜60分の所要時間を指定してください。'});
    return;
   }
-  const captured=worldVersion,lock={};flight.current=lock;setPending(true);dirty();
+  const captured=worldVersion,lock={};flight.current=lock;setPending(true);setFailure(null);setSettled(null);
   try{
    const response=await invoke<Result>('preview_fixed_od',{originStationId:origin,destinationStationId:destination,trips:scenario.trips,alternativeSeconds:scenario.alternative_seconds,...(transfer?{transfer}:{})});
    if(latest.current.worldVersion!==captured||!latest.current.enabled)return;
@@ -105,7 +105,7 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
   if(!enabled||flight.current||scenarioFlight.current||!observedAllowed)return;
   const scenario=input();
   if(!scenario){setFailure({world:worldVersion,message:'人数は0〜10億の整数、代替手段の所要時間は正の値かつ1年以下を入力してください。'});return;}
-  const captured=worldVersion,lock={};flight.current=lock;setPending(true);dirty();
+  const captured=worldVersion,lock={};flight.current=lock;setPending(true);setFailure(null);setSettledObserved(null);
   try{
    const response=await invoke<ObservedResult>('preview_observed_fixed_od',{query:{
     originStationId:scenario.origin_station_id,destinationStationId:scenario.destination_station_id,
@@ -152,13 +152,21 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
   {saveError&&<p role="alert">{saveError}</p>}
   {pending&&<p role="status">需要を試算中…</p>}
   {error&&<p role="alert">{error}</p>}
-  {result&&(result.potential_trips===null?<p role="status">移動需要は不明のため、人数は配分していません。</p>:result.search_complete?<dl className="fixed-od-results">
-   <dt>公共交通を利用</dt><dd>{quantity(result.rail.reduce((sum,path)=>sum+path.trips,0))}人</dd>
-   <dt>別の移動手段を利用</dt><dd>{quantity(result.alternative_trips)}人</dd>
-   <dt>利用できる経路なし</dt><dd>{quantity(result.unserved_trips)}人</dd>
-   <dt>未確定</dt><dd>{quantity(result.unresolved_trips)}人</dd>
-  </dl>:<p role="status">探索上限に達しました。{quantity(result.unresolved_trips)}人は未確定で、利用人数には含めません。</p>)}
+  {result&&observed&&<p>同じ条件での別々の試算です。人数の差は遅れだけによるものではありません。</p>}
+  {result&&<section aria-label="ダイヤを使った需要試算結果">
+   <h5>ダイヤを使った需要試算結果</h5>
+   {result.potential_trips===null?<p role="status">移動需要は不明のため、人数は配分していません。</p>:result.search_complete?<dl className="fixed-od-results">
+    <dt>公共交通を利用</dt><dd>{quantity(result.rail.reduce((sum,path)=>sum+path.trips,0))}人</dd>
+    <dt>別の移動手段を利用</dt><dd>{quantity(result.alternative_trips)}人</dd>
+    <dt>利用できる経路なし</dt><dd>{quantity(result.unserved_trips)}人</dd>
+    <dt>未確定</dt><dd>{quantity(result.unresolved_trips)}人</dd>
+   </dl>:<p role="status">探索上限に達しました。{quantity(result.unresolved_trips)}人は未確定で、利用人数には含めません。</p>}
+   {result.search_complete&&result.rail.length>0&&<ol className="fixed-od-paths" aria-label="利用経路">
+    {result.rail.map((path,index)=><li key={index}><strong>{quantity(path.trips)}人</strong> {path.stations.map(id=>stationNames.get(id)??'移動地点').join(' → ')}{path.services.length>0&&<div>{path.services.map(id=>serviceNames.get(id)??'別系統').join(' → ')}</div>}{path.time&&<div>推計: 待ち {quantity(path.time.wait_seconds/60)}分 / 乗車 {quantity(path.time.ride_seconds/60)}分 / 徒歩 {quantity(path.time.walk_seconds/60)}分 / 乗換 {path.time.transfers}回</div>}</li>)}
+   </ol>}
+  </section>}
   {observed&&<section aria-label="遅れを含む需要試算結果">
+   <h5>遅れを含む需要試算結果</h5>
    {typeof observationStart==='number'&&Number.isSafeInteger(observationStart)&&observationStart>=0&&<OperationObservationMinute observedMs={observationStart}/>}
     <p>観測開始時点に出発駅に着いた場合の最早到着1経路と、指定した代替手段を比較します。ダイヤ全体の利用予測ではありません。</p>
    {observed.status!=='reached'?<p role="status">
@@ -172,8 +180,5 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
     {observed.itinerary?.arrival_ms!=null&&<p>所要 {quantity((observed.itinerary.arrival_ms-observed.itinerary.ready_ms)/60000)}分（待ち {quantity(observed.itinerary.platform_wait_ms/60000)}分、乗車 {quantity(observed.itinerary.onboard_ms/60000)}分）</p>}
    </>}
   </section>}
-  {result?.search_complete&&result.rail.length>0&&<ol className="fixed-od-paths" aria-label="利用経路">
-   {result.rail.map((path,index)=><li key={index}><strong>{quantity(path.trips)}人</strong> {path.stations.map(id=>stationNames.get(id)??'移動地点').join(' → ')}{path.services.length>0&&<div>{path.services.map(id=>serviceNames.get(id)??'別系統').join(' → ')}</div>}{path.time&&<div>推計: 待ち {quantity(path.time.wait_seconds/60)}分 / 乗車 {quantity(path.time.ride_seconds/60)}分 / 徒歩 {quantity(path.time.walk_seconds/60)}分 / 乗換 {path.time.transfers}回</div>}</li>)}
-  </ol>}
  </section>;
 }
