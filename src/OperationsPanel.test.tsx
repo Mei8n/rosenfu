@@ -120,10 +120,14 @@ test('rail shows scheduled dwell, live path wait, and rear clearance separately'
  expect(rows[0].textContent).not.toContain('遅れ');
  expect(rows[1].textContent).toContain('進路待ち（分岐・接続）');
  expect(rows[1].textContent).toContain('遅れ 4秒');
+ expect(rows[1].textContent).toContain('今回の進路待ち 3秒');
  expect(rows[2].textContent).toContain('到着済み');
+ expect(rows[2].textContent).toContain('この区間の後部通過まで 1秒');
+ expect(rows[2].textContent).not.toContain('今回の進路待ち');
  expect(rows[2].textContent).toContain('遅れ 1秒');
  expect(rows[3].textContent).toContain('進路待ち');
  expect(rows[3].textContent).not.toContain('遅れ');
+ expect(rows[3].textContent).not.toContain('今回の進路待ち');
 });
 
 test('a train entering after a wait does not count the same delay twice',async()=>{
@@ -136,10 +140,13 @@ test('a train entering after a wait does not count the same delay twice',async()
  await act(async()=>{});
  expect(screen.getByText('進路待ち（平面交差）')).toBeTruthy();
  expect(screen.getByText('遅れ 4秒')).toBeTruthy();
+ expect(screen.getByText('今回の進路待ち 4秒')).toBeTruthy();
  await act(async()=>vi.advanceTimersByTime(500));
  expect(screen.getByText('走行中')).toBeTruthy();
  expect(screen.queryByText('進路待ち（平面交差）')).toBeNull();
  expect(screen.getByText('遅れ 5秒')).toBeTruthy();
+ expect(screen.queryByText(/今回の進路待ち/)).toBeNull();
+ expect(screen.queryByText(/後部通過/)).toBeNull();
  expect(screen.queryByText('進路待ち')).toBeNull();
 });
 
