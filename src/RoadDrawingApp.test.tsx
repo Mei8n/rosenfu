@@ -581,3 +581,21 @@ test('local park and return keep a branch permit but a restored draft requires d
  selectBranch();
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
 });
+
+test('releasing Ctrl can place a fresh road click while the cancelled one is still computing',async()=>{
+ const {click}=await start();
+ RoadWorker.delay=true;
+ await click(-.0008);
+ expect(RoadWorker.queued).toHaveLength(1);
+ fireEvent.keyDown(window,{key:'Control',ctrlKey:true});
+ fireEvent.keyUp(window,{key:'Control'});
+ await click(.0008);
+ expect(RoadWorker.queued).toHaveLength(1);
+ await act(async()=>{RoadWorker.queued.shift()!();});
+ expect(document.querySelectorAll('.draft-anchor')).toHaveLength(0);
+ expect(RoadWorker.queued).toHaveLength(1);
+ await act(async()=>{RoadWorker.queued.shift()!();});
+ const [anchor]=document.querySelectorAll('.draft-anchor');
+ expect(document.querySelectorAll('.draft-anchor')).toHaveLength(1);
+ expect(Number(anchor.getAttribute('x'))+Number(anchor.getAttribute('width'))/2).toBeCloseTo(project(latitude,longitude+.0008,camera).x,5);
+});

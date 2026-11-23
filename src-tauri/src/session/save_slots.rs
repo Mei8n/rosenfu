@@ -253,6 +253,57 @@ mod tests {
         assert_eq!(bytes(&manual), before);
     }
     #[test]
+    fn autosave_conflict_revokes_slot_authorization_until_rechecked() {
+        use rosenfu_core::world::ViewState;
+
+        let root = tempfile::tempdir().unwrap();
+        let mut editor = WorldEditor::new();
+        editor.save_active_slot(root.path(), None, None).unwrap();
+        let id = editor.active_slot_id.clone().unwrap();
+        let manual = editor.active_save_path(root.path()).unwrap();
+        let auto = editor.active_autosave_path(root.path()).unwrap();
+        let original_manual = bytes(&manual);
+        assert!(!editor.slot_autosave_status(root.path()).unwrap());
+
+        // Another normal editor publishes its recovery file after our check.
+        let mut other = WorldEditor::new();
+        other.load_save_slot(root.path(), id.clone()).unwrap();
+        other
+            .rename_company("recovery from second editor".into())
+            .unwrap();
+        other
+            .autosave_active_slot(root.path(), &id, None, None)
+            .unwrap();
+        let external = bytes(&auto);
+        let before = editor.snapshot();
+        let view = ViewState {
+            latitude: 35.0,
+            longitude: 139.0,
+            zoom: 14.0,
+        };
+        assert!(editor
+            .autosave_active_slot(root.path(), &id, None, Some(view))
+            .is_err());
+        assert_eq!(bytes(&auto), external);
+        assert_eq!(editor.snapshot(), before);
+
+        // The path returns to its old Missing baseline, but the failed
+        // authorization must not silently become valid again.
+        std::fs::remove_file(&auto).unwrap();
+        assert!(editor
+            .autosave_active_slot(root.path(), &id, None, Some(view))
+            .is_err());
+        assert!(!auto.exists());
+        assert_eq!(editor.snapshot(), before);
+
+        assert!(!editor.slot_autosave_status(root.path()).unwrap());
+        editor
+            .autosave_active_slot(root.path(), &id, None, Some(view))
+            .unwrap();
+        assert_eq!(editor.snapshot().view_state, Some(view));
+        assert_eq!(bytes(&manual), original_manual);
+    }
+    #[test]
     fn deleting_active_slot_preserves_edits_and_stops_autosave() {
         let root = tempfile::tempdir().unwrap();
         let mut editor = WorldEditor::new();

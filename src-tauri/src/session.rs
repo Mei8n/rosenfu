@@ -2337,7 +2337,16 @@ impl WorldEditor {
             .update_save_metadata(plans, view)
             .map_err(|e| e.to_string())?;
         if automatic {
-            candidate.autosave(path)?;
+            if let Err(error) = candidate.autosave(path) {
+                // Keep the failed candidate's view and plans unpublished, but
+                // carry forward a revoked write authorization. Otherwise a
+                // subsequent tick could retry a stale autosave baseline.
+                self.autosave_version = candidate.autosave_version;
+                self.observed_autosave = candidate.observed_autosave;
+                self.autosave_blocked = candidate.autosave_blocked;
+                self.autosave_replace_allowed = candidate.autosave_replace_allowed;
+                return Err(error);
+            }
         } else {
             candidate.save(path)?;
         }
@@ -2442,6 +2451,7 @@ impl WorldEditor {
                 self.autosave_version = None;
                 self.observed_autosave = None;
                 self.autosave_blocked = true;
+                self.autosave_replace_allowed = false;
                 Err(error.to_string())
             }
         }
