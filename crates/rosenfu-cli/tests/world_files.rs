@@ -142,3 +142,65 @@ fn inspect_counts_physical_services_without_modifying_current_save() {
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert!(!rosenfu_storage::backup_path(&path).exists());
 }
+
+#[test]
+fn road_proof_requires_exact_approval_and_never_modifies_an_unproved_world() {
+    use rosenfu_core::{
+        ofm_evidence::raw_sha256,
+        world::{GeoPoint, World},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let capture = dir.path().join("test.rosenfu");
+    let manifest = dir.path().join("approved.json");
+    let mut world = World::default();
+    let player = world.add_player("Player".into()).unwrap();
+    let company = world.add_company(player, "Railway".into()).unwrap();
+    let alignment = world
+        .build_alignment(
+            company,
+            "Unproved line".into(),
+            vec![
+                GeoPoint {
+                    latitude: 35.,
+                    longitude: 139.,
+                },
+                GeoPoint {
+                    latitude: 35.,
+                    longitude: 139.1,
+                },
+            ],
+        )
+        .unwrap();
+    let save = rosenfu_storage::encode(&world).unwrap();
+    let approval = serde_json::to_vec(&serde_json::json!({
+        "format": "rosenfu-road-path-scope-v1",
+        "origin": "synthetic",
+        "save_sha256": raw_sha256(&save),
+        "alignment_id": alignment.0.to_string(),
+        "spans": [],
+        "tiles": [],
+    }))
+    .unwrap();
+    std::fs::write(&manifest, &approval).unwrap();
+    let run = |hash: &str| {
+        Command::new(env!("CARGO_BIN_EXE_rosenfu-cli"))
+            .args(["world", "verify-road-proof"])
+            .arg(&manifest)
+            .arg(hash)
+            .arg(&capture)
+            .output()
+            .unwrap()
+    };
+    // No capture exists: a wrong approval must be rejected before opening it.
+    let rejected = run(&"0".repeat(64));
+    assert!(!rejected.status.success() && rejected.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("manifest digest differs"));
+    std::fs::write(&capture, &save).unwrap();
+    let rejected = run(&raw_sha256(&approval));
+    assert!(!rejected.status.success() && rejected.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&rejected.stderr)
+        .contains("not fully covered by contiguous proved spans"));
+    assert_eq!(std::fs::read(&capture).unwrap(), save);
+    assert_eq!(std::fs::read(&manifest).unwrap(), approval);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+}

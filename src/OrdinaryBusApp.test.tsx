@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import {afterEach,expect,test,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {invoke} from '@tauri-apps/api/core';
 import {App} from './App';
 import {project} from './map';
@@ -33,7 +33,7 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;retainedGrade?:boolean}){
+async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;retainedGrade?:boolean;retainedOneway?:boolean}){
  const authored=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
   ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
  ]}]}:tile;
@@ -54,7 +54,7 @@ async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rect
  const nonordinary={...first,id:'pilot',name:'対象外 D'};
  const baseline=config.multiple?{
   ...world,ofm_gameplay_bus_routes:{[first.id]:config.savedProof?{
-   rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,respectOneway:false,
+   rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,respectOneway:!!config.retainedOneway,
    start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:config.closedSaved?0:1},
    ...(config.retainedGrade?{gradePolicy:'observedConnectors'}:{}),
    ...(config.closedSaved?{pattern:'closedOneWay',via:[{id:'closed-via',tileKey:key,vertex:{feature:0,line:0,vertex:1}}]}:{}),
@@ -234,10 +234,32 @@ test('a newly drawn open route requests and displays the native reverse path bef
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',preview));
 });
 
-test('an unavailable native return explains the refusal and cannot be committed as outbound only',async()=>{
- const map=(await setup({roundTrip:true,preview:async()=>({points:[a,b],lengthM:380,
+test.each([false,true])('can choose mapped one-way restrictions for a new route (waypoints = %s)',async waypoints=>{
+ const preview=async()=>({points:[a,b],lengthM:380,returnPath:{points:[b,waypoint,a],lengthM:440}});
+ const {from,to}=(await setup({waypoints,roundTrip:true,autoStart:false,preview}))!;
+ const mode=screen.getByRole<HTMLInputElement>('checkbox',{name:'地図データの一方通行に従う'});
+ expect(mode.checked).toBe(false);
+ fireEvent.click(mode);
+ expect(mode.checked).toBe(true);
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
+ expect(screen.queryByRole('checkbox',{name:'地図データの一方通行に従う'})).toBeNull();
+ expect(screen.getByText('地図データの一方通行に従います')).toBeTruthy();
+ from();to();await screen.findByText('復路 440 m');
+ const request=vi.mocked(invoke).mock.calls.find(c=>c[0]==='preview_gameplay_ofm_bus')?.[1];
+ expect(request).toMatchObject({path:{pattern:'openRoundTrip',respectOneway:true}});
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',request));
+});
+
+test.each([false,true])('an unavailable native return cannot be committed as outbound only (one-way = %s)',async respectOneway=>{
+ const map=(await setup({roundTrip:true,autoStart:false,preview:async()=>({points:[a,b],lengthM:380,
   returnUnavailableReason:'終点から起点に戻れる道路がありません。'})}))!;
+ if(respectOneway)fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
  map.from();map.to();await screen.findByText(/終点から起点に戻れる道路がありません/);
+ expect(invoke).toHaveBeenCalledWith('preview_gameplay_ofm_bus',expect.objectContaining({
+  path:expect.objectContaining({respectOneway}),
+ }));
  expect(screen.getByLabelText('バス系統のプレビュー')).toBeTruthy();
  expect(screen.queryByLabelText('バス系統の復路プレビュー')).toBeNull();
  const confirm=screen.getByRole<HTMLButtonElement>('button',{name:'バス系統を確定'});
@@ -433,6 +455,54 @@ test('ordinary buses place and rename an on-route stop; no world writes before e
  expect(put).not.toHaveProperty('requestStopTargets');
 });
 
+test('an intermediate stop moves on its confirmed route without changing its identity',async()=>{
+ let holdMove=false,releaseMove:(()=>void)|undefined;
+ const occurrenceKey='a'.repeat(64),requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ const {map}=(await setup({waypoints:true,interiorStops:true,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
+  if(holdMove)await new Promise<void>(resolve=>{releaseMove=resolve;});
+  const req=requests().at(-1)![1] as {path:{interiorStops?:{id:string;name:string;fractionQ:number}[]}};
+  return {points:[a,b],lengthM:370,stopOccurrenceKeys:[occurrenceKey],interiorStops:req.path.interiorStops?.map(stop=>({
+   id:stop.id,stopId:'native:'+stop.id,name:stop.name,servesReturn:false,
+   point:{latitude:a.latitude,longitude:a.longitude+(b.longitude-a.longitude)*stop.fractionQ/1_000_000},
+  }))};
+ }}))!;
+ fireEvent.click(screen.getByRole('button',{name:'停留所を編集'}));
+ const route=await screen.findByLabelText('停留所を置くバス経路');
+ const [x0,y0,x1,y1]=route.querySelector('path')!.getAttribute('d')!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+ const onRoute=(fraction:number,offset=0)=>fireEvent.click(map,{clientX:x0+(x1-x0)*fraction,clientY:y0+(y1-y0)*fraction+offset});
+ onRoute(.25);await screen.findByRole('textbox',{name:'停留所名 1'});
+ const oldMarker=screen.getByLabelText('停留所 1').getAttribute('cx');
+ const one=(requests().at(-1)![1] as {path:{interiorStops:{id:string}[]}}).path.interiorStops[0].id;
+ onRoute(.75);await screen.findByRole('textbox',{name:'停留所名 2'});
+ fireEvent.change(screen.getByRole('textbox',{name:'停留所名 1'}),{target:{value:'中央'}});
+ const before=requests().length;
+ const selectMove=()=>fireEvent.click(screen.getByRole('button',{name:'停留所 1 の位置を変更'}));
+ selectMove();
+ onRoute(.5,30);
+ expect(screen.getByText(/経路上の、駅や交差点から少し離れた位置/)).toBeTruthy();
+ onRoute(.75);
+ expect(screen.getByText('ここにはすでに停留所があります。')).toBeTruthy();
+ expect(requests()).toHaveLength(before);
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.queryByText(/停留所の移動先を/)).toBeNull();
+ expect(screen.getByRole<HTMLInputElement>('textbox',{name:'停留所名 1'}).value).toBe('中央');
+ holdMove=true;selectMove();onRoute(.5);
+ await waitFor(()=>expect(releaseMove).toBeTypeOf('function'));
+ fireEvent.keyDown(window,{key:'Escape'});
+ holdMove=false;await act(async()=>releaseMove!());
+ expect(screen.getByLabelText('停留所 1').getAttribute('cx')).toBe(oldMarker);
+ expect(screen.queryByText(/停留所の移動先を/)).toBeNull();
+ selectMove();onRoute(.5);
+ await waitFor(()=>expect(screen.queryByText(/停留所の移動先を/)).toBeNull());
+ expect(requests().at(-1)![1]).toMatchObject({expectedWorldToken:'world-exact',routeId:'owned-a',rawEvidence:null,requestStopTargets:true,
+  path:{interiorStops:[{id:one,name:'中央',occurrenceKey,fractionQ:500000},{name:'停留所 2',fractionQ:750000}]}});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'停留所の編集を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({routeId:'owned-a',
+  path:expect.objectContaining({interiorStops:[{id:one,name:'中央',occurrenceKey,fractionQ:500000},
+   expect.objectContaining({name:'停留所 2',fractionQ:750000})]})})));
+});
+
 test('overlapping stops require an explicit occurrence and Escape discards the unconfirmed stop draft',async()=>{
  const keys=['a','b','c'].map(s=>s.repeat(64)),requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
  const {pressPoint}=(await setup({waypoints:true,interiorStops:true,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
@@ -608,12 +678,13 @@ test('native observed-grade capability routes through proven structures without 
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',req));
 });
 
-test.each([false,true])('saved grade flag=%s is never rewritten by an engine capability while editing',async retainedGrade=>{
+test.each([false,true])('saved road policies are preserved while editing (strict and grade = %s)',async retainedGrade=>{
  const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
- const {pressPoint}=(await setup({waypoints:true,observedGrade:true,retainedGrade,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
+ const {pressPoint}=(await setup({waypoints:true,observedGrade:true,retainedGrade,retainedOneway:retainedGrade,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
   const req=requests().at(-1)![1] as {path:{via?:unknown[];end:{vertex:number}}};
   return req.path.via?.length?{points:[a,b,waypoint],lengthM:660,viaPointIndices:[1]}:{points:[a,b],lengthM:380};
  }}))!;
+ if(!retainedGrade)fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
  fireEvent.click(screen.getByRole('button',{name:'バス系統を引き直す'}));
  await screen.findByText('道路経路 380 m・停留所2か所');
  pressPoint(b,1,screen.getByLabelText('バスの終点'));
@@ -621,6 +692,7 @@ test.each([false,true])('saved grade flag=%s is never rewritten by an engine cap
  await screen.findByText('道路経路 660 m・停留所2か所');
  expect(requests()).toHaveLength(2);
  for(const [,query] of requests()){
+  expect(query).toHaveProperty('path.respectOneway',retainedGrade);
   if(retainedGrade)expect(query).toHaveProperty('path.gradePolicy','observedConnectors');
   else expect(query).not.toHaveProperty('path.gradePolicy');
  }

@@ -314,7 +314,65 @@ test('ordinary authored tram follows a cached raw T junction on click without in
  expect(document.querySelector('.parked-plan')).toBeNull();
 });
 
-test.each(['confirmed-road-snap','free-on-road'] as const)('Tram missing old cell %s never trusts a coincident free point',async(kind)=>{
+test('a native-verified tram road junction can connect to a nearby built tram endpoint through an explicit lead',async()=>{
+ vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
+ const f=tramFixture,bytes=Uint8Array.from(f.raw),tile=await decodeOpenFreeMapRoadTile(bytes,f.x,f.y,f.revision,1);
+ mock.snapshot={...tile,tileSnapshots:[tile]};
+ const [[startLon,startLat],[jointLon,jointLat]]=tile.tileLines[0].coordinates;
+ const [endLon,endLat]=tile.tileLines[1].coordinates[1];
+ const start={latitude:startLat+(jointLat-startLat)*.25,longitude:startLon+(jointLon-startLon)*.25};
+ const junction={latitude:jointLat,longitude:jointLon};
+ const roadEnd={latitude:endLat,longitude:endLon};
+ const bearing={latitude:endLat-jointLat,longitude:endLon-jointLon};
+ const scale=.00006/Math.hypot(bearing.latitude,bearing.longitude);
+ const terminal={latitude:endLat+bearing.latitude*scale,longitude:endLon+bearing.longitude*scale};
+ const continuation={latitude:endLat+bearing.latitude*scale*6,longitude:endLon+bearing.longitude*scale*6};
+ const mapCamera={...junction,zoom:16};
+ const target={id:'10',owner:'2',name:'既設トラム',track_type:'tram',points:[terminal,continuation]};
+ const loaded={...world,view_state:mapCamera,alignments:[target]};
+ const binding={z:14,x:f.x,y:f.y,revision:f.revision,rawSha256:f.tileRawSha256,decoderRule:OFM_EVIDENCE_RULE,
+  key:f.tileKey,url:f.tileKey,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION};
+ mock.read.mockResolvedValue({status:'ready',evidence:{rawTiles:[{sha256:f.tileRawSha256,bytes}],bindings:[binding]}});
+ let wrongRoadEnd=true,refuse=true;
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'tram-terminal-lead',authored_tram_road_guide_enabled:true};
+  if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='ofm_world_token')return 'tram-terminal-token';
+  if(command==='preview_authored_tram_road_guide')return [start,junction,wrongRoadEnd?terminal:roadEnd];
+  if(command==='preview_construction_plan')return {validationError:refuse&&(args as {validationOnly?:boolean})?.validationOnly?'敷設できない区間です':null,newCrossingCount:0};
+  return loaded;
+ });
+ render(<App/>);await screen.findByText(/tram-terminal-lead/);
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ const map=screen.getByRole('img',{name:/^駅配置用/});map.getBoundingClientRect=()=>new DOMRect(0,0,1000,600);
+ const click=async(p:typeof start)=>{const xy=project(p.latitude,p.longitude,mapCamera);await act(async()=>fireEvent.click(map,{clientX:xy.x,clientY:xy.y,detail:1}));};
+ await click(start);await waitFor(()=>expect(document.querySelector('.draft-anchor')).toBeTruthy());
+ await click(terminal);
+ await screen.findByText(/道路に沿う軌道の経路を確認できません/);
+ expect(vi.mocked(invoke).mock.calls.some(([c,args])=>c==='preview_construction_plan'&&(args as {validationOnly?:boolean})?.validationOnly)).toBe(false);
+ wrongRoadEnd=false;await click(terminal);
+ await screen.findByText(/敷設できない区間です/);
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ expect(invoke).toHaveBeenCalledWith('preview_authored_tram_road_guide',expect.objectContaining({
+  expectedWorldToken:'tram-terminal-token',guide:expect.objectContaining({tileKey:f.tileKey,endFractionQ:1_000_000}),
+ }));
+ refuse=false;await click(terminal);
+ await waitFor(()=>expect(document.querySelector('.confirmed-draft')).toBeTruthy());
+ const validation=vi.mocked(invoke).mock.calls.filter(([c,args])=>c==='preview_construction_plan'&&(args as {validationOnly?:boolean})?.validationOnly).at(-1)?.[1] as {
+  alignments:{trackType:string;points:typeof start[];ofmPath?:unknown;destination:unknown}[]
+ };
+ const path=validation.alignments[0];
+ expect(path.destination).toEqual({alignmentId:'10',endpoint:'start'});
+ expect(path.trackType).toBe('tram');
+ expect(path.points.at(-2)).toEqual(roadEnd);
+ expect(path.points.at(-1)).toEqual(terminal);
+ expect(path.ofmPath).toBeUndefined();
+ expect(invoke).not.toHaveBeenCalledWith('build_plan',expect.anything());
+ expect(target.points).toEqual([terminal,continuation]);
+});
+
+test.each(['confirmed-road-snap','free-on-road','undo-road-snap'] as const)('Tram missing old cell %s accepts only matching road snap proof',async(kind)=>{
  vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
  const revision='rosenfu_webview_fixture_16';
  const tile=(x:number)=>`${OFM_METADATA}/${revision}/14/${x}/6452.pbf`;
@@ -354,6 +412,33 @@ test.each(['confirmed-road-snap','free-on-road'] as const)('Tram missing old cel
  const map=document.querySelector('svg[role=img]')!;
  map.getBoundingClientRect=()=>new DOMRect(0,0,1000,600);
  const gesture=(p:typeof start)=>{const xy=project(p.latitude,p.longitude,mapCamera);return {clientX:xy.x,clientY:xy.y,detail:1};};
+ if(kind==='undo-road-snap'){
+  const [[x1,y1],[x2,y2]]=startTile.tileSnapshots[0].tileLines[0].coordinates;
+  const leftPoint=(f:number)=>({latitude:y1+(y2-y1)*f,longitude:x1+(x2-x1)*f});
+  const a=leftPoint(.04),b=leftPoint(.48),c=leftPoint(.96);
+  nativeReject=false;
+  for(const p of [a,b,c])await act(async()=>fireEvent.click(map,gesture(p)));
+  const three=document.querySelector('.confirmed-draft')?.getAttribute('d');
+  expect(three).toBeTruthy();
+  fireEvent.keyDown(window,{key:'z',ctrlKey:true});
+  const two=document.querySelector('.confirmed-draft')?.getAttribute('d');
+  expect(two).toBeTruthy(); expect(two).not.toBe(three);
+  mock.snapshot=endTile;rerender(<App/>);
+  // Undo leaves a completed plan; clicking its endpoint resumes that path.
+  const follow=screen.getByRole("button",{name:"道路に合わせる"});
+  if(follow.getAttribute("aria-pressed")==="false")fireEvent.click(follow);
+  await act(async()=>fireEvent.click(map,gesture(b)));
+  await act(async()=>fireEvent.click(map,gesture(end)));
+  await waitFor(()=>expect(observeWaiting).toBeTruthy());
+  expect(mock.observe).toHaveBeenCalledTimes(1);
+  await act(async()=>observeWaiting!());
+  await waitFor(()=>expect(document.querySelector('.confirmed-draft')?.getAttribute('d')).not.toBe(two));
+  const validation=vi.mocked(invoke).mock.calls.filter(([command,args])=>command==='preview_construction_plan'&&(args as {validationOnly?:boolean})?.validationOnly).at(-1)![1] as {alignments:{points:typeof start[]}[]};
+  const last=validation.alignments[0].points.at(-1);
+  expect(last?.longitude).toBeCloseTo(end.longitude,9);
+  expect(last?.latitude).toBeCloseTo(end.latitude,9);
+  return;
+ }
  await act(async()=>fireEvent.click(map,{...gesture(start),ctrlKey:kind==='free-on-road'}));
  expect(document.querySelector('.draft-endpoint')).toBeTruthy();
  expect(mock.snapshot).toBe(startTile);
@@ -398,4 +483,101 @@ test.each(['confirmed-road-snap','free-on-road'] as const)('Tram missing old cel
  expect(placed.ofmPath).toBeUndefined();
  expect(fetcher.mock.calls.map(([url])=>url)).toEqual([OFM_METADATA,tile(14551),tile(14552)]);
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c.startsWith('build_'))).toBe(false);
+});
+
+function branchFixture(){
+ const p=(offset:number)=>({latitude,longitude:longitude+offset});
+ const a=p(-.0008),b=p(.0008);
+ const west={id:'10',owner:'2',name:'西側の本線',track_type:'normal',points:[p(-.0015),a]};
+ const main={id:'11',owner:'2',name:'既存の中央線',track_type:'normal',points:[a,b]};
+ const east={id:'12',owner:'2',name:'東側の本線',track_type:'normal',points:[b,p(.0015)]};
+ const end=(alignment_id:string,endpoint:'start'|'end')=>({alignment_id,endpoint});
+ const alignment_connections=[{a:end('10','end'),b:end('11','start')},{a:end('11','end'),b:end('12','start')}];
+ const snapshot={...world,alignments:[west,main,east],alignment_connections};
+ return {snapshot,alignment_connections,main,end};
+}
+function selectBranch(){
+ fireEvent.click(screen.getByRole('button',{name:'分岐として接続'}));
+ fireEvent.change(screen.getByLabelText('分岐の起点'),{target:{value:'10:end'}});
+ fireEvent.change(screen.getByLabelText('分岐の終点'),{target:{value:'12:start'}});
+ fireEvent.click(screen.getByRole('button',{name:'選んだ端点で分岐を計画'}));
+}
+test('an existing join still blocks ordinary drawing; explicit stem selection uses native preview and build',async()=>{
+ const {snapshot,alignment_connections,main,end}=branchFixture();
+ const h=await start(snapshot,undefined,false);
+ await h.click(-.0008);
+ expect(screen.getByText(/この端点は接続済みです/)).toBeTruthy();
+ selectBranch();
+ expect(screen.getByText(/分岐の終点: 東側の本線/)).toBeTruthy();
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+ const original=vi.mocked(invoke).getMockImplementation()!;
+ let deny=true;
+ const built={...snapshot,alignments:[...snapshot.alignments,{...main,id:'13',name:'分岐'}],
+  alignment_connections:[...alignment_connections,{a:end('10','end'),b:end('13','start')},{a:end('13','end'),b:end('12','start')}]};
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='preview_construction_plan'&&args&&'alignments' in args&&(args.alignments as any[]).some(path=>path.destination))
+    return {validationError:deny?'native branch refused':null,newCrossingCount:0};
+  if(command==='build_plan')return built;
+  return original(command,args);
+ });
+ await h.click(.0008);
+ expect(screen.getByText(/native branch refused/)).toBeTruthy();
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ deny=false;
+ await h.click(.00055);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+ // Roughly 6px from both the selected destination and the last anchor:
+ // the explicit terminal has precedence over ordinary finish-on-last-anchor.
+ await h.click(.000675);
+ expect(document.querySelector('.confirmed-draft')).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='build_plan')).toBe(true));
+ const [,args]=vi.mocked(invoke).mock.calls.find(([c])=>c==='build_plan'&&!!c)!;
+ expect(args).toMatchObject({alignments:[{extension:{alignmentId:'10',endpoint:'end'},
+   destination:{alignmentId:'12',endpoint:'start'},anchorLevels:['ground','ground','ground'],
+   infrastructure:{track_count:1,level:'ground'}}]});
+ await waitFor(()=>expect(screen.queryByText(/分岐の終点: 東側の本線/)).toBeNull());
+ fireEvent.click(screen.getByRole('button',{name:'分岐として接続'}));
+ const pick=screen.getByLabelText('分岐の起点') as HTMLSelectElement;
+ expect(Array.from(pick.options).map(option=>option.value)).toEqual(['']);
+});
+
+test('clearing an approved branch restores ordinary placement on the same path number and permits deliberate reselection',async()=>{
+ const {snapshot}=branchFixture(),h=await start(snapshot,undefined,false);
+ selectBranch();
+ await h.click(.00055);
+ expect(screen.getByText(/分岐の終点: 東側の本線/)).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'下書きを消去'}));
+ expect(screen.queryByText(/分岐の終点: 東側の本線/)).toBeNull();
+ vi.mocked(invoke).mockClear();
+ await h.click(.0025);await h.click(.0035);
+ const plans=vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='preview_construction_plan')
+   .flatMap(([,args])=>args&&'alignments' in args?args.alignments as Array<{extension?:unknown;destination?:unknown;points:unknown[]}>:[]);
+ expect(plans.some(plan=>plan.points.length>=2&&!plan.extension&&!plan.destination)).toBe(true);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'下書きを消去'}));
+ selectBranch();
+ expect(screen.getByText(/分岐の終点: 東側の本線/)).toBeTruthy();
+ await h.click(.0008);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('local park and return keep a branch permit but a restored draft requires deliberate reselection',async()=>{
+ const {snapshot}=branchFixture(),h=await start(snapshot,undefined,false);
+ selectBranch();await h.click(.0008);
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
+ expect(screen.queryByText(/分岐の終点: 東側の本線/)).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'計画 1 を編集'}));
+ expect(screen.getByText(/分岐の終点: 東側の本線/)).toBeTruthy();
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
+ fireEvent.click(screen.getByRole('tab',{name:'セーブデータ'}));
+ fireEvent.click(screen.getByRole('button',{name:'ワールドを保存'}));
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_world')).toBe(true));
+ const plans=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as any).constructionPlans;
+ cleanup();await start({...snapshot,construction_plans:JSON.parse(JSON.stringify(plans))},undefined,false);
+ expect(screen.queryByText(/分岐の終点: 東側の本線/)).toBeNull();
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+ selectBranch();
+ expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(false);
 });

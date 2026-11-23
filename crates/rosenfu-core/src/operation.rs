@@ -151,6 +151,15 @@ impl RailWaitReason {
     }
 }
 
+/// In Fixed operation, both ends of an alignment belong to one stop-to-stop
+/// reservation. This describes scope, not where the blocker physically is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RailWaitScope {
+    HeldAcrossConnections,
+    NeedsAcrossConnections,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arrival {
     pub train: TrainKey,
@@ -163,6 +172,7 @@ struct CompiledLeg {
     duration_ms: u64,
     clearance_ms: u64,
     resources: BTreeSet<String>,
+    spans_connections: bool,
     // Milliseconds from entry; absence means reserved through the ordinary rear-clear event.
     early_releases: BTreeMap<String, u64>,
     release_events: BTreeSet<u64>,
@@ -214,6 +224,9 @@ pub struct OperationRuntime {
     #[cfg(feature = "standard-periodic-rail")]
     standard_timetable: Option<periodic_dispatch::standard::StandardDailyV1>,
     rail_admission: RailAdmissionModel,
+    // Re-derived from checked World geometry on configuration/restore. The
+    // public runtime alone has no authority to choose this exact-meet tie.
+    preferred_opposing_birth: Option<TrainKey>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -703,14 +716,26 @@ impl OperationRuntime {
                         .saturating_add(clearance_ms)
                         .saturating_add(l.dwell_ms),
                 );
+                let resources: BTreeSet<_> = l
+                    .sections
+                    .iter()
+                    .flat_map(|s| s.resources.iter().cloned())
+                    .collect();
+                // Inspect the authoritative lockset once, never on each UI tick.
+                // One transition names two different alignment IDs; detecting
+                // both ends of the SAME alignment requires multiple transitions.
+                let spans_connections = rail_admission == RailAdmissionModel::Fixed
+                    && resources.iter().any(|key| {
+                        key.strip_prefix("rail:join:")
+                            .and_then(|s| s.strip_suffix(":End"))
+                            .filter(|id| id.parse::<u64>().is_ok())
+                            .is_some_and(|id| resources.contains(&format!("rail:join:{id}:Start")))
+                    });
                 legs.push(CompiledLeg {
                     duration_ms,
                     clearance_ms,
-                    resources: l
-                        .sections
-                        .iter()
-                        .flat_map(|s| s.resources.iter().cloned())
-                        .collect(),
+                    resources,
+                    spans_connections,
                     early_releases,
                     release_events,
                     nominal_entry_ms,
@@ -779,6 +804,7 @@ impl OperationRuntime {
             #[cfg(feature = "standard-periodic-rail")]
             standard_timetable: None,
             rail_admission,
+            preferred_opposing_birth: None,
         })
     }
     pub(crate) fn progressive_rail(&self) -> bool {
@@ -819,6 +845,13 @@ impl OperationRuntime {
     /// May report no category for an unknown resource. Scheduled dwell, moving
     /// vehicles and any bus are never reported as rail reservation waits.
     pub fn rail_wait_reason(&self, key: &TrainKey) -> Option<RailWaitReason> {
+        self.rail_wait_advisory(key).map(|(reason, _)| reason)
+    }
+
+    pub fn rail_wait_advisory(
+        &self,
+        key: &TrainKey,
+    ) -> Option<(RailWaitReason, Option<RailWaitScope>)> {
         key.service_id.parse::<u64>().ok()?;
         let train = self.trains.get(key)?;
         if !matches!(train.state, TrainState::Waiting { ready_ms } if ready_ms <= self.now_ms) {
@@ -829,7 +862,33 @@ impl OperationRuntime {
             .resources
             .iter()
             .find(|key_resource| self.reservation_blocks(key_resource, key))?;
-        RailWaitReason::of_resource(resource)
+        let reason = RailWaitReason::of_resource(resource)?;
+        let scope = if self.rail_admission == RailAdmissionModel::Fixed
+            && reason == RailWaitReason::Junction
+        {
+            let owner_spans = self
+                .occupied
+                .get(resource)
+                .and_then(|owner| self.trains.get(owner))
+                .filter(|owner| matches!(owner.state, TrainState::Moving { .. }))
+                .and_then(|owner| {
+                    self.services
+                        .get(&owner.key.service_id)?
+                        .legs
+                        .get(owner.leg)
+                })
+                .is_some_and(|leg| leg.spans_connections);
+            if owner_spans {
+                Some(RailWaitScope::HeldAcrossConnections)
+            } else if leg.spans_connections {
+                Some(RailWaitScope::NeedsAcrossConnections)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        Some((reason, scope))
     }
 
     /// Transfer only an idle clock to a freshly compiled timetable. Departures
@@ -920,6 +979,18 @@ impl OperationRuntime {
 
     pub(crate) fn admission_model(&self) -> RailAdmissionModel {
         self.rail_admission
+    }
+
+    pub(crate) fn set_preferred_opposing_birth(&mut self, key: Option<TrainKey>) {
+        self.preferred_opposing_birth = key;
+    }
+
+    /// A siding train already moving or dwelling after this approved tie
+    /// must not lose its physical clearance proof during a world edit.
+    pub(crate) fn active_preferred_opposing_birth(&self) -> Option<&TrainKey> {
+        let key = self.preferred_opposing_birth.as_ref()?;
+        let train = self.trains.get(key)?;
+        (train.leg > 0 || matches!(train.state, TrainState::Moving { .. })).then_some(key)
     }
 
     /// Verify neither the admission model nor another service's run changes.
@@ -1232,6 +1303,7 @@ impl OperationRuntime {
                 started: self.started,
                 time_margin_ms: self.time_margin_ms,
                 rail_admission: self.rail_admission,
+                preferred_opposing_birth: self.preferred_opposing_birth.clone(),
                 // Replay does not serialize or validate historical births.
                 timetable_handoffs: BTreeMap::new(),
                 #[cfg(feature = "standard-periodic-rail")]
@@ -1444,6 +1516,27 @@ impl OperationRuntime {
                 })
                 .collect();
             waiting.sort();
+            if let [(first_ready, first), (second_ready, second)] = waiting.as_slice() {
+                // Only a proved two-train birth tie. Never jump the queue,
+                // preempt locks, or swap already-waiting/returning trains.
+                if self.preferred_opposing_birth.as_ref() == Some(second)
+                    && self.rail_admission == RailAdmissionModel::Fixed
+                    && self.services.len() == 2
+                    && self.trains.len() == 2
+                    && self.occupied.is_empty()
+                    && *first_ready == at
+                    && *second_ready == at
+                    && [first, second].into_iter().all(|k| {
+                        k.scheduled_ms == at
+                            && self
+                                .trains
+                                .get(k)
+                                .is_some_and(|t| t.leg == 0 && t.delay_ms == 0)
+                    })
+                {
+                    waiting.swap(0, 1);
+                }
+            }
             for (ready, key) in waiting {
                 let t = &self.trains[&key];
                 let c = &self.services[&key.service_id].legs[t.leg];

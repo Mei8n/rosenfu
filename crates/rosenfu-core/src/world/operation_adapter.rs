@@ -5,8 +5,9 @@ use crate::operation::{
     OperationRuntime, RailAdmissionModel, RunLeg, Section, ServiceRunSpec, Timetable, Vehicle,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod opposing_birth_priority;
 mod vehicle_map;
-pub use vehicle_map::LiveRailMarker;
+pub use vehicle_map::{LiveBusMarker, LiveRailMarker};
 #[cfg(feature = "periodic-world-qa")]
 pub mod periodic_qa;
 #[cfg(feature = "standard-periodic-rail")]
@@ -1078,7 +1079,7 @@ impl World {
             InlineTerminalDwell => OperationRuntime::new_with_inline_terminal_dwell(specs)?,
             InlinePlatformHandoff => OperationRuntime::new_with_inline_platform_handoff(specs)?,
         };
-        Ok(WorldOperation {
+        let mut operation = WorldOperation {
             configs,
             bus_configs,
             runtime,
@@ -1086,7 +1087,11 @@ impl World {
             pending_target: None,
             #[cfg(feature = "standard-periodic-rail")]
             standard_owner: None,
-        })
+        };
+        operation
+            .runtime
+            .set_preferred_opposing_birth(self.opposing_birth_priority(&operation));
+        Ok(operation)
     }
     pub fn operation_save(&self) -> Option<WorldOperationSave> {
         self.operation.as_ref().map(|o| WorldOperationSave {
@@ -1317,7 +1322,7 @@ impl World {
         if saved.invalidated {
             runtime.set_paused(true);
         }
-        self.operation = Some(WorldOperation {
+        let mut operation = WorldOperation {
             configs: saved.configs,
             bus_configs: saved.bus_configs,
             runtime,
@@ -1325,7 +1330,11 @@ impl World {
             pending_target: saved.pending_target,
             #[cfg(feature = "standard-periodic-rail")]
             standard_owner: None,
-        });
+        };
+        operation
+            .runtime
+            .set_preferred_opposing_birth(self.opposing_birth_priority(&operation));
+        self.operation = Some(operation);
         Ok(())
     }
     fn terminal_hold_eligible(
@@ -2050,8 +2059,20 @@ impl World {
                             != o.runtime.service_spec(&format!("bus:{}", config.route_id))
                     })
             });
-        if invalid {
-            if let Some(o) = &mut self.operation {
+        let priority = (!invalid)
+            .then(|| {
+                self.operation
+                    .as_ref()
+                    .and_then(|o| self.opposing_birth_priority(o))
+            })
+            .flatten();
+        if let Some(o) = &mut self.operation {
+            let lost_active_siding_proof = o
+                .runtime
+                .active_preferred_opposing_birth()
+                .is_some_and(|started| Some(started) != priority.as_ref());
+            o.runtime.set_preferred_opposing_birth(priority);
+            if invalid || lost_active_siding_proof {
                 o.invalidated = true;
                 o.runtime.set_paused(true);
             }

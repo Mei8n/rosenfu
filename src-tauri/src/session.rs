@@ -2329,16 +2329,13 @@ impl WorldEditor {
     ) -> Result<(), String> {
         self.advance_operation()?;
         let mut candidate = self.clone();
-        let mut draft = candidate.snapshot();
-        if let Some(plans) = plans {
-            draft.construction_plans = Some(plans);
-        }
-        if let Some(view) = view {
-            draft.view_state = Some(view);
-        }
-        candidate.world = World::new(draft).map_err(|e| e.to_string())?;
-        candidate.world.retain_operation_from(&self.world);
-        candidate.world.retain_fixed_od_scenario_from(&self.world);
+        // Save only changes editor metadata. The loaded world and current
+        // runtime retain their existing validation; storage still validates
+        // the full final archive and checks the exact previous file version.
+        candidate
+            .world
+            .update_save_metadata(plans, view)
+            .map_err(|e| e.to_string())?;
         if automatic {
             candidate.autosave(path)?;
         } else {
@@ -3323,6 +3320,71 @@ mod tests {
             "activePathId":1,"activePlanId":1,"draftPoints":[{"latitude":35.0,"longitude":139.0}],"redoPoints":[],"draftExtension":null,
             "trackType":"normal","designSpeedKmh":120,"roadFollowing":false,"plannedStations":[],"draftFinished":false
         })).unwrap()
+    }
+    #[test]
+    fn metadata_only_save_reuses_equal_view_and_preserves_supplied_plan_bits() {
+        use rosenfu_core::world::{ConstructionJunctionSource, ViewState};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        let mut editor = WorldEditor::new();
+        let point = |longitude| GeoPoint {
+            latitude: 35.,
+            longitude,
+        };
+        let draft = editor
+            .build_alignment("line".into(), vec![point(139.), point(139.02)])
+            .unwrap();
+        let alignment = draft.alignments[0].clone();
+        let mut plans = draft_plans();
+        plans.draft_junction_source = Some(ConstructionJunctionSource {
+            reverse: false,
+            alignment_id: alignment.id,
+            segment_index: 0,
+            fraction: 0.,
+            expected_alignment: alignment,
+        });
+        let view = ViewState {
+            latitude: 35.,
+            longitude: 139.,
+            zoom: 14.,
+        };
+        editor
+            .save_with_view(&path, Some(plans.clone()), Some(view), false)
+            .unwrap();
+        let shared = editor.world.shared_snapshot();
+        let original = std::fs::read(&path).unwrap();
+        editor
+            .save_with_view(&path, None, Some(view), false)
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &shared,
+            &editor.world.shared_snapshot()
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let backup = rosenfu_storage::backup_path(&path);
+        assert_eq!(std::fs::read(&backup).unwrap(), original);
+        let mut supplied = plans.clone();
+        supplied.draft_junction_source.as_mut().unwrap().fraction = -0.;
+        assert_eq!(plans, supplied); // PartialEq must not drop the supplied bits.
+        editor
+            .save_with_view(&path, Some(supplied), None, false)
+            .unwrap();
+        let written = std::fs::read(&path).unwrap();
+        assert_ne!(written, original);
+        assert_eq!(std::fs::read(&backup).unwrap(), original);
+        let saved = rosenfu_storage::load_world(&path).unwrap();
+        let fraction = saved
+            .snapshot()
+            .construction_plans
+            .as_ref()
+            .unwrap()
+            .draft_junction_source
+            .as_ref()
+            .unwrap()
+            .fraction;
+        assert_eq!(fraction.to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(saved.snapshot().view_state, Some(view));
+        assert_eq!(saved.snapshot(), &editor.snapshot());
     }
     #[test]
     fn plan_save_conflict_does_not_apply_new_draft_or_replace_disk() {

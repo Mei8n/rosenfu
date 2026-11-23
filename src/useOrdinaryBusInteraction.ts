@@ -8,7 +8,7 @@ import {cachedBusHoverQuery,matchOrdinaryBusPreview,prepareOrdinaryBusQuery,rest
 import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
 type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean};
-type DraftSpec={id:string;pattern?:OrdinaryBusPattern;gradePolicy?:OrdinaryBusGradePolicy;savedPath?:OrdinaryBusQuery['path']};
+type DraftSpec={id:string;respectOneway:boolean;pattern?:OrdinaryBusPattern;gradePolicy?:OrdinaryBusGradePolicy;savedPath?:OrdinaryBusQuery['path']};
 type Input={
  active:boolean;allow:boolean;autoRoute:boolean;closedCapable?:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;descriptors:readonly unknown[];
  observe?:RouteTileObserver;read:BusEvidenceReader;token:()=>Promise<string>;
@@ -103,13 +103,13 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
   const src=latest.current.input;
   const pattern=closed?'closedOneWay':currentSpec.pattern;
   const prior=lastProof.current;
-  const cached=prior?.routeId===currentSpec.id&&prior.path.pattern===pattern&&prior.path.gradePolicy===currentSpec.gradePolicy&&cachedBusHoverQuery(prior,controls);
+  const cached=prior?.routeId===currentSpec.id&&prior.path.pattern===pattern&&prior.path.gradePolicy===currentSpec.gradePolicy&&prior.path.respectOneway===currentSpec.respectOneway&&cachedBusHoverQuery(prior,controls);
   if(cached&&!final)return {...cached,name};
   const expectedWorldToken=await src.token();
   if(signal.aborted)throw Error('経路の確認を中止しました。');
   if(cached&&cached.expectedWorldToken===expectedWorldToken)return {...cached,name};
   return prepareOrdinaryBusQuery(controls[0].anchor,controls.at(-1)!.anchor,name,currentSpec.id,expectedWorldToken,
-   src.read,src.descriptors,signal,src.observe,pattern,controls.slice(1,-1),currentSpec.savedPath?.respectOneway??false,currentSpec.savedPath?.interiorStops,currentSpec.gradePolicy);
+   src.read,src.descriptors,signal,src.observe,pattern,controls.slice(1,-1),currentSpec.respectOneway,currentSpec.savedPath?.interiorStops,currentSpec.gradePolicy);
  }
  async function finish(f:NonNullable<Frame['finish']>){
   if(!canEdit()||!spec.current||frameRef.current?.finish!==f)return;

@@ -66,3 +66,17 @@ test('a cancelled endpoint lookup cannot restore the old draft preview',async()=
  expect(h.props.onSave).not.toHaveBeenCalled();
  expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='preview_route_membership')).toBe(false);
 });
+
+test('disconnected series endpoint can be retried without changing stop overrides',async()=>{
+ const h=setup();
+ vi.mocked(invoke).mockResolvedValueOnce({status:'no_path',candidates:[],truncated:false});
+ await h.click('3');await h.click('4');
+ expect(await screen.findByText(/この駅には接続できません/)).toBeTruthy();
+ await h.click('2');
+ await waitFor(()=>expect(h.props.onCandidateChange.mock.lastCall?.[0]?.stations).toEqual(['1','2']));
+ expect(h.props.onSave).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByText('編集終了'));await waitFor(()=>expect(h.props.onSave).toHaveBeenCalledOnce());
+ expect(h.props.onSave.mock.calls[0][0]).toMatchObject({
+  start:'1',sourceRouteIds:['r1','r2'],stops:[{kind:'start'},{kind:'on_leg',leg_key:'9',station_id:'2'}],
+ });
+});

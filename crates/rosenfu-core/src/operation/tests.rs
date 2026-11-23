@@ -697,3 +697,84 @@ fn live_cutover_never_spawns_a_departure_equal_to_its_processed_boundary() {
     assert_eq!(runtime.trains().count(), 1);
     assert_eq!(OperationRuntime::restore(runtime.save()).unwrap(), runtime);
 }
+
+#[test]
+fn fixed_rail_wait_scope_distinguishes_actual_connection_reservation_owner_and_request() {
+    let near = ["rail:join:3:End", "rail:join:5:Start"];
+    let far = ["rail:join:4:Start", "rail:join:5:End"];
+    let siding = ["rail:join:4:Start", "rail:join:6:End"];
+    let run = |id, keys: &[&str]| {
+        let mut spec = service(id, keys[0]);
+        spec.legs[0].sections[0].resources = keys.iter().map(|s| (*s).to_owned()).collect();
+        spec
+    };
+    let key = |id: &str| TrainKey {
+        service_id: id.into(),
+        scheduled_ms: 0,
+    };
+    let start = |a, b| {
+        let mut r = OperationRuntime::new(vec![a, b]).unwrap();
+        r.advance_to(0, 32).unwrap();
+        r
+    };
+    let joined = [near, far].concat();
+    let split = start(run("1", &near), run("2", &siding));
+    assert!(split
+        .trains()
+        .all(|train| matches!(train.state, TrainState::Moving { entered_ms: 0, .. })));
+    assert_eq!(split.rail_wait_advisory(&key("2")), None);
+
+    let mut main_first = start(run("1", &joined), run("2", &siding));
+    assert_eq!(main_first.rail_wait_advisory(&key("1")), None);
+    assert_eq!(
+        main_first.rail_wait_advisory(&key("2")),
+        Some((
+            RailWaitReason::Junction,
+            Some(RailWaitScope::HeldAcrossConnections)
+        ))
+    );
+    let serialized = main_first.save();
+    let round_trip = OperationRuntime::restore(serialized.clone()).unwrap();
+    assert_eq!(round_trip.save(), serialized);
+    assert_eq!(
+        round_trip.rail_wait_advisory(&key("2")),
+        main_first.rail_wait_advisory(&key("2"))
+    );
+    let TrainState::Moving { release_ms, .. } = main_first
+        .trains()
+        .find(|t| t.key == key("1"))
+        .unwrap()
+        .state
+    else {
+        panic!()
+    };
+    main_first.advance_to(release_ms, 32).unwrap();
+    assert_eq!(main_first.rail_wait_advisory(&key("2")), None);
+
+    let side_first = start(run("1", &siding), run("2", &joined));
+    assert_eq!(
+        side_first.rail_wait_advisory(&key("2")),
+        Some((
+            RailWaitReason::Junction,
+            Some(RailWaitScope::NeedsAcrossConnections)
+        ))
+    );
+    let ordinary = start(run("1", &far), run("2", &siding));
+    assert_eq!(
+        ordinary.rail_wait_advisory(&key("2")),
+        Some((RailWaitReason::Junction, None))
+    );
+    let crossing = [
+        "rail:crossing:fixture",
+        joined[0],
+        joined[1],
+        joined[2],
+        joined[3],
+    ];
+    let other = ["rail:crossing:fixture", siding[0], siding[1]];
+    let crossing_first = start(run("1", &crossing), run("2", &other));
+    assert_eq!(
+        crossing_first.rail_wait_advisory(&key("2")),
+        Some((RailWaitReason::Crossing, None))
+    );
+}

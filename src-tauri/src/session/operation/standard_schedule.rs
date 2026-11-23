@@ -18,6 +18,7 @@ pub struct StandardScheduleStatus {
     service_id: String,
     can_apply: bool,
     active_elsewhere: bool,
+    has_bus_configs: bool,
     authored: Option<StandardIntervals>,
     departure_count: Option<u64>,
     origin: Option<NamedStop>,
@@ -82,7 +83,6 @@ impl WorldEditor {
             && operation.is_some_and(|o| {
                 !o.invalidated
                     && o.pending_target.is_none()
-                    && o.bus_configs.is_empty()
                     && o.runtime
                         .preview_nominal_fleet(
                             &key,
@@ -90,9 +90,10 @@ impl WorldEditor {
                         )
                         .is_ok()
             })
-            && self.world.operation_save().is_some_and(|saved| {
-                matches!(saved.runtime.format, 2 | 4) && saved.configs.len() <= 4
-            });
+            && self
+                .world
+                .operation_save()
+                .is_some_and(|saved| saved.supports_standard_scope());
         let named = |id: &str| {
             let id_num = id.parse::<u64>().ok()?;
             self.world
@@ -121,6 +122,7 @@ impl WorldEditor {
             service_id: key,
             can_apply,
             active_elsewhere,
+            has_bus_configs: operation.is_some_and(|o| !o.bus_configs.is_empty()),
             authored,
             departure_count,
             origin,
@@ -158,7 +160,7 @@ impl WorldEditor {
         };
         let mut candidate = self.world.clone();
         candidate.apply_standard_timetable(&saved, actor, self.company, service, authored).map_err(|err| match err {
-            rosenfu_core::operation::OperationError::InvalidClock => "運行を一度開始したあと、車両がいない状態で一時停止してください。時間帯ダイヤは同時に1系統のみです。".to_owned(),
+            rosenfu_core::operation::OperationError::InvalidClock => "時間帯ダイヤは一時停止中で車両がいないときに適用できます。運行開始前は、この鉄道系統だけにダイヤを設定してください。".to_owned(),
             rosenfu_core::operation::OperationError::InvalidTimetable => "間隔と時間帯の境界を確認してください。この系統または設定では適用できません。".to_owned(),
             _ => "この系統・線路構成は時間帯ダイヤに未対応です。元のダイヤは変更していません。".to_owned(),
         })?;

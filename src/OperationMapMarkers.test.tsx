@@ -69,3 +69,28 @@ test('marker stays on the painted diagonal at high zoom even when both ends are 
  rerender(<svg><OperationMapMarkers markers={[{...diagonal,position:0}]} camera={zoomed} scale={1}/></svg>);
  expect(container.querySelector('circle')).toBeNull();
 });
+
+
+test('ordinary bus uses the same native snapshot and distinct passive road marker',async()=>{
+ vi.useFakeTimers();
+ const bus=(position:number)=>({key:{service_id:'bus:B1',scheduled_ms:0},edge_start:{latitude:35,longitude:138.999},edge_end:{latitude:35,longitude:139.001},position});
+ const {services:_,...compact}=snapshot;
+ vi.mocked(invoke).mockResolvedValueOnce({...snapshot,bus_markers:[bus(.25),bus(.5),{...bus(.6),key:{service_id:'12',scheduled_ms:0}}]})
+  .mockResolvedValueOnce({...compact,now_ms:5,bus_markers:[bus(.75)]})
+  .mockResolvedValueOnce({...compact,now_ms:9});
+ const {container}=render(panel());
+ await act(async()=>{});
+ const group=()=>container.querySelector('[aria-label="表示できる走行中のバス"]');
+ expect(group()?.getAttribute('pointer-events')).toBe('none');
+ expect(group()?.querySelectorAll('circle')).toHaveLength(1);
+ const x=()=>Number(group()?.querySelector('circle')?.getAttribute('cx'));
+ const first=x();
+ expect(first).toBeLessThan(500);
+ expect(container.innerHTML).not.toContain('bus:B1');
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(x()).toBeGreaterThan(first);
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(group()).toBeNull();
+ expect(container.querySelector('[aria-label="表示できる走行中の列車"]')).not.toBeNull();
+ expect(invoke).toHaveBeenCalledTimes(3);
+});

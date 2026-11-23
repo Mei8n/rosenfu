@@ -558,6 +558,7 @@ mod tests {
                 &editor.operation_snapshot().timetable_edit_token,
             )
             .unwrap();
+        assert!(editor.operation_snapshot().bus_markers.is_empty());
         let runtime = &mut editor.world.operation_mut().unwrap().runtime;
         let spec = runtime.service_spec("bus:B2").unwrap();
         assert_eq!(spec.legs.len(), 2);
@@ -572,6 +573,14 @@ mod tests {
         assert!(spec.legs[1].sections[0].length_m > spec.legs[0].sections[0].length_m);
         assert!((spec.legs[1].sections[0].length_m - returned.length_m).abs() < 0.1);
         runtime.advance_to(1000, 100).unwrap();
+        let marker = editor.operation_snapshot().live.bus_markers;
+        assert_eq!(marker.len(), 1);
+        assert_eq!(marker[0].key.service_id, "bus:B2");
+        assert_eq!(
+            [marker[0].edge_start, marker[0].edge_end],
+            preview.points.as_slice()
+        );
+        assert!(marker[0].position > 0.0 && marker[0].position < 1.0);
         let active = editor.world.operation_save().unwrap();
         let selected = |feature, vertex| BusVertex {
             feature,
@@ -589,7 +598,7 @@ mod tests {
         let one = editor
             .put_gameplay_ofm_bus(
                 &token,
-                "independent".into(),
+                "A-independent".into(),
                 "別区間".into(),
                 other_proof.clone(),
                 vec![],
@@ -600,7 +609,7 @@ mod tests {
         let with_other = editor
             .put_gameplay_ofm_bus(
                 &token,
-                "independent".into(),
+                "A-independent".into(),
                 "別区間".into(),
                 other_proof,
                 vec![],
@@ -609,9 +618,23 @@ mod tests {
         assert_ne!(one.road_transport.edges, with_other.road_transport.edges);
         assert!(!editor.operation_snapshot().invalidated);
         assert_eq!(editor.world.operation_save().unwrap(), active);
+        assert_eq!(with_other.road_transport.bus_routes[0].id, "A-independent");
         assert_eq!(
-            with_other.road_transport.bus_routes[0],
+            with_other.road_transport.bus_routes[1],
             accepted.road_transport.bus_routes[0]
+        );
+        assert_eq!(editor.operation_snapshot().bus_markers, marker);
+        let token = editor.operation_snapshot().configuration_token.clone();
+        let compact = serde_json::to_value(
+            editor
+                .advance_operation_with_configuration(Some(&token))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(compact.get("bus_services").is_none());
+        assert_eq!(
+            compact["bus_markers"],
+            serde_json::to_value(&marker).unwrap()
         );
 
         // A separately authored outbound path along the return streets must
@@ -668,7 +691,23 @@ mod tests {
             .trains()
             .any(|train| train.key.service_id == "bus:compete"
                 && matches!(train.state, TrainState::Waiting { .. })));
-        let finished = runtime.advance_to(400_000, 100).unwrap();
+        // The trace shows the actual independent return, not a reversal
+        // on outbound. The waiting bus must not be drawn as moving.
+        let return_marks = shadow.operation_snapshot().live.bus_markers;
+        assert_eq!(return_marks.len(), 1);
+        assert_eq!(return_marks[0].key.service_id, "bus:B2");
+        assert_eq!(
+            [return_marks[0].edge_start, return_marks[0].edge_end],
+            returned.points[..2]
+        );
+        assert_eq!(return_marks[0].position, 0.0);
+        let finished = shadow
+            .world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(400_000, 100)
+            .unwrap();
         assert!(finished
             .arrivals
             .iter()
@@ -689,6 +728,12 @@ mod tests {
         editor.load(&file).unwrap();
         assert_eq!(editor.snapshot(), with_other);
         assert_eq!(editor.world.operation_save().unwrap(), saved);
+        assert_eq!(editor.operation_snapshot().bus_markers, marker);
+        let clock = editor.world.operation_mut().unwrap();
+        clock.runtime.advance_to(2000, 100).unwrap();
+        let progressed = editor.operation_snapshot().live.bus_markers;
+        assert_eq!(progressed[0].key, marker[0].key);
+        assert!(progressed[0].position > marker[0].position);
         let finished = editor
             .world
             .operation_mut()
@@ -1355,7 +1400,7 @@ mod tests {
                 occurrence_key: targets.stop_occurrence_keys[0].clone(),
                 fraction_q: 500_000,
             });
-        let only_out = preview(detour_stop);
+        let only_out = preview(detour_stop.clone());
         assert!(only_out.return_path.is_some());
         assert!(!only_out.interior_stops[0].serves_return);
         let mut default = proof;
@@ -1365,11 +1410,105 @@ mod tests {
             relaxed.return_path.unwrap().points,
             relaxed.points.into_iter().rev().collect::<Vec<_>>()
         );
+
+        // Stop halfway along the second atom: the moving first leg must
+        // switch onto that real chord and end at its actual interior cut.
+        detour_stop.interior_stops[0].occurrence_key = targets.stop_occurrence_keys[1].clone();
+        let partial = preview(detour_stop.clone());
+        assert_eq!(partial.interior_stops.len(), 1);
+        assert!(!partial.interior_stops[0].serves_return);
+        let accepted = editor
+            .put_gameplay_ofm_bus(&token, "B1".into(), "折り返し".into(), detour_stop, cache())
+            .unwrap();
+        assert_eq!(accepted.road_transport.bus_routes[0].edges.len(), 2);
+        use rosenfu_core::operation::{Timetable, Vehicle};
+        editor
+            .configure_bus_operation(
+                "B1".into(),
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 60.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.,
+                    length_m: 12.,
+                },
+                30.,
+                1_000,
+                None,
+                &editor.operation_snapshot().timetable_edit_token,
+            )
+            .unwrap();
+        let mut predicted = editor.world.operation().unwrap().runtime.clone();
+        predicted.set_paused(false);
+        let arrives = predicted.advance_to(1_000_000, 100).unwrap().arrivals;
+        assert_eq!(arrives.len(), 3);
+        let advance = |editor: &mut WorldEditor, time| {
+            let runtime = &mut editor.world.operation_mut().unwrap().runtime;
+            runtime.set_paused(false);
+            runtime.advance_to(time, 100).unwrap();
+            runtime.set_paused(true);
+        };
+        let marker = |editor: &WorldEditor| editor.operation_snapshot().live.bus_markers;
+        advance(&mut editor, 0);
+        let initial = marker(&editor);
+        assert_eq!(initial.len(), 1);
+        assert_eq!(
+            [initial[0].edge_start, initial[0].edge_end],
+            strict.points[..2]
+        );
+        assert_eq!(initial[0].position, 0.0);
+        advance(&mut editor, arrives[0].at_ms - 1);
+        let before_stop = marker(&editor);
+        assert_eq!(before_stop.len(), 1);
+        assert_eq!(
+            [before_stop[0].edge_start, before_stop[0].edge_end],
+            strict.points[1..]
+        );
+        assert!((before_stop[0].position - 0.5).abs() < 1e-5);
+        assert_eq!(before_stop[0].key, initial[0].key);
+        let bytes = rosenfu_storage::encode(&editor.world).unwrap();
+        assert!(!std::str::from_utf8(&bytes).unwrap().contains("bus_markers"));
+        let folder = tempfile::tempdir().unwrap();
+        let save = folder.path().join("multiedge-bus-marker.rosenfu");
+        editor.save(&save).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&save).unwrap();
+        assert_eq!(rosenfu_storage::encode(&reopened.world).unwrap(), bytes);
+        assert_eq!(marker(&reopened), before_stop);
+        advance(&mut reopened, arrives[0].at_ms);
+        assert!(marker(&reopened).is_empty()); // actual intermediate dwell
+        advance(&mut reopened, arrives[1].at_ms - 1);
+        let at_terminal = marker(&reopened);
+        assert_eq!(at_terminal.len(), 1);
+        assert!((at_terminal[0].position - 1.0).abs() < 1e-5);
+        advance(&mut reopened, arrives[2].at_ms - 1);
+        let on_return = marker(&reopened);
+        assert_eq!(on_return.len(), 1);
+        assert_eq!(
+            [on_return[0].edge_start, on_return[0].edge_end],
+            home.points[1..]
+        );
+        assert_ne!(on_return[0].edge_start, strict.points[1]);
+        assert!((on_return[0].position - 1.0).abs() < 1e-5);
+        assert_eq!(on_return[0].key, initial[0].key);
+        let return_save = folder.path().join("multiedge-bus-marker-return.rosenfu");
+        let bytes = rosenfu_storage::encode(&reopened.world).unwrap();
+        assert!(!std::str::from_utf8(&bytes).unwrap().contains("bus_markers"));
+        reopened.save(&return_save).unwrap();
+        let mut fresh = WorldEditor::new();
+        fresh.load(&return_save).unwrap();
+        assert_eq!(rosenfu_storage::encode(&fresh.world).unwrap(), bytes);
+        assert_eq!(marker(&fresh), on_return);
     }
 
     fn verify_ordinary_bus_turnaround(
         source: &WorldEditor,
         mut cfg: rosenfu_core::world::BusOperationConfig,
+        first_return_chord: [GeoPoint; 2],
     ) {
         use rosenfu_core::operation::TrainState;
         let mut editor = source.clone();
@@ -1473,9 +1612,11 @@ mod tests {
         );
         assert_eq!(waiting.delay_ms, 0);
         runtime.set_paused(true);
+        assert!(editor.operation_snapshot().bus_markers.is_empty());
         let saved = editor.world.operation_save().unwrap();
         let mut reopened = reopen(&mut editor, "new.rosenfu");
         assert_eq!(reopened.world.operation_save().unwrap(), saved);
+        assert!(reopened.operation_snapshot().bus_markers.is_empty());
         let runtime = &mut reopened.world.operation_mut().unwrap().runtime;
         runtime.set_paused(false);
         assert!(runtime
@@ -1488,6 +1629,15 @@ mod tests {
         assert!(matches!(moving.state, TrainState::Moving { entered_ms, .. }
             if entered_ms == arrival_ms + 120_000));
         assert_eq!(moving.delay_ms, 0);
+        // Once the same bus starts its return, show its exact retained
+        // directed road chord, even when its next stop is intermediate.
+        let snapshot = reopened.operation_snapshot();
+        let [marker] = snapshot.bus_markers.as_slice() else {
+            panic!("expected one moving marker on the proved return leg");
+        };
+        assert_eq!(marker.key, key);
+        assert_eq!([marker.edge_start, marker.edge_end], first_return_chord);
+        assert_eq!(marker.position, 0.0);
     }
 
     #[test]
@@ -1661,7 +1811,12 @@ mod tests {
         loaded.load(&file).unwrap();
         assert_eq!(loaded.snapshot(), sw);
         assert_eq!(loaded.world.compile_bus_operation(&cfg).unwrap(), full);
-        verify_ordinary_bus_turnaround(&loaded, cfg);
+        let return_path = proposed.return_path.as_ref().unwrap();
+        verify_ordinary_bus_turnaround(
+            &loaded,
+            cfg,
+            [return_path.points[0], return_path.points[1]],
+        );
 
         // Two distinct visits to the same outward atom and physical offset.
         // Strict endpoint return traverses that location once and must not
@@ -2105,6 +2260,100 @@ mod tests {
             .unwrap_err()
             .contains("高さ指定数"));
         assert_eq!(editor.snapshot(), before);
+    }
+
+    #[test]
+    fn metadata_only_save_refuses_unproven_parked_paths_before_publication() {
+        use rosenfu_core::world::{TrackType, ViewState, WorldError};
+
+        let mut editor = WorldEditor::new();
+        stage(&mut editor);
+        let plans = editor.snapshot().construction_plans.unwrap();
+        let proof = plans.parked_paths[0].ofm_path.as_ref().unwrap();
+        // The combined count must include built proofs, even though this API
+        // is allowed to replace only the parked portion.
+        editor
+            .world
+            .build_alignment_from_road_path(
+                editor.company,
+                "既設".into(),
+                TrackType::Normal,
+                proof.clone(),
+            )
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        editor.save(&path).unwrap();
+        let shared_before = editor.world.shared_snapshot();
+        let bytes = std::fs::read(&path).unwrap();
+        let backup = rosenfu_storage::backup_path(&path);
+        assert!(!backup.exists());
+
+        let mut missing = plans.clone();
+        missing.parked_paths[0]
+            .ofm_path
+            .as_mut()
+            .unwrap()
+            .required_binding_keys
+            .clear();
+        let mut wrong = plans.clone();
+        wrong.parked_paths[0]
+            .ofm_path
+            .as_mut()
+            .unwrap()
+            .start
+            .fragment_id
+            .push_str("-wrong");
+        let mut wrong_geometry = plans.clone();
+        wrong_geometry.parked_paths[0].points[0].longitude += 0.0001;
+        let mut cap = plans.clone();
+        cap.parked_paths = (2..=33)
+            .map(|id| {
+                let mut parked = plans.parked_paths[0].clone();
+                parked.id = id;
+                parked
+            })
+            .collect();
+        let updated_view = ViewState {
+            latitude: 35.,
+            longitude: 139.,
+            zoom: 12.,
+        };
+        for (invalid, expected) in [
+            (missing, WorldError::InvalidRoadEvidence),
+            (wrong, WorldError::InvalidRoadEvidence),
+            (wrong_geometry, WorldError::InvalidConstructionPlans),
+            (cap, WorldError::InvalidRoadEvidence),
+        ] {
+            invalid.validate().unwrap(); // The existing evidence is needed.
+            let mut candidate = editor.world.clone();
+            assert_eq!(
+                candidate.update_save_metadata(Some(invalid.clone()), Some(updated_view)),
+                Err(expected)
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &shared_before,
+                &candidate.shared_snapshot()
+            ));
+            assert!(editor
+                .save_with_view(&path, Some(invalid), Some(updated_view), false)
+                .is_err());
+            assert!(std::sync::Arc::ptr_eq(
+                &shared_before,
+                &editor.world.shared_snapshot()
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(!backup.exists());
+        }
+        editor
+            .save_with_view(&path, Some(plans), Some(updated_view), false)
+            .unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+        assert_eq!(
+            rosenfu_storage::load_world(&path).unwrap().snapshot(),
+            editor.world.snapshot()
+        );
+        assert_eq!(editor.world.snapshot().view_state, Some(updated_view));
     }
 
     #[test]

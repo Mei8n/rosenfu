@@ -60,7 +60,8 @@ fn json_roundtrip_preserves_graph_and_allocator() {
 
 #[test]
 fn unsupported_version_is_reported_before_decoding_world() {
-    for version in [0, rosenfu_storage::SCHEMA_VERSION + 1, u64::MAX] {
+    // Schema 27 is the default writer, not the highest supported version.
+    for version in [0, 25, 29, u64::MAX] {
         let bytes = format!(
             r#"{{"format":"rosenfu-world","schema_version":{version},"world":"not a world"}}"#
         );
@@ -68,6 +69,15 @@ fn unsupported_version_is_reported_before_decoding_world() {
             matches!(decode(bytes.as_bytes()), Err(StorageError::UnsupportedVersion(v)) if v == version)
         );
     }
+}
+
+#[test]
+fn mixed_schema_header_reaches_world_validation_only_in_compatible_readers() {
+    let result = decode(br#"{"format":"rosenfu-world","schema_version":28,"world":"not a world"}"#);
+    #[cfg(feature = "standard-periodic-rail")]
+    assert!(matches!(result, Err(StorageError::InvalidHeader)));
+    #[cfg(not(feature = "standard-periodic-rail"))]
+    assert!(matches!(result, Err(StorageError::UnsupportedVersion(28))));
 }
 
 #[test]

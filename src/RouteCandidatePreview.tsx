@@ -7,6 +7,7 @@ export type Segment = { kind: "alignment"; alignment_id: string; from: string; t
 export type Candidate = { stations: string[]; segments: Segment[] };
 export type Candidates = { shortest_candidate_index?: number | null; status: "no_path" | "unique" | "ambiguous" | "incomplete"; candidates: Candidate[]; truncated: boolean };
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };
+type EndpointPick = {side:"start"|"end"; state:"idle"|"queued"|"running"};
 type Props = {
   entityLabel?: string;
   onStationClick?: (id:string)=>boolean;
@@ -32,6 +33,7 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  const editingMap=!!editRoute?.path;
  const stationClick=useRef(onStationClick);stationClick.current=onStationClick;
  const editQueue=useRef(Promise.resolve());
+ const endpointPick=useRef<EndpointPick|null>(null);
  const orderedRef=useRef<string[]>([]);
  useEffect(()=>{onSelectionChange?.(ordered);},[ordered,onSelectionChange]);
  useEffect(()=>()=>{onSelectionChange?.([]);},[onSelectionChange]);
@@ -50,9 +52,11 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  const names=new Map(stations.map(s=>[s.id,s.name]));
  const editingInputs=useRef({names,candidateLength});editingInputs.current={names,candidateLength};
  const stationName=(id:string)=>names.get(id)??`駅 ${id}`;
- function invalidate(){generation.current++;setResult(null);setMembership(null);setChosen(null);setLoading(false);setStale(false);setShowChoices(false);setError("");}
+ function clearEndpoint(){if(endpointPick.current?.state==="running")setLoading(false);endpointPick.current=null;}
+ useEffect(()=>{if(mapPickTarget===null)clearEndpoint();},[mapPickTarget]);
+ function invalidate(){generation.current++;if(endpointPick.current)endpointPick.current.state="idle";setResult(null);setMembership(null);setChosen(null);setLoading(false);setStale(false);setShowChoices(false);setError("");}
  useEffect(()=>{invalidate();orderedRef.current=[];setOrdered([]);setName(initialName);},[resetKey]);
- useEffect(()=>{generation.current++;setLoading(false);setMembership(null);setShowChoices(false);setStale(orderedRef.current.length>1);return()=>{generation.current++;};},[worldVersion]);
+ useEffect(()=>{generation.current++;if(endpointPick.current)endpointPick.current.state="idle";setLoading(false);setMembership(null);setShowChoices(false);setStale(orderedRef.current.length>1);return()=>{generation.current++;};},[worldVersion]);
  useEffect(()=>{onDirty?.(ordered.length>0||name!==initialName);},[ordered,name,initialName,onDirty]);
  async function membershipFor(candidate:Candidate){
   const args={start:candidate.stations[0],segments:candidate.segments};
@@ -81,15 +85,18 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
   finally{if(token===generation.current)setLoading(false);}
  }
  const lookup=(ids:string[])=>invoke<Candidates>('preview_route_candidates',{start:ids[0],end:ids.at(-1),...(ids.length>2?{viaStationIds:ids.slice(1,-1)}:{})});
- function applyMapEdit(id:string,side?:'start'|'end'){
+ function applyMapEdit(id:string,endpoint?:EndpointPick){
   const session=generation.current;
+  const current=()=>session===generation.current&&(!endpoint||endpointPick.current===endpoint);
   editQueue.current=editQueue.current.then(async()=>{
-   if(session!==generation.current||pendingSave.current||blocked.current)return;
+   if(!current()||pendingSave.current||blocked.current){if(endpoint)endpoint.state="idle";return;}
+   let accepted=false;
+   if(endpoint)endpoint.state="running";
    setLoading(true);setError("");
    try{
     let choice:{ids:string[];result:Candidates;index:number|null};
-    if(side){
-     const ids=replaceStationEndpoint(orderedRef.current,side,id);
+    if(endpoint){
+     const ids=replaceStationEndpoint(orderedRef.current,endpoint.side,id);
      if(ids.every((station,i)=>station===orderedRef.current[i])&&ids.length===orderedRef.current.length)return;
      const result=await lookup(ids);
      if(result.truncated||result.status==='incomplete')throw Error('経路を確認しきれませんでした。元の編集内容を保持しています');
@@ -102,21 +109,25 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
      if(!length)throw Error('経路の比較に必要な地図情報がありません');
      choice=await editStationOrder(orderedRef.current,id,lookup,length);
     }
-    if(session!==generation.current)return;
+    if(!current())return;
     const next=choice.index===null?null:await membershipFor(choice.result.candidates[choice.index]);
-    if(session!==generation.current)return;
-    orderedRef.current=choice.ids;setOrdered(choice.ids);setResult(choice.result);setChosen(choice.index);setMembership(next);setStale(false);setShowChoices(choice.result.candidates.length>1);
-   }catch(cause){if(session===generation.current)setError(String(cause));}
-   finally{if(session===generation.current)setLoading(false);}
+    if(!current())return;
+    orderedRef.current=choice.ids;setOrdered(choice.ids);setResult(choice.result);setChosen(choice.index);setMembership(next);setStale(false);setShowChoices(choice.result.candidates.length>1);accepted=true;
+   }catch(cause){if(current())setError(String(cause));}
+   finally{if(current()){if(endpoint)endpoint.state="idle";setLoading(false);}}
+   if(accepted&&endpoint&&current())beginSequence();
   });
  }
  function beginEndpoint(side:'start'|'end'){
+  clearEndpoint();
+  const pick:EndpointPick={side,state:"idle"};endpointPick.current=pick;
   onMapPick?.(side,id=>{
-   if(pendingSave.current||blocked.current||!editingInputs.current.names.has(id))return;
-   beginSequence();applyMapEdit(id,side);
+   if(endpointPick.current!==pick||pick.state!=="idle"||pendingSave.current||blocked.current||!editingInputs.current.names.has(id))return;
+   pick.state="queued";applyMapEdit(id,pick);
   });
  }
  function beginSequence(){
+  clearEndpoint();
   onMapPick?.("sequence",id=>{
    if(pendingSave.current||blocked.current||!editingInputs.current.names.has(id))return;
    if(editingMap){

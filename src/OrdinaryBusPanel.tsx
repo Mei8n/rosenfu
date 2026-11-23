@@ -6,7 +6,7 @@ import type {RoadSnapshot} from './automaticRoadData';
 import {prepareOrdinaryBusQuery,snapOrdinaryBusVertex,verifyOrdinaryBusPreview,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
 
 type Route={id:string;name:string;pattern?:OrdinaryBusPattern;path?:OrdinaryBusPath};
-type Draft={id:string;pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
+type Draft={id:string;respectOneway:boolean;pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
 type Input={
  on:boolean;allow:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;
  route?:Route;multiple:boolean;roundTrip:boolean;waypoints?:boolean;autoStopsAvailable?:boolean;closedCapable?:boolean;observedGrade?:boolean;conflictingGraph:boolean;descriptors:readonly unknown[];
@@ -20,6 +20,7 @@ export function useOrdinaryBusDraft(input:Input){
  const [draft,setDraft]=useState<Draft>();
  const [autoStops,setAutoStops]=useState(false);
  const [newRoute,setNewRoute]=useState(false);
+ const [respectOneway,setRespectOneway]=useState(false);
  const [name,setName]=useState('バス系統');
  const [error,setError]=useState('');
  const [waiting,setWaiting]=useState(false);
@@ -34,7 +35,7 @@ export function useOrdinaryBusDraft(input:Input){
   job.current?.abort();job.current=undefined;setWaiting(false);setDraft(undefined);setError('');setDeleting(false);
  }
  useEffect(()=>{
-  cancel();
+  cancel();setRespectOneway(false);
   return ()=>{job.current?.abort();job.current=undefined;};
  },[input.on,input.scope]);
  function start(kind:'new'|'edit'){
@@ -42,7 +43,8 @@ export function useOrdinaryBusDraft(input:Input){
   const editing=kind==='edit'?input.route:undefined;
   if((kind==='edit'&&!editing)||(kind==='new'&&input.route&&!input.multiple))return;
   const pattern=editing?editing.pattern:input.roundTrip?'openRoundTrip':undefined;
-  cancel();const spec={id:editing?.id??`bus:${crypto.randomUUID()}`,pattern};setDraft(spec);
+  cancel();const spec={id:editing?.id??`bus:${crypto.randomUUID()}`,pattern,
+   respectOneway:editing?editing.path?.respectOneway??false:respectOneway};setDraft(spec);
   if(input.waypoints)waypoints.start({...spec,savedPath:editing?.path,
    gradePolicy:editing?editing.path?.gradePolicy:input.observedGrade?'observedConnectors':undefined});
   setNewRoute(!editing);setAutoStops(!editing&&!!input.autoStopsAvailable);
@@ -69,7 +71,7 @@ export function useOrdinaryBusDraft(input:Input){
   try{
    const token=await input.token();
    if(!alive())return;
-   const query=await prepareOrdinaryBusQuery(start,end,title,draft.id,token,input.read,input.descriptors,controller.signal,input.observe,draft.pattern);
+   const query=await prepareOrdinaryBusQuery(start,end,title,draft.id,token,input.read,input.descriptors,controller.signal,input.observe,draft.pattern,[],draft.respectOneway);
    if(!alive())return;
    const result=await input.preview(query);
    if('failedLegIndex' in result)throw Error('この区間を道路でつなげません。');
@@ -98,7 +100,7 @@ export function useOrdinaryBusDraft(input:Input){
  }
  function selectDeleting(value:boolean){setError('');setDeleting(value);}
  const visible=input.waypoints&&draft?{...draft,pattern:waypoints.closed?'closedOneWay' as const:draft.pattern,start:waypoints.controls[0]?.anchor,end:waypoints.controls.length>1?waypoints.controls.at(-1)?.anchor:undefined,preview:waypoints.preview}:draft;
- return {draft:visible,name,setName,autoStops,setAutoStops,showAuto:!!input.autoStopsAvailable&&!!input.waypoints&&newRoute,error:error||waypoints.error,waiting:waiting||waypoints.checking||waypoints.committing,deleting,selectDeleting,start,cancel,pick,commit,remove,
+ return {draft:visible,name,setName,autoStops,setAutoStops,respectOneway,setRespectOneway,showAuto:!!input.autoStopsAvailable&&!!input.waypoints&&newRoute,error:error||waypoints.error,waiting:waiting||waypoints.checking||waypoints.committing,deleting,selectDeleting,start,cancel,pick,commit,remove,
   mutating:()=>mutation.current||waypoints.committing,rectangle:!!input.observe,waypoints:!!input.waypoints,
   extending:waypoints.extending&&!waypoints.closed,closed:waypoints.closed,closedCapable:!!input.closedCapable&&newRoute,exitExtension:waypoints.exitExtension,offerHover:waypoints.offerHover,clearHover:waypoints.clearHover,hoverPreview:waypoints.hoverPreview,allowFinish:waypoints.ready,controls:waypoints.controls,activeControl:waypoints.active==='start'?waypoints.controls[0]?.id:waypoints.controls.at(-1)?.id,
   failedLeg:waypoints.failedLeg,refusedControls:waypoints.frame?.refusal?.attempt.controls,
@@ -115,7 +117,11 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
   <h3>バス</h3>
   <p>地図の道路を使ってゲーム内の系統を作ります。実際の通行可否は示しません。</p>
   {blocked?<p>このワールドの別の道路交通データは上書きできません。</p>:<>
-   {!draft&&!state.deleting&&(!route||multiple)&&<button type="button" disabled={disabled} onClick={()=>state.start('new')}>新しいバス系統</button>}
+   {!draft&&!state.deleting&&(!route||multiple)&&<>
+    <label><input type="checkbox" style={{width:"auto"}} checked={state.respectOneway} disabled={disabled}
+     onChange={event=>state.setRespectOneway(event.target.checked)}/>地図データの一方通行に従う</label>
+    <button type="button" disabled={disabled} onClick={()=>state.start('new')}>新しいバス系統</button>
+   </>}
    {route&&(routes.length>1?<label>表示するバス系統<select value={route.id} disabled={disabled||!!draft||state.deleting}
     onChange={e=>onSelect(e.target.value)}>{routes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label>:<p>{route.name}</p>)}
    {route&&!draft&&!state.deleting&&<>
@@ -124,6 +130,7 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
    </>}
    {draft&&<>
     <label>バス系統名<input maxLength={120} autoComplete="off" value={state.name} disabled={disabled} onChange={e=>state.setName(e.target.value)}/></label>
+    {draft.respectOneway&&<p>地図データの一方通行に従います</p>}
     {state.showAuto&&<label>停留所の配置<select value={state.autoStops?'auto':'manual'} disabled={disabled} onChange={event=>state.setAutoStops(event.target.value==='auto')}>
      <option value="auto">自動（およそ2km間隔）</option><option value="manual">手動（起点・終点のみ）</option>
     </select></label>}

@@ -95,3 +95,18 @@
 最大ケースでは単一計画の入力JSON140 B（実際のIPCエンベロープを含まない）・応答本体69 B・通常の保存本体4,387,604 Bは前後同じ。ロックとスナップショット取得は1.212 → 0.928 ms、応答エンコード2.830 → 1.280 µs。プロセス全体のピークRSS中央値は31,652 → 33,740 KiB。これは合成入力のネイティブ処理で、TauriのIPC往復、WebViewの描画遅延、全国実プレイを計測した値ではない。
 
 再現: `cargo test --release --locked -p rosenfu-storage --test construction_preview_benchmark construction_summary_timings -- --ignored --nocapture`。
+
+### α0.2 着工・保存上書き・再読込の計測（#198）
+
+上の同じ合成ワールド・道路データで、短い線形を実際に着工し、既存の手動セーブを新しい視点とともに上書きし、新規エディタで同じスロットを開く。毎回同じ既設線形数から始め、編集済みワールドが視点を含めて一致することを検証する。着工、返却ワールドのJSON化、保存上書き、再読込を分け、合計時間と返却・保存バイト数も記録する。
+
+```bash
+for n in 100 1000 10000; do
+  ROSENFU_EDIT_BENCH_ALIGNMENTS=$n cargo test --release --locked \
+    -p rosenfu-storage --features standard-periodic-rail \
+    --test construction_preview_benchmark construction_edit_save_reopen_timings \
+    -- --ignored --exact --nocapture
+done
+```
+
+各ケースは新規テストプロセスの1回目と、その後の6回を別に比較する。LinuxのピークRSSはワールド生成と照合を含むプロセス全体の値で、個別工程の増分ではない。再読込はエディタだけを作り直し、OSのファイルキャッシュは消去しない。この結果はWebViewの描画、IPC通信、未取得の地図読み込み、全国プレイの性能を含まない。

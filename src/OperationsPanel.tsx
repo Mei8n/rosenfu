@@ -13,8 +13,8 @@ type Vehicle={max_speed_kmh:number;acceleration_mps2:number;braking_mps2:number;
 type Config={timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type ServiceConfig=Config&{service_id:string};
 type BusConfig=Config&{route_id:string;assumed_speed_kmh:number;turnaround_ms?:number};
-type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'track';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
-export type OperationView={standard_schedule_active?:boolean;now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown};
+type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'track';wait_scope?:'held_across_connections'|'needs_across_connections';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
+export type OperationView={standard_schedule_active?:boolean;now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown;bus_markers?:unknown};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
 type Commands={apply_standard_schedule:ApplyStandardSchedule;reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
 type OperationContext={view:OperationView|null;crossingPlanningToken?:string;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
@@ -90,6 +90,12 @@ function scheduleTime(ms:number){
  return `${Math.floor(ms/day)+1}日目 ${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}`;
 }
 
+export function OperationObservationMinute({observedMs}:{observedMs:number}){
+ const now=useContext(Context)?.view?.now_ms;
+ const clockAdvanced=now!==undefined&&Math.floor(now/minute)>Math.floor(observedMs/minute);
+ return <p>観測開始: {scheduleTime(observedMs)} <span role="status">{clockAdvanced?'時刻が進みました。最新の時刻で見るには再試算してください。':null}</span></p>;
+}
+
 export function OperationClock(){
  const state=useContext(Context);const [confirmReset,setConfirmReset]=useState(false);if(!state)return null;
  const {view,busy,blocked,error,refresh,send}=state;
@@ -115,7 +121,10 @@ export function OperationVehicleLayer({camera,scale}:{camera:Camera;scale:number
  const state=useContext(Context);
  const view=state?.view;
  if(!state?.crossingPlanningToken||state.blocked||!view||view.invalidated)return null;
- return <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale}/>;
+ return <>
+  <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale}/>
+  <OperationMapMarkers markers={view.bus_markers} camera={camera} scale={scale} mode="bus"/>
+ </>;
 }
 
 export function CrossingOperations({enabled}:{enabled:boolean}){
@@ -200,7 +209,8 @@ export function ServiceOperations({serviceId,enabled,standardEnabled=false}:{ser
   <h4>運行</h4>
   {standardEnabled&&state.crossingPlanningToken&&<StandardSchedulePanel key={serviceId+':'+state.crossingPlanningToken}
    service={serviceId} revision={state.crossingPlanningToken} operationToken={view.timetable_edit_token}
-   enabled={enabled&&!busy&&!blocked&&!view.invalidated} canApply={!!config&&view.paused&&!blocker&&view.now_ms>0}
+   enabled={enabled&&!busy&&!blocked&&!view.invalidated}
+   canApply={!!config&&view.paused&&!blocker&&(view.now_ms>0||(view.services.length===1&&!view.bus_services?.length))}
    apply={args=>send('apply_standard_schedule',args)}/>}
   {view.standard_schedule_active?<p>時間帯ダイヤを使用中のため、従来のダイヤ編集と編成試算は利用できません。</p>:
    standardEnabled?<details><summary>時刻・車両の設定（従来方式）</summary>{advanced}</details>:advanced}
@@ -218,15 +228,19 @@ function vehicleStatus(train:Train,now:number,invalidated:boolean,bus:boolean){
  // The native clock has already attempted dispatch at ready_ms. The engine
  // books the wait on entry, so accrue it in the view only while waiting.
  const reason=train.waiting_for==='crossing'?'平面交差':train.waiting_for==='junction'?'分岐・接続':train.waiting_for==='track'?'線路':null;
- return {status:reason?`進路待ち（${reason}）`:'進路待ち',delayMs:train.delay_ms+(now-state.ready_ms)};
+ const detail=train.waiting_for==='junction'
+  ?train.wait_scope==='held_across_connections'?'相手列車が、接続部をまたぐ進路を確保中'
+   :train.wait_scope==='needs_across_connections'?'次の停車駅まで、接続部をまたぐ進路が空くのを待っています':undefined
+  :undefined;
+ return {status:reason?`進路待ち（${reason}）`:'進路待ち',detail,delayMs:train.delay_ms+(now-state.ready_ms)};
 }
 
 function ActiveVehicles({trains,configured,now,invalidated,bus=false}:{trains:Train[];configured:boolean;now:number;invalidated:boolean;bus?:boolean}){
  const label=bus?"バス":"列車";
  return <div className="operation-trains">
   {trains.length?<ul aria-label={`運行中・待機中の${label}`}>{trains.map(train=>{
-   const {status,delayMs}=vehicleStatus(train,now,invalidated,bus);
-   return <li key={train.key.scheduled_ms}><span>{scheduleTime(train.key.scheduled_ms)} 発</span><strong>{status}</strong>{delayMs>0&&<span>遅れ {Math.ceil(delayMs/1000)}秒</span>}</li>;
+   const {status,detail,delayMs}=vehicleStatus(train,now,invalidated,bus);
+   return <li key={train.key.scheduled_ms}><span>{scheduleTime(train.key.scheduled_ms)} 発</span><strong>{status}</strong>{detail&&<small>{detail}</small>}{delayMs>0&&<span>遅れ {Math.ceil(delayMs/1000)}秒</span>}</li>;
   })}</ul>:<p>{configured?`現在、運行中・待機中の${label}はありません。`:'この系統のダイヤは未設定です。'}</p>}
  </div>;
 }

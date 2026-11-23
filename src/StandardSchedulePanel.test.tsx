@@ -23,6 +23,7 @@ test('five standard fields with opt-in ownership token; changing input does not 
  fireEvent.change(morning,{target:{value:'6'}});
  expect(apply).not.toHaveBeenCalled();
  expect(screen.getByText(/24ゲーム時間だけ有効/)).toBeTruthy();
+ expect(screen.queryByText(/旧0.2.1では開けません/)).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'時間帯ダイヤを適用'}));
  expect(apply).toHaveBeenCalledWith({service:'3',expected:'edit',baseMinutes:10,overrides:rates,boundariesMinutes:bounds});
 });
@@ -44,4 +45,19 @@ test('applied native timetable displays the finite window and explicit OD, not a
  assignment:{rail:[],alternative_trips:0,unserved_trips:0,unresolved_trips:100}});
  fireEvent.click(screen.getByRole('button',{name:'この時間の固定ODを試算'}));
  expect(await screen.findByText(/発車ゼロとは扱いません/)).toBeTruthy();
+});
+
+test('warns before Apply and after reopening a Standard+bus save, but never auto-applies',async()=>{
+ const mixed={...plain,hasBusConfigs:true};
+ ipc.mockResolvedValueOnce(mixed).mockResolvedValueOnce({...mixed,canApply:false,
+  authored:{baseMinutes:10,overrides:rates,boundariesMinutes:bounds,startMs:60_000,endMs:86_460_000},departureCount:93});
+ const {rerender}=render(panel());
+ expect(await screen.findByText(/旧0.2.1では開けません/)).toBeTruthy();
+ expect(screen.getByRole('button',{name:'時間帯ダイヤを適用'})).toBeTruthy();
+ expect(apply).not.toHaveBeenCalled();
+ rerender(<StandardSchedulePanel service="3" revision="cfg" operationToken="edit" enabled canApply={false} apply={apply} key="reopened"/>);
+ expect(await screen.findByText(/終了後に自動で延長しません/)).toBeTruthy();
+ expect(screen.getByText(/適用前のセーブを別の場所に残してください/)).toBeTruthy();
+ expect(screen.queryByRole('button',{name:'時間帯ダイヤを適用'})).toBeNull();
+ expect(apply).not.toHaveBeenCalled();
 });
