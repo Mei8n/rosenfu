@@ -1508,6 +1508,7 @@ mod tests {
     fn verify_ordinary_bus_turnaround(
         source: &WorldEditor,
         mut cfg: rosenfu_core::world::BusOperationConfig,
+        first_return_chord: [GeoPoint; 2],
     ) {
         use rosenfu_core::operation::TrainState;
         let mut editor = source.clone();
@@ -1615,6 +1616,7 @@ mod tests {
         let saved = editor.world.operation_save().unwrap();
         let mut reopened = reopen(&mut editor, "new.rosenfu");
         assert_eq!(reopened.world.operation_save().unwrap(), saved);
+        assert!(reopened.operation_snapshot().bus_markers.is_empty());
         let runtime = &mut reopened.world.operation_mut().unwrap().runtime;
         runtime.set_paused(false);
         assert!(runtime
@@ -1627,9 +1629,15 @@ mod tests {
         assert!(matches!(moving.state, TrainState::Moving { entered_ms, .. }
             if entered_ms == arrival_ms + 120_000));
         assert_eq!(moving.delay_ms, 0);
-        // This return has its own intermediate stop and therefore is not
-        // the direct terminal-origin visual subset.
-        assert!(reopened.operation_snapshot().bus_markers.is_empty());
+        // Once the same bus starts its return, show its exact retained
+        // directed road chord, even when its next stop is intermediate.
+        let snapshot = reopened.operation_snapshot();
+        let [marker] = snapshot.bus_markers.as_slice() else {
+            panic!("expected one moving marker on the proved return leg");
+        };
+        assert_eq!(marker.key, key);
+        assert_eq!([marker.edge_start, marker.edge_end], first_return_chord);
+        assert_eq!(marker.position, 0.0);
     }
 
     #[test]
@@ -1803,7 +1811,12 @@ mod tests {
         loaded.load(&file).unwrap();
         assert_eq!(loaded.snapshot(), sw);
         assert_eq!(loaded.world.compile_bus_operation(&cfg).unwrap(), full);
-        verify_ordinary_bus_turnaround(&loaded, cfg);
+        let return_path = proposed.return_path.as_ref().unwrap();
+        verify_ordinary_bus_turnaround(
+            &loaded,
+            cfg,
+            [return_path.points[0], return_path.points[1]],
+        );
 
         // Two distinct visits to the same outward atom and physical offset.
         // Strict endpoint return traverses that location once and must not
