@@ -33,7 +33,7 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;retainedGrade?:boolean}){
+async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;retainedGrade?:boolean;retainedOneway?:boolean}){
  const authored=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
   ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
  ]}]}:tile;
@@ -54,7 +54,7 @@ async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rect
  const nonordinary={...first,id:'pilot',name:'対象外 D'};
  const baseline=config.multiple?{
   ...world,ofm_gameplay_bus_routes:{[first.id]:config.savedProof?{
-   rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,respectOneway:false,
+   rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,respectOneway:!!config.retainedOneway,
    start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:config.closedSaved?0:1},
    ...(config.retainedGrade?{gradePolicy:'observedConnectors'}:{}),
    ...(config.closedSaved?{pattern:'closedOneWay',via:[{id:'closed-via',tileKey:key,vertex:{feature:0,line:0,vertex:1}}]}:{}),
@@ -234,10 +234,32 @@ test('a newly drawn open route requests and displays the native reverse path bef
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',preview));
 });
 
-test('an unavailable native return explains the refusal and cannot be committed as outbound only',async()=>{
- const map=(await setup({roundTrip:true,preview:async()=>({points:[a,b],lengthM:380,
+test.each([false,true])('can choose mapped one-way restrictions for a new route (waypoints = %s)',async waypoints=>{
+ const preview=async()=>({points:[a,b],lengthM:380,returnPath:{points:[b,waypoint,a],lengthM:440}});
+ const {from,to}=(await setup({waypoints,roundTrip:true,autoStart:false,preview}))!;
+ const mode=screen.getByRole<HTMLInputElement>('checkbox',{name:'地図データの一方通行に従う'});
+ expect(mode.checked).toBe(false);
+ fireEvent.click(mode);
+ expect(mode.checked).toBe(true);
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
+ expect(screen.queryByRole('checkbox',{name:'地図データの一方通行に従う'})).toBeNull();
+ expect(screen.getByText('地図データの一方通行に従います')).toBeTruthy();
+ from();to();await screen.findByText('復路 440 m');
+ const request=vi.mocked(invoke).mock.calls.find(c=>c[0]==='preview_gameplay_ofm_bus')?.[1];
+ expect(request).toMatchObject({path:{pattern:'openRoundTrip',respectOneway:true}});
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',request));
+});
+
+test.each([false,true])('an unavailable native return cannot be committed as outbound only (one-way = %s)',async respectOneway=>{
+ const map=(await setup({roundTrip:true,autoStart:false,preview:async()=>({points:[a,b],lengthM:380,
   returnUnavailableReason:'終点から起点に戻れる道路がありません。'})}))!;
+ if(respectOneway)fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
  map.from();map.to();await screen.findByText(/終点から起点に戻れる道路がありません/);
+ expect(invoke).toHaveBeenCalledWith('preview_gameplay_ofm_bus',expect.objectContaining({
+  path:expect.objectContaining({respectOneway}),
+ }));
  expect(screen.getByLabelText('バス系統のプレビュー')).toBeTruthy();
  expect(screen.queryByLabelText('バス系統の復路プレビュー')).toBeNull();
  const confirm=screen.getByRole<HTMLButtonElement>('button',{name:'バス系統を確定'});
@@ -608,12 +630,13 @@ test('native observed-grade capability routes through proven structures without 
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',req));
 });
 
-test.each([false,true])('saved grade flag=%s is never rewritten by an engine capability while editing',async retainedGrade=>{
+test.each([false,true])('saved road policies are preserved while editing (strict and grade = %s)',async retainedGrade=>{
  const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
- const {pressPoint}=(await setup({waypoints:true,observedGrade:true,retainedGrade,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
+ const {pressPoint}=(await setup({waypoints:true,observedGrade:true,retainedGrade,retainedOneway:retainedGrade,multiple:true,savedProof:true,autoStart:false,preview:async()=>{
   const req=requests().at(-1)![1] as {path:{via?:unknown[];end:{vertex:number}}};
   return req.path.via?.length?{points:[a,b,waypoint],lengthM:660,viaPointIndices:[1]}:{points:[a,b],lengthM:380};
  }}))!;
+ if(!retainedGrade)fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
  fireEvent.click(screen.getByRole('button',{name:'バス系統を引き直す'}));
  await screen.findByText('道路経路 380 m・停留所2か所');
  pressPoint(b,1,screen.getByLabelText('バスの終点'));
@@ -621,6 +644,7 @@ test.each([false,true])('saved grade flag=%s is never rewritten by an engine cap
  await screen.findByText('道路経路 660 m・停留所2か所');
  expect(requests()).toHaveLength(2);
  for(const [,query] of requests()){
+  expect(query).toHaveProperty('path.respectOneway',retainedGrade);
   if(retainedGrade)expect(query).toHaveProperty('path.gradePolicy','observedConnectors');
   else expect(query).not.toHaveProperty('path.gradePolicy');
  }
