@@ -90,3 +90,34 @@ assessment alone (31 samples per process) measured median times of
 This improves crossing assessment, not save size, JSON decoding, viewport or
 desktop responsiveness. It does not establish connected long-distance
 routing or nationwide capacity.
+
+## Verify an independently approved captured alignment
+
+For an isolated existing save with an already authorized source capture,
+verify the approved fixture locally in the headless CLI:
+
+```sh
+cargo run --locked --offline -p rosenfu-cli -- world verify-road-proof \
+  APPROVED.json APPROVED_SHA256 CAPTURE.rosenfu
+```
+
+The independently reviewed JSON manifest has these exact fields:
+
+- `format`: `rosenfu-road-path-scope-v1`.
+- `origin`: `captured` for a separately authorized provider capture, or
+  `synthetic` for generated geometry. This label is a declaration.
+- `save_sha256`: the exact SHA-256 of the approved isolated save bytes.
+- `alignment_id`: the positive decimal string ID of the selected alignment.
+- `spans`: exact `world.road_path_provenance` entries for the selected
+  alignment in increasing start-point order.
+- `tiles`: exact `world.road_evidence_descriptors` entries, in the order
+  their full keys first occur among the spans' `requiredBindingKeys`.
+
+Pass the manifest's approved SHA-256 separately. The CLI verifies the exact
+discardable input bytes with the production save loader, then checks that the
+selected alignment is fully and contiguously protected and has points in at
+least two bound z14 cells. Its JSON receipt includes ordered span ranges and
+digests, not raw tiles or coordinates. A mismatch emits no receipt. This
+command does not write either file, fetch tiles, change any game state, or
+verify real-world coverage, legal access, or source licensing. Verification
+of a real capture remains separate from the synthetic acceptance above.
