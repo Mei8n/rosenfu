@@ -1,5 +1,5 @@
 use super::*;
-use rosenfu_core::operation::{RailWaitReason, Timetable, Train, Vehicle};
+use rosenfu_core::operation::{RailWaitReason, RailWaitScope, Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
 use rosenfu_core::world::{LiveBusMarker, LiveRailMarker, OperationServiceConfig};
 #[path = "operation/bus_transfers.rs"]
@@ -26,6 +26,8 @@ pub struct OperationLiveTrain {
     pub train: Train,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_for: Option<RailWaitReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_scope: Option<RailWaitScope>,
 }
 
 impl std::ops::Deref for OperationLiveTrain {
@@ -267,12 +269,15 @@ impl WorldEditor {
                 .map(|o| {
                     o.runtime
                         .trains()
-                        .map(|train| OperationLiveTrain {
-                            train: train.clone(),
-                            waiting_for: (!o.invalidated
-                                && matches!(train.state, rosenfu_core::operation::TrainState::Waiting { ready_ms } if ready_ms <= now_ms))
-                            .then(|| o.runtime.rail_wait_reason(&train.key))
-                            .flatten(),
+                        .map(|train| {
+                            let wait = (!o.invalidated)
+                                .then(|| o.runtime.rail_wait_advisory(&train.key))
+                                .flatten();
+                            OperationLiveTrain {
+                                train: train.clone(),
+                                waiting_for: wait.map(|(reason, _)| reason),
+                                wait_scope: wait.and_then(|(_, scope)| scope),
+                            }
                         })
                         .collect()
                 })

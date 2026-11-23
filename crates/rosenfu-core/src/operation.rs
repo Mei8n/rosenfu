@@ -151,6 +151,15 @@ impl RailWaitReason {
     }
 }
 
+/// In Fixed operation, both ends of an alignment belong to one stop-to-stop
+/// reservation. This describes scope, not where the blocker physically is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RailWaitScope {
+    HeldAcrossConnections,
+    NeedsAcrossConnections,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arrival {
     pub train: TrainKey,
@@ -163,6 +172,7 @@ struct CompiledLeg {
     duration_ms: u64,
     clearance_ms: u64,
     resources: BTreeSet<String>,
+    spans_connections: bool,
     // Milliseconds from entry; absence means reserved through the ordinary rear-clear event.
     early_releases: BTreeMap<String, u64>,
     release_events: BTreeSet<u64>,
@@ -703,14 +713,26 @@ impl OperationRuntime {
                         .saturating_add(clearance_ms)
                         .saturating_add(l.dwell_ms),
                 );
+                let resources: BTreeSet<_> = l
+                    .sections
+                    .iter()
+                    .flat_map(|s| s.resources.iter().cloned())
+                    .collect();
+                // Inspect the authoritative lockset once, never on each UI tick.
+                // One transition names two different alignment IDs; detecting
+                // both ends of the SAME alignment requires multiple transitions.
+                let spans_connections = rail_admission == RailAdmissionModel::Fixed
+                    && resources.iter().any(|key| {
+                        key.strip_prefix("rail:join:")
+                            .and_then(|s| s.strip_suffix(":End"))
+                            .filter(|id| id.parse::<u64>().is_ok())
+                            .is_some_and(|id| resources.contains(&format!("rail:join:{id}:Start")))
+                    });
                 legs.push(CompiledLeg {
                     duration_ms,
                     clearance_ms,
-                    resources: l
-                        .sections
-                        .iter()
-                        .flat_map(|s| s.resources.iter().cloned())
-                        .collect(),
+                    resources,
+                    spans_connections,
                     early_releases,
                     release_events,
                     nominal_entry_ms,
@@ -819,6 +841,13 @@ impl OperationRuntime {
     /// May report no category for an unknown resource. Scheduled dwell, moving
     /// vehicles and any bus are never reported as rail reservation waits.
     pub fn rail_wait_reason(&self, key: &TrainKey) -> Option<RailWaitReason> {
+        self.rail_wait_advisory(key).map(|(reason, _)| reason)
+    }
+
+    pub fn rail_wait_advisory(
+        &self,
+        key: &TrainKey,
+    ) -> Option<(RailWaitReason, Option<RailWaitScope>)> {
         key.service_id.parse::<u64>().ok()?;
         let train = self.trains.get(key)?;
         if !matches!(train.state, TrainState::Waiting { ready_ms } if ready_ms <= self.now_ms) {
@@ -829,7 +858,33 @@ impl OperationRuntime {
             .resources
             .iter()
             .find(|key_resource| self.reservation_blocks(key_resource, key))?;
-        RailWaitReason::of_resource(resource)
+        let reason = RailWaitReason::of_resource(resource)?;
+        let scope = if self.rail_admission == RailAdmissionModel::Fixed
+            && reason == RailWaitReason::Junction
+        {
+            let owner_spans = self
+                .occupied
+                .get(resource)
+                .and_then(|owner| self.trains.get(owner))
+                .filter(|owner| matches!(owner.state, TrainState::Moving { .. }))
+                .and_then(|owner| {
+                    self.services
+                        .get(&owner.key.service_id)?
+                        .legs
+                        .get(owner.leg)
+                })
+                .is_some_and(|leg| leg.spans_connections);
+            if owner_spans {
+                Some(RailWaitScope::HeldAcrossConnections)
+            } else if leg.spans_connections {
+                Some(RailWaitScope::NeedsAcrossConnections)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        Some((reason, scope))
     }
 
     /// Transfer only an idle clock to a freshly compiled timetable. Departures
