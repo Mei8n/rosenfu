@@ -6835,8 +6835,14 @@ mod road_snapshot_transaction_tests {
                 let reopened = rosenfu_storage::decode(&actual_bytes).unwrap();
                 assert_ne!(actual_bytes, baseline_bytes);
                 assert_eq!(history_of(&final_only), (baseline_history.0 + 1, 0, 0));
-                assert_eq!(final_only.world.operation_save(), fixture.world.operation_save());
-                assert_eq!(final_only.world.fixed_od_scenario(), reopened.fixed_od_scenario());
+                assert_eq!(
+                    final_only.world.operation_save(),
+                    fixture.world.operation_save()
+                );
+                assert_eq!(
+                    final_only.world.fixed_od_scenario(),
+                    reopened.fixed_od_scenario()
+                );
                 assert_eq!(final_only.world.operation_save(), reopened.operation_save());
             } else {
                 assert_eq!(history_of(&final_only), baseline_history);

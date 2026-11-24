@@ -215,10 +215,14 @@ impl BusPath {
         })?;
         let mut points = Vec::with_capacity(self.points.len());
         points.push(first);
-        points.extend(self.points[1..self.points.len() - 1].iter().map(|p| GeoPoint {
-            longitude: p[0],
-            latitude: p[1],
-        }));
+        points.extend(
+            self.points[1..self.points.len() - 1]
+                .iter()
+                .map(|p| GeoPoint {
+                    longitude: p[0],
+                    latitude: p[1],
+                }),
+        );
         points.push(last);
         let legs = metric_legs(self, "@start", "@end", vec![])?;
         let [leg] = legs.as_slice() else {

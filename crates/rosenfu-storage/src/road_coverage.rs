@@ -214,7 +214,9 @@ pub fn read_road_coverage(
         (_, None) => true,
     };
     if !known_header {
-        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
     }
     let rows = index.road_evidence.0.bindings.0;
     let invalid = || StorageError::InvalidWorld(WorldError::InvalidRoadEvidence);

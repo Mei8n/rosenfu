@@ -175,7 +175,10 @@ fn cli_requires_a_canonical_known_combined_profile_without_claiming_world_valida
     header["schema_version"] = 35.into();
     for profile in [
         json!(["classic_bus_run_v1", "rail_terminal_neck_v1"]),
-        json!(["fractional_bus_same_ground_atom_v1", "street_tram_single_cell_v1"]),
+        json!([
+            "fractional_bus_same_ground_atom_v1",
+            "street_tram_single_cell_v1"
+        ]),
         json!(["street_tram_chain_v1"]),
         json!(["fractional_bus_ground_route_v1"]),
         json!([
@@ -207,8 +210,15 @@ fn cli_requires_a_canonical_known_combined_profile_without_claiming_world_valida
         json!(["unsupported_v1"]),
         json!(["street_tram_chain_v1", "street_tram_chain_v1"]),
         json!(["rail_terminal_neck_v1", "classic_bus_run_v1"]),
-        json!(["street_tram_chain_v1", "classic_bus_run_v1", "rail_terminal_neck_v1"]),
-        json!(["fractional_bus_ground_stops_v1", "fractional_bus_ground_route_v1"]),
+        json!([
+            "street_tram_chain_v1",
+            "classic_bus_run_v1",
+            "rail_terminal_neck_v1"
+        ]),
+        json!([
+            "fractional_bus_ground_stops_v1",
+            "fractional_bus_ground_route_v1"
+        ]),
         json!([
             "fractional_bus_ground_route_v1",
             "fractional_bus_ground_stops_v1",
@@ -222,15 +232,22 @@ fn cli_requires_a_canonical_known_combined_profile_without_claiming_world_valida
         assert!(output.stdout.is_empty());
     }
     header.as_object_mut().unwrap().remove("capabilities");
-    assert!(!inspect(&serde_json::to_vec(&header).unwrap()).status.success());
+    assert!(!inspect(&serde_json::to_vec(&header).unwrap())
+        .status
+        .success());
 
     header["capabilities"] = json!(["street_tram_chain_v1"]);
     let encoded = serde_json::to_string(&header).unwrap();
-    let duplicate = format!("{{\"capabilities\":[\"street_tram_chain_v1\"],{}", &encoded[1..]);
+    let duplicate = format!(
+        "{{\"capabilities\":[\"street_tram_chain_v1\"],{}",
+        &encoded[1..]
+    );
     assert!(!inspect(duplicate.as_bytes()).status.success());
     let duplicate_version = format!("{{\"schema_version\":35,{}", &encoded[1..]);
     assert!(!inspect(duplicate_version.as_bytes()).status.success());
 
     header["schema_version"] = 34.into();
-    assert!(!inspect(&serde_json::to_vec(&header).unwrap()).status.success());
+    assert!(!inspect(&serde_json::to_vec(&header).unwrap())
+        .status
+        .success());
 }

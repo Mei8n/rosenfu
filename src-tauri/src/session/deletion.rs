@@ -571,7 +571,9 @@ impl WorldEditor {
             // Remove only the targeted ranges from scratch. Reattach their
             // unchanged proof and point slice before validating the final world.
             if has_road_proof {
-                stripped.road_path_provenance.retain(|p| p.alignment_id != id);
+                stripped
+                    .road_path_provenance
+                    .retain(|p| p.alignment_id != id);
             }
             stripped.routes.clear();
             stripped.route_paths.clear();
@@ -1036,7 +1038,9 @@ mod tests {
             let mut before = editor.snapshot();
             before.construction_plans = Some(plans());
             let history = editor.world_edit_history();
-            let after = editor.delete_alignment_section(id, remove, plans()).unwrap();
+            let after = editor
+                .delete_alignment_section(id, remove, plans())
+                .unwrap();
             assert_eq!(after.alignments[0].points, authored.alignments[0].points);
             assert_eq!(after.road_path_provenance, authored.road_path_provenance);
             assert_eq!(

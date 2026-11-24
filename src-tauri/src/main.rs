@@ -52,7 +52,8 @@ fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInf
         road_transport_enabled: true,
         ordinary_ofm_bus_enabled: true,
         ordinary_ofm_bus_fractional_enabled: true,
-        ordinary_ofm_bus_ground_fractional_enabled: rosenfu_storage::GENERAL_FRACTIONAL_BUS_SUPPORTED,
+        ordinary_ofm_bus_ground_fractional_enabled:
+            rosenfu_storage::GENERAL_FRACTIONAL_BUS_SUPPORTED,
         ordinary_ofm_bus_ground_fractional_stops_enabled:
             rosenfu_storage::GENERAL_FRACTIONAL_BUS_STOPS_SUPPORTED,
         authored_tram_road_guide_enabled: true,

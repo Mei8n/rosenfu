@@ -6,10 +6,9 @@ mod bus_grade;
 pub(crate) use bus::BUS_STOP_DENOMINATOR;
 pub use bus::{
     find_gameplay_bus_path, reconstruct_authored_tram_chain, reconstruct_authored_tram_guide,
-    reconstruct_gameplay_bus_path, AuthoredTramChainGuide, AuthoredTramGuide, BusGradePolicy,
-    BusInteriorStop, BusPath, BusPathBinding, BusPattern, BusTileProof, BusVertex, BusVia,
-    FractionalBusTraversal, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
-    resolve_fractional_bus_traversal,
+    reconstruct_gameplay_bus_path, resolve_fractional_bus_traversal, AuthoredTramChainGuide,
+    AuthoredTramGuide, BusGradePolicy, BusInteriorStop, BusPath, BusPathBinding, BusPattern,
+    BusTileProof, BusVertex, BusVia, FractionalBusTraversal, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
 };
 mod candidates;
 mod path;

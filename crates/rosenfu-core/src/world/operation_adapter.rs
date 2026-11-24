@@ -873,7 +873,8 @@ pub struct WorldOperationSave {
     standard_timetable: Option<StandardWorldSchedule>,
 }
 impl WorldOperationSave {
-    pub const CONNECTED_TERMINAL_NECK_FORMAT: u32 = RailAdmissionModel::ConnectedTerminalNeck as u32;
+    pub const CONNECTED_TERMINAL_NECK_FORMAT: u32 =
+        RailAdmissionModel::ConnectedTerminalNeck as u32;
     pub fn has_connected_terminal_neck(&self) -> bool {
         self.runtime.format == Self::CONNECTED_TERMINAL_NECK_FORMAT
     }
@@ -1510,21 +1511,29 @@ impl World {
         const MAX_WORK: usize = 32_768;
         const BUFFER_DEGREES: f64 = 0.0002;
         let error = OperationError::ReservationScopeChanged;
-        if !self.data.carries_general_fractional_bus_proof() || !self.data.carries_street_tram_proof() {
+        if !self.data.carries_general_fractional_bus_proof()
+            || !self.data.carries_street_tram_proof()
+        {
             return Ok(());
         }
         let selected = specs.into_iter().collect::<Vec<_>>();
         let is_road = |spec: &ServiceRunSpec| {
-            spec.service_id.strip_prefix("bus:")
+            spec.service_id
+                .strip_prefix("bus:")
                 .and_then(|id| self.data.ofm_gameplay_bus_routes.get(id))
                 .is_some_and(|b| b.fractional_terminals.is_some())
         };
         if !selected.iter().any(|spec| is_road(spec))
-            || !selected.iter().any(|spec| !spec.service_id.starts_with("bus:"))
+            || !selected
+                .iter()
+                .any(|spec| !spec.service_id.starts_with("bus:"))
         {
             return Ok(());
         }
-        let authored: BTreeSet<_> = self.data.road_path_provenance.iter()
+        let authored: BTreeSet<_> = self
+            .data
+            .road_path_provenance
+            .iter()
             .filter(|p| p.path.carries_street_tram_proof())
             .map(|p| p.alignment_id.0)
             .collect();
@@ -1536,10 +1545,18 @@ impl World {
             if spec.service_id.starts_with("bus:") && !is_road {
                 continue;
             }
-            for key in spec.legs.iter().flat_map(|l| &l.sections).flat_map(|s| &s.resources) {
+            for key in spec
+                .legs
+                .iter()
+                .flat_map(|l| &l.sections)
+                .flat_map(|s| &s.resources)
+            {
                 remaining = remaining.checked_sub(1).ok_or_else(|| error.clone())?;
                 if is_road {
-                    roads.insert(key.strip_prefix("road:edge:").ok_or_else(|| error.clone())?);
+                    roads.insert(
+                        key.strip_prefix("road:edge:")
+                            .ok_or_else(|| error.clone())?,
+                    );
                 } else if let Some((id, _, _)) = inline_lane_key(key) {
                     if authored.contains(&id) {
                         rails.insert(id);
@@ -1558,26 +1575,43 @@ impl World {
                 return None;
             }
             Some([
-                a.longitude.min(b.longitude), a.latitude.min(b.latitude),
-                a.longitude.max(b.longitude), a.latitude.max(b.latitude),
+                a.longitude.min(b.longitude),
+                a.latitude.min(b.latitude),
+                a.longitude.max(b.longitude),
+                a.latitude.max(b.latitude),
             ])
         };
         let mut strips = Vec::new();
-        for line in self.data.alignments.iter().filter(|line| rails.contains(&line.id.0)) {
+        for line in self
+            .data
+            .alignments
+            .iter()
+            .filter(|line| rails.contains(&line.id.0))
+        {
             for segment in line.points.windows(2) {
                 remaining = remaining.checked_sub(1).ok_or_else(|| error.clone())?;
                 strips.push(bbox(segment).ok_or_else(|| error.clone())?);
             }
         }
         let mut found = 0;
-        for edge in self.data.road_transport.edges.iter().filter(|edge| roads.contains(edge.id.as_str())) {
+        for edge in self
+            .data
+            .road_transport
+            .edges
+            .iter()
+            .filter(|edge| roads.contains(edge.id.as_str()))
+        {
             found += 1;
             for segment in edge.geometry.windows(2) {
                 let b = bbox(segment).ok_or_else(|| error.clone())?;
-                remaining = remaining.checked_sub(strips.len()).ok_or_else(|| error.clone())?;
+                remaining = remaining
+                    .checked_sub(strips.len())
+                    .ok_or_else(|| error.clone())?;
                 if strips.iter().any(|r| {
-                    b[0] <= r[2] + BUFFER_DEGREES && r[0] <= b[2] + BUFFER_DEGREES
-                        && b[1] <= r[3] + BUFFER_DEGREES && r[1] <= b[3] + BUFFER_DEGREES
+                    b[0] <= r[2] + BUFFER_DEGREES
+                        && r[0] <= b[2] + BUFFER_DEGREES
+                        && b[1] <= r[3] + BUFFER_DEGREES
+                        && r[1] <= b[3] + BUFFER_DEGREES
                 }) {
                     return Err(error);
                 }
@@ -2433,7 +2467,9 @@ impl World {
                                             [bus] => o
                                                 .runtime
                                                 .service_spec(&format!("bus:{}", bus.route_id))
-                                                .is_some_and(|run| self.separated_neck_bus(spec, run)),
+                                                .is_some_and(|run| {
+                                                    self.separated_neck_bus(spec, run)
+                                                }),
                                             _ => false,
                                         }
                                 }
@@ -2459,13 +2495,18 @@ impl World {
         let invalid = invalid
             || self.operation.as_ref().is_some_and(|o| {
                 !o.invalidated
-                    && self.check_fractional_bus_street_separation(
-                        o.configs.iter().filter_map(|rail| {
-                            o.runtime.service_spec(&rail.service_id.0.to_string())
-                        }).chain(o.bus_configs.iter().filter_map(|bus| {
-                            o.runtime.service_spec(&format!("bus:{}", bus.route_id))
-                        }))
-                    ).is_err()
+                    && self
+                        .check_fractional_bus_street_separation(
+                            o.configs
+                                .iter()
+                                .filter_map(|rail| {
+                                    o.runtime.service_spec(&rail.service_id.0.to_string())
+                                })
+                                .chain(o.bus_configs.iter().filter_map(|bus| {
+                                    o.runtime.service_spec(&format!("bus:{}", bus.route_id))
+                                })),
+                        )
+                        .is_err()
             })
             || self.operation.as_ref().is_some_and(|o| {
                 !o.invalidated

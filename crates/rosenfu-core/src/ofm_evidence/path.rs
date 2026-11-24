@@ -438,7 +438,8 @@ pub(crate) fn reconstruct_street_tram_path(
     guide: AuthoredTramProof<'_>,
 ) -> Result<DerivedPath> {
     let request = guide.evidence_request()?;
-    let points = guide.geometry(store)?
+    let points = guide
+        .geometry(store)?
         .filter(|line| (2..=4096).contains(&line.len()))
         .ok_or(Error::Binding)?;
     let pick = |key: &str, vertex: super::BusVertex, q: Option<u32>| -> Result<PathPick> {

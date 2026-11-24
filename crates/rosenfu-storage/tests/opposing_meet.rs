@@ -481,7 +481,10 @@ fn assert_spaced_opposing_repeats(
     assert!(matches!(
         state(whole, 1, second), TrainState::Moving { entered_ms, .. } if entered_ms == second
     ));
-    assert_eq!(aligning.operation_save(), aligning_reopened.operation_save());
+    assert_eq!(
+        aligning.operation_save(),
+        aligning_reopened.operation_save()
+    );
 
     // Both services still have births at START, but later grids disagree.
     // The original deterministic ordering must win rather than special ties.

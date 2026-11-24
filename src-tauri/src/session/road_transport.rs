@@ -240,8 +240,14 @@ impl WorldEditor {
         if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
             return Err("ワールドが変更されました。道路を選び直してください。".into());
         }
-        if !self.world.can_author_street_tram_with_bus_capabilities(guide) {
-            return Err("この併用軌道は、道路の途中に起終点を置いたバス系統と同じワールドに置けません。".into());
+        if !self
+            .world
+            .can_author_street_tram_with_bus_capabilities(guide)
+        {
+            return Err(
+                "この併用軌道は、道路の途中に起終点を置いたバス系統と同じワールドに置けません。"
+                    .into(),
+            );
         }
         if alignment.track_type != TrackType::Tram
             || alignment.infrastructure.level != Ground
@@ -310,7 +316,8 @@ impl WorldEditor {
             // Same immutable raw occurrence. The two adjacent segment
             // representations of a raw vertex have the same segment position.
             if old.fragment_id != new.fragment_id
-                || old.segment_index as f64 + old.fraction != new.segment_index as f64 + new.fraction
+                || old.segment_index as f64 + old.fraction
+                    != new.segment_index as f64 + new.fraction
             {
                 return Err("延伸先は終点と同じ道路の位置から描き始めてください。".into());
             }
@@ -592,8 +599,7 @@ impl WorldEditor {
         {
             return Err("この版では、途中に起終点のあるバス経路の停留所を追加できません。".into());
         }
-        if path.fractional_terminals.is_some()
-            && !rosenfu_storage::GENERAL_FRACTIONAL_BUS_SUPPORTED
+        if path.fractional_terminals.is_some() && !rosenfu_storage::GENERAL_FRACTIONAL_BUS_SUPPORTED
         {
             return Err("この版では、道路を経由する途中起終点に対応していません。".into());
         }

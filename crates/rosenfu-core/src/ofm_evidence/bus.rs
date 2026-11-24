@@ -740,8 +740,7 @@ fn build_observed_road_graph(
     let max_x = cells.iter().map(|c| c.0).max().ok_or(Error::Binding)?;
     let max_y = cells.iter().map(|c| c.1).max().ok_or(Error::Binding)?;
     if cells.len() != keys.len()
-        || (tram_chain.is_none()
-            && (max_x - min_x + 1) * (max_y - min_y + 1) != cells.len() as u32)
+        || (tram_chain.is_none() && (max_x - min_x + 1) * (max_y - min_y + 1) != cells.len() as u32)
         || tiles
             .iter()
             .any(|t| t.binding.revision != tiles[0].binding.revision)
@@ -755,12 +754,10 @@ fn build_observed_road_graph(
         }
     }
 
-    let has_west = |x, y| {
-        tram_chain.map_or(x > min_x, |_| x > 0 && cells.contains(&Cell(x - 1, y)))
-    };
-    let has_north = |x, y| {
-        tram_chain.map_or(y > min_y, |_| y > 0 && cells.contains(&Cell(x, y - 1)))
-    };
+    let has_west =
+        |x, y| tram_chain.map_or(x > min_x, |_| x > 0 && cells.contains(&Cell(x - 1, y)));
+    let has_north =
+        |x, y| tram_chain.map_or(y > min_y, |_| y > 0 && cells.contains(&Cell(x, y - 1)));
     let owned = |tile: &TileBinding, extent: i32, [x, y]: [i32; 2]| {
         x >= 0
             && x < extent

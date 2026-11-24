@@ -194,7 +194,9 @@ fn check_terminal_neck_envelope(
         version == CONNECTED_TERMINAL_NECK_SCHEMA
     };
     if declared != has_neck || (has_neck && conflicts) {
-        return Err(StorageError::UnsupportedVersion(CONNECTED_TERMINAL_NECK_SCHEMA));
+        return Err(StorageError::UnsupportedVersion(
+            CONNECTED_TERMINAL_NECK_SCHEMA,
+        ));
     }
     Ok(())
 }
@@ -213,10 +215,7 @@ fn check_fractional_envelope(
         FRACTIONAL_BUS_SCHEMA
     };
     if !fractional {
-        if matches!(
-            version,
-            FRACTIONAL_BUS_SCHEMA
-        ) {
+        if matches!(version, FRACTIONAL_BUS_SCHEMA) {
             return Err(StorageError::UnsupportedVersion(version));
         }
     } else if version != expected
@@ -246,11 +245,14 @@ fn check_typed_fractional_envelope(
     };
     if draft.carries_general_fractional_bus_proof() {
         return if version == COMBINED_CAPABILITIES_SCHEMA
-            && combined_profile(draft, operation).is_some_and(|p| p.first() == Some(&GENERAL_FRAC_ROUTE))
+            && combined_profile(draft, operation)
+                .is_some_and(|p| p.first() == Some(&GENERAL_FRAC_ROUTE))
         {
             Ok(())
         } else {
-            Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+            Err(StorageError::UnsupportedVersion(
+                COMBINED_CAPABILITIES_SCHEMA,
+            ))
         };
     }
     let fractional = draft.carries_fractional_bus_proof();
@@ -303,7 +305,9 @@ fn combined_profile(
         } else {
             &GENERAL_FRAC_PROFILES
         };
-        return Some(profiles[usize::from(draft.carries_general_fractional_bus_stops_proof())][transit]);
+        return Some(
+            profiles[usize::from(draft.carries_general_fractional_bus_stops_proof())][transit],
+        );
     }
     if standard {
         return (chain && !fractional).then_some(STANDARD_CHAIN_PROFILE);
@@ -334,7 +338,12 @@ fn known_combined_profile(declared: &[String]) -> bool {
         .into_iter()
         .chain(GENERAL_FRAC_PROFILES.into_iter().flatten())
         .chain(standard_profiles)
-        .any(|expected| declared.iter().map(String::as_str).eq(expected.iter().copied()))
+        .any(|expected| {
+            declared
+                .iter()
+                .map(String::as_str)
+                .eq(expected.iter().copied())
+        })
 }
 
 fn check_combined_profile(
@@ -345,14 +354,19 @@ fn check_combined_profile(
     let matches = match (version, declared, expected) {
         (COMBINED_CAPABILITIES_SCHEMA, Some(declared), Some(expected)) => {
             known_combined_profile(declared)
-                && declared.iter().map(String::as_str).eq(expected.iter().copied())
+                && declared
+                    .iter()
+                    .map(String::as_str)
+                    .eq(expected.iter().copied())
         }
         (COMBINED_CAPABILITIES_SCHEMA, _, _) => false,
         (_, None, None) => true,
         _ => false,
     };
     if !matches {
-        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
     }
     Ok(())
 }
@@ -680,7 +694,9 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
     // reached, the label or declaration was attached to malformed typed
     // data (possibly duplicate fields); never interpret that as repairable.
     if version == COMBINED_CAPABILITIES_SCHEMA || value.get("capabilities").is_some() {
-        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
     }
     let data = &value["world"];
     // Recognize reserved proof fields so an early build never treats them as
@@ -689,10 +705,17 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
     if value_carries_descriptor_marker(data, |path| {
         path.get("tramChainGuide").is_some()
             || path["algorithm"].as_str() == Some("ofm_ground_tram_chain_v1")
-    }) || data["ofm_gameplay_bus_routes"].as_object().is_some_and(|routes| {
-        routes.values().any(|proof| proof.get("fractionalTerminals").is_some())
-    }) {
-        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
+    }) || data["ofm_gameplay_bus_routes"]
+        .as_object()
+        .is_some_and(|routes| {
+            routes
+                .values()
+                .any(|proof| proof.get("fractionalTerminals").is_some())
+        })
+    {
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
     }
     let op = &value["operation"];
     let fractional = data["ofm_gameplay_bus_routes"]
@@ -972,7 +995,9 @@ fn checked_save_document(world: &World) -> Result<BorrowedSaveDocument<'_>, Stor
     }
     let document = save_document(world);
     if document.schema_version == COMBINED_CAPABILITIES_SCHEMA && document.capabilities.is_none() {
-        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
     }
     check_typed_fractional_envelope(
         document.schema_version,
@@ -985,7 +1010,9 @@ fn checked_save_document(world: &World) -> Result<BorrowedSaveDocument<'_>, Stor
         .filter(|op| op.has_connected_terminal_neck())
         .is_some_and(|op| typed_terminal_neck_conflicts(document.world, op))
     {
-        return Err(StorageError::UnsupportedVersion(CONNECTED_TERMINAL_NECK_SCHEMA));
+        return Err(StorageError::UnsupportedVersion(
+            CONNECTED_TERMINAL_NECK_SCHEMA,
+        ));
     }
     Ok(document)
 }
@@ -1444,7 +1471,10 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("world.json");
         for (tram, operation) in [
-            (serde_json::json!({"tramGuide":null}), serde_json::Value::Null),
+            (
+                serde_json::json!({"tramGuide":null}),
+                serde_json::Value::Null,
+            ),
             (
                 serde_json::json!({"algorithm":"ofm_ground_tram_adjacent_v2"}),
                 serde_json::Value::Null,
@@ -1489,7 +1519,11 @@ mod tests {
     fn neither_standalone_envelope_can_disguise_a_neck_and_fractional_bus() {
         let baseline: serde_json::Value =
             serde_json::from_slice(&encode(&World::default()).unwrap()).unwrap();
-        for version in [SCHEMA_VERSION, CONNECTED_TERMINAL_NECK_SCHEMA, FRACTIONAL_BUS_SCHEMA] {
+        for version in [
+            SCHEMA_VERSION,
+            CONNECTED_TERMINAL_NECK_SCHEMA,
+            FRACTIONAL_BUS_SCHEMA,
+        ] {
             let mut malicious = baseline.clone();
             malicious["schema_version"] = version.into();
             malicious["operation"] = serde_json::json!({"runtime":{"format":8}});
@@ -1511,8 +1545,8 @@ mod tests {
         let expect = Some(FRACTIONAL_BUS_STREET_TRAM_PROFILE);
         assert!(check_combined_profile(COMBINED_CAPABILITIES_SCHEMA, Some(&exact), expect).is_ok());
         assert!(check_combined_profile(SCHEMA_VERSION, None, None).is_ok());
-        let complete = [GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_CHAIN]
-            .map(str::to_owned);
+        let complete =
+            [GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_CHAIN].map(str::to_owned);
         assert!(known_combined_profile(&complete));
         let standard = [
             GENERAL_FRAC_ROUTE,
@@ -1531,8 +1565,13 @@ mod tests {
         assert!(!known_combined_profile(
             &[STANDARD_DAILY, "rail_terminal_neck_v1"].map(str::to_owned)
         ));
-        let extra = [GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_CHAIN, "extra_v1"]
-            .map(str::to_owned);
+        let extra = [
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_CHAIN,
+            "extra_v1",
+        ]
+        .map(str::to_owned);
         assert!(!known_combined_profile(&extra));
         for labels in [
             None,
@@ -1543,12 +1582,16 @@ mod tests {
         ] {
             assert!(matches!(
                 check_combined_profile(COMBINED_CAPABILITIES_SCHEMA, labels.as_deref(), expect),
-                Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+                Err(StorageError::UnsupportedVersion(
+                    COMBINED_CAPABILITIES_SCHEMA
+                ))
             ));
         }
         assert!(matches!(
             check_combined_profile(SCHEMA_VERSION, Some(&exact), None),
-            Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+            Err(StorageError::UnsupportedVersion(
+                COMBINED_CAPABILITIES_SCHEMA
+            ))
         ));
 
         let world = World::default();
@@ -1561,13 +1604,21 @@ mod tests {
             let bytes = serde_json::to_vec(&forged).unwrap();
             assert!(matches!(
                 decode(&bytes),
-                Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+                Err(StorageError::UnsupportedVersion(
+                    COMBINED_CAPABILITIES_SCHEMA
+                ))
             ));
         }
         assert_eq!(encode(&decode(&old).unwrap()).unwrap(), old);
         for (path, proof) in [
-            (serde_json::json!({"tramChainGuide":null}), serde_json::Value::Null),
-            (serde_json::Value::Null, serde_json::json!({"fractionalTerminals":null})),
+            (
+                serde_json::json!({"tramChainGuide":null}),
+                serde_json::Value::Null,
+            ),
+            (
+                serde_json::Value::Null,
+                serde_json::json!({"fractionalTerminals":null}),
+            ),
         ] {
             let mut downgraded: serde_json::Value = serde_json::from_slice(&old).unwrap();
             if !path.is_null() {
@@ -1578,7 +1629,9 @@ mod tests {
             }
             assert!(matches!(
                 decode(&serde_json::to_vec(&downgraded).unwrap()),
-                Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+                Err(StorageError::UnsupportedVersion(
+                    COMBINED_CAPABILITIES_SCHEMA
+                ))
             ));
         }
     }

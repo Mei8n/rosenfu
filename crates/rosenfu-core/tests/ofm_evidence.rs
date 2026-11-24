@@ -2491,8 +2491,15 @@ fn authored_tram_chain_two_north_south_seams_require_exact_order_and_evidence() 
     };
     let (tiles, store) = bus_rectangle(&cells);
     let guide = make(&tiles);
-    let path = reconstruct_authored_tram_chain(&store, &guide).unwrap().unwrap();
-    let latitude = |y: f64| (std::f64::consts::PI * (1. - 2. * y / 16384.)).sinh().atan().to_degrees();
+    let path = reconstruct_authored_tram_chain(&store, &guide)
+        .unwrap()
+        .unwrap();
+    let latitude = |y: f64| {
+        (std::f64::consts::PI * (1. - 2. * y / 16384.))
+            .sinh()
+            .atan()
+            .to_degrees()
+    };
     assert!(path.windows(2).all(|p| p[0][1] > p[1][1]));
     for seam in [6429., 6430.] {
         let cut = latitude(seam);
@@ -2509,22 +2516,46 @@ fn authored_tram_chain_two_north_south_seams_require_exact_order_and_evidence() 
 
     let mut outside = make(&tiles);
     outside.start_fraction_q = Some(950_000);
-    assert!(reconstruct_authored_tram_chain(&store, &outside).unwrap().is_none());
+    assert!(reconstruct_authored_tram_chain(&store, &outside)
+        .unwrap()
+        .is_none());
     let mut digest = make(&tiles);
     digest.tiles[1].tile_raw_sha256 = "0".repeat(64);
-    assert_eq!(reconstruct_authored_tram_chain(&store, &digest), Err(Error::Hash));
+    assert_eq!(
+        reconstruct_authored_tram_chain(&store, &digest),
+        Err(Error::Hash)
+    );
     let mut repeat = make(&tiles);
     repeat.tiles[1] = repeat.tiles[0].clone();
-    assert_eq!(reconstruct_authored_tram_chain(&store, &repeat), Err(Error::Binding));
+    assert_eq!(
+        reconstruct_authored_tram_chain(&store, &repeat),
+        Err(Error::Binding)
+    );
     let mut skip = make(&tiles);
     skip.tiles.swap(1, 2);
-    assert_eq!(reconstruct_authored_tram_chain(&store, &skip), Err(Error::Binding));
+    assert_eq!(
+        reconstruct_authored_tram_chain(&store, &skip),
+        Err(Error::Binding)
+    );
 
     let doubled = [middle[0], middle[0]];
-    let (tiles, ambiguous) = bus_rectangle(&[(14391, 6428, north), (14391, 6429, &doubled), (14391, 6430, south)]);
-    assert!(reconstruct_authored_tram_chain(&ambiguous, &make(&tiles)).unwrap().is_none());
-    let (tiles, corner) = bus_rectangle(&[(14391, 6428, north), (14392, 6429, middle), (14392, 6430, south)]);
-    assert_eq!(reconstruct_authored_tram_chain(&corner, &make(&tiles)), Err(Error::Binding));
+    let (tiles, ambiguous) = bus_rectangle(&[
+        (14391, 6428, north),
+        (14391, 6429, &doubled),
+        (14391, 6430, south),
+    ]);
+    assert!(reconstruct_authored_tram_chain(&ambiguous, &make(&tiles))
+        .unwrap()
+        .is_none());
+    let (tiles, corner) = bus_rectangle(&[
+        (14391, 6428, north),
+        (14392, 6429, middle),
+        (14392, 6430, south),
+    ]);
+    assert_eq!(
+        reconstruct_authored_tram_chain(&corner, &make(&tiles)),
+        Err(Error::Binding)
+    );
 }
 
 #[test]
@@ -2533,12 +2564,13 @@ fn authored_tram_chain_can_turn_through_an_observed_middle_tile_not_a_rectangle(
         reconstruct_authored_tram_chain, AuthoredTramChainGuide, BusTileProof,
     };
     let north: &[BusFixtureLine<'_>] = &[(&[[2000, 3400], [2000, 4196]], None)];
-    let corner: &[BusFixtureLine<'_>] = &[(
-        &[[2000, -100], [2000, 2100], [4196, 2100]],
-        None,
-    )];
+    let corner: &[BusFixtureLine<'_>] = &[(&[[2000, -100], [2000, 2100], [4196, 2100]], None)];
     let east: &[BusFixtureLine<'_>] = &[(&[[-100, 2100], [700, 2100]], None)];
-    let (tiles, store) = bus_rectangle(&[(14391, 6428, north), (14391, 6429, corner), (14392, 6429, east)]);
+    let (tiles, store) = bus_rectangle(&[
+        (14391, 6428, north),
+        (14391, 6429, corner),
+        (14392, 6429, east),
+    ]);
     let guide = AuthoredTramChainGuide {
         tiles: tiles
             .iter()
@@ -2552,7 +2584,9 @@ fn authored_tram_chain_can_turn_through_an_observed_middle_tile_not_a_rectangle(
         start_fraction_q: None,
         end_fraction_q: None,
     };
-    let path = reconstruct_authored_tram_chain(&store, &guide).unwrap().unwrap();
+    let path = reconstruct_authored_tram_chain(&store, &guide)
+        .unwrap()
+        .unwrap();
     assert_eq!(path.len(), 5);
     assert!(path[0][0] == path[1][0] && path[1][0] == path[2][0]);
     assert!(path[0][1] > path[1][1] && path[1][1] > path[2][1]);
@@ -2635,9 +2669,11 @@ fn fractional_bus_traversal_preserves_regular_atom_ids_and_exact_terminal_positi
         tile_raw_sha256: one_way.0.raw_sha256.clone(),
         ..reverse
     };
-    assert!(resolve_fractional_bus_traversal(&one_way.1, &denied, [750_000, 250_000])
-        .unwrap()
-        .is_none());
+    assert!(
+        resolve_fractional_bus_traversal(&one_way.1, &denied, [750_000, 250_000])
+            .unwrap()
+            .is_none()
+    );
     assert!(matches!(
         resolve_fractional_bus_traversal(&one_way.1, &request, [250_000, 750_000]),
         Err(Error::Hash)

@@ -211,13 +211,7 @@ pub(super) fn solve_fractional(
 ) -> Result<Option<FractionalBusTraversal>> {
     let end_key = query.end_tile_key.as_deref().unwrap_or(&query.tile_key);
     let mut work = MAX_MULTI_RELAXATIONS;
-    let starts = terminal_directions(
-        graph,
-        &query.tile_key,
-        query.start,
-        cuts_raw[0],
-        &mut work,
-    )?;
+    let starts = terminal_directions(graph, &query.tile_key, query.start, cuts_raw[0], &mut work)?;
     let ends = terminal_directions(graph, end_key, query.end, cuts_raw[1], &mut work)?;
     let mut chosen: Option<Chosen> = None;
     let mut scratch = SearchScratch::new(graph.geometry.len());

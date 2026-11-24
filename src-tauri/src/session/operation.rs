@@ -2141,12 +2141,8 @@ mod tests {
                 end_ms: 1_280_000,
             };
             serde_json::to_value(
-                e.preview_standard_schedule_od(
-                    service,
-                    &e.operation_configuration_token(),
-                    query,
-                )
-                .unwrap(),
+                e.preview_standard_schedule_od(service, &e.operation_configuration_token(), query)
+                    .unwrap(),
             )
             .unwrap()
         };
@@ -2193,7 +2189,10 @@ mod tests {
                 [0, 360, 600, 960, 1200, 1440],
             )
             .is_err());
-        assert_eq!(rosenfu_storage::encode(&other_service.world).unwrap(), exact);
+        assert_eq!(
+            rosenfu_storage::encode(&other_service.world).unwrap(),
+            exact
+        );
 
         let before_od = query_od(&e);
         assert_eq!(before_od["first_departure_ms"], 1_140_000);
@@ -2228,7 +2227,9 @@ mod tests {
         );
         assert!(
             after_od["assignment"]["rail"][0]["trips"].as_f64().unwrap()
-                < before_od["assignment"]["rail"][0]["trips"].as_f64().unwrap()
+                < before_od["assignment"]["rail"][0]["trips"]
+                    .as_f64()
+                    .unwrap()
         );
 
         let dir = tempfile::tempdir().unwrap();

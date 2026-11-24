@@ -448,7 +448,8 @@ pub(crate) fn independent_neck_bus(spec: &ServiceRunSpec) -> bool {
                 && leg.sections.iter().all(|section| {
                     !section.resources.is_empty()
                         && section.resources.iter().all(|key| {
-                            key.strip_prefix("road:edge:").is_some_and(|id| !id.is_empty())
+                            key.strip_prefix("road:edge:")
+                                .is_some_and(|id| !id.is_empty())
                         })
                 })
         })
@@ -518,7 +519,7 @@ pub(crate) fn terminal_neck(spec: &ServiceRunSpec) -> Option<(u64, u64)> {
         && out_ports == back_ports
         && out_ports.iter().any(|&(id, _)| id == main)
         && out_ports.iter().any(|&(id, _)| id == lead))
-        .then_some((main, lead))
+    .then_some((main, lead))
 }
 
 /// Only one alignment and one direction per run. Inside each leg blocks
@@ -1972,15 +1973,18 @@ impl OperationRuntime {
                     return Err(OperationError::InvalidClock);
                 }
             }
-            if rail_admission == RailAdmissionModel::ConnectedTerminalNeck && service.terminal_hold {
+            if rail_admission == RailAdmissionModel::ConnectedTerminalNeck && service.terminal_hold
+            {
                 let valid = match train.state {
                     TrainState::Waiting { ready_ms } => {
                         train.leg == 0 && ready_ms == birth && train.delay_ms == 0
                     }
-                    TrainState::Moving { entered_ms, .. } => birth
-                        .checked_add(leg.nominal_entry_ms)
-                        .and_then(|at| at.checked_add(train.delay_ms))
-                        == Some(entered_ms),
+                    TrainState::Moving { entered_ms, .. } => {
+                        birth
+                            .checked_add(leg.nominal_entry_ms)
+                            .and_then(|at| at.checked_add(train.delay_ms))
+                            == Some(entered_ms)
+                    }
                 };
                 if !valid {
                     return Err(OperationError::InvalidClock);

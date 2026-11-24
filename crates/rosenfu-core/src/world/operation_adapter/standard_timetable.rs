@@ -78,8 +78,7 @@ impl World {
         }
         self.validate_standard_physics(expected, service)?;
         let op = self.operation_mut().ok_or(OperationError::InvalidClock)?;
-        op.runtime
-            .set_standard_timetable(key, authored)?;
+        op.runtime.set_standard_timetable(key, authored)?;
         op.standard_owner = Some((player, company));
         Ok(())
     }

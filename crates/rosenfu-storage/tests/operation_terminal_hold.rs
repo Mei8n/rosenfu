@@ -186,7 +186,11 @@ fn connected_neck(
     reverse_construction: bool,
     main_tracks: u8,
     lead_tracks: u8,
-) -> (World, OperationServiceConfig, [rosenfu_core::world::AlignmentId; 2]) {
+) -> (
+    World,
+    OperationServiceConfig,
+    [rosenfu_core::world::AlignmentId; 2],
+) {
     connected_neck_at(reverse_construction, main_tracks, lead_tracks, 139.)
 }
 
@@ -195,7 +199,11 @@ fn connected_neck_at(
     main_tracks: u8,
     lead_tracks: u8,
     longitude: f64,
-) -> (World, OperationServiceConfig, [rosenfu_core::world::AlignmentId; 2]) {
+) -> (
+    World,
+    OperationServiceConfig,
+    [rosenfu_core::world::AlignmentId; 2],
+) {
     use rosenfu_core::world::{
         AlignmentConnection, AlignmentEndpoint, AlignmentEndpointRef, SectionInfrastructure,
     };
@@ -214,10 +222,18 @@ fn connected_neck_at(
         }
     };
     let approach = world
-        .build_alignment(company, "Approach".into(), points(longitude, longitude + 0.008))
+        .build_alignment(
+            company,
+            "Approach".into(),
+            points(longitude, longitude + 0.008),
+        )
         .unwrap();
     let lead = world
-        .build_alignment(company, "Terminal lead".into(), points(longitude + 0.008, longitude + 0.012))
+        .build_alignment(
+            company,
+            "Terminal lead".into(),
+            points(longitude + 0.008, longitude + 0.012),
+        )
         .unwrap();
     let mut draft = world.snapshot().clone();
     for (a, tracks) in draft.alignments.iter_mut().zip([main_tracks, lead_tracks]) {
@@ -306,7 +322,11 @@ fn proved_connected_neck_keeps_the_train_during_dwell_and_returns_on_the_other_l
         assert!(!back.contains(&lane(approach, u8::from(reverse))));
         assert!(out.contains(&lane(lead, 0)) && back.contains(&lane(lead, 0)));
         let advance = |w: &mut World, at| {
-            w.operation_mut().unwrap().runtime.advance_to(at, 64).unwrap()
+            w.operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(at, 64)
+                .unwrap()
         };
         advance(&mut world, 0);
         let TrainState::Moving {
@@ -341,7 +361,10 @@ fn proved_connected_neck_keeps_the_train_during_dwell_and_returns_on_the_other_l
         advance(&mut resumed, release_ms);
         let returning = world.operation_save().unwrap();
         assert_eq!(resumed.operation_save(), Some(returning.clone()));
-        assert_eq!(returning.runtime.trains[0].key, waiting.runtime.trains[0].key);
+        assert_eq!(
+            returning.runtime.trains[0].key,
+            waiting.runtime.trains[0].key
+        );
         assert_eq!(returning.runtime.trains[0].leg, 1);
         assert_eq!(returning.runtime.trains[1], waiting.runtime.trains[1]);
         let TrainState::Moving {
@@ -369,16 +392,20 @@ fn proved_connected_neck_keeps_the_train_during_dwell_and_returns_on_the_other_l
         ));
 
         let mut legacy = setup;
-        legacy.runtime =
-            rosenfu_core::operation::OperationRuntime::new(legacy.runtime.services)
-                .unwrap()
-                .save();
+        legacy.runtime = rosenfu_core::operation::OperationRuntime::new(legacy.runtime.services)
+            .unwrap()
+            .save();
         let mut legacy_world = World::new(world.snapshot().clone()).unwrap();
-        legacy_world.restore_operation(Some(legacy.clone())).unwrap();
+        legacy_world
+            .restore_operation(Some(legacy.clone()))
+            .unwrap();
         let legacy_bytes = encode(&legacy_world).unwrap();
         let legacy_header: serde_json::Value = serde_json::from_slice(&legacy_bytes).unwrap();
         assert_eq!(legacy_header["schema_version"], SCHEMA_VERSION);
-        assert_eq!(decode(&legacy_bytes).unwrap().operation_save(), Some(legacy));
+        assert_eq!(
+            decode(&legacy_bytes).unwrap().operation_save(),
+            Some(legacy)
+        );
 
         // Only the new capability receives the high outer envelope. Current
         // older-schema paths must reject even a syntactically valid downgrade.
@@ -504,7 +531,10 @@ fn adjacent_street_tram_and_connected_neck_envelopes_cannot_mask_each_other() {
         )
         .unwrap();
     assert!(mixed.snapshot().carries_adjacent_street_tram_proof());
-    assert!(mixed.operation_save().unwrap().has_connected_terminal_neck());
+    assert!(mixed
+        .operation_save()
+        .unwrap()
+        .has_connected_terminal_neck());
     assert!(matches!(
         rosenfu_storage::ensure_world_saveable(&mixed),
         Err(StorageError::UnsupportedVersion(33))
@@ -524,7 +554,10 @@ fn adjacent_street_tram_and_connected_neck_envelopes_cannot_mask_each_other() {
     // switched into a conflicting optional mode. It saves in the old format.
     let mut fallback = World::new(mixed.snapshot().clone()).unwrap();
     fallback.configure_operation(vec![config]).unwrap();
-    assert!(!fallback.operation_save().unwrap().has_connected_terminal_neck());
+    assert!(!fallback
+        .operation_save()
+        .unwrap()
+        .has_connected_terminal_neck());
     let normal = encode(&fallback).unwrap();
     assert_eq!(encode(&decode(&normal).unwrap()).unwrap(), normal);
     let mut tram_wire: serde_json::Value = serde_json::from_slice(&normal).unwrap();
@@ -604,7 +637,9 @@ fn connected_neck_and_verified_classic_bus_keep_exact_independent_run_lifetimes(
     let bus = attach_classic_test_bus(&mut mixed);
     let mut control_rail = mixed.clone();
     let mut control_bus = mixed.clone();
-    control_rail.configure_operation(vec![rail.clone()]).unwrap();
+    control_rail
+        .configure_operation(vec![rail.clone()])
+        .unwrap();
     control_bus
         .configure_all_operation(vec![], vec![bus.clone()])
         .unwrap();
@@ -742,13 +777,18 @@ fn rail_near_a_traversed_bus_edge_falls_back_despite_disjoint_resource_names() {
     let bus = attach_classic_test_bus(&mut near);
     let mut rail_only = near.clone();
     rail_only.configure_operation(vec![rail.clone()]).unwrap();
-    assert!(rail_only.operation_save().unwrap().has_connected_terminal_neck());
+    assert!(rail_only
+        .operation_save()
+        .unwrap()
+        .has_connected_terminal_neck());
     near.configure_all_operation(vec![rail], vec![bus]).unwrap();
     assert_eq!(near.operation_save().unwrap().runtime.format, 2);
 
     let (mut separated, rail, _) = connected_neck_at(false, 2, 1, 139.);
     let bus = attach_classic_test_bus(&mut separated);
-    separated.configure_all_operation(vec![rail], vec![bus]).unwrap();
+    separated
+        .configure_all_operation(vec![rail], vec![bus])
+        .unwrap();
     separated
         .operation_mut()
         .unwrap()

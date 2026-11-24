@@ -431,7 +431,9 @@ fn add_synthetic_long_service(world: &mut World) {
     use rosenfu_core::world::{GeoPoint, OperationServiceConfig, RouteSegment};
 
     let player = world.add_player("Long service fixture".into()).unwrap();
-    let owner = world.add_company(player, "Synthetic operator".into()).unwrap();
+    let owner = world
+        .add_company(player, "Synthetic operator".into())
+        .unwrap();
     let points = (0..=64)
         .map(|i| GeoPoint {
             latitude: 35.,
@@ -465,7 +467,13 @@ fn add_synthetic_long_service(world: &mut World) {
         .map(|stop| stop.reference)
         .collect();
     let service_id = world
-        .add_service_path(owner, "Synthetic long service".into(), from, segments, stops)
+        .add_service_path(
+            owner,
+            "Synthetic long service".into(),
+            from,
+            segments,
+            stops,
+        )
         .unwrap();
     world
         .configure_operation(vec![OperationServiceConfig {
@@ -592,7 +600,10 @@ fn prepare_dense_and_long_geographic_reopen_fixture() {
             assert_eq!(tile.len(), MIB);
             let sha256 = raw_sha256(&tile);
             bindings.push(bound(REV, x + i, y, &sha256));
-            raw.push(RawEvidence { bytes: tile, sha256 });
+            raw.push(RawEvidence {
+                bytes: tile,
+                sha256,
+            });
         }
     }
     let store = EvidenceStore::from_archive_parts(raw, bindings).unwrap();
