@@ -408,3 +408,32 @@ test('the Standard form follows live catch-up and pause without renewing cached 
  expect(apply().disabled).toBe(false);
  expect(vi.mocked(invoke).mock.calls.filter(([which])=>which==='standard_schedule_status')).toHaveLength(1);
 });
+
+test('time-band defaults follow the selected service and AM/PM overrides remain independent',async()=>{
+ const view={...snapshot,now_ms:60_000,configuration_token:'freq',services:[config,
+  {...config,service_id:'13',timetable:{...config.timetable,headway_ms:900_000}}]};
+ const ipc=vi.mocked(invoke);
+ ipc.mockImplementation(async (command,args)=>command==='standard_schedule_status'
+  ?{configurationToken:'freq',serviceId:(args as {service:string}).service,canApply:true,activeElsewhere:false,
+    authored:null,departureCount:null,destinations:[]}
+  :view);
+ const display=(id:string)=><OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}>
+  <ServiceOperations serviceId={id} enabled standardEnabled/>
+ </OperationProvider>;
+ const {rerender}=render(display('13'));
+ expect((await screen.findByLabelText('基本の間隔（分）') as HTMLInputElement).value).toBe('15');
+ fireEvent.change(screen.getByLabelText('朝ラッシュの間隔（分）'),{target:{value:'4'}});
+ rerender(display('12'));
+ expect((await screen.findByLabelText('基本の間隔（分）') as HTMLInputElement).value).toBe('6');
+ const morning=screen.getByLabelText('朝ラッシュの間隔（分）') as HTMLInputElement;
+ expect(morning.value).toBe('');
+ fireEvent.change(morning,{target:{value:'3'}});
+ fireEvent.change(screen.getByLabelText('夕ラッシュの間隔（分）'),{target:{value:'5'}});
+ expect(ipc.mock.calls.some(([command])=>command==='apply_standard_schedule')).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'時間帯ダイヤを適用'}));
+ await waitFor(()=>expect(ipc).toHaveBeenCalledWith('apply_standard_schedule',{
+  service:'12',expected:'initial-token',baseMinutes:6,
+  overrides:{earlyMorning:null,morningRush:3,midday:null,eveningRush:5,lateNight:null},
+  boundariesMinutes:[0,360,600,960,1200,1440],
+ }));
+});

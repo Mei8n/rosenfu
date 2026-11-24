@@ -2,7 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {useOrdinaryBusInteraction} from './useOrdinaryBusInteraction';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
-import type {RoadSnapshot} from './automaticRoadData';
+import type {RoadDataState,RoadSnapshot} from './automaticRoadData';
 import {OFM_EVIDENCE_LIMITS,OFM_LIMITS} from './openFreeMapRoadData';
 import {ordinaryBusTileFootprint,prepareOrdinaryBusQuery,snapOrdinaryBusVertex,verifyOrdinaryBusPreview,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
 
@@ -109,9 +109,10 @@ export function useOrdinaryBusDraft(input:Input){
   canPlace:!waypoints.committing};
 }
 
-export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,enabled}:{
+export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,enabled,roadSource}:{
  state:ReturnType<typeof useOrdinaryBusDraft>;route?:Route;routes:readonly Route[];
  onSelect:(id:string)=>void;multiple:boolean;blocked:boolean;enabled:boolean;
+ roadSource:Pick<RoadDataState,'status'|'message'>&{retry:()=>void};
 }){
  const {draft,waiting,error}=state,disabled=!enabled||waiting;
  const tileLimit=state.rectangle?OFM_EVIDENCE_LIMITS.batchTiles:1;
@@ -125,6 +126,11 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
   <h3>バス</h3>
   <p>地図の道路を使ってゲーム内の系統を作ります。実際の通行可否は示しません。</p>
   {blocked?<p>このワールドの別の道路交通データは上書きできません。</p>:<>
+   {roadSource.status!=='ready'&&roadSource.message&&
+    <div role="status" aria-label="バスの道路データ状態"><p>{roadSource.message}</p>
+     {roadSource.status==='error'&&<button type="button" className="secondary" disabled={disabled||state.mutating()}
+      onClick={roadSource.retry}>道路データを再取得</button>}
+    </div>}
    <details>
     <summary>バス経路のデータ上限</summary>
     <p>選択点を囲む道路の確認範囲は最大 {tileLimit} タイル。元データ1タイル最大{OFM_LIMITS.bytes/2**20} MiB、1回の転送合計最大{OFM_EVIDENCE_LIMITS.batchBytes/2**20} MiBです。</p>

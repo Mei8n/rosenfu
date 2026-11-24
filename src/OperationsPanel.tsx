@@ -216,6 +216,7 @@ export function ServiceOperations({serviceId,enabled,standardEnabled=false}:{ser
   <h4>運行</h4>
   {standardEnabled&&state.crossingPlanningToken&&<StandardSchedulePanel key={serviceId+':'+state.crossingPlanningToken}
    service={serviceId} revision={state.crossingPlanningToken} operationToken={view.timetable_edit_token}
+   currentHeadwayMs={config?.timetable.headway_ms}
    enabled={enabled&&!busy&&!blocked&&!view.invalidated}
    canApply={!!config&&!standardBlocker} applyBlocker={standardBlocker}
    apply={args=>send('apply_standard_schedule',args)}/>}
