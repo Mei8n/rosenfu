@@ -146,6 +146,130 @@ mod tests {
         ))
         .unwrap()
     }
+    #[test]
+    fn authored_street_tram_retains_the_original_raw_guide_without_catalog() {
+        use rosenfu_core::ofm_evidence::{AuthoredTramGuide, BusVertex, DECODER_RULE};
+        let f: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../crates/rosenfu-core/tests/fixtures/ofm_authored_tram_synthetic.json"
+        ))
+        .unwrap();
+        let bytes: Vec<u8> = serde_json::from_value(f["raw"].clone()).unwrap();
+        let key = f["tileKey"].as_str().unwrap().to_owned();
+        let sha = f["tileRawSha256"].as_str().unwrap().to_owned();
+        let cached = || {
+            Some((
+                OfmRawInput {
+                    sha256: sha.clone(),
+                    byte_length: bytes.len(),
+                    base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                },
+                OfmBindingInput {
+                    key: key.clone(),
+                    url: key.clone(),
+                    raw_sha256: sha.clone(),
+                    revision: f["revision"].as_str().unwrap().to_owned(),
+                    z: 14,
+                    x: f["x"].as_u64().unwrap() as u32,
+                    y: f["y"].as_u64().unwrap() as u32,
+                    decoder_rule: DECODER_RULE.into(),
+                    license: "ODbL-1.0".into(),
+                    attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                },
+            ))
+        };
+        let guide = AuthoredTramGuide {
+            tile_key: key.clone(),
+            tile_raw_sha256: sha.clone(),
+            start: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: 0,
+            },
+            end: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: 1,
+            },
+            start_fraction_q: Some(100_000),
+            end_fraction_q: Some(500_000),
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("軌道会社".into()).unwrap();
+        let before = editor.snapshot();
+        let prior = rosenfu_storage::encode(&editor.world).unwrap();
+        let token = editor.ofm_world_token().unwrap();
+        let points = editor
+            .preview_authored_tram_road_guide(&token, &guide, cached())
+            .unwrap();
+        assert_eq!(editor.snapshot(), before);
+        let plan = || -> PlannedAlignment {
+            serde_json::from_value(serde_json::json!({
+                "name": "道路上の軌道", "points": points, "trackType": "tram", "stations": []
+            }))
+            .unwrap()
+        };
+        assert!(editor
+            .build_authored_street_tram("old", &guide, cached(), plan(), vec![])
+            .is_err());
+        let mut mismatched = plan();
+        mismatched.points[0].latitude += 0.001;
+        assert!(editor
+            .build_authored_street_tram(&token, &guide, cached(), mismatched, vec![])
+            .is_err());
+        let mut grade = plan();
+        grade.infrastructure.level = rosenfu_core::world::InfrastructureLevel::Elevated;
+        assert!(editor
+            .build_authored_street_tram(&token, &guide, cached(), grade, vec![])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let built = editor
+            .build_authored_street_tram(&token, &guide, cached(), plan(), vec![])
+            .unwrap();
+        assert_eq!(built.road_evidence_descriptors.len(), 1);
+        assert!(built.road_transport.tram_sections.is_empty());
+        let proof = &built.road_path_provenance[0];
+        assert_eq!(proof.path.tram_guide.as_ref(), Some(&guide));
+        assert_eq!(proof.alignment_id, built.alignments[0].id);
+        assert_eq!(built.alignments[0].points, points);
+        let saved = rosenfu_storage::encode(&editor.world).unwrap();
+        let reopened = rosenfu_storage::decode(&saved).unwrap();
+        assert_eq!(reopened.snapshot(), &built);
+        assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), saved);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&prior).unwrap()["schema_version"],
+            27
+        );
+        let original: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(original["schema_version"], 29);
+
+        // Both a mislabeled old envelope and a genuine future discriminator
+        // must survive an ordinary autosave recovery attempt byte-for-byte.
+        // The prior reader's header gate accepts at most 28; a real 29 save
+        // takes its same UnsupportedVersion branch before it sees tramGuide.
+        let dir = tempfile::tempdir().unwrap();
+        let manual = dir.path().join("manual.json");
+        let auto = dir.path().join("autosave.json");
+        std::fs::write(&auto, &prior).unwrap();
+        for version in [26, 27, 28, 31] {
+            let mut corrupted = original.clone();
+            corrupted["schema_version"] = version.into();
+            let exact = serde_json::to_vec(&corrupted).unwrap();
+            std::fs::write(&manual, &exact).unwrap();
+            let error = rosenfu_storage::load_world(&manual).unwrap_err();
+            assert!(matches!(
+                error,
+                rosenfu_storage::StorageError::UnsupportedVersion(_)
+            ));
+            let mut reader = WorldEditor::new();
+            assert!(reader.load_autosave(&auto, &manual).is_err());
+            assert!(!reader.manual_repair_allowed);
+            assert!(reader.loaded_path.is_none());
+            assert_eq!(std::fs::read(&manual).unwrap(), exact);
+            assert_eq!(std::fs::read(&auto).unwrap(), prior);
+            assert!(!rosenfu_storage::backup_path(&manual).exists());
+        }
+    }
+
     fn stage(editor: &mut WorldEditor) {
         stage_fixture(editor, fixture());
     }

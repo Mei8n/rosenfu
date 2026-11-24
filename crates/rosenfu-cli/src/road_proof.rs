@@ -78,6 +78,9 @@ fn checked(approved: &Value, save: &[u8]) -> Result<Value> {
         .iter()
         .filter(|p| p.alignment_id == alignment.id)
         .collect();
+    if spans.iter().any(|p| p.path.carries_street_tram_proof()) {
+        return Err("street-tram geometry is not a multi-cell road proof".into());
+    }
     spans.sort_unstable_by_key(|p| p.start_point_index);
     if spans.first().is_none_or(|p| p.start_point_index != 0)
         || spans

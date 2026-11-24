@@ -213,6 +213,72 @@ impl WorldEditor {
             .collect()
     }
 
+    /// Bank exactly the confirmed game-authored street path. A world switch,
+    /// tile change or changed geometry may not silently downgrade to free track.
+    pub fn build_authored_street_tram(
+        &mut self,
+        expected_world_token: &str,
+        guide: &rosenfu_core::ofm_evidence::AuthoredTramGuide,
+        cached: Option<(OfmRawInput, OfmBindingInput)>,
+        mut alignment: PlannedAlignment,
+        roads: Vec<rosenfu_core::world::RoadSnapshot>,
+    ) -> Result<WorldDraft, String> {
+        use rosenfu_core::world::{InfrastructureLevel::Ground, TrackType};
+        if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
+            return Err("ワールドが変更されました。道路を選び直してください。".into());
+        }
+        if alignment.track_type != TrackType::Tram
+            || alignment.infrastructure.level != Ground
+            || alignment.start_level.is_some_and(|level| level != Ground)
+            || alignment
+                .anchor_levels
+                .as_ref()
+                .is_some_and(|levels| levels.as_slice() != [Ground, Ground])
+            || alignment.ofm_path.is_some()
+            || alignment.reference.is_some()
+            || alignment.extension.is_some()
+            || alignment.destination.is_some()
+            || alignment.junction_source.is_some()
+        {
+            return Err("併用軌道は地上の独立した一区間として敷設してください。".into());
+        }
+        let (raw, bindings): (Vec<_>, Vec<_>) = cached.into_iter().unzip();
+        let (raw, bindings) = super::ofm::inputs(raw, bindings)?;
+        let (world, derived) = self
+            .world
+            .staged_street_tram_for_construction(guide, raw.into_iter().zip(bindings).collect())
+            .map_err(road_path_help)?;
+        if alignment.points.len() != derived.points.len()
+            || alignment.points.iter().zip(&derived.points).any(|(p, q)| {
+                !in_edit_extent(p.latitude, p.longitude)
+                    || (p.longitude - q[0]).abs() > 1e-10
+                    || (p.latitude - q[1]).abs() > 1e-10
+            })
+        {
+            return Err("確認した道路と敷設位置が一致しません。道路を選び直してください。".into());
+        }
+        alignment.anchor_indices = None;
+        alignment.anchor_levels = None;
+        alignment.start_level = None;
+        alignment.ofm_path = Some(derived.descriptor);
+        let mut candidate = self.clone();
+        candidate.world = world;
+        for road in roads {
+            candidate
+                .world
+                .add_road_snapshot(road)
+                .map_err(|e| e.to_string())?;
+        }
+        candidate.prepare_construction_candidate(
+            self.world.snapshot(),
+            vec![alignment],
+            vec![],
+        )?;
+        candidate.deleted_alignment = None;
+        self.commit_edit(candidate, true)?;
+        Ok(self.snapshot())
+    }
+
     /// A player action over immutable OFM evidence, independent of the regional
     /// catalog selector. An optional already fetched tile is admitted and used
     /// in the same transaction, without creating or changing a rail plan.

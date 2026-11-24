@@ -156,6 +156,37 @@ pub async fn preview_authored_tram_road_guide(
 }
 
 #[tauri::command]
+pub async fn build_authored_street_tram(
+    app: tauri::AppHandle,
+    expected_world_token: String,
+    guide: rosenfu_core::ofm_evidence::AuthoredTramGuide,
+    raw_evidence: Option<crate::session::OfmRawInput>,
+    tile_binding: Option<crate::session::OfmBindingInput>,
+    alignment: crate::session::PlannedAlignment,
+    roads: Option<Vec<rosenfu_core::world::RoadSnapshot>>,
+) -> Result<WorldDraft, String> {
+    let cached = match (raw_evidence, tile_binding) {
+        (Some(raw), Some(binding)) => Some((raw, binding)),
+        (None, None) => None,
+        _ => return Err("道路のキャッシュ情報が揃っていません。".into()),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let editor = app.state::<Mutex<WorldEditor>>();
+        let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+        editor.build_authored_street_tram(
+            &expected_world_token,
+            &guide,
+            cached,
+            alignment,
+            roads.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|_| "併用軌道を建設できません。".to_owned())?
+}
+
+#[tauri::command]
 pub async fn preview_gameplay_ofm_bus(
     editor: State<'_, Mutex<WorldEditor>>,
     expected_world_token: String,

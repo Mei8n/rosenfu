@@ -11,6 +11,7 @@ pub use bus::{
 };
 mod candidates;
 mod path;
+pub(crate) use path::reconstruct_street_tram_path;
 pub use path::{
     reconstruct_path, validate_path_descriptor, DerivedPath, PathDescriptor, PathJoin, PathPick,
     SourceSpan,
@@ -94,6 +95,24 @@ pub struct DecodedTile {
 pub struct EvidenceInput<'a> {
     pub binding: &'a TileBinding,
     pub raw: &'a [u8],
+}
+
+/// Canonical raw fragment identity shared by the route and crossing views.
+pub(crate) fn raw_road_fragment_id(binding: &TileBinding, line: &TileLine) -> String {
+    format!(
+        "ofm:{}:14:{}:{}:{}:{}",
+        binding.revision, binding.x, binding.y, line.feature_index, line.line_index
+    )
+}
+
+pub(crate) fn road_grid_lon_lat(x: f64, y: f64) -> [f64; 2] {
+    [
+        x / 16384. * 360. - 180.,
+        (std::f64::consts::PI * (1. - 2. * y / 16384.))
+            .sinh()
+            .atan()
+            .to_degrees(),
+    ]
 }
 
 pub fn raw_sha256(raw: &[u8]) -> String {
@@ -361,7 +380,7 @@ fn decode_value(raw: &[u8]) -> Result<RawValue> {
 fn zigzag(v: u64) -> i64 {
     ((v >> 1) as i64) ^ -((v & 1) as i64)
 }
-fn number(v: &RawValue) -> Option<f64> {
+pub(crate) fn number(v: &RawValue) -> Option<f64> {
     match v {
         RawValue::Float32(v) => Some(f32::from_bits(*v) as f64),
         RawValue::Float64(v) => Some(f64::from_bits(*v)),

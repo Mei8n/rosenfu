@@ -223,13 +223,7 @@ impl BusGridPoint {
         let [(xn, xd), (yn, yd)] = self.0;
         let x = xn as f64 / xd as f64;
         let y = yn as f64 / yd as f64;
-        [
-            x / 16384. * 360. - 180.,
-            (std::f64::consts::PI * (1. - 2. * y / 16384.))
-                .sinh()
-                .atan()
-                .to_degrees(),
-        ]
+        super::road_grid_lon_lat(x, y)
     }
 }
 
@@ -341,13 +335,6 @@ fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
     let h = (lat / 2.).sin().powi(2)
         + a[1].to_radians().cos() * b[1].to_radians().cos() * (lon / 2.).sin().powi(2);
     2. * 6_371_000. * h.clamp(0., 1.).sqrt().asin()
-}
-
-fn fragment(tile: &TileBinding, line: &TileLine) -> String {
-    format!(
-        "ofm:{}:14:{}:{}:{}:{}",
-        tile.revision, tile.x, tile.y, line.feature_index, line.line_index
-    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -756,7 +743,7 @@ fn build_observed_road_graph(
                     p.map(|q| (i64::from(q), 1)),
                 ));
             }
-            ids.insert(fragment(&tile.binding, raw), lines.len());
+            ids.insert(super::raw_road_fragment_id(&tile.binding, raw), lines.len());
             offsets
                 .entry(tile.binding.canonical_url.clone())
                 .or_default()
@@ -977,7 +964,7 @@ fn build_observed_road_graph(
         .into_iter()
         .map(|line| BusGraphLine {
             tile_key: line.tile.canonical_url.clone(),
-            fragment_id: fragment(line.tile, line.raw),
+            fragment_id: super::raw_road_fragment_id(line.tile, line.raw),
             extent: line.raw.extent,
             metric_scale: scales[&line.tile.y],
             grade: line.grade,
@@ -1269,6 +1256,12 @@ pub fn reconstruct_authored_tram_guide(
     else {
         return Ok(None);
     };
+    // Two independently admitted positions on the same raw atom are
+    // directly connected. Searching via the atom's endpoints would insert
+    // a false turnback on a completely straight stretch.
+    if query.start == query.end {
+        return Ok((start != end).then_some(vec![start, end]));
+    }
     // Both fractional picks attach only to a verified ordinary raw atom.
     // At most four bounded searches share one graph and one work allowance.
     let mut scratch = SearchScratch::new(graph.geometry.len());

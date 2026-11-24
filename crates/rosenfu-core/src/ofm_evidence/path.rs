@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 type P = [f64; 2];
 const RULE: &str = "ofm_overlap_blend_v1";
 const METHOD: &str = "ofm_tile_path_v1";
+const TRAM_METHOD: &str = "ofm_authored_street_tram_v1";
+const TRAM_RULE: &str = "ofm_ground_tram_guide_v1";
 const SEGMENTS: usize = 256;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,6 +49,27 @@ pub struct PathDescriptor {
     pub end: PathPick,
     pub ordered_spans: Vec<SourceSpan>,
     pub joins: Vec<PathJoin>,
+    /// Present only for a game-authored street tram; not a real lane right.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_tram_guide"
+    )]
+    pub tram_guide: Option<super::AuthoredTramGuide>,
+}
+fn present_tram_guide<'de, D>(
+    input: D,
+) -> std::result::Result<Option<super::AuthoredTramGuide>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    super::AuthoredTramGuide::deserialize(input).map(Some)
+}
+impl PathDescriptor {
+    /// Wire capability marker; its presence doesn't certify any geometry.
+    pub fn carries_street_tram_proof(&self) -> bool {
+        self.method == TRAM_METHOD || self.tram_guide.is_some()
+    }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct DerivedPath {
@@ -340,11 +363,50 @@ pub fn reconstruct_path(
             end: end.clone(),
             ordered_spans: spans,
             joins: blends.into_iter().map(|b| b.record).collect(),
+            tram_guide: None,
         },
         points,
         max_correction_meters: maximum,
     })
 }
+/// Use exactly the native guide solver used at point placement. The binding
+/// records the raw byte identity as well as the original fractional endpoints.
+pub(crate) fn reconstruct_street_tram_path(
+    store: &EvidenceStore,
+    guide: &super::AuthoredTramGuide,
+) -> Result<DerivedPath> {
+    let points = super::reconstruct_authored_tram_guide(store, guide)?
+        .filter(|line| (2..=4096).contains(&line.len()))
+        .ok_or(Error::Binding)?;
+    let fragment_prefix = guide
+        .tile_key
+        .split_once("/planet/")
+        .and_then(|(_, tile)| tile.strip_suffix(".pbf"))
+        .ok_or(Error::Binding)?
+        .replace('/', ":");
+    let pick = |vertex: super::BusVertex, q: Option<u32>| PathPick {
+        fragment_id: format!("ofm:{fragment_prefix}:{}:{}", vertex.feature, vertex.line),
+        segment_index: vertex.vertex as usize,
+        fraction: f64::from(q.unwrap_or(0)) / 1_000_000.,
+    };
+    Ok(DerivedPath {
+        descriptor: PathDescriptor {
+            method: TRAM_METHOD.into(),
+            algorithm: TRAM_RULE.into(),
+            geometry_derived: true,
+            coverage_verified: false,
+            required_binding_keys: vec![guide.tile_key.clone()],
+            start: pick(guide.start, guide.start_fraction_q),
+            end: pick(guide.end, guide.end_fraction_q),
+            ordered_spans: vec![],
+            joins: vec![],
+            tram_guide: Some(guide.clone()),
+        },
+        points,
+        max_correction_meters: 0.,
+    })
+}
+
 fn close(a: f64, b: f64, tolerance: f64) -> bool {
     b.is_finite() && (a - b).abs() <= tolerance
 }
@@ -354,6 +416,20 @@ pub fn validate_path_descriptor(
     store: &EvidenceStore,
     claim: &PathDescriptor,
 ) -> Result<DerivedPath> {
+    if let Some(guide) = claim.tram_guide.as_ref() {
+        if claim.method != TRAM_METHOD
+            || claim.algorithm != TRAM_RULE
+            || !claim.ordered_spans.is_empty()
+            || !claim.joins.is_empty()
+            || claim.required_binding_keys.as_slice() != std::slice::from_ref(&guide.tile_key)
+        {
+            return Err(Error::Binding);
+        }
+        let actual = reconstruct_street_tram_path(store, guide)?;
+        return (actual.descriptor == *claim)
+            .then_some(actual)
+            .ok_or(Error::Binding);
+    }
     if claim.method != METHOD
         || claim.algorithm != RULE
         || !claim.geometry_derived

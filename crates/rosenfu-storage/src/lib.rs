@@ -20,6 +20,11 @@ pub const SCHEMA_VERSION: u64 = 27;
 // classify unsupported outer schemas as non-repairable, unlike a known
 // schema whose unfamiliar runtime merely appears invalid.
 const MIXED_STANDARD_BUS_SCHEMA: u64 = 28;
+// Pre-tram clients must reject these BEFORE typed fields are decoded, even
+// during autosave recovery. A standard-enabled save must not appear safe to an
+// otherwise new client built without the standard-periodic-rail capability.
+const STREET_TRAM_SCHEMA: u64 = 29;
+const STREET_TRAM_STANDARD_SCHEMA: u64 = 30;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -84,11 +89,22 @@ impl From<WorldError> for StorageError {
 }
 
 fn current_wire_schema(version: u64) -> bool {
-    version == SCHEMA_VERSION
-        || (cfg!(feature = "standard-periodic-rail") && version == MIXED_STANDARD_BUS_SCHEMA)
+    matches!(version, SCHEMA_VERSION | STREET_TRAM_SCHEMA)
+        || (cfg!(feature = "standard-periodic-rail")
+            && matches!(version, MIXED_STANDARD_BUS_SCHEMA | STREET_TRAM_STANDARD_SCHEMA))
 }
 
-fn operation_wire_schema(operation: Option<&rosenfu_core::world::WorldOperationSave>) -> u64 {
+fn wire_schema(
+    draft: &WorldDraft,
+    operation: Option<&rosenfu_core::world::WorldOperationSave>,
+) -> u64 {
+    if draft.carries_street_tram_proof() {
+        #[cfg(feature = "standard-periodic-rail")]
+        if operation.is_some_and(|op| op.has_standard_timetable()) {
+            return STREET_TRAM_STANDARD_SCHEMA;
+        }
+        return STREET_TRAM_SCHEMA;
+    }
     #[cfg(feature = "standard-periodic-rail")]
     if operation.is_some_and(|op| op.has_standard_timetable() && !op.bus_configs.is_empty()) {
         return MIXED_STANDARD_BUS_SCHEMA;
@@ -294,6 +310,23 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
     decode_document(serde_json::from_slice(bytes)?)
 }
 
+fn value_carries_street_tram_proof(data: &serde_json::Value) -> bool {
+    // Only inspect the two reachable descriptor shapes, not arbitrary JSON.
+    // A bad point or malformed tramGuide in a downgraded envelope still
+    // signals a newer capability, and is not permission to replace the file.
+    let marker = |path: &serde_json::Value| {
+        path.get("tramGuide").is_some()
+            || path.get("method").and_then(serde_json::Value::as_str)
+                == Some("ofm_authored_street_tram_v1")
+    };
+    data["road_path_provenance"]
+        .as_array()
+        .is_some_and(|proofs| proofs.iter().any(|p| marker(&p["path"])))
+        || data["construction_plans"]["parkedPaths"]
+            .as_array()
+            .is_some_and(|paths| paths.iter().any(|p| marker(&p["ofmPath"])))
+}
+
 fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
     let format = value
         .get("format")
@@ -308,6 +341,18 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
         .ok_or(StorageError::InvalidHeader)?;
     if version != 26 && !current_wire_schema(version) {
         return Err(StorageError::UnsupportedVersion(version));
+    }
+    if version < STREET_TRAM_SCHEMA
+        && value.get("world").is_some_and(value_carries_street_tram_proof)
+    {
+        return Err(StorageError::UnsupportedVersion(STREET_TRAM_SCHEMA));
+    }
+    if version == STREET_TRAM_SCHEMA
+        && value["operation"]
+            .get("standard_timetable")
+            .is_some_and(|v| !v.is_null())
+    {
+        return Err(StorageError::UnsupportedVersion(STREET_TRAM_STANDARD_SCHEMA));
     }
     if version == 26 && value.get("fixed_od_scenario").is_some() {
         return Err(StorageError::InvalidHeader);
@@ -370,6 +415,15 @@ fn restore_document<W: Into<WorldDraft>>(
     document: SaveDocument<W>,
     version: u64,
 ) -> Result<World, StorageError> {
+    let draft = document.world.into();
+    let expected = wire_schema(&draft, document.operation.as_ref());
+    if version < STREET_TRAM_SCHEMA && expected >= STREET_TRAM_SCHEMA {
+        return Err(StorageError::UnsupportedVersion(STREET_TRAM_SCHEMA));
+    }
+    #[cfg(feature = "standard-periodic-rail")]
+    if version == STREET_TRAM_SCHEMA && expected == STREET_TRAM_STANDARD_SCHEMA {
+        return Err(StorageError::UnsupportedVersion(expected));
+    }
     // Schema 26 predates runtime formats after v2 and the newer rail reservations. Keep that ingress
     // closed even when the current schema supports newer runtime formats.
     if version == 26
@@ -390,10 +444,9 @@ fn restore_document<W: Into<WorldDraft>>(
     {
         return Err(StorageError::InvalidHeader);
     }
-    if version != 26 && operation_wire_schema(document.operation.as_ref()) != version {
+    if version != 26 && expected != version {
         return Err(StorageError::InvalidHeader);
     }
-    let draft = document.world.into();
     if version == 26 && !draft.ofm_gameplay_bus_routes.is_empty() {
         return Err(StorageError::InvalidHeader);
     }
@@ -504,7 +557,7 @@ fn save_document(world: &World) -> BorrowedSaveDocument<'_> {
     let operation = world.operation_save();
     BorrowedSaveDocument {
         format: FORMAT,
-        schema_version: operation_wire_schema(operation.as_ref()),
+        schema_version: wire_schema(data, operation.as_ref()),
         world: data,
         road_evidence: BorrowedEvidenceEnvelope::from_store(&data.runtime_road_evidence),
         operation,
@@ -924,6 +977,55 @@ mod tests {
             Err(StorageError::InvalidWorld(
                 rosenfu_core::world::WorldError::InvalidRoadTransport
             ))
+        ));
+    }
+
+    #[test]
+    fn downgraded_street_tram_markers_cannot_be_mistaken_for_repairable_corruption() {
+        let before = encode(&World::default()).unwrap();
+        let old: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        assert_eq!(old["schema_version"], SCHEMA_VERSION);
+        assert_eq!(encode(&decode(&before).unwrap()).unwrap(), before);
+        for version in [26, SCHEMA_VERSION, MIXED_STANDARD_BUS_SCHEMA] {
+            for parked in [false, true] {
+                let mut data = old.clone();
+                data["schema_version"] = version.into();
+                let marker = serde_json::json!({"tramGuide": null});
+                if parked {
+                    data["world"]["construction_plans"] =
+                        serde_json::json!({"parkedPaths":[{"ofmPath":marker}]});
+                } else {
+                    data["world"]["road_path_provenance"] =
+                        serde_json::json!([{"path":marker}]);
+                }
+                let expected = if version == MIXED_STANDARD_BUS_SCHEMA
+                    && !cfg!(feature = "standard-periodic-rail")
+                {
+                    version
+                } else {
+                    STREET_TRAM_SCHEMA
+                };
+                assert!(matches!(
+                    decode(&serde_json::to_vec(&data).unwrap()),
+                    Err(StorageError::UnsupportedVersion(v)) if v == expected
+                ));
+            }
+        }
+        let mut forged = old;
+        for version in [STREET_TRAM_SCHEMA, STREET_TRAM_STANDARD_SCHEMA] {
+            forged["schema_version"] = version.into();
+            let result = decode(&serde_json::to_vec(&forged).unwrap());
+            if version == STREET_TRAM_STANDARD_SCHEMA && !cfg!(feature = "standard-periodic-rail") {
+                assert!(matches!(result, Err(StorageError::UnsupportedVersion(30))));
+            } else {
+                assert!(matches!(result, Err(StorageError::InvalidHeader)));
+            }
+        }
+        forged["schema_version"] = STREET_TRAM_SCHEMA.into();
+        forged["operation"] = serde_json::json!({"standard_timetable":{}});
+        assert!(matches!(
+            decode(&serde_json::to_vec(&forged).unwrap()),
+            Err(StorageError::UnsupportedVersion(30))
         ));
     }
 

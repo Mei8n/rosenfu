@@ -99,7 +99,7 @@ export function removeBusControl<T>(s:OrdinaryBusInteraction<T>,id:string):Ordin
  return controls.length===body.controls.length?s:propose(s,{...body,controls});
 }
 export function settleBusValidation<T>(
- s:OrdinaryBusInteraction<T>,scope:unknown,id:number,outcome:{verified:T}|{reason:string;leg?:number},
+ s:OrdinaryBusInteraction<T>,scope:unknown,id:number,outcome:{verified:T;resolvedEnd?:DraftControl}|{reason:string;leg?:number},
 ):OrdinaryBusInteraction<T>{
  const check=s.check;
  if(scope!==s.scope||!check||check.id!==id)return s;
@@ -107,9 +107,16 @@ export function settleBusValidation<T>(
   const leg=Number.isInteger(outcome.leg)&&outcome.leg!>=0&&outcome.leg!<check.body.controls.length-1?outcome.leg:undefined;
   return refuse(s,check.body,outcome.reason,leg);
  }
- const frame={body:check.body,verified:outcome.verified};
+ const resolved=outcome.resolvedEnd;
+ const controls=check.body.controls,index=resolved?controls.findIndex(c=>c.id===resolved.id):-1;
+ if(resolved&&(check.body.closed||index<0||index!==0&&index!==controls.length-1||
+    controls.some(c=>c.id!==resolved.id&&samePoint(c.anchor,resolved.anchor))))
+  return refuse(s,check.body,'経路の確認結果が一致しません。位置を選び直してください。');
+ const body=resolved?{...check.body,controls:controls.map(c=>c.id===resolved.id?resolved:c)}:check.body;
+ const frame={body,verified:outcome.verified};
  return {...s,frame,past:trail(s),future:[],check:undefined,refusal:undefined,
-  finish:check.finish?{id,body:frame.body,verified:frame.verified}:undefined};
+  // A double click while checking must not commit a different landing.
+  finish:check.finish&&!resolved?{id,body:frame.body,verified:frame.verified}:undefined};
 }
 /** Ctrl+Z clears an unvalidated/pending attempt first, otherwise changes
  * only the local draft. It never calls world's Undo. */

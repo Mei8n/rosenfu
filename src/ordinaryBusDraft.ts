@@ -49,7 +49,7 @@ function tilesOf(snapshot?:RoadSnapshot):Tile[]{
  * expose several source descriptors; use one stable original index because
  * the native graph uses the exact same encoded vertex. Distinct equally near
  * placements and different copies of a tile-boundary point are not guessed. */
-export function snapOrdinaryBusVertex(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number,previous?:BusAnchor,rectangle=false):BusAnchor{
+function snapOrdinaryBusChoices(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number,previous?:BusAnchor,rectangle=false,nearby?:readonly BusAnchor[]):BusAnchor[]{
  if(!finitePoint(at)||!Number.isFinite(scale)||scale<=0)throw Error('地図上の道路を選んでください。');
  const tiles=tilesOf(snapshot);let seen=0;
  const fromView=tiles.some(item=>previous&&sameTile(item.binding,previous.tile));
@@ -88,7 +88,34 @@ export function snapOrdinaryBusVertex(snapshot:RoadSnapshot|undefined,at:GeoPoin
  const related=candidates.filter(c=>c.distance<=nearest.distance+0.001);
  if(previous&&!rectangle&&!sameTile(anchor.tile,previous.tile))throw Error('起点と終点は同じ道路の取得範囲に置いてください。範囲をまたぐ経路は未対応です。');
  if(related.some(c=>!sameTile(c.anchor.tile,anchor.tile)||!samePlace(c.anchor.point,anchor.point)))throw Error('位置が重なっています。地図を拡大して選び直してください。');
- return anchor;
+ const out=[anchor];
+ if(nearby){
+  // A different cell is eligible only if replacing the free endpoint
+  // keeps the exact rectangle defined by all fixed control points.
+  const fixed=nearby.map(v=>v.tile);
+  const grid=fixed.length&&fixed.every(t=>t.revision===anchor.tile.revision)?
+   ordinaryBusTileFootprint(fixed[0],fixed[0],fixed.slice(1)):undefined;
+  const sameRectangle=(tile:OpenFreeMapEvidenceRequest)=>grid&&tile.revision===anchor.tile.revision&&
+   Math.min(grid.west,tile.x)===Math.min(grid.west,anchor.tile.x)&&Math.max(grid.east,tile.x)===Math.max(grid.east,anchor.tile.x)&&
+   Math.min(grid.north,tile.y)===Math.min(grid.north,anchor.tile.y)&&Math.max(grid.south,tile.y)===Math.max(grid.south,anchor.tile.y);
+  for(const other of candidates){
+   if(out.length>=3)break;
+   if((sameTile(other.anchor.tile,anchor.tile)||sameRectangle(other.anchor.tile))&&
+      !out.some(p=>samePlace(p.point,other.anchor.point)))out.push(other.anchor);
+  }
+ }
+ return out;
+}
+export function snapOrdinaryBusVertex(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number,previous?:BusAnchor,rectangle=false):BusAnchor{
+ return snapOrdinaryBusChoices(snapshot,at,camera,scale,previous,rectangle)[0];
+}
+/** Up to two distinct alternatives from the same confirmed rectangle. A
+ * placed start cannot change the primary tile key of the existing proof. */
+export function snapOrdinaryBusFreeEnd(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number,fixed:readonly BusAnchor[]=[]):BusAnchor[]{
+ return snapOrdinaryBusChoices(snapshot,at,camera,scale,undefined,true,fixed);
+}
+export function hasObservedOrdinaryBusTile(snapshot:RoadSnapshot|undefined,tile:OpenFreeMapEvidenceRequest):boolean{
+ return tilesOf(snapshot).some(t=>sameTile(t.binding,tile));
 }
 /** Bridge a worker's 20m ray pick to the observed tile digest. This is a
  * bounded source anchor, not a second projection or asserted native topology. */

@@ -122,10 +122,17 @@ import type { TileStatus } from "./GsiBackground";
 import { provisionalCurveSpeed, snapStraight } from "./circularAlignment";
 import { nearestOnAlignment, stationPolygon, alignmentLength, distanceM, pointOnAlignment } from "./alignment";
 type GeoPoint = { latitude: number; longitude: number };
+type StreetTramPreview={
+  world:World; basis:GeoPoint[]; plan:number; path:number;
+  args:Pick<OrdinaryBusQuery,"expectedWorldToken"|"rawEvidence"|"tileBinding">&{
+    guide:Pick<OrdinaryBusPath,"tileKey"|"tileRawSha256"|"start"|"end">&{startFractionQ:number;endFractionQ:number}
+  };
+  points:GeoPoint[];
+};
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { standard_schedule_enabled?: boolean; crossing_planning_enabled?: boolean; authored_tram_road_guide_enabled?: boolean; ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; ordinary_ofm_bus_interior_stops_enabled?: boolean; ordinary_ofm_bus_auto_stops_enabled?: boolean; ordinary_ofm_bus_closed_loop_enabled?: boolean; ordinary_ofm_bus_observed_grade_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
+type EngineInfo = { standard_schedule_enabled?: boolean; crossing_planning_enabled?: boolean; authored_tram_road_guide_enabled?: boolean; authored_street_tram_enabled?: boolean; ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; ordinary_ofm_bus_interior_stops_enabled?: boolean; ordinary_ofm_bus_auto_stops_enabled?: boolean; ordinary_ofm_bus_closed_loop_enabled?: boolean; ordinary_ofm_bus_observed_grade_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
@@ -362,6 +369,7 @@ export function App() {
   const alignmentName = "新しい線路";
   const [draftFinished, setDraftFinished] = useState(false);
   const [draftPoints, setDraftPoints] = useState<GeoPoint[]>([]);
+  const [streetTramPreview,setStreetTramPreview]=useState<StreetTramPreview|null>(null);
   const [draftEditedGeometry,setDraftEditedGeometry]=useState<EditedGeometry|undefined>();
   type AnchorEdit={kind?:"point";id:number;before:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];extension?:Extension|null;destination?:Extension;redoDestination?:Extension;anchorLevels?:SectionInfrastructure["level"][];redoAnchorLevels?:SectionInfrastructure["level"][];startLevel?:SectionInfrastructure["level"];infrastructure?:SectionInfrastructure};after:{points:GeoPoint[];geometry?:EditedGeometry;redo:GeoPoint[];extension?:Extension|null;destination?:Extension;redoDestination?:Extension;anchorLevels?:SectionInfrastructure["level"][];redoAnchorLevels?:SectionInfrastructure["level"][];startLevel?:SectionInfrastructure["level"];infrastructure?:SectionInfrastructure}};
   const [anchorUndo,setAnchorUndo]=useState<AnchorEdit[]>([]),[anchorRedo,setAnchorRedo]=useState<AnchorEdit[]>([]);
@@ -1603,6 +1611,7 @@ export function App() {
       if(draftPoints.length>1)setDraftFinished(true);roadDrawing.cancel();return;
     }
     if(roadDrawing.clickPending())return;roadFinishAfterPlacement.current=false;
+    setStreetTramPreview(null);
     // Existing endpoints, planned endpoints, junction selection and finishing are
     // owned by normal construction, not inferred from road geometry.
     if(((!draftPoints.length||draftFinished)&&startTarget(point,rect.width,rect.height))||snappedEndpoint(point,rect.width,rect.height)) {placeTrackPoint(point,rect,event);roadDrawing.cancel();return;}
@@ -1645,6 +1654,24 @@ export function App() {
         if(anchorPlacementToken.current===task){anchorPlacementPending.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);}
       }
     }
+    // Only the native proof is eligible for street tram. A leased two-click
+    // view is never parked as ordinary geometry by autosave/plan switching.
+    const streetIntent=info?.authored_street_tram_enabled===true&&!!world&&roadFollowing&&
+      !draftFinished&&draftPoints.length===1&&!draftExtension&&!destination&&
+      !parkedPaths.some(p=>p.planId===activePlanId)&&!plannedStations.some(p=>stationPlanId(p)===activePlanId)&&
+      infrastructure.level==="ground"&&(startLevel===undefined||startLevel==="ground")&&
+      !(draftAnchorLevels??[]).some(level=>level!=="ground")&&
+      roadDrawingBundle===automaticRoad.snapshot?.bundle;
+    if(streetIntent&&result.kind==="route"&&result.roadSnap&&remembered&&
+       remembered.world===world&&remembered.epoch===worldEpoch&&remembered.plan===activePlanId&&remembered.path===activePathId){
+      // Adjacent cell recovery is a visual guide only until the native
+      // street-tram proof supports a path across the exact boundary.
+      const sameCell=bindTramRoadSnap(automaticRoad.snapshot,result.roadSnap);
+      if(sameCell?.tile.x===remembered.proof.tile.x&&sameCell.tile.y===remembered.proof.tile.y&&
+         sameCell.tile.revision===remembered.proof.tile.revision&&sameCell.tile.rawSha256===remembered.proof.tile.rawSha256){
+        result={kind:"junction",from:remembered.proof.pick,to:result.roadSnap};
+      }
+    }
     if(result.kind==="junction"){
       const task=++anchorPlacementToken.current;
       anchorPlacementPending.current=true;setAnchorPlacementInProgress(true);
@@ -1661,12 +1688,18 @@ export function App() {
         if(!currentTask())return;
         const q=await prepareOrdinaryBusQuery(from.anchor,to.anchor,"軌道の参考経路","authored-tram-guide",expected,automaticRoad.readTileEvidenceBatch,world?.road_evidence_descriptors??[]);
         if(!currentTask())return;
-        const points=await invoke<GeoPoint[]>("preview_authored_tram_road_guide",{expectedWorldToken:expected,guide:{
+        const args={expectedWorldToken:expected,guide:{
           tileKey:q.path.tileKey,tileRawSha256:q.path.tileRawSha256,start:q.path.start,end:q.path.end,startFractionQ:from.fractionQ,endFractionQ:to.fractionQ
-        },rawEvidence:q.rawEvidence,tileBinding:q.tileBinding});
+        },rawEvidence:q.rawEvidence,tileBinding:q.tileBinding};
+        const points=await invoke<GeoPoint[]>("preview_authored_tram_road_guide",args);
         if(!currentTask())return;
         if(points.length<2||points.length>4096||points.some(p=>!Number.isFinite(p.latitude)||!Number.isFinite(p.longitude))
            ||distanceM(points[0],from.anchor.point)>.01||distanceM(points[points.length-1],to.anchor.point)>.01)throw Error("道路に沿う軌道の経路を確認できません。");
+        if(streetIntent&&world&&from.anchor.tile.x===to.anchor.tile.x&&from.anchor.tile.y===to.anchor.tile.y){
+          setStreetTramPreview({world,basis:draftPoints,plan:activePlanId,path:activePathId,args,points});
+          finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;
+          setHoverPoint(null);setError("");roadDrawing.cancel();return;
+        }
         // Preserve the same approved displayed endpoints across quantization.
         points[0]=start;points[points.length-1]=to.anchor.point;
         const line=fitRoadFollow(points);
@@ -1803,6 +1836,29 @@ export function App() {
   useEffect(()=>()=>{tramReacquireAbort.current?.abort();},[world,placementContextKey]);
   useEffect(()=>()=>{anchorPlacementContext.current={world:null,key:'unmounted'};},[]);
 
+  const visibleStreetTram=streetTramPreview?.world===world&&streetTramPreview.basis===draftPoints&&
+    streetTramPreview.plan===activePlanId&&streetTramPreview.path===activePathId&&activeTool==="tracks"&&
+    mapMode==="draw"&&trackType==="tram"&&roadFollowing&&!tramCtrl&&infrastructure.level==="ground"&&
+    (startLevel===undefined||startLevel==="ground")&&!(draftAnchorLevels??[]).some(level=>level!=="ground")&&
+    !parkedPaths.some(p=>p.planId===activePlanId)&&!plannedStations.some(p=>stationPlanId(p)===activePlanId)&&
+    streetTramPreview.args.guide.tileRawSha256===automaticRoad.snapshot?.tileSnapshots?.find(t=>t.bundle.source.source===streetTramPreview.args.guide.tileKey)?.bundle.sourceSha256
+    ?streetTramPreview:null;
+  useEffect(()=>{if(streetTramPreview&&!visibleStreetTram)setStreetTramPreview(null);},[streetTramPreview,visibleStreetTram]);
+
+  function commitStreetTram() {
+    const preview=visibleStreetTram;
+    if(!enabled||!preview||busyRef.current||anchorPlacementPending.current)return;
+    void perform(async()=>{
+      const roads=constructionRoadAttachment(automaticRoad.snapshot,world).roads;
+      const snapshot=await invoke<World>("build_authored_street_tram",{
+        ...preview.args,roads,alignment:{name:alignmentName,points:preview.points,
+          trackType:"tram",designSpeedKmh,infrastructure,stations:[]}
+      });
+      setStreetTramPreview(null);setWorld(snapshot);setDirty(true);setConfirmLoad(false);
+      clearCurrentPlan();changeMapMode("draw");setNotice("道路に沿う併用軌道を建設しました。");
+    });
+  }
+
   function commitAlignment() {
     if (!enabled || !planBuildable || anchorGesture.current || anchorPlacementPending.current) return;
     void perform(async () => {
@@ -1936,6 +1992,7 @@ export function App() {
       if (event.key === "Escape" && anchorGesture.current) {event.preventDefault();cancelAnchorGesture();return;}
       if (event.key === "Escape" && (event.defaultPrevented || event.isComposing || event.keyCode === 229 || document.querySelector('dialog[open], [role="dialog"]'))) return;
       if(event.key==="Escape"&&clearStationSelection()){event.preventDefault();return;}
+      if (event.key === "Escape" && visibleStreetTram) {event.preventDefault();setStreetTramPreview(null);roadDrawing.cancel();return;}
       if (event.key === "Escape") {clearTrackSelection();roadDrawing.cancel();cancelParallel(); if(activeTool==="tracks")setActiveTool("inactive"); changeMapMode("move"); setStationCursor(null); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
@@ -2364,10 +2421,15 @@ export function App() {
             {nativeConstructionPreview?.error&&activeTool==="tracks"&&<div role="status" className="construction-tooltip">敷設判定を取得できません。着工時に再確認します。</div>}
             {nativeValidationError&&((activeTool!=="tracks"&&activeTool!=="inactive")||referenceCopy.active||parallelMode)&&<div role="status" className="construction-tooltip">敷設不可：{nativeValidationError}</div>}
             {anchorPlacementWaiting&&<div role="status" className="construction-tooltip">この位置に敷設できるか確認中…</div>}
-            {activeTool === "tracks" && <div className="construction-toolbar track-construction-toolbar" role="group" aria-label="線路敷設設定"><HeightControls value={selectedHeight??infrastructure.level} disabled={!enabled||!!activeBranch||referenceCopy.active||(!heightAnchor&&!!draftDestination)} onChange={changeHeight}/><div className="construction-mode-row"><TrackTypeControls value={trackType} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType}/><div className="track-follow-options" role="group" aria-label="線路の追従"><button type="button" className="secondary follow-icon" aria-label="実在の路線網に合わせる" aria-describedby="follow-tip-rail" aria-pressed={referencePanel&&!roadFollowing} disabled={!enabled||!!draftExtension} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();referenceCopy.setMode("rail");setRoadFollowing(false);setReferencePanel(value=>!value||roadFollowing);}}><TrackFollowIcon kind="rail"/><span id="follow-tip-rail" role="tooltip" className="follow-tip">実在の路線網に合わせる<br/>実在の線路に沿って、線路の経路を描きます</span></button><button type="button" className="secondary follow-icon" aria-label="道路に合わせる" aria-describedby="follow-tip-road" aria-pressed={roadFollowing} disabled={!enabled||!!activeBranch} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();roadDrawing.cancel();setRoadFollowing(value=>!value);setReferencePanel(!roadFollowing);setHoverPoint(null);}}><TrackFollowIcon kind="road"/><span id="follow-tip-road" role="tooltip" className="follow-tip">道路に合わせる<br/>道路に沿って、線路の経路を描きます{trackType==="tram"&&<><br/>Ctrlで一時切替</>}</span></button><button type="button" className="secondary follow-icon" aria-label="線路の横に沿わせる" aria-describedby="follow-tip-parallel" aria-pressed={parallelMode} disabled={!enabled||!!activeBranch||!copyCanStart} onClick={()=>{cancelParallel();referenceCopy.clear();setReferencePanel(false);setRoadFollowing(false);setParallelMode(value=>!value);setHoverPoint(null);}}><TrackFollowIcon kind="parallel"/><span id="follow-tip-parallel" role="tooltip" className="follow-tip">線路の横に沿わせる<br/>青い範囲にカーソルを合わせると、別の線路と平行に線路を描きます</span></button></div>{(world?.alignment_connections?.length??0)>=2&&!activeBranch&&<button type="button" className="secondary" aria-expanded={!!branchSelection} disabled={!branchPlacementAvailable}
+            {activeTool === "tracks" && <div className="construction-toolbar track-construction-toolbar" role="group" aria-label="線路敷設設定"><HeightControls value={selectedHeight??infrastructure.level} disabled={!enabled||!!activeBranch||referenceCopy.active||(!heightAnchor&&!!draftDestination)} onChange={changeHeight}/><div className="construction-mode-row"><TrackTypeControls value={trackType} disabled={!enabled||referenceCopy.active||!!draftExtension} onChange={chooseTrackType}/><div className="track-follow-options" role="group" aria-label="線路の追従"><button type="button" className="secondary follow-icon" aria-label="実在の路線網に合わせる" aria-describedby="follow-tip-rail" aria-pressed={referencePanel&&!roadFollowing} disabled={!enabled||!!draftExtension} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();referenceCopy.setMode("rail");setRoadFollowing(false);setReferencePanel(value=>!value||roadFollowing);}}><TrackFollowIcon kind="rail"/><span id="follow-tip-rail" role="tooltip" className="follow-tip">実在の路線網に合わせる<br/>実在の線路に沿って、線路の経路を描きます</span></button><button type="button" className="secondary follow-icon" aria-label="道路に合わせる" aria-describedby="follow-tip-road" aria-pressed={roadFollowing} disabled={!enabled||!!activeBranch} onClick={()=>{cancelParallel();setParallelMode(false);referenceCopy.clear();roadDrawing.cancel();setRoadFollowing(value=>!value);setReferencePanel(!roadFollowing);setHoverPoint(null);}}><TrackFollowIcon kind="road"/><span id="follow-tip-road" role="tooltip" className="follow-tip">道路に合わせる<br/>道路に沿って、線路の経路を描きます{trackType==="tram"&&<><br/>Ctrlで一時切替{info?.authored_street_tram_enabled===true&&<><br/>地上で確認できた一区間は併用軌道として着工できます</>}</>}</span></button><button type="button" className="secondary follow-icon" aria-label="線路の横に沿わせる" aria-describedby="follow-tip-parallel" aria-pressed={parallelMode} disabled={!enabled||!!activeBranch||!copyCanStart} onClick={()=>{cancelParallel();referenceCopy.clear();setReferencePanel(false);setRoadFollowing(false);setParallelMode(value=>!value);setHoverPoint(null);}}><TrackFollowIcon kind="parallel"/><span id="follow-tip-parallel" role="tooltip" className="follow-tip">線路の横に沿わせる<br/>青い範囲にカーソルを合わせると、別の線路と平行に線路を描きます</span></button></div>{(world?.alignment_connections?.length??0)>=2&&!activeBranch&&<button type="button" className="secondary" aria-expanded={!!branchSelection} disabled={!branchPlacementAvailable}
               onClick={()=>{if(world)setBranchPicker(branchSelection?null:{epoch:worldEpoch,basis:world,source:"",destination:""});}}>分岐として接続</button>}</div>
             <div className="construction-options-row"><label>線路数<select aria-label="敷設する線路数" value={infrastructure.track_count} disabled={!enabled||!!draftExtension||draftPoints.length>0||referenceCopy.active} onChange={e=>setInfrastructure(value=>({...value,track_count:Number(e.target.value) as 1|2|4}))}>{([1,2,4] as const).map(count=><option key={count} value={count}>{COUNT_LABELS[count]}</option>)}</select></label><details className="track-advanced-settings"><summary>詳細設定</summary><div className="target-speed-control"><label htmlFor="track-target-speed">目標最高速度</label><span className="speed-input"><button type="button" className="secondary" aria-label="目標最高速度を20 km/h下げる" disabled={!enabled||!!draftExtension||referenceCopy.active||designSpeedKmh<=1} onClick={()=>setDesignSpeedKmh(value=>Math.max(1,value-20))}>−</button><input id="track-target-speed" aria-label="線路の目標最高速度" type="number" min="1" max="600" step="1" value={designSpeedKmh} disabled={!enabled||!!draftExtension||referenceCopy.active} onChange={event=>{const value=Number(event.target.value);if(Number.isFinite(value)&&value>=1&&value<=600)setDesignSpeedKmh(value);}}/><button type="button" className="secondary" aria-label="目標最高速度を20 km/h上げる" disabled={!enabled||!!draftExtension||referenceCopy.active||designSpeedKmh>=600} onClick={()=>setDesignSpeedKmh(value=>Math.min(600,value+20))}>＋</button><span>km/h</span></span></div></details></div>
 </div>}
+            {visibleStreetTram&&<div className="construction-toolbar" role="group" aria-label="併用軌道の確認">
+              <span role="status">道路に沿う併用軌道 {Math.round(alignmentLength(visibleStreetTram.points))} m</span>
+              <button type="button" disabled={!enabled} onClick={commitStreetTram}>併用軌道を建設</button>
+              <button type="button" className="secondary" disabled={!enabled} onClick={()=>setStreetTramPreview(null)}>終点を選び直す</button>
+            </div>}
             {activeTool==="tracks"&&mapMode==="draw"&&(activeBranch||branchSelection&&branchPlacementAvailable)&&<div className="construction-toolbar" role="group" aria-label="既設線の分岐接続">
               {branchSelection&&branchPlacementAvailable&&!activeBranch&&<>
                 {([["source","分岐の起点"],["destination","分岐の終点"]] as const).map(([key,label])=><label key={key}>{label}
@@ -2457,6 +2519,7 @@ export function App() {
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
 
               {!roadCursorPreview && !parallelMode && !referenceCopy.active && guideCenter && guideEdge && <circle className="curve-circle-guide" cx={guideCenter.x} cy={guideCenter.y} r={Math.hypot(guideEdge.x-guideCenter.x,guideEdge.y-guideCenter.y)} fill="none" stroke={previewError ? "#b34c4c" : "#65716b"} strokeWidth="1" opacity=".6" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
+              {visibleStreetTram&&<TrackStroke d={drawInfrastructurePath(visibleStreetTram.points,infrastructure)} data-track-count={infrastructure.track_count} className="draft-path candidate-draft" pointerEvents="none"/>}
               {!referenceCopy.active&&draftLine.length > 1 && <TrackStroke d={drawInfrastructurePath(draftLine,infrastructure)} data-track-count={infrastructure.track_count} className={"draft-path confirmed-draft"+(mapMode==="move"&&selectedPlanPath===activePathId?" track-explicit-selection":"")} pointerEvents="none" />}
               {!roadCursorPreview&&!parallelMode&&!referenceCopy.active&&candidateLine.length > 1 && <TrackStroke d={drawInfrastructurePath(candidateLine,infrastructure)} data-track-count={infrastructure.track_count} className={"draft-path candidate-draft"+(previewError||nativeValidationError?" invalid-candidate":"")} pointerEvents="none" />}
               {!referenceCopy.active && draftLine.length > 1 && <path d={drawPath(draftLine)} className="plan-hover-hit" data-plan-hover-id={activePathId} onClick={event=>{if(mapMode==="move"&&!roadMapPicking){event.stopPropagation();selectTrackPath(activePathId);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,activePathId)} onPointerMove={event=>hoverPlan(event,activePathId)} onPointerLeave={()=>setPlanHover(null)} />}

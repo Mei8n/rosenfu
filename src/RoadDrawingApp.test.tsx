@@ -599,3 +599,55 @@ test('releasing Ctrl can place a fresh road click while the cancelled one is sti
  expect(document.querySelectorAll('.draft-anchor')).toHaveLength(1);
  expect(Number(anchor.getAttribute('x'))+Number(anchor.getAttribute('width'))/2).toBeCloseTo(project(latitude,longitude+.0008,camera).x,5);
 });
+
+test('street tram confirms exact live tile geometry and does not bank a preview or substitute manually drawn track',async()=>{
+ vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
+ const f=tramFixture,bytes=Uint8Array.from(f.raw),tile=await decodeOpenFreeMapRoadTile(bytes,f.x,f.y,f.revision,1);
+ mock.snapshot={...tile,tileSnapshots:[tile]};
+ const [[aLon,aLat],[jLon,jLat]]=tile.tileLines[0].coordinates;
+ const [bLon,bLat]=tile.tileLines[1].coordinates[1];
+ const a={latitude:aLat+(jLat-aLat)*.25,longitude:aLon+(jLon-aLon)*.25};
+ const j={latitude:jLat,longitude:jLon};
+ const b={latitude:jLat+(bLat-jLat)*.75,longitude:jLon+(bLon-jLon)*.75};
+ const camera={...j,zoom:16},loaded={...world,view_state:camera};
+ const binding={...f,key:f.tileKey,url:f.tileKey,rawSha256:f.tileRawSha256,
+   decoderRule:OFM_EVIDENCE_RULE,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION};
+ mock.read.mockResolvedValue({status:'ready',evidence:{rawTiles:[{sha256:f.tileRawSha256,bytes}],bindings:[binding]}});
+ let fail=true;
+ vi.mocked(invoke).mockImplementation(async(command)=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'street-tram-test',authored_tram_road_guide_enabled:true,authored_street_tram_enabled:true};
+  if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='ofm_world_token')return 'Street-preview-world';
+  if(command==='preview_authored_tram_road_guide')return [a,j,b];
+  if(command==='preview_construction_plan')return {validationError:null,newCrossingCount:0};
+  if(command==='build_authored_street_tram'&&fail)throw Error('道路の版が変わりました');
+  return loaded;
+ });
+ render(<App/>);await screen.findByText(/street-tram-test/);
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ const map=document.querySelector('svg[role=img]')!;
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ async function click(p:typeof a){
+   const xy=project(p.latitude,p.longitude,camera);
+   const args={clientX:xy.x,clientY:xy.y,detail:1,button:0,pointerId:1};
+   await act(async()=>{fireEvent.pointerDown(map,args);fireEvent.pointerUp(map,args);fireEvent.click(map,args);await new Promise(r=>setTimeout(r,0));});
+ }
+ await click(a);await click(b);
+ const confirm=await screen.findByRole('button',{name:'併用軌道を建設'});
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('build_authored_street_tram',expect.anything());
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(screen.queryByRole('button',{name:'併用軌道を建設'})).toBeNull();
+ await click(b);await screen.findByRole('button',{name:'併用軌道を建設'});
+ fireEvent.click(screen.getByRole('button',{name:'併用軌道を建設'}));
+ await screen.findByText(/道路の版が変わりました/);
+ expect(confirm).not.toBeNull();
+ const request=vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='build_authored_street_tram').at(-1)?.[1];
+ const guide=vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='preview_authored_tram_road_guide').at(-1)?.[1];
+ expect(request).toMatchObject({...guide,alignment:{points:[a,j,b],trackType:'tram'}});
+ fail=false;fireEvent.click(screen.getByRole('button',{name:'併用軌道を建設'}));
+ await screen.findByText(/道路に沿う併用軌道を建設しました/);
+ expect(screen.queryByRole('button',{name:'併用軌道を建設'})).toBeNull();
+ expect(vi.mocked(invoke).mock.calls.some(([cmd])=>['build_alignment','build_plan','build_plan_with_roads'].includes(cmd))).toBe(false);
+});

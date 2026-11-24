@@ -41,6 +41,22 @@ fn same_points(a: &[GeoPoint], b: &[GeoPoint]) -> bool {
         })
 }
 impl WorldDraft {
+    /// A writer must select the new save envelope before emitting this proof.
+    /// Inspect parked descriptors, too, even though the current authoring
+    /// transaction doesn't let a street-tram preview become a parked plan.
+    pub fn carries_street_tram_proof(&self) -> bool {
+        self.road_path_provenance
+            .iter()
+            .any(|range| range.path.carries_street_tram_proof())
+            || self.construction_plans.as_ref().is_some_and(|p| {
+                p.parked_paths.iter().any(|path| {
+                    path.ofm_path
+                        .as_ref()
+                        .is_some_and(PathDescriptor::carries_street_tram_proof)
+                })
+            })
+    }
+
     /// Saved parked paths share the budget and immutable source evidence of
     /// the already-built paths. Used by both whole-world and metadata edits.
     pub(super) fn validate_parked_road_paths(
@@ -60,7 +76,8 @@ impl WorldDraft {
             for p in &plans.parked_paths {
                 if let Some(path) = &p.ofm_path {
                     let actual = generated(&self.runtime_road_evidence, path)?;
-                    if p.reference.is_some()
+                    if path.carries_street_tram_proof()
+                        || p.reference.is_some()
                         || p.edited_geometry.is_some()
                         || !same_points(&p.points, &actual)
                         || !same_points(&p.line, &actual)
@@ -98,6 +115,16 @@ impl WorldDraft {
                 || p.from_position < 0.
                 || p.to_position > 1.
                 || p.from_position >= p.to_position
+            {
+                return Err(WorldError::InvalidProvenance);
+            }
+            if p.path.carries_street_tram_proof()
+                && (a.track_type != TrackType::Tram
+                    || a.vertical_profile.is_some()
+                    || !a.section_profiles.is_empty()
+                    || a.effective_infrastructure()
+                        .iter()
+                        .any(|s| s.level != InfrastructureLevel::Ground))
             {
                 return Err(WorldError::InvalidProvenance);
             }
@@ -223,6 +250,20 @@ impl World {
 }
 
 impl World {
+    /// Return a detached candidate containing the single tile and its exact
+    /// street-tram derivation. The editor uses this only with its ordinary
+    /// construction transaction and can discard it on any later rejection.
+    pub fn staged_street_tram_for_construction(
+        &self,
+        guide: &crate::ofm_evidence::AuthoredTramGuide,
+        cached: Vec<(RawEvidence, TileBinding)>,
+    ) -> Result<(Self, crate::ofm_evidence::DerivedPath), crate::road_transport::RoadTransportError> {
+        let (draft, path) = self.snapshot().clone().stage_authored_street_tram(guide, cached)?;
+        let mut candidate = self.clone();
+        candidate.data = draft.into();
+        Ok((candidate, path))
+    }
+
     /// Park light plans and raw evidence in one candidate. Supplied preview points
     /// are replaced by regenerated backend points, not promoted to trusted geometry.
     pub fn stage_ofm_construction_plans(
@@ -299,6 +340,9 @@ impl World {
         endpoint: AlignmentEndpoint,
         mut path: PathDescriptor,
     ) -> Result<(), WorldError> {
+        if path.carries_street_tram_proof() {
+            return Err(WorldError::ProvenanceEditUnsupported);
+        }
         let points = generated(&self.data.runtime_road_evidence, &path)?;
         let count = points.len() - 1;
         let old = self
