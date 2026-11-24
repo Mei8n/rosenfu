@@ -1,4 +1,4 @@
-import {createContext,useContext,useEffect,useRef,useState,type FormEvent,type ReactNode} from 'react';
+import {createContext,useContext,useEffect,useMemo,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import './operationsPanel.css';
 import {TrainsetPlanning} from './TrainsetPlanning';
@@ -125,6 +125,22 @@ export function OperationVehicleLayer({camera,scale}:{camera:Camera;scale:number
   <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale}/>
   <OperationMapMarkers markers={view.bus_markers} camera={camera} scale={scale} mode="bus"/>
  </>;
+}
+
+/** Count committed rail vehicles, not fleet inventory or the capped map markers. */
+export function useRailServiceActivity(visible:boolean):ReadonlyMap<string,number>|null{
+ const state=useContext(Context);
+ const view=visible&&state?.crossingPlanningToken&&!state.blocked&&!state.view?.invalidated?state.view:null;
+ const services=view?.services,trains=view?.trains;
+ return useMemo(()=>{
+  if(!services||!trains)return null;
+  const counts=new Map(services.map(({service_id})=>[service_id,0]));
+  for(const {key} of trains){
+   const count=counts.get(key.service_id);
+   if(count!==undefined)counts.set(key.service_id,count+1);
+  }
+  return counts;
+ },[services,trains]);
 }
 
 export function CrossingOperations({enabled}:{enabled:boolean}){
