@@ -261,7 +261,7 @@ impl WorldEditor {
             rail_timetable_handoff_in_progress: o
                 .is_some_and(|op| op.runtime.rail_timetable_handoff_in_progress()),
             configuration_token,
-            rail_markers: self.world.live_straight_rail_markers(),
+            rail_markers: self.world.live_ground_rail_markers(),
             bus_markers: self.world.live_straight_bus_markers(),
             #[cfg(feature = "standard-periodic-rail")]
             standard_schedule_active: self.world.has_standard_timetable(),

@@ -124,15 +124,15 @@ import { nearestOnAlignment, stationPolygon, alignmentLength, distanceM, pointOn
 type GeoPoint = { latitude: number; longitude: number };
 type StreetTramPreview={
   world:World; basis:GeoPoint[]; plan:number; path:number;
-  args:Pick<OrdinaryBusQuery,"expectedWorldToken"|"rawEvidence"|"tileBinding">&{
-    guide:Pick<OrdinaryBusPath,"tileKey"|"tileRawSha256"|"start"|"end">&{startFractionQ:number;endFractionQ:number}
+  args:Pick<OrdinaryBusQuery,"expectedWorldToken"|"rawEvidence"|"tileBinding"|"contextTiles">&{
+    guide:Pick<OrdinaryBusPath,"tileKey"|"tileRawSha256"|"start"|"end">&{startFractionQ:number;endFractionQ:number;adjacentEnd?:{tileKey:string;tileRawSha256:string}}
   };
   points:GeoPoint[];
 };
 type Alignment = { infrastructure?:SectionInfrastructure[]; anchor_indices?:number[]|null; id: string; owner: string; name: string; points: GeoPoint[]; track_type: TrackType; design_speed_kmh?:number|null };
 type StationPlacement = { station_id: string; alignment_id: string; position: number; length_m: number; width_m: number };
 
-type EngineInfo = { standard_schedule_enabled?: boolean; crossing_planning_enabled?: boolean; authored_tram_road_guide_enabled?: boolean; authored_street_tram_enabled?: boolean; ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; ordinary_ofm_bus_interior_stops_enabled?: boolean; ordinary_ofm_bus_auto_stops_enabled?: boolean; ordinary_ofm_bus_closed_loop_enabled?: boolean; ordinary_ofm_bus_observed_grade_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
+type EngineInfo = { standard_schedule_enabled?: boolean; crossing_planning_enabled?: boolean; authored_tram_road_guide_enabled?: boolean; authored_street_tram_enabled?: boolean; authored_adjacent_street_tram_enabled?: boolean; ordinary_ofm_bus_enabled?: boolean; ordinary_ofm_bus_rectangle_enabled?: boolean; ordinary_ofm_bus_multiple_enabled?: boolean; ordinary_ofm_bus_round_trip_enabled?: boolean; ordinary_ofm_bus_waypoints_enabled?: boolean; ordinary_ofm_bus_interior_stops_enabled?: boolean; ordinary_ofm_bus_auto_stops_enabled?: boolean; ordinary_ofm_bus_closed_loop_enabled?: boolean; ordinary_ofm_bus_observed_grade_enabled?: boolean; road_transport_enabled?: boolean; road_tram_enabled?: boolean; bus_operation_enabled?: boolean; name: string; version: string; company_setup_required?: boolean; operation_enabled?: boolean; fixed_od_enabled?: boolean; rail_journey_replay_enabled?: boolean; fixed_od_scenario_enabled?: boolean };
 type Station = { id: string; owner: string; name: string; latitude: number; longitude: number };
 type Route = { id: string; owner: string; name: string; start: string };
 type OperatingService = { id: string; owner: string; name: string; start: string };
@@ -1619,8 +1619,17 @@ export function App() {
     const nearEnd=(!draftFinished&&draftPoints.length)?startTarget(point,rect.width,rect.height):null;
     const destination=nearEnd?.kind==='built'?nearEnd:(!draftFinished&&draftPoints.length)?destinationTarget(point,rect.width,rect.height):null;
     pendingPlacementPoint.current={x:event.clientX??0,y:event.clientY??0};
+    // Only the native proof is eligible for street tram. A leased two-click
+    // view is never parked as ordinary geometry by autosave/plan switching.
+    const streetIntent=info?.authored_street_tram_enabled===true&&!!world&&roadFollowing&&
+      !draftFinished&&draftPoints.length===1&&!draftExtension&&!destination&&
+      !parkedPaths.some(p=>p.planId===activePlanId)&&!plannedStations.some(p=>stationPlanId(p)===activePlanId)&&
+      infrastructure.level==="ground"&&(startLevel===undefined||startLevel==="ground")&&
+      !(draftAnchorLevels??[]).some(level=>level!=="ground")&&
+      roadDrawingBundle===automaticRoad.snapshot?.bundle;
+    const allowAdjacent=streetIntent&&info?.authored_adjacent_street_tram_enabled===true;
     let result:RoadDrawingResult|null=await roadDrawing.click({
-      point:destination?.point??point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20,authoredTramCue:nativeTramGuide,resolveAuthoredSeam:nativeTramGuide
+      point:destination?.point??point,start:!draftFinished?draftPoints.at(-1):undefined,radiusM:20,authoredTramCue:nativeTramGuide,resolveAuthoredSeam:nativeTramGuide,nativeAdjacentTram:allowAdjacent
     });
     const stillCurrent=()=>captured.world===anchorPlacementContext.current.world&&captured.key===anchorPlacementContext.current.key;
     const reject=(message:string)=>{
@@ -1654,18 +1663,10 @@ export function App() {
         if(anchorPlacementToken.current===task){anchorPlacementPending.current=false;setAnchorPlacementInProgress(false);setAnchorPlacementWaiting(false);}
       }
     }
-    // Only the native proof is eligible for street tram. A leased two-click
-    // view is never parked as ordinary geometry by autosave/plan switching.
-    const streetIntent=info?.authored_street_tram_enabled===true&&!!world&&roadFollowing&&
-      !draftFinished&&draftPoints.length===1&&!draftExtension&&!destination&&
-      !parkedPaths.some(p=>p.planId===activePlanId)&&!plannedStations.some(p=>stationPlanId(p)===activePlanId)&&
-      infrastructure.level==="ground"&&(startLevel===undefined||startLevel==="ground")&&
-      !(draftAnchorLevels??[]).some(level=>level!=="ground")&&
-      roadDrawingBundle===automaticRoad.snapshot?.bundle;
     if(streetIntent&&result.kind==="route"&&result.roadSnap&&remembered&&
        remembered.world===world&&remembered.epoch===worldEpoch&&remembered.plan===activePlanId&&remembered.path===activePathId){
-      // Adjacent cell recovery is a visual guide only until the native
-      // street-tram proof supports a path across the exact boundary.
+      // Same-fragment fast path still obtains a native proof. Recovery
+      // from a non-visible adjacent cell remains a visual guide only.
       const sameCell=bindTramRoadSnap(automaticRoad.snapshot,result.roadSnap);
       if(sameCell?.tile.x===remembered.proof.tile.x&&sameCell.tile.y===remembered.proof.tile.y&&
          sameCell.tile.revision===remembered.proof.tile.revision&&sameCell.tile.rawSha256===remembered.proof.tile.rawSha256){
@@ -1686,16 +1687,26 @@ export function App() {
         if(distanceM(destination?.point??point,to.anchor.point)>20.01)throw Error("道路上の点を選び直してください。");
         const expected=await invoke<string>("ofm_world_token");
         if(!currentTask())return;
-        const q=await prepareOrdinaryBusQuery(from.anchor,to.anchor,"軌道の参考経路","authored-tram-guide",expected,automaticRoad.readTileEvidenceBatch,world?.road_evidence_descriptors??[]);
+        const adjacent=Math.abs(from.anchor.tile.x-to.anchor.tile.x)+Math.abs(from.anchor.tile.y-to.anchor.tile.y)===1;
+        if(adjacent&&!allowAdjacent)throw Error("道路の隣り合う範囲を確認できません。");
+        // Both visible cells already have immutable raw evidence references.
+        // The shared query validates the bounded tile list without a second
+        // network observation; native independently proves the exact cut.
+        const q=await prepareOrdinaryBusQuery(from.anchor,to.anchor,"軌道の参考経路","authored-tram-guide",expected,
+          automaticRoad.readTileEvidenceBatch,world?.road_evidence_descriptors??[],undefined,
+          adjacent?async()=>[from.anchor.tile,to.anchor.tile]:undefined);
+        const adjacentEnd=adjacent&&q.path.rule==='ofm_ground_bus_rectangle_z14_v2'?q.path.additionalTiles[0]:undefined;
+        if(adjacent&&!adjacentEnd)throw Error("隣り合う道路の元データが揃いません。");
         if(!currentTask())return;
         const args={expectedWorldToken:expected,guide:{
-          tileKey:q.path.tileKey,tileRawSha256:q.path.tileRawSha256,start:q.path.start,end:q.path.end,startFractionQ:from.fractionQ,endFractionQ:to.fractionQ
-        },rawEvidence:q.rawEvidence,tileBinding:q.tileBinding};
+          tileKey:q.path.tileKey,tileRawSha256:q.path.tileRawSha256,start:q.path.start,end:q.path.end,startFractionQ:from.fractionQ,endFractionQ:to.fractionQ,
+          ...(adjacentEnd?{adjacentEnd}:{})
+        },rawEvidence:q.rawEvidence,tileBinding:q.tileBinding,...(q.contextTiles?{contextTiles:q.contextTiles}:{})};
         const points=await invoke<GeoPoint[]>("preview_authored_tram_road_guide",args);
         if(!currentTask())return;
         if(points.length<2||points.length>4096||points.some(p=>!Number.isFinite(p.latitude)||!Number.isFinite(p.longitude))
            ||distanceM(points[0],from.anchor.point)>.01||distanceM(points[points.length-1],to.anchor.point)>.01)throw Error("道路に沿う軌道の経路を確認できません。");
-        if(streetIntent&&world&&from.anchor.tile.x===to.anchor.tile.x&&from.anchor.tile.y===to.anchor.tile.y){
+        if(streetIntent&&world){
           setStreetTramPreview({world,basis:draftPoints,plan:activePlanId,path:activePathId,args,points});
           finishPendingPlacement.current=false;roadFinishAfterPlacement.current=false;
           setHoverPoint(null);setError("");roadDrawing.cancel();return;
@@ -1836,12 +1847,15 @@ export function App() {
   useEffect(()=>()=>{tramReacquireAbort.current?.abort();},[world,placementContextKey]);
   useEffect(()=>()=>{anchorPlacementContext.current={world:null,key:'unmounted'};},[]);
 
+  const streetTramTileIsCurrent=(proof:{tileKey:string;tileRawSha256:string})=>
+    proof.tileRawSha256===automaticRoad.snapshot?.tileSnapshots?.find(t=>t.bundle.source.source===proof.tileKey)?.bundle.sourceSha256;
   const visibleStreetTram=streetTramPreview?.world===world&&streetTramPreview.basis===draftPoints&&
     streetTramPreview.plan===activePlanId&&streetTramPreview.path===activePathId&&activeTool==="tracks"&&
     mapMode==="draw"&&trackType==="tram"&&roadFollowing&&!tramCtrl&&infrastructure.level==="ground"&&
     (startLevel===undefined||startLevel==="ground")&&!(draftAnchorLevels??[]).some(level=>level!=="ground")&&
     !parkedPaths.some(p=>p.planId===activePlanId)&&!plannedStations.some(p=>stationPlanId(p)===activePlanId)&&
-    streetTramPreview.args.guide.tileRawSha256===automaticRoad.snapshot?.tileSnapshots?.find(t=>t.bundle.source.source===streetTramPreview.args.guide.tileKey)?.bundle.sourceSha256
+    streetTramTileIsCurrent(streetTramPreview.args.guide)&&
+    (!streetTramPreview.args.guide.adjacentEnd||streetTramTileIsCurrent(streetTramPreview.args.guide.adjacentEnd))
     ?streetTramPreview:null;
   useEffect(()=>{if(streetTramPreview&&!visibleStreetTram)setStreetTramPreview(null);},[streetTramPreview,visibleStreetTram]);
 

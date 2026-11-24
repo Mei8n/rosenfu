@@ -270,6 +270,11 @@ fn supports_ground_road_geometry(line: &TileLine) -> bool {
         }
 }
 
+pub(super) fn supports_authored_ground_tram(line: &TileLine) -> bool {
+    supports_ground_road_geometry(line)
+        && !matches!(line.attributes.get("class"), Some(RawValue::String(s)) if s == "busway" || s == "bus_guideway")
+}
+
 fn eligible(line: &TileLine, respect_oneway: bool, structured: bool) -> Option<(Direction, Grade)> {
     if structured {
         if !bus_grade::supported_class(line) || !bus_grade::allowed_access(line) {
@@ -702,9 +707,7 @@ fn build_observed_road_graph(
                 // Source motor direction is not an in-game rail design rule.
                 // Do not enter explicit bus-only, unavailable or non-ground
                 // roads, and do not grant the graph any transport authority.
-                (supports_ground_road_geometry(raw)
-                    && !matches!(raw.attributes.get("class"), Some(RawValue::String(s)) if s == "busway" || s == "bus_guideway"))
-                .then_some((Direction::Both, Grade::Ground))
+                supports_authored_ground_tram(raw).then_some((Direction::Both, Grade::Ground))
             } else {
                 eligible(raw, query.respect_oneway, structured)
             };
@@ -827,7 +830,12 @@ fn build_observed_road_graph(
 
     if query.rule == BUS_RECTANGLE_RULE {
         let coords: Vec<_> = cells.iter().map(|c| (c.0, c.1)).collect();
-        for seam in super::candidates::boundary_candidates_for_bus(store, &coords, structured)? {
+        let seams = if authored_tram_guide {
+            super::candidates::boundary_candidates_for_tram(store, &coords)?
+        } else {
+            super::candidates::boundary_candidates_for_bus(store, &coords, structured)?
+        };
+        for seam in seams {
             let (Some(&a), Some(&b)) = (ids.get(&seam.a_fragment), ids.get(&seam.b_fragment))
             else {
                 continue;
@@ -1199,6 +1207,14 @@ fn bus_arc_micrometres(weight: u64, extent: u32, cosh: u128) -> u128 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthoredTramGuide {
+    /// Exactly one cardinal-neighbor cell. The omitted field keeps one-cell
+    /// commands and save geometry byte-compatible.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_adjacent_tram_proof"
+    )]
+    pub adjacent_end: Option<BusTileProof>,
     pub tile_key: String,
     pub tile_raw_sha256: String,
     pub start: BusVertex,
@@ -1211,18 +1227,31 @@ pub struct AuthoredTramGuide {
     pub end_fraction_q: Option<u32>,
 }
 
+fn present_adjacent_tram_proof<'de, D>(
+    input: D,
+) -> std::result::Result<Option<BusTileProof>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    BusTileProof::deserialize(input).map(Some)
+}
+
 impl AuthoredTramGuide {
     pub(crate) fn evidence_request(&self) -> BusPathBinding {
         BusPathBinding {
-            rule: BUS_GRAPH_RULE.into(),
+            rule: if self.adjacent_end.is_some() {
+                BUS_RECTANGLE_RULE.into()
+            } else {
+                BUS_GRAPH_RULE.into()
+            },
             grade_policy: None,
             tile_key: self.tile_key.clone(),
             tile_raw_sha256: self.tile_raw_sha256.clone(),
             respect_oneway: false,
             start: self.start,
             end: self.end,
-            additional_tiles: vec![],
-            end_tile_key: None,
+            additional_tiles: self.adjacent_end.iter().cloned().collect(),
+            end_tile_key: self.adjacent_end.as_ref().map(|end| end.tile_key.clone()),
             pattern: None,
             interior_stops: vec![],
             via: vec![],
@@ -1236,14 +1265,35 @@ pub fn reconstruct_authored_tram_guide(
 ) -> Result<Option<Vec<[f64; 2]>>> {
     let query = proposed.evidence_request();
     let scope = store.scope(&query.tile_keys()?)?;
-    if scope.decoded(&query.tile_key)?.binding.raw_sha256 != query.tile_raw_sha256 {
+    let start_binding = &scope.decoded(&query.tile_key)?.binding;
+    if start_binding.raw_sha256 != query.tile_raw_sha256 {
         return Err(Error::Hash);
     }
+    let end_key = if let Some(end) = &proposed.adjacent_end {
+        let end_binding = &scope.decoded(&end.tile_key)?.binding;
+        if start_binding.x.abs_diff(end_binding.x) + start_binding.y.abs_diff(end_binding.y) != 1
+            || start_binding.revision != end_binding.revision
+        {
+            return Err(Error::Binding);
+        }
+        if end_binding.raw_sha256 != end.tile_raw_sha256 {
+            return Err(Error::Hash);
+        }
+        end.tile_key.as_str()
+    } else {
+        &query.tile_key
+    };
     let graph = build_observed_road_graph(&scope, &query, true)?;
     if proposed.start_fraction_q.is_none() && proposed.end_fraction_q.is_none() {
         return Ok(solve_gameplay_bus_graph(&graph, &query)?.map(|p| p.points));
     }
-    let Some((start, from)) = authored_anchor(
+    let anchor: fn(&GameplayBusGraph, &str, BusVertex, Option<u32>) -> Option<TramAnchor> =
+        if proposed.adjacent_end.is_some() {
+            adjacent_tram_anchor
+        } else {
+            authored_anchor
+        };
+    let Some((start, from)) = anchor(
         &graph,
         &query.tile_key,
         query.start,
@@ -1251,15 +1301,13 @@ pub fn reconstruct_authored_tram_guide(
     ) else {
         return Ok(None);
     };
-    let Some((end, to)) =
-        authored_anchor(&graph, &query.tile_key, query.end, proposed.end_fraction_q)
-    else {
+    let Some((end, to)) = anchor(&graph, end_key, query.end, proposed.end_fraction_q) else {
         return Ok(None);
     };
     // Two independently admitted positions on the same raw atom are
     // directly connected. Searching via the atom's endpoints would insert
     // a false turnback on a completely straight stretch.
-    if query.start == query.end {
+    if proposed.adjacent_end.is_none() && query.start == query.end {
         return Ok((start != end).then_some(vec![start, end]));
     }
     // Both fractional picks attach only to a verified ordinary raw atom.
@@ -1293,12 +1341,78 @@ pub fn reconstruct_authored_tram_guide(
     Ok(best.map(|(_, points)| points))
 }
 
+type TramAnchor = ([f64; 2], Vec<usize>);
+
+fn adjacent_tram_anchor(
+    graph: &GameplayBusGraph,
+    key: &str,
+    vertex: BusVertex,
+    q: Option<u32>,
+) -> Option<TramAnchor> {
+    let Some(q) = q.filter(|q| *q > 0) else {
+        return authored_anchor(graph, key, vertex, q);
+    };
+    if q > 1_000_000 {
+        return None;
+    }
+    let &(base, n) = graph
+        .offsets
+        .get(key)?
+        .get(&(vertex.feature, vertex.line))?;
+    let i = vertex.vertex as usize;
+    if i.checked_add(1)? >= n {
+        return None;
+    }
+    let raw_pair = [base.checked_add(i)?, base.checked_add(i + 1)?];
+    let fragment = format!(
+        "ofm:{}:{}:{}",
+        key.split_once("/planet/")?
+            .1
+            .strip_suffix(".pbf")?
+            .replace('/', ":"),
+        vertex.feature,
+        vertex.line
+    );
+    let fraction = f64::from(q) / 1_000_000.;
+    let position = i as f64 + fraction;
+    // A seam arc has one owned raw endpoint and one verified cut port.
+    // Inspect only incident arcs; points in the duplicated buffer past
+    // the cut must not attach to the other cell by coordinate coincidence.
+    for raw in raw_pair {
+        let u = graph.representative[raw];
+        for arc in &graph.adj[u] {
+            if arc.ordinal != i
+                || graph.lines[arc.line].fragment_id != fragment
+                || position < arc.from_pos.min(arc.to_pos)
+                || position > arc.from_pos.max(arc.to_pos)
+            {
+                continue;
+            }
+            if position == arc.from_pos {
+                return Some((graph.geometry[u].point(), vec![u]));
+            }
+            if position == arc.to_pos {
+                return Some((graph.geometry[arc.to].point(), vec![arc.to]));
+            }
+            let [a, b] = raw_pair.map(|r| graph.geometry[r].point());
+            return Some((
+                [
+                    a[0] + (b[0] - a[0]) * fraction,
+                    a[1] + (b[1] - a[1]) * fraction,
+                ],
+                vec![u, arc.to],
+            ));
+        }
+    }
+    None
+}
+
 fn authored_anchor(
     graph: &GameplayBusGraph,
     tile_key: &str,
     v: BusVertex,
     fraction_q: Option<u32>,
-) -> Option<([f64; 2], Vec<usize>)> {
+) -> Option<TramAnchor> {
     const FRACTION_DENOMINATOR: u32 = 1_000_000;
     let a = graph.node_at(tile_key, v)?;
     let Some(q) = fraction_q.filter(|q| *q != 0) else {

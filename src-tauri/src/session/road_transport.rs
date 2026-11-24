@@ -184,7 +184,7 @@ impl WorldEditor {
         &self,
         expected_world_token: &str,
         guide: &rosenfu_core::ofm_evidence::AuthoredTramGuide,
-        cached: Option<(OfmRawInput, OfmBindingInput)>,
+        cached: impl IntoIterator<Item = (OfmRawInput, OfmBindingInput)>,
     ) -> Result<Vec<GeoPoint>, String> {
         if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
             return Err("ワールドが変更されました。道路を選び直してください。".into());
@@ -219,7 +219,7 @@ impl WorldEditor {
         &mut self,
         expected_world_token: &str,
         guide: &rosenfu_core::ofm_evidence::AuthoredTramGuide,
-        cached: Option<(OfmRawInput, OfmBindingInput)>,
+        cached: impl IntoIterator<Item = (OfmRawInput, OfmBindingInput)>,
         mut alignment: PlannedAlignment,
         roads: Vec<rosenfu_core::world::RoadSnapshot>,
     ) -> Result<WorldDraft, String> {

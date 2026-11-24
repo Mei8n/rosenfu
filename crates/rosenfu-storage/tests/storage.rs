@@ -61,7 +61,7 @@ fn json_roundtrip_preserves_graph_and_allocator() {
 #[test]
 fn unsupported_version_is_reported_before_decoding_world() {
     // Schema 27 is the default writer, not the highest supported version.
-    for version in [0, 25, 31, u64::MAX] {
+    for version in [0, 25, 33, u64::MAX] {
         let bytes = format!(
             r#"{{"format":"rosenfu-world","schema_version":{version},"world":"not a world"}}"#
         );

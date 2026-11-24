@@ -139,6 +139,7 @@ impl WorldEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rosenfu_core::ofm_evidence::AuthoredTramGuide;
 
     fn fixture() -> serde_json::Value {
         serde_json::from_str(include_str!(
@@ -146,9 +147,12 @@ mod tests {
         ))
         .unwrap()
     }
-    #[test]
-    fn authored_street_tram_retains_the_original_raw_guide_without_catalog() {
-        use rosenfu_core::ofm_evidence::{AuthoredTramGuide, BusVertex, DECODER_RULE};
+
+    fn street_tram_inputs() -> (
+        AuthoredTramGuide,
+        impl Fn() -> Option<(OfmRawInput, OfmBindingInput)>,
+    ) {
+        use rosenfu_core::ofm_evidence::{BusVertex, DECODER_RULE};
         let f: serde_json::Value = serde_json::from_str(include_str!(
             "../../../crates/rosenfu-core/tests/fixtures/ofm_authored_tram_synthetic.json"
         ))
@@ -156,17 +160,19 @@ mod tests {
         let bytes: Vec<u8> = serde_json::from_value(f["raw"].clone()).unwrap();
         let key = f["tileKey"].as_str().unwrap().to_owned();
         let sha = f["tileRawSha256"].as_str().unwrap().to_owned();
-        let cached = || {
+        let admitted_key = key.clone();
+        let admitted_sha = sha.clone();
+        let cached = move || {
             Some((
                 OfmRawInput {
-                    sha256: sha.clone(),
+                    sha256: admitted_sha.clone(),
                     byte_length: bytes.len(),
                     base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
                 },
                 OfmBindingInput {
-                    key: key.clone(),
-                    url: key.clone(),
-                    raw_sha256: sha.clone(),
+                    key: admitted_key.clone(),
+                    url: admitted_key.clone(),
+                    raw_sha256: admitted_sha.clone(),
                     revision: f["revision"].as_str().unwrap().to_owned(),
                     z: 14,
                     x: f["x"].as_u64().unwrap() as u32,
@@ -178,8 +184,9 @@ mod tests {
             ))
         };
         let guide = AuthoredTramGuide {
-            tile_key: key.clone(),
-            tile_raw_sha256: sha.clone(),
+            adjacent_end: None,
+            tile_key: key,
+            tile_raw_sha256: sha,
             start: BusVertex {
                 feature: 0,
                 line: 0,
@@ -193,6 +200,12 @@ mod tests {
             start_fraction_q: Some(100_000),
             end_fraction_q: Some(500_000),
         };
+        (guide, cached)
+    }
+
+    #[test]
+    fn authored_street_tram_retains_the_original_raw_guide_without_catalog() {
+        let (guide, cached) = street_tram_inputs();
         let mut editor = WorldEditor::new();
         editor.rename_company("軌道会社".into()).unwrap();
         let before = editor.snapshot();
@@ -250,7 +263,7 @@ mod tests {
         let manual = dir.path().join("manual.json");
         let auto = dir.path().join("autosave.json");
         std::fs::write(&auto, &prior).unwrap();
-        for version in [26, 27, 28, 31] {
+        for version in [26, 27, 28, 33] {
             let mut corrupted = original.clone();
             corrupted["schema_version"] = version.into();
             let exact = serde_json::to_vec(&corrupted).unwrap();
@@ -268,6 +281,359 @@ mod tests {
             assert_eq!(std::fs::read(&auto).unwrap(), prior);
             assert!(!rosenfu_storage::backup_path(&manual).exists());
         }
+    }
+
+    #[test]
+    fn ordinary_tram_adjacent_archives_both_tiles_and_declines_stale_scope() {
+        use rosenfu_core::ofm_evidence::{
+            AuthoredTramGuide, BusTileProof, BusVertex, DECODER_RULE,
+        };
+        let tiles: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../crates/rosenfu-core/tests/fixtures/ofm_authored_adjacent_tram_synthetic.json"
+        ))
+        .unwrap();
+        let cached = || {
+            tiles
+                .iter()
+                .map(|t| {
+                    let key = t["tileKey"].as_str().unwrap().to_owned();
+                    let digest = t["tileRawSha256"].as_str().unwrap().to_owned();
+                    let bytes: Vec<u8> = serde_json::from_value(t["raw"].clone()).unwrap();
+                    (
+                        OfmRawInput {
+                            sha256: digest.clone(),
+                            byte_length: bytes.len(),
+                            base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                        },
+                        OfmBindingInput {
+                            key: key.clone(),
+                            url: key,
+                            raw_sha256: digest,
+                            revision: t["revision"].as_str().unwrap().to_owned(),
+                            z: 14,
+                            x: t["x"].as_u64().unwrap() as u32,
+                            y: t["y"].as_u64().unwrap() as u32,
+                            decoder_rule: DECODER_RULE.into(),
+                            license: "ODbL-1.0".into(),
+                            attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let proof = |i: usize| BusTileProof {
+            tile_key: tiles[i]["tileKey"].as_str().unwrap().to_owned(),
+            tile_raw_sha256: tiles[i]["tileRawSha256"].as_str().unwrap().to_owned(),
+        };
+        let a = proof(0);
+        let vertex = BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: 0,
+        };
+        let guide = AuthoredTramGuide {
+            adjacent_end: Some(proof(1)),
+            tile_key: a.tile_key,
+            tile_raw_sha256: a.tile_raw_sha256,
+            start: vertex,
+            end: vertex,
+            start_fraction_q: Some(500_000),
+            end_fraction_q: Some(500_000),
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("併用軌道会社".into()).unwrap();
+        let before = editor.snapshot();
+        let token = editor.ofm_world_token().unwrap();
+        assert!(editor
+            .preview_authored_tram_road_guide(&token, &guide, cached().into_iter().take(1))
+            .is_err());
+        let points = editor
+            .preview_authored_tram_road_guide(&token, &guide, cached())
+            .unwrap();
+        assert_eq!(points.len(), 3);
+        assert_eq!(editor.snapshot(), before);
+        let plan = || -> PlannedAlignment {
+            serde_json::from_value(serde_json::json!({
+                "name":"境界を渡る併用軌道", "points":points, "trackType":"tram", "stations":[]
+            }))
+            .unwrap()
+        };
+        let mut stale = guide.clone();
+        stale.adjacent_end.as_mut().unwrap().tile_raw_sha256 = "0".repeat(64);
+        assert!(editor
+            .build_authored_street_tram(&token, &stale, cached(), plan(), vec![])
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        let after = editor
+            .build_authored_street_tram(&token, &guide, cached(), plan(), vec![])
+            .unwrap();
+        assert_eq!(after.road_evidence_descriptors.len(), 2);
+        assert_eq!(after.alignments[0].points, points);
+        assert_eq!(
+            after.road_path_provenance[0]
+                .path
+                .required_binding_keys
+                .len(),
+            2
+        );
+        let saved = rosenfu_storage::encode(&editor.world).unwrap();
+        let mut archive: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(archive["schema_version"], 31);
+        let reopened = rosenfu_storage::decode(&saved).unwrap();
+        assert_eq!(reopened.snapshot(), &after);
+        assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), saved);
+        for former in [26, 27, 29, 30] {
+            archive["schema_version"] = former.into();
+            assert!(matches!(
+                rosenfu_storage::decode(&serde_json::to_vec(&archive).unwrap()),
+                Err(rosenfu_storage::StorageError::UnsupportedVersion(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn ordinary_street_tram_runs_between_dedicated_platforms_and_resumes_exactly() {
+        use rosenfu_core::{
+            operation::{Timetable, TrainState, Vehicle},
+            world::{AlignmentEndpoint, RouteSegment, TrackType},
+        };
+        let (guide, cached) = street_tram_inputs();
+        let mut editor = WorldEditor::new();
+        editor.rename_company("通常の併用軌道".into()).unwrap();
+        let token = editor.ofm_world_token().unwrap();
+        let road_points = editor
+            .preview_authored_tram_road_guide(&token, &guide, cached())
+            .unwrap();
+        let plan = |name: &str, points: &[GeoPoint], destination| -> PlannedAlignment {
+            serde_json::from_value(serde_json::json!({
+                "name": name, "points": points, "trackType": "tram",
+                "anchorLevels": ["ground", "ground"], "stations": [], "destination": destination
+            }))
+            .unwrap()
+        };
+        let installed = editor
+            .build_authored_street_tram(
+                &token,
+                &guide,
+                cached(),
+                plan("併用", &road_points, serde_json::Value::Null),
+                vec![],
+            )
+            .unwrap();
+        let middle = &installed.alignments[0];
+        assert_eq!(middle.track_type, TrackType::Tram);
+        assert_eq!(middle.points, road_points);
+        assert_eq!(installed.road_path_provenance.len(), 1);
+        assert_eq!(installed.road_evidence_descriptors.len(), 1);
+
+        // Dedicated ground approaches with tangents matching the exact
+        // straight source. Provisions platforms only on the free-built rails.
+        let a = road_points[0];
+        let b = *road_points.last().unwrap();
+        let along = |fraction: f64| GeoPoint {
+            latitude: a.latitude + fraction * (b.latitude - a.latitude),
+            longitude: a.longitude + fraction * (b.longitude - a.longitude),
+        };
+        let destination =
+            |end: AlignmentEndpoint| serde_json::json!({"alignmentId":middle.id,"endpoint":end});
+        let infrastructure = editor
+            .build_construction_plan(
+                vec![
+                    plan(
+                        "西側専用",
+                        &[along(-2.0), a],
+                        destination(AlignmentEndpoint::Start),
+                    ),
+                    plan(
+                        "東側専用",
+                        &[along(3.0), b],
+                        destination(AlignmentEndpoint::End),
+                    ),
+                ],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(infrastructure.alignments.len(), 3);
+        assert_eq!(infrastructure.alignment_connections.len(), 2);
+        assert_eq!(
+            infrastructure.road_path_provenance,
+            installed.road_path_provenance
+        );
+        assert!(infrastructure.road_transport.tram_sections.is_empty());
+        let stop = |editor: &mut WorldEditor, name: &str| {
+            let line = infrastructure
+                .alignments
+                .iter()
+                .find(|a| a.name == name)
+                .unwrap();
+            let placed = editor
+                .place_station_on_alignment(name.into(), line.id, 0.5, 20.0, 8.0)
+                .unwrap();
+            (line.id, placed.stations.last().unwrap().id)
+        };
+        let (west, origin) = stop(&mut editor, "西側専用");
+        let (east, terminus) = stop(&mut editor, "東側専用");
+        let choices = editor
+            .preview_route_candidates_via(origin, terminus, &[])
+            .unwrap();
+        let [choice] = choices.candidates.as_slice() else {
+            panic!("the only through route uses both explicit joins");
+        };
+        let [RouteSegment::ConnectedAlignments { connections, .. }] = choice.segments.as_slice()
+        else {
+            panic!("must not substitute a straight or dedicated-only bypass");
+        };
+        assert_eq!(connections.len(), 2);
+        let route_world = editor
+            .save_planned_route(
+                None,
+                "併用線".into(),
+                origin,
+                choice.segments.clone(),
+                vec![],
+            )
+            .unwrap();
+        let route = route_world.routes.last().unwrap().id;
+        let stops = editor
+            .preview_service_path(origin, choice.segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|entry| entry.reference)
+            .collect::<Vec<_>>();
+        assert_eq!(stops.len(), 2);
+        let service_world = editor
+            .create_service_path_with_source_routes(
+                "各停".into(),
+                origin,
+                choice.segments.clone(),
+                stops,
+                Some(route),
+                None,
+            )
+            .unwrap();
+        let service = service_world.services.last().unwrap().id;
+        let token = editor.operation_snapshot().timetable_edit_token.clone();
+        editor
+            .configure_operation_service(
+                service,
+                Timetable {
+                    first_departure_ms: 1000,
+                    last_departure_ms: 1000,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 25.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.,
+                    length_m: 10.,
+                },
+                1000,
+                &token,
+            )
+            .unwrap();
+
+        // Inspect the admitted runtime itself, not an uncommitted route preview:
+        // each leg allocates the exact shared span between the two dedicated lanes.
+        let spec_save = editor.world.operation_save().unwrap();
+        let [spec] = spec_save.runtime.services.as_slice() else {
+            panic!("only the one player-configured service may exist");
+        };
+        assert_eq!(spec.legs.len(), 2);
+        for (leg, lines, from, to) in [
+            (&spec.legs[0], [west, middle.id, east], origin, terminus),
+            (&spec.legs[1], [east, middle.id, west], terminus, origin),
+        ] {
+            assert_eq!(leg.from, from.0.to_string());
+            assert_eq!(leg.to, to.0.to_string());
+            let first_indexes = lines.map(|id| {
+                let prefix = format!("rail:{}:section:", id.0);
+                leg.sections
+                    .iter()
+                    .position(|piece| piece.resources.iter().any(|id| id.starts_with(&prefix)))
+                    .expect("all three physical lanes reached the compiled traversal")
+            });
+            assert!(first_indexes.windows(2).all(|w| w[0] < w[1]));
+            let middle_prefix = format!("rail:{}:section:", middle.id.0);
+            let distance: f64 = leg
+                .sections
+                .iter()
+                .filter(|piece| {
+                    piece
+                        .resources
+                        .iter()
+                        .any(|id| id.starts_with(&middle_prefix))
+                })
+                .map(|piece| piece.length_m)
+                .sum();
+            assert!((distance - middle.length_m()).abs() < 0.01);
+        }
+        let (train_key, first_arrival) = {
+            let runtime = &mut editor.world.operation_mut().unwrap().runtime;
+            runtime.set_paused(false);
+            let tick = runtime.advance_to(4000, 128).unwrap();
+            assert!(tick.reached_target && tick.arrivals.is_empty());
+            let train = runtime.trains().next().unwrap();
+            let TrainState::Moving {
+                entered_ms,
+                arrival_ms,
+                ..
+            } = train.state
+            else {
+                panic!("the connected service must be dispatched, not merely configured");
+            };
+            assert_eq!(train.leg, 0);
+            assert!(arrival_ms > runtime.now_ms());
+            let key = train.key.clone();
+            // Equal dedicated approach lengths and equal acceleration/braking
+            // put the midpoint of this exact in-flight envelope on the street.
+            let centre = entered_ms + (arrival_ms - entered_ms) / 2;
+            assert!(runtime.advance_to(centre, 128).unwrap().reached_target);
+            runtime.set_paused(true);
+            (key, arrival_ms)
+        };
+        let markers = editor.operation_snapshot().rail_markers.clone();
+        let [marker] = markers.as_slice() else {
+            panic!("ordinary connected tram requires an actual native moving marker");
+        };
+        assert_eq!(marker.key, train_key);
+        assert!(road_points
+            .windows(2)
+            .any(|pair| { marker.alignment_start == pair[0] && marker.alignment_end == pair[1] }));
+        assert!((0.0..=1.0).contains(&marker.position));
+        let saved_runtime = editor.world.operation_save().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        assert!(
+            editor
+                .save_world_as_slot(temp.path(), "併用線".into(), None, None)
+                .unwrap()
+                .saved
+        );
+        let slot = editor
+            .list_save_slots(temp.path())
+            .unwrap()
+            .active_slot_id
+            .unwrap();
+        let mut resumed = WorldEditor::new();
+        assert_eq!(
+            resumed.load_save_slot(temp.path(), slot).unwrap(),
+            editor.snapshot()
+        );
+        assert_eq!(resumed.world.operation_save().unwrap(), saved_runtime);
+        assert_eq!(resumed.operation_snapshot().rail_markers, markers);
+        let runtime = &mut resumed.world.operation_mut().unwrap().runtime;
+        runtime.set_paused(false);
+        let outbound = runtime.advance_to(first_arrival, 128).unwrap();
+        assert!(outbound.reached_target);
+        assert_eq!(outbound.arrivals.len(), 1);
+        assert_eq!(outbound.arrivals[0].station_id, terminus.0.to_string());
+        assert_eq!(outbound.arrivals[0].train, train_key);
+        let inbound = runtime.advance_to(first_arrival + 120_000, 128).unwrap();
+        assert!(inbound.reached_target);
+        assert_eq!(inbound.arrivals.len(), 1);
+        assert_eq!(inbound.arrivals[0].station_id, origin.0.to_string());
+        assert_eq!(inbound.arrivals[0].train, train_key);
+        assert_eq!(runtime.trains().count(), 0);
     }
 
     fn stage(editor: &mut WorldEditor) {
