@@ -4,7 +4,7 @@ import {createOrdinaryBusHover} from './ordinaryBusHover';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
-import {cachedBusHoverQuery,matchOrdinaryBusPreview,prepareOrdinaryBusQuery,restoreOrdinaryBusControls,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusVertex,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
+import {cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareOrdinaryBusQuery,restoreOrdinaryBusControls,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
 import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
 type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean};
@@ -16,6 +16,7 @@ type Input={
 };
 const errorText=(e:unknown)=>e instanceof Error?e.message:typeof e==='string'?e:'バス系統を変更できませんでした。';
 type Frame=OrdinaryBusInteraction<Verified>;
+type FreeEnd={id:string;alternatives:BusAnchor[]};
 export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()=>void){
  const [frame,render]=useState<Frame>();const frameRef=useRef<Frame|undefined>(undefined);
  const spec=useRef<DraftSpec|undefined>(undefined);const latest=useRef({input,name,onCommitted});latest.current={input,name,onCommitted};
@@ -156,7 +157,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
    running.current=false;setCommitting(false);
   }
  }
- function handle(next:Frame){
+ function handle(next:Frame,freeEnd?:FreeEnd){
   const before=frameRef.current;
   if(before===next)return;
   clearHover(true);publish(next);setError('');
@@ -171,22 +172,46 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
    try{
     const title=latest.current.name.trim();
     // The name field can remain temporarily empty while laying out geometry.
-    const query=await build(check.body.controls,currentSpec,title||'バス系統',ctrl.signal,false,!!check.body.closed);
+    let query=await build(check.body.controls,currentSpec,title||'バス系統',ctrl.signal,false,!!check.body.closed);
     if(!alive())return;
-    // At most one native graph query in flight per editor. A retired query
-    // can finish, but intermediate pointer guesses do not queue behind it.
-    const waits=serialNative.current;
-    const request=waits.then(()=>alive()?latest.current.input.preview(query):undefined);
-    serialNative.current=request.catch(()=>undefined);
-    const reply=await request;
-    if(!alive()||!reply)return;
+    // At most one native graph query in flight per editor. Retired
+    // candidates are not allowed to queue another request.
+    const queryNative=(job:OrdinaryBusQuery,valid=alive)=>{
+     const request=serialNative.current.then(()=>valid()?latest.current.input.preview(job):undefined);
+     serialNative.current=request.catch(()=>undefined);
+     return request;
+    };
+    const match=(reply:OrdinaryBusPreviewReply,controls:readonly DraftControl[],pattern?:OrdinaryBusPattern)=>
+     matchOrdinaryBusPreview(reply,controls[0].anchor,controls.at(-1)!.anchor,pattern,controls.map(c=>c.anchor));
     const controls=check.body.controls;
-    const matched=matchOrdinaryBusPreview(reply,controls[0].anchor,controls.at(-1)!.anchor,query.path.pattern,controls.map(c=>c.anchor));
+    const reply=await queryNative(query);
+    if(!alive()||!reply)return;
+    let matched=match(reply,controls,query.path.pattern);
+    let resolvedEnd:DraftControl|undefined;
+    const freeIndex=freeEnd?controls.findIndex(c=>c.id===freeEnd.id):-1;
+    if(freeEnd&&!check.body.closed&&(freeIndex===0||freeIndex===controls.length-1)&&
+       'refusedLeg' in matched&&matched.refusedLeg===Math.max(0,freeIndex-1)){
+     for(const anchor of freeEnd.alternatives){
+      const current=()=>alive()&&latest.current.input.allow&&hasObservedOrdinaryBusTile(latest.current.input.snapshot,anchor.tile);
+      if(!current())break;
+      if(controls.some(c=>c.anchor.point.latitude===anchor.point.latitude&&c.anchor.point.longitude===anchor.point.longitude))continue;
+      const moved={id:freeEnd.id,anchor};
+      const candidate=controls.map(c=>c.id===moved.id?moved:c);
+      const nextQuery=cachedBusHoverQuery(query,candidate);
+      if(!nextQuery)continue;
+      const alt=await queryNative(nextQuery,current);
+      if(!current()||!alt)break;
+      const checked=match(alt,candidate,nextQuery.path.pattern);
+      if('preview' in checked&&!checked.preview.returnUnavailableReason){
+       matched=checked;query=nextQuery;resolvedEnd=moved;break;
+      }
+     }
+    }
     if('preview' in matched&&query.path.pattern==='closedOneWay'&&!!matched.preview.loopFallbackStop===!!query.path.interiorStops?.length)
      throw Error('環状系統の途中停留所を確認できません。');
-    const outcome:{reason:string;leg?:number}|{verified:Verified}='refusedLeg' in matched?{reason:'この区間を道路でつなげません。',leg:matched.refusedLeg}:
+    const outcome:{reason:string;leg?:number}|{verified:Verified;resolvedEnd?:DraftControl}='refusedLeg' in matched?{reason:'この区間を道路でつなげません。',leg:matched.refusedLeg}:
       matched.preview.returnUnavailableReason&&!(latest.current.input.closedCapable&&!currentSpec.savedPath)?{reason:`復路を作れません。${matched.preview.returnUnavailableReason}`}:
-      {verified:{preview:matched.preview,token:query.expectedWorldToken,path:query.path}};
+      {verified:{preview:matched.preview,token:query.expectedWorldToken,path:query.path},resolvedEnd};
     if('verified' in outcome)lastProof.current=query;
     handle(settleBusValidation<Verified>(frameRef.current!,next.scope,check.id,outcome));
    }catch(e){
@@ -216,10 +241,13 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
   }
   try{
    if(!handleAt&&!latest.current.input.snapshot)throw Error(latest.current.input.loading?'道路を読み込み中です。':'道路を確認できませんでした。地図を拡大して選び直してください。');
-   const anchor=handleAt?.anchor??snapOrdinaryBusVertex(latest.current.input.snapshot,at,camera,scale,undefined,true);
+   const snapshot=latest.current.input.snapshot,free=extend.current&&controls.length>0&&!moveId&&!afterId&&!handleAt;
+   const [anchor,...alternatives]=handleAt?[handleAt.anchor]:free?snapOrdinaryBusFreeEnd(snapshot,at,camera,scale,body.active==='end'?controls.map(c=>c.anchor):[]):
+    [snapOrdinaryBusVertex(snapshot,at,camera,scale,undefined,true)];
    if(moveId){handle(moveBusControl(now,moveId,anchor));return;}
    if(afterId){handle(insertBusControl(now,afterId,{id:`b-${crypto.randomUUID()}`,anchor}));return;}
-   handle(clickBusControl(now,handleAt??{id:`b-${crypto.randomUUID()}`,anchor},detail));
+   const picked=handleAt??{id:`b-${crypto.randomUUID()}`,anchor};
+   handle(clickBusControl(now,picked,detail),alternatives.length?{id:picked.id,alternatives}:undefined);
   }catch(e){setError(errorText(e));}
  }
  function history(direction:'undo'|'redo'){

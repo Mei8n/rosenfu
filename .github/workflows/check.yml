@@ -42,6 +42,9 @@ jobs:
       - name: Clippy workspace and all targets
         run: cargo clippy --locked --workspace --all-targets
       - run: cargo test --locked --workspace
+      - name: Verify street tram save downgrade without Standard rail
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p rosenfu-storage --no-default-features --lib downgraded_street_tram_markers_cannot_be_mistaken_for_repairable_corruption
       - name: Build desktop executable
         run: npm run tauri -- build --no-bundle
 

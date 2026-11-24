@@ -1180,6 +1180,25 @@ impl WorldDraft {
             .map_err(outward_evidence_error)
     }
 
+    /// Stage the same raw tile input used for ordinary Bus, but reconstruct
+    /// with the authored tram mode. Issuing the preview doesn't publish it.
+    pub(crate) fn stage_authored_street_tram(
+        self,
+        request: &crate::ofm_evidence::AuthoredTramGuide,
+        cached: Vec<(
+            crate::ofm_evidence::RawEvidence,
+            crate::ofm_evidence::TileBinding,
+        )>,
+    ) -> Result<(Self, crate::ofm_evidence::DerivedPath), RoadTransportError> {
+        let staged = self.admit_gameplay_ofm_bus_tiles(&request.evidence_request(), cached)?;
+        let path = crate::ofm_evidence::reconstruct_street_tram_path(
+            &staged.runtime_road_evidence,
+            request,
+        )
+        .map_err(outward_evidence_error)?;
+        Ok((staged, path))
+    }
+
     /// Admit one independent route without replacing another route's metadata.
     pub(crate) fn put_ofm_gameplay_bus(
         mut self,

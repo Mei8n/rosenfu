@@ -2091,6 +2091,17 @@ fn authored_tram_uses_exact_ground_junction_without_treating_motor_direction_as_
     assert_eq!(partial[0][0], a[0][0] + (a[1][0] - a[0][0]) * 0.25);
     assert_eq!(partial[1], a[1]);
     assert_eq!(partial[2][1], a[1][1] + (a[2][1] - a[1][1]) * 0.75);
+    let same_atom = AuthoredTramGuide {
+        start_fraction_q: Some(250_000),
+        end_fraction_q: Some(500_000),
+        ..guide(&b, start, start)
+    };
+    let direct = reconstruct_authored_tram_guide(&store, &same_atom)
+        .unwrap()
+        .unwrap();
+    assert_eq!(direct.len(), 2);
+    assert_eq!(direct[0], partial[0]);
+    assert_eq!(direct[1][0], a[0][0] + (a[1][0] - a[0][0]) * 0.5);
     let refused = AuthoredTramGuide {
         start_fraction_q: Some(1_000_001),
         ..fractional

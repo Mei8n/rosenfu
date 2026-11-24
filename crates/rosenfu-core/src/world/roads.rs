@@ -2,6 +2,7 @@
 //! alignment geometry, so edits, deletions and Undo cannot leave stale crossing records.
 use super::*;
 mod boundary;
+mod ofm_projection;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CoverageBounds {
@@ -368,13 +369,26 @@ struct RoadGeometry<'a> {
     scope: &'a [CoverageBounds],
     height: RoadHeight,
     bounds: CoverageBounds,
+    retained_raw: bool,
+}
+
+fn road_geometry(
+    snapshot: &RoadSnapshot,
+    retained_raw: bool,
+) -> impl Iterator<Item = RoadGeometry<'_>> {
+    snapshot.roads.iter().map(move |road| RoadGeometry {
+        road,
+        scope: &snapshot.road_coverage,
+        height: road_height(road),
+        bounds: geometry_bounds(&road.points),
+        retained_raw,
+    })
 }
 
 /// Derived only from the snapshots borrowed for one assessment pass. Do not
 /// persist across construction, Undo or source changes, and do not use the
 /// broad phase as source coverage or as a routing/permission decision.
 struct RoadAssessmentInputs<'a> {
-    has_snapshots: bool,
     coverage: Vec<CoverageBounds>,
     roads: Vec<RoadGeometry<'a>>,
     snapshots: &'a [RoadSnapshot],
@@ -383,7 +397,6 @@ struct RoadAssessmentInputs<'a> {
 impl<'a> RoadAssessmentInputs<'a> {
     fn new(snapshots: &'a [RoadSnapshot], rail_bounds: Option<&[CoverageBounds]>) -> Self {
         Self {
-            has_snapshots: !snapshots.is_empty(),
             snapshots,
             coverage: snapshots
                 .iter()
@@ -406,14 +419,7 @@ impl<'a> RoadAssessmentInputs<'a> {
                             .is_some_and(|scope| rail.iter().any(|r| overlaps(*r, scope)))
                     })
                 })
-                .flat_map(|snapshot| {
-                    snapshot.roads.iter().map(|road| RoadGeometry {
-                        road,
-                        scope: &snapshot.road_coverage,
-                        height: road_height(road),
-                        bounds: geometry_bounds(&road.points),
-                    })
-                })
+                .flat_map(|snapshot| road_geometry(snapshot, false))
                 .collect(),
             boundary_pairs: boundary::pairs(snapshots),
         }
@@ -429,12 +435,14 @@ pub fn assess_road_crossings(alignment: &Alignment, snapshots: &[RoadSnapshot]) 
         &RoadAssessmentInputs::new(snapshots, Some(&bounds)),
         &[],
         &[],
+        &[],
     )
 }
 
 fn assess_connected_road_crossings(
     alignment: &Alignment,
     inputs: &RoadAssessmentInputs<'_>,
+    retained: &[std::sync::Arc<RoadSnapshot>],
     start_neighbors: &[GeoPoint],
     end_neighbors: &[GeoPoint],
 ) -> RoadAssessment {
@@ -443,7 +451,7 @@ fn assess_connected_road_crossings(
         roads_ready: false,
         unknown_road_height: false,
     };
-    if !inputs.has_snapshots {
+    if inputs.snapshots.is_empty() && retained.is_empty() {
         return result;
     }
     let total = alignment.length_m();
@@ -453,9 +461,14 @@ fn assess_connected_road_crossings(
     let alignment_bounds = geometry_bounds(&alignment.points);
     // Limit direct geometry intersections; continuation independently uses the
     // exact point and original snapshots, and boundary budgets remain global.
+    let observed: Vec<_> = retained
+        .iter()
+        .flat_map(|snapshot| road_geometry(snapshot, true))
+        .collect();
     let candidates: Vec<_> = inputs
         .roads
         .iter()
+        .chain(&observed)
         .filter(|road| {
             road.height != RoadHeight::Separated && overlaps(alignment_bounds, road.bounds)
         })
@@ -481,6 +494,8 @@ fn assess_connected_road_crossings(
                 };
                 let point = mix(a, b, t);
                 if !in_scope(point, Some(geometry.scope))
+                    || (geometry.retained_raw
+                        && !ofm_projection::owns_crossing_point(point, geometry.scope))
                     || !in_scope(point, road.coverage.as_deref())
                     || !(crosses_at(&alignment.points, i, t, edge[0], edge[1])
                         || connected_endpoint_crosses(
@@ -492,7 +507,18 @@ fn assess_connected_road_crossings(
                             start_neighbors,
                             end_neighbors,
                         ))
-                    || !crosses_road_at(road, j, u, a, b, inputs.snapshots)
+                    || !crosses_road_at(
+                        road,
+                        j,
+                        u,
+                        a,
+                        b,
+                        if geometry.retained_raw {
+                            &[]
+                        } else {
+                            inputs.snapshots
+                        },
+                    )
                 {
                     continue;
                 }
@@ -563,6 +589,10 @@ impl World {
                 .map(|a| geometry_bounds(&a.points))
                 .collect::<Vec<_>>()
         });
+        let mut observations = ofm_projection::RetainedObservations::new(
+            &self.data.runtime_road_evidence,
+            &self.data.road_snapshots,
+        );
         let inputs = RoadAssessmentInputs::new(&self.data.road_snapshots, bounds.as_deref());
         for alignment in &self.data.alignments {
             let mut starts = vec![];
@@ -597,9 +627,10 @@ impl World {
                     }
                 }
             }
+            let retained = observations.for_alignment(geometry_bounds(&alignment.points));
             result.insert(
                 alignment.id,
-                assess_connected_road_crossings(alignment, &inputs, &starts, &ends),
+                assess_connected_road_crossings(alignment, &inputs, &retained, &starts, &ends),
             );
         }
         let mut shared_endpoints: Vec<GeoPoint> = vec![];

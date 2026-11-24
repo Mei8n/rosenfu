@@ -10,6 +10,7 @@ const {read,observe}=vi.hoisted(()=>({read:vi.fn(),observe:vi.fn()}));
 vi.mock('@tauri-apps/api/core',()=>({isTauri:()=>true,invoke:vi.fn()}));
 const a={latitude:35.67504,longitude:139.748},b={latitude:35.67504,longitude:139.752};
 const bend={latitude:35.67532,longitude:139.75};
+const reachable={latitude:b.latitude,longitude:b.longitude+0.00025};
 const bridgeOnly={latitude:35.67424,longitude:139.7535};
 const waypoint={latitude:35.67482,longitude:139.75},waypointMoved={latitude:35.67452,longitude:139.7508};
 const raw='2'.repeat(64),key='https://tiles.openfreemap.org/planet/r1/14/14552/6452.pbf';
@@ -18,6 +19,8 @@ const tile={bundle:{sourceSha256:raw,source:{source:key}},tileLines:[{
 }]};
 const left={latitude:a.latitude,longitude:139.744};
 const leftRaw='3'.repeat(64),leftKey='https://tiles.openfreemap.org/planet/r1/14/14551/6452.pbf';
+const seamStub={latitude:a.latitude+.00003,longitude:139.74604};
+const seamReachable={latitude:a.latitude+.00003,longitude:139.74615};
 const adjacent={bundle:{sourceSha256:leftRaw,source:{source:leftKey}},tileLines:[{
  id:'ofm:r1:14:14551:6452:4:2',z:14,x:14551,y:6452,revision:'r1',class:'minor',coordinates:[[left.longitude,left.latitude],[139.745,left.latitude]]
 }]};
@@ -33,7 +36,7 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;retainedGrade?:boolean;retainedOneway?:boolean}){
+async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean}){
  const authored=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
   ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
  ]}]}:tile;
@@ -41,13 +44,27 @@ async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rect
   ...tile.tileLines[0],id:'ofm:r1:14:14552:6452:2:0',brunnel:'bridge',
   coordinates:[[bridgeOnly.longitude,bridgeOnly.latitude],[bridgeOnly.longitude+.0006,bridgeOnly.latitude-.00025]],
  }]}:authored;
- snapshots=config.rectangle?[adjacent,candidate]:[candidate];
+ const observed=config.reachableAlternative?{...candidate,tileLines:[
+  {...tile.tileLines[0],coordinates:[[a.longitude,a.latitude],[reachable.longitude,reachable.latitude]]},
+  {...tile.tileLines[0],id:'ofm:r1:14:14552:6452:2:0',coordinates:[[b.longitude,b.latitude],[b.longitude+0.002,b.latitude]]},
+ ]}:candidate;
+ const east=config.seamAlternative?{...observed,tileLines:[{...tile.tileLines[0],coordinates:[
+  [a.longitude,a.latitude],[seamReachable.longitude,seamReachable.latitude],
+ ]}]}:observed;
+ const west=config.seamAlternative?{...adjacent,tileLines:[...adjacent.tileLines,{
+  ...adjacent.tileLines[0],id:'ofm:r1:14:14551:6452:9:0',coordinates:[[seamStub.longitude,seamStub.latitude],[seamStub.longitude-.002,seamStub.latitude+.001]],
+ }]}:adjacent;
+ snapshots=config.rectangle?[west,east]:[east];
  const bind=(x:number,sha:string,url:string)=>({key:url,url,x,y:6452,z:14,revision:'r1',rawSha256:sha,decoderRule:'ofm_transportation_z14_v1',license:'ODbL-1.0',attribution:'© OpenMapTiles © OpenStreetMap contributors'});
  const bindings=config.rectangle?[bind(14551,leftRaw,leftKey),bind(14552,raw,key)]:[bind(14552,raw,key)];
  observe.mockResolvedValue(bindings);
- read.mockResolvedValue({status:'ready',evidence:{
-  rawTiles:bindings.map((entry,i)=>({sha256:entry.rawSha256,bytes:Uint8Array.of(21+i)})),bindings,
- }});
+ read.mockImplementation(async (refs:{x:number;y:number}[])=>{
+  const requested=config.seamAlternative?bindings.filter(binding=>refs.some(ref=>ref.x===binding.x&&ref.y===binding.y)):bindings;
+  return {status:'ready',evidence:{
+   rawTiles:requested.map(entry=>({sha256:entry.rawSha256,bytes:Uint8Array.of(21+bindings.indexOf(entry))})),
+   bindings:requested,
+  }};
+ });
  const first={id:'owned-a',name:'既存 A',owner:'2',edges:['native-edge'],stops:[]};
  const second={...first,id:'owned-b',name:'既存 B'};
  const foreign={...first,id:'foreign',owner:'3',name:'他社 C'};
@@ -68,7 +85,7 @@ async function setup(config:{preview:()=>Promise<unknown>;ordinary?:boolean;rect
   if(command==='operation_snapshot')return {now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,
     timetable_edit_token:'fixture-operation-token',services:[],trains:[],bus_services:[]};
   if(command==='list_save_slots')return {active_slot_id:null,slots:[]};
-  if(command==='preview_gameplay_ofm_bus')return config.preview();
+  if(command==='preview_gameplay_ofm_bus')return config.preview(args);
   if(command==='put_gameplay_ofm_bus'){
    const req=args as {routeId:string;name:string;path:unknown};
    if(baseline)return {...baseline,ofm_gameplay_bus_routes:{...baseline.ofm_gameplay_bus_routes,[req.routeId]:req.path},
@@ -701,6 +718,87 @@ test.each([false,true])('saved road policies are preserved while editing (strict
   expect(query).toHaveProperty('path.respectOneway',retainedGrade);
   if(retainedGrade)expect(query).toHaveProperty('path.gradePolicy','observedConnectors');
   else expect(query).not.toHaveProperty('path.gradePolicy');
+ }
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+});
+
+test('a free bus endpoint skips a nearer disconnected stub without fetching or changing the fixed endpoint',async()=>{
+ const previews:unknown[]=[];
+ let resolveAlternate!:(value:unknown)=>void;
+ const app=(await setup({waypoints:true,reachableAlternative:true,preview:async args=>{
+  previews.push(args);
+  const {path}=args as {path:{end:{feature:number}}};
+  return path.end.feature===2?{points:[],lengthM:0,failedLegIndex:0}:new Promise(resolve=>{resolveAlternate=resolve;});
+ }}))!;
+ fireEvent.keyDown(window,{key:'Escape'});
+ fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
+ app.from();
+ app.pressPoint(b,1);
+ app.pressPoint(b,2);
+ await waitFor(()=>expect(previews).toHaveLength(2));
+ await act(async()=>resolveAlternate({points:[a,reachable],lengthM:421}));
+ await screen.findByText('道路経路 421 m・停留所2か所');
+ expect(previews).toHaveLength(2);
+ expect(previews[0]).toMatchObject({path:{tileKey:key,tileRawSha256:raw,respectOneway:true,start:{feature:0,line:0,vertex:0},end:{feature:2,line:0,vertex:0}}});
+ expect(previews[1]).toMatchObject({path:{tileKey:key,tileRawSha256:raw,respectOneway:true,start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:1}}});
+ expect(read).toHaveBeenCalledTimes(1);
+ expect(observe).not.toHaveBeenCalled();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',previews[1]));
+});
+
+test('does not use an alternate bus response after the observed tile changes',async()=>{
+ let resolveAlternate!:(value:unknown)=>void;
+ let tries=0;
+ const app=(await setup({waypoints:true,reachableAlternative:true,preview:async ()=>{
+  return ++tries===1?{points:[],lengthM:0,failedLegIndex:0}:new Promise(resolve=>{resolveAlternate=resolve;});
+ }}))!;
+ app.from();app.to();
+ await waitFor(()=>expect(tries).toBe(2));
+ snapshots=snapshots.map(cell=>({...cell,bundle:{...cell.bundle,sourceSha256:'4'.repeat(64)}}));
+ fireEvent.change(screen.getByLabelText('バス系統名'),{target:{value:'New name'}});
+ await act(async()=>resolveAlternate({points:[a,reachable],lengthM:421}));
+ await screen.findByText('この区間を道路でつなげません。');
+ expect(screen.queryByLabelText('バス系統のプレビュー')).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ expect(read).toHaveBeenCalledTimes(1);
+ expect(observe).not.toHaveBeenCalled();
+});
+
+test.each([true,false])('an alternate in another cell is used only inside an unchanged complete bus rectangle (%s)',async hasFixedEast=>{
+ const previews:unknown[]=[];
+ const app=(await setup({waypoints:true,rectangle:true,seamAlternative:true,preview:async args=>{
+  previews.push(args);
+  const {path}=args as {path:{end:{feature:number;vertex:number}}};
+  return path.end.feature===9?{points:[],lengthM:0,failedLegIndex:hasFixedEast?1:0}:
+   path.end.vertex===0?{points:[left,a],lengthM:400}:{points:[left,a,seamReachable],lengthM:600,viaPointIndices:[1]};
+ }}))!;
+ app.pressPoint(left);
+ if(hasFixedEast){
+  app.pressPoint(a);
+  await screen.findByText('道路経路 400 m・停留所2か所');
+ }
+ app.pressPoint(seamStub);
+ if(hasFixedEast){
+  await screen.findByText('道路経路 600 m・停留所2か所');
+  expect(previews).toHaveLength(3);
+  const [initial,stub,alternate]=previews as {path:{via:unknown};contextTiles:unknown}[];
+  expect(initial.contextTiles).toBeDefined();
+  expect(alternate).toMatchObject({
+   expectedWorldToken:'world-exact',path:{
+    tileKey:leftKey,endTileKey:key,additionalTiles:[{tileKey:key,tileRawSha256:raw}],
+    start:{feature:4,line:2,vertex:0},end:{feature:0,line:0,vertex:1},via:stub.path.via,
+   },contextTiles:stub.contextTiles,
+  });
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(observe).toHaveBeenCalledTimes(1);
+ }else{
+  await screen.findByText('この区間を道路でつなげません。');
+  expect(previews).toHaveLength(1);
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(observe).not.toHaveBeenCalled();
  }
  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
 });
