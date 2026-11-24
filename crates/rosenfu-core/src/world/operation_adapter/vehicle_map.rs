@@ -53,8 +53,10 @@ impl World {
         };
         let roads = &self.data.road_transport;
         let now = op.runtime.now_ms();
+        // Rail vehicles sort before bus IDs; do not let them consume the
+        // bounded bus candidate search before the first bus is considered.
         op.runtime
-            .trains()
+            .trains_with_service_prefix("bus:")
             .take(MAX_TRAINS)
             .filter_map(|train| {
                 let route_id = train.key.service_id.strip_prefix("bus:")?;

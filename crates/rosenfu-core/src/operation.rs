@@ -1226,6 +1226,20 @@ impl OperationRuntime {
     pub fn trains(&self) -> impl Iterator<Item = &Train> {
         self.trains.values()
     }
+    pub(crate) fn trains_with_service_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a Train> + 'a {
+        self.trains
+            .range(
+                TrainKey {
+                    service_id: prefix.to_owned(),
+                    scheduled_ms: 0,
+                }..,
+            )
+            .take_while(move |(key, _)| key.service_id.starts_with(prefix))
+            .map(|(_, train)| train)
+    }
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
