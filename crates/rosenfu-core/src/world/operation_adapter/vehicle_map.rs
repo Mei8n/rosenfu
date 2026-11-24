@@ -179,28 +179,30 @@ impl World {
                 Some((train, spec, leg, lanes, profile, entered_ms, arrival_ms))
             })
             .take(8)
-            .filter_map(|(train, spec, leg, lanes, profile, entered_ms, arrival_ms)| {
-                let (duration, _) = op
-                    .runtime
-                    .unblocked_leg_timing(&train.key.service_id, train.leg)?;
-                if entered_ms.checked_add(duration)? != arrival_ms {
-                    return None;
-                }
-                let fraction = uniform_position(
-                    &profile,
-                    &spec.vehicle,
-                    op.runtime.now_ms().checked_sub(entered_ms)?,
-                    duration,
-                )?;
-                let (alignment_start, alignment_end, position) =
-                    joined_tram_chord(&self.data, leg, lanes, profile.length_m * fraction)?;
-                Some(LiveRailMarker {
-                    key: train.key.clone(),
-                    alignment_start,
-                    alignment_end,
-                    position,
-                })
-            })
+            .filter_map(
+                |(train, spec, leg, lanes, profile, entered_ms, arrival_ms)| {
+                    let (duration, _) = op
+                        .runtime
+                        .unblocked_leg_timing(&train.key.service_id, train.leg)?;
+                    if entered_ms.checked_add(duration)? != arrival_ms {
+                        return None;
+                    }
+                    let fraction = uniform_position(
+                        &profile,
+                        &spec.vehicle,
+                        op.runtime.now_ms().checked_sub(entered_ms)?,
+                        duration,
+                    )?;
+                    let (alignment_start, alignment_end, position) =
+                        joined_tram_chord(&self.data, leg, lanes, profile.length_m * fraction)?;
+                    Some(LiveRailMarker {
+                        key: train.key.clone(),
+                        alignment_start,
+                        alignment_end,
+                        position,
+                    })
+                },
+            )
             .take(limit)
             .collect()
     }
@@ -362,7 +364,10 @@ fn joined_tram_profile(leg: &RunLeg, vehicle: &Vehicle) -> Option<([AlignmentId;
         {
             return None;
         }
-        let mut ids = piece.resources.iter().filter_map(|key| inline_lane_key(key));
+        let mut ids = piece
+            .resources
+            .iter()
+            .filter_map(|key| inline_lane_key(key));
         let (id, 0, 0) = ids.next()? else {
             return None;
         };

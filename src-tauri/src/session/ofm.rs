@@ -285,7 +285,9 @@ mod tests {
 
     #[test]
     fn ordinary_tram_adjacent_archives_both_tiles_and_declines_stale_scope() {
-        use rosenfu_core::ofm_evidence::{AuthoredTramGuide, BusTileProof, BusVertex, DECODER_RULE};
+        use rosenfu_core::ofm_evidence::{
+            AuthoredTramGuide, BusTileProof, BusVertex, DECODER_RULE,
+        };
         let tiles: Vec<serde_json::Value> = serde_json::from_str(include_str!(
             "../../../crates/rosenfu-core/tests/fixtures/ofm_authored_adjacent_tram_synthetic.json"
         ))
@@ -367,7 +369,13 @@ mod tests {
             .unwrap();
         assert_eq!(after.road_evidence_descriptors.len(), 2);
         assert_eq!(after.alignments[0].points, points);
-        assert_eq!(after.road_path_provenance[0].path.required_binding_keys.len(), 2);
+        assert_eq!(
+            after.road_path_provenance[0]
+                .path
+                .required_binding_keys
+                .len(),
+            2
+        );
         let saved = rosenfu_storage::encode(&editor.world).unwrap();
         let mut archive: serde_json::Value = serde_json::from_slice(&saved).unwrap();
         assert_eq!(archive["schema_version"], 31);
@@ -426,9 +434,8 @@ mod tests {
             latitude: a.latitude + fraction * (b.latitude - a.latitude),
             longitude: a.longitude + fraction * (b.longitude - a.longitude),
         };
-        let destination = |end: AlignmentEndpoint| {
-            serde_json::json!({"alignmentId":middle.id,"endpoint":end})
-        };
+        let destination =
+            |end: AlignmentEndpoint| serde_json::json!({"alignmentId":middle.id,"endpoint":end});
         let infrastructure = editor
             .build_construction_plan(
                 vec![
@@ -478,7 +485,13 @@ mod tests {
         };
         assert_eq!(connections.len(), 2);
         let route_world = editor
-            .save_planned_route(None, "併用線".into(), origin, choice.segments.clone(), vec![])
+            .save_planned_route(
+                None,
+                "併用線".into(),
+                origin,
+                choice.segments.clone(),
+                vec![],
+            )
             .unwrap();
         let route = route_world.routes.last().unwrap().id;
         let stops = editor
@@ -546,7 +559,8 @@ mod tests {
                 .sections
                 .iter()
                 .filter(|piece| {
-                    piece.resources
+                    piece
+                        .resources
                         .iter()
                         .any(|id| id.starts_with(&middle_prefix))
                 })
@@ -583,16 +597,18 @@ mod tests {
             panic!("ordinary connected tram requires an actual native moving marker");
         };
         assert_eq!(marker.key, train_key);
-        assert!(road_points.windows(2).any(|pair| {
-            marker.alignment_start == pair[0] && marker.alignment_end == pair[1]
-        }));
+        assert!(road_points
+            .windows(2)
+            .any(|pair| { marker.alignment_start == pair[0] && marker.alignment_end == pair[1] }));
         assert!((0.0..=1.0).contains(&marker.position));
         let saved_runtime = editor.world.operation_save().unwrap();
         let temp = tempfile::tempdir().unwrap();
-        assert!(editor
-            .save_world_as_slot(temp.path(), "併用線".into(), None, None)
-            .unwrap()
-            .saved);
+        assert!(
+            editor
+                .save_world_as_slot(temp.path(), "併用線".into(), None, None)
+                .unwrap()
+                .saved
+        );
         let slot = editor
             .list_save_slots(temp.path())
             .unwrap()

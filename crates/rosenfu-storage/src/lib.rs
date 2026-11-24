@@ -377,11 +377,13 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
             .get("standard_timetable")
             .is_some_and(|v| !v.is_null())
     {
-        return Err(StorageError::UnsupportedVersion(if version == ADJACENT_TRAM_SCHEMA {
-            ADJACENT_TRAM_STANDARD_SCHEMA
-        } else {
-            STREET_TRAM_STANDARD_SCHEMA
-        }));
+        return Err(StorageError::UnsupportedVersion(
+            if version == ADJACENT_TRAM_SCHEMA {
+                ADJACENT_TRAM_STANDARD_SCHEMA
+            } else {
+                STREET_TRAM_STANDARD_SCHEMA
+            },
+        ));
     }
     if version == 26 && value.get("fixed_od_scenario").is_some() {
         return Err(StorageError::InvalidHeader);
@@ -1044,7 +1046,11 @@ mod tests {
                 ));
             }
         }
-        for version in [SCHEMA_VERSION, STREET_TRAM_SCHEMA, STREET_TRAM_STANDARD_SCHEMA] {
+        for version in [
+            SCHEMA_VERSION,
+            STREET_TRAM_SCHEMA,
+            STREET_TRAM_STANDARD_SCHEMA,
+        ] {
             for parked in [false, true] {
                 let mut data = old.clone();
                 data["schema_version"] = version.into();

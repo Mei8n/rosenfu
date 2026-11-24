@@ -2338,10 +2338,7 @@ fn ordinary_bus_markers_follow_both_verified_return_intervals_at_an_interior_sto
 #[test]
 fn ordinary_street_tram_adjacent_seam_rejects_wrong_hash_and_buffer_pick() {
     use rosenfu_core::ofm_evidence::BusTileProof;
-    let left: &[BusFixtureLine<'_>] = &[(
-        &[[3200, 2010], [4200, 2010]],
-        Some(("oneway", "yes")),
-    )];
+    let left: &[BusFixtureLine<'_>] = &[(&[[3200, 2010], [4200, 2010]], Some(("oneway", "yes")))];
     let test = |right: &[BusFixtureLine<'_>], right_x, right_y| {
         let (tiles, store) = bus_rectangle(&[(14552, 6451, left), (right_x, right_y, right)]);
         let guide = AuthoredTramGuide {
@@ -2358,10 +2355,7 @@ fn ordinary_street_tram_adjacent_seam_rejects_wrong_hash_and_buffer_pick() {
         };
         (tiles, store, guide)
     };
-    let right: &[BusFixtureLine<'_>] = &[(
-        &[[-104, 2010], [896, 2010]],
-        Some(("oneway", "yes")),
-    )];
+    let right: &[BusFixtureLine<'_>] = &[(&[[-104, 2010], [896, 2010]], Some(("oneway", "yes")))];
     let (tiles, store, guide) = test(right, 14553, 6451);
     let route = reconstruct_authored_tram_guide(&store, &guide)
         .unwrap()
@@ -2406,9 +2400,11 @@ fn ordinary_street_tram_adjacent_seam_rejects_wrong_hash_and_buffer_pick() {
         14553,
         6451,
     );
-    assert!(reconstruct_authored_tram_guide(&disconnected, &disconnected_guide)
-        .unwrap()
-        .is_none());
+    assert!(
+        reconstruct_authored_tram_guide(&disconnected, &disconnected_guide)
+            .unwrap()
+            .is_none()
+    );
     let ambiguous = [right[0], right[0]];
     let (_, store, guide) = test(&ambiguous, 14553, 6451);
     assert!(reconstruct_authored_tram_guide(&store, &guide)

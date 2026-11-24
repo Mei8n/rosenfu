@@ -1293,8 +1293,12 @@ pub fn reconstruct_authored_tram_guide(
         } else {
             authored_anchor
         };
-    let Some((start, from)) = anchor(&graph, &query.tile_key, query.start, proposed.start_fraction_q)
-    else {
+    let Some((start, from)) = anchor(
+        &graph,
+        &query.tile_key,
+        query.start,
+        proposed.start_fraction_q,
+    ) else {
         return Ok(None);
     };
     let Some((end, to)) = anchor(&graph, end_key, query.end, proposed.end_fraction_q) else {
@@ -1351,7 +1355,10 @@ fn adjacent_tram_anchor(
     if q > 1_000_000 {
         return None;
     }
-    let &(base, n) = graph.offsets.get(key)?.get(&(vertex.feature, vertex.line))?;
+    let &(base, n) = graph
+        .offsets
+        .get(key)?
+        .get(&(vertex.feature, vertex.line))?;
     let i = vertex.vertex as usize;
     if i.checked_add(1)? >= n {
         return None;
@@ -1359,7 +1366,10 @@ fn adjacent_tram_anchor(
     let raw_pair = [base.checked_add(i)?, base.checked_add(i + 1)?];
     let fragment = format!(
         "ofm:{}:{}:{}",
-        key.split_once("/planet/")?.1.strip_suffix(".pbf")?.replace('/', ":"),
+        key.split_once("/planet/")?
+            .1
+            .strip_suffix(".pbf")?
+            .replace('/', ":"),
         vertex.feature,
         vertex.line
     );
