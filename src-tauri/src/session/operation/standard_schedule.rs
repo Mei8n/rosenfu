@@ -82,7 +82,7 @@ impl WorldEditor {
         // The panel caches this structural eligibility by configuration token.
         // Backlog/vehicle/pause readiness comes from live ticks and is checked
         // again during Apply; don't cache a transient backlog as unsupported.
-        let can_apply = active.is_none()
+        let can_apply = !active_elsewhere
             && operation.is_some_and(|o| {
                 !o.invalidated
                     && o.runtime
@@ -219,8 +219,6 @@ impl WorldEditor {
                 query.start_ms..query.end_ms,
                 &ChoiceWeights::default(),
             )
-            .map_err(|_| {
-                "往路の乗車駅・到着駅と、最大24時間の試算範囲を確認してください。".into()
-            })
+            .map_err(|_| "往路の乗車駅・到着駅と、最大24時間の試算範囲を確認してください。".into())
     }
 }

@@ -28,8 +28,8 @@ fn ordinary_world_reopen_can_display_each_retained_region_offline() {
             y,
         })
         .collect();
-    let store = EvidenceStore::from_archive_parts(vec![RawEvidence { sha256: sha, bytes }], rows)
-        .unwrap();
+    let store =
+        EvidenceStore::from_archive_parts(vec![RawEvidence { sha256: sha, bytes }], rows).unwrap();
     let world = World::new(WorldDraft::default().with_road_evidence(store).unwrap()).unwrap();
     let folder = tempfile::tempdir().unwrap();
     let file = folder.path().join("distant-regions.rosenfu");

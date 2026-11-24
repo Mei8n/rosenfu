@@ -5,21 +5,23 @@ mod bus;
 mod bus_grade;
 pub(crate) use bus::BUS_STOP_DENOMINATOR;
 pub use bus::{
-    find_gameplay_bus_path, reconstruct_authored_tram_guide, reconstruct_gameplay_bus_path,
-    AuthoredTramGuide, BusGradePolicy, BusInteriorStop, BusPath, BusPathBinding, BusPattern,
-    BusTileProof, BusVertex, BusVia, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
+    find_gameplay_bus_path, reconstruct_authored_tram_chain, reconstruct_authored_tram_guide,
+    reconstruct_gameplay_bus_path, AuthoredTramChainGuide, AuthoredTramGuide, BusGradePolicy,
+    BusInteriorStop, BusPath, BusPathBinding, BusPattern, BusTileProof, BusVertex, BusVia,
+    FractionalBusTraversal, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
+    resolve_fractional_bus_traversal,
 };
 mod candidates;
 mod path;
 pub(crate) use path::reconstruct_street_tram_path;
 pub use path::{
-    reconstruct_path, validate_path_descriptor, DerivedPath, PathDescriptor, PathJoin, PathPick,
-    SourceSpan,
+    reconstruct_path, validate_path_descriptor, AuthoredTramProof, DerivedPath, PathDescriptor,
+    PathJoin, PathPick, SourceSpan,
 };
 mod store;
 mod viewport;
-pub use viewport::{retained_road_view, RetainedRoadView};
 pub use candidates::{boundary_candidates, validate_boundary_candidates, BoundaryCandidate};
+pub use viewport::{retained_road_view, RetainedRoadView};
 mod wire;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};

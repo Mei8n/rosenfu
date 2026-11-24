@@ -278,7 +278,20 @@ impl OperationRuntime {
             .services
             .get(&schedule.service_id)
             .ok_or(OperationError::InvalidPath)?;
-        if service.departure_source.is_periodic()
+        // Only an idle, exact same-service Standard source can supersede
+        // its own grid. Compile first and publish neither grid nor cursor
+        // until all outstanding-runtime and new-plan guards have succeeded.
+        #[cfg(feature = "standard-periodic-rail")]
+        let replace_standard = standard
+            && !restoring
+            && schedule.cutover_ms == self.now_ms
+            && self
+                .standard_timetable
+                .as_ref()
+                .is_some_and(|active| active.service_id == schedule.service_id);
+        #[cfg(not(feature = "standard-periodic-rail"))]
+        let replace_standard = false;
+        if (service.departure_source.is_periodic() && !replace_standard)
             || (!standard
                 && (service
                     .spec

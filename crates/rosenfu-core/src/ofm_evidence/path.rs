@@ -9,6 +9,7 @@ const METHOD: &str = "ofm_tile_path_v1";
 const TRAM_METHOD: &str = "ofm_authored_street_tram_v1";
 const TRAM_RULE: &str = "ofm_ground_tram_guide_v1";
 const ADJACENT_TRAM_RULE: &str = "ofm_ground_tram_adjacent_v2";
+const CHAIN_TRAM_RULE: &str = "ofm_ground_tram_chain_v1";
 const SEGMENTS: usize = 256;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -57,6 +58,51 @@ pub struct PathDescriptor {
         deserialize_with = "present_tram_guide"
     )]
     pub tram_guide: Option<super::AuthoredTramGuide>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_chain_guide"
+    )]
+    pub tram_chain_guide: Option<super::AuthoredTramChainGuide>,
+}
+fn present_chain_guide<'de, D>(
+    input: D,
+) -> std::result::Result<Option<super::AuthoredTramChainGuide>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    super::AuthoredTramChainGuide::deserialize(input).map(Some)
+}
+
+/// Runtime dispatch between old one/two-cell proofs and the disjoint chain.
+#[derive(Clone, Copy)]
+pub enum AuthoredTramProof<'a> {
+    SingleOrAdjacent(&'a super::AuthoredTramGuide),
+    Chain(&'a super::AuthoredTramChainGuide),
+}
+impl<'a> From<&'a super::AuthoredTramGuide> for AuthoredTramProof<'a> {
+    fn from(value: &'a super::AuthoredTramGuide) -> Self {
+        Self::SingleOrAdjacent(value)
+    }
+}
+impl<'a> From<&'a super::AuthoredTramChainGuide> for AuthoredTramProof<'a> {
+    fn from(value: &'a super::AuthoredTramChainGuide) -> Self {
+        Self::Chain(value)
+    }
+}
+impl AuthoredTramProof<'_> {
+    pub(crate) fn evidence_request(self) -> Result<super::BusPathBinding> {
+        match self {
+            Self::SingleOrAdjacent(guide) => Ok(guide.evidence_request()),
+            Self::Chain(guide) => guide.evidence_request(),
+        }
+    }
+    pub(crate) fn geometry(self, store: &EvidenceStore) -> Result<Option<Vec<P>>> {
+        match self {
+            Self::SingleOrAdjacent(guide) => super::reconstruct_authored_tram_guide(store, guide),
+            Self::Chain(guide) => super::reconstruct_authored_tram_chain(store, guide),
+        }
+    }
 }
 fn present_tram_guide<'de, D>(
     input: D,
@@ -69,7 +115,13 @@ where
 impl PathDescriptor {
     /// Wire capability marker; its presence doesn't certify any geometry.
     pub fn carries_street_tram_proof(&self) -> bool {
-        self.method == TRAM_METHOD || self.tram_guide.is_some()
+        self.method == TRAM_METHOD
+            || self.tram_guide.is_some()
+            || self.carries_chain_street_tram_proof()
+    }
+
+    pub fn carries_chain_street_tram_proof(&self) -> bool {
+        self.algorithm == CHAIN_TRAM_RULE || self.tram_chain_guide.is_some()
     }
 
     pub fn carries_adjacent_street_tram_proof(&self) -> bool {
@@ -373,6 +425,7 @@ pub fn reconstruct_path(
             ordered_spans: spans,
             joins: blends.into_iter().map(|b| b.record).collect(),
             tram_guide: None,
+            tram_chain_guide: None,
         },
         points,
         max_correction_meters: maximum,
@@ -382,9 +435,10 @@ pub fn reconstruct_path(
 /// records the raw byte identity as well as the original fractional endpoints.
 pub(crate) fn reconstruct_street_tram_path(
     store: &EvidenceStore,
-    guide: &super::AuthoredTramGuide,
+    guide: AuthoredTramProof<'_>,
 ) -> Result<DerivedPath> {
-    let points = super::reconstruct_authored_tram_guide(store, guide)?
+    let request = guide.evidence_request()?;
+    let points = guide.geometry(store)?
         .filter(|line| (2..=4096).contains(&line.len()))
         .ok_or(Error::Binding)?;
     let pick = |key: &str, vertex: super::BusVertex, q: Option<u32>| -> Result<PathPick> {
@@ -399,26 +453,40 @@ pub(crate) fn reconstruct_street_tram_path(
             fraction: f64::from(q.unwrap_or(0)) / 1_000_000.,
         })
     };
-    let end_key = guide
-        .adjacent_end
-        .as_ref()
-        .map_or(guide.tile_key.as_str(), |end| end.tile_key.as_str());
+    let end_key = request.end_tile_key.as_deref().unwrap_or(&request.tile_key);
+    let (algorithm, start_fraction, end_fraction, single, chain) = match guide {
+        AuthoredTramProof::SingleOrAdjacent(single) => (
+            if single.adjacent_end.is_some() {
+                ADJACENT_TRAM_RULE
+            } else {
+                TRAM_RULE
+            },
+            single.start_fraction_q,
+            single.end_fraction_q,
+            Some(single.clone()),
+            None,
+        ),
+        AuthoredTramProof::Chain(chain) => (
+            CHAIN_TRAM_RULE,
+            chain.start_fraction_q,
+            chain.end_fraction_q,
+            None,
+            Some(chain.clone()),
+        ),
+    };
     Ok(DerivedPath {
         descriptor: PathDescriptor {
             method: TRAM_METHOD.into(),
-            algorithm: if guide.adjacent_end.is_some() {
-                ADJACENT_TRAM_RULE.into()
-            } else {
-                TRAM_RULE.into()
-            },
+            algorithm: algorithm.into(),
             geometry_derived: true,
             coverage_verified: false,
-            required_binding_keys: guide.evidence_request().tile_keys()?,
-            start: pick(&guide.tile_key, guide.start, guide.start_fraction_q)?,
-            end: pick(end_key, guide.end, guide.end_fraction_q)?,
+            required_binding_keys: request.tile_keys()?,
+            start: pick(&request.tile_key, request.start, start_fraction)?,
+            end: pick(end_key, request.end, end_fraction)?,
             ordered_spans: vec![],
             joins: vec![],
-            tram_guide: Some(guide.clone()),
+            tram_guide: single,
+            tram_chain_guide: chain,
         },
         points,
         max_correction_meters: 0.,
@@ -434,9 +502,15 @@ pub fn validate_path_descriptor(
     store: &EvidenceStore,
     claim: &PathDescriptor,
 ) -> Result<DerivedPath> {
-    if let Some(guide) = claim.tram_guide.as_ref() {
+    let guide = match (&claim.tram_guide, &claim.tram_chain_guide) {
+        (Some(guide), None) => Some(AuthoredTramProof::from(guide)),
+        (None, Some(guide)) => Some(AuthoredTramProof::from(guide)),
+        (None, None) => None,
+        (Some(_), Some(_)) => return Err(Error::Binding),
+    };
+    if let Some(guide) = guide {
         if claim.method != TRAM_METHOD
-            || claim.required_binding_keys != guide.evidence_request().tile_keys()?
+            || claim.required_binding_keys != guide.evidence_request()?.tile_keys()?
             || !claim.ordered_spans.is_empty()
             || !claim.joins.is_empty()
         {

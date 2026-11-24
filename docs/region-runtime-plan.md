@@ -136,3 +136,23 @@ IPCに入るのは参考線分だけであり、元のタイルデータや着�
 前者は遠く離れた区画を一枚ずつ展開し、選ばれなかった区画がLRUに入らないことを検査する。
 後者はワールドの保存 → 通常読込 → 両地域の表示と保存内容の一致を確認する。
 `npm test -- src/RetainedRoadLayer.test.tsx` は範囲移動・ワールド切替・Undoでの表示破棄を確認する。
+
+### α0.2 着工確定時の最終セーブ容量検査（#198）
+
+着工候補の線形・駅・水域の検証は維持する。着工確定時の容量は、中間案ではなく運行と固定ODを
+引き継いだ最終状態で検査する。時間帯ダイヤを復元できない案は引き続き確定せず、履歴や操作対象を
+更新する前に拒否する。地図・時間帯ダイヤ・セーブの形式や、プレビューの容量検査は変えない。
+
+次の合成ベンチマークは既設線形100 / 1,000 / 10,000本に、設定済みの時間帯ダイヤと固定ODを持つ
+ワールドを使う。旧処理と新処理で、道路参照1枚と線形1本を確定する。各規模の順序を交替させ、
+確定処理時間と返却・保存バイト数を出力し、対の出力バイトの一致を検査する。
+初回を除いた各方式の中央値を比較する。保存への実際の書込やWebViewは含まない。
+
+```sh
+cargo test --locked --release -p rosenfu-storage --features standard-periodic-rail \
+  --test water_session measure_reconciled_construction_capacity -- --ignored --nocapture
+```
+
+個別プロセスのRSS比較には同じテストバイナリを使い、
+`ROSENFU_FINAL_CAPACITY_ALIGNMENTS=10000` と
+`ROSENFU_FINAL_CAPACITY_ARM=former` または `final` を指定する。この変更の時間・RSSは未測定。

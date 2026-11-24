@@ -22,6 +22,17 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
  const inheritedBase=Number.isInteger(currentMinutes)&&currentMinutes>=1&&currentMinutes<=240?String(currentMinutes):'';
  const [draft,setDraft]=useState<FrequencyDraft>({baseMinutes:inheritedBase,overrides:{}});
  const [bounds,setBounds]=useState<string[]>(provisional);
+ const [editing,setEditing]=useState(false);
+ const authored=status?.authored;
+ function startEdit(){
+  if(!authored)return;
+  setDraft({baseMinutes:String(authored.baseMinutes),overrides:Object.fromEntries(
+   frequencyBands.flatMap(([id])=>authored.overrides[id]===null?[]:[[id,String(authored.overrides[id])]]),
+  )});
+  setBounds(authored.boundariesMinutes.map(String));
+  setError('');
+  setEditing(true);
+ }
  useEffect(()=>{
   let current=true;
   invoke<Status>('standard_schedule_status',{service,revision}).then(value=>{
@@ -45,22 +56,28 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
   <h5>時間帯ダイヤ</h5>
   {error&&<p role="alert">{error}</p>}
   {status?.hasBusConfigs&&(status.canApply||status.authored)&&<p className="field-hint">既存のバスダイヤはそのままです。バスと時間帯ダイヤを組み合わせたセーブは旧0.2.1では開けません。適用前のセーブを別の場所に残してください。</p>}
-  {status?.authored?<><p>この系統の起点発車：{clock(status.authored.startMs)} ～ {clock(status.authored.endMs)}（終了時刻を含まない）。有効期間内に{status.departureCount}本。終了後に自動で延長しません。</p><p>従来のダイヤに戻すには時刻欄の「運行をリセット」を使います。時刻、運行中の車両、鉄道・バスの全ダイヤが消去されます。線路・駅・停留所・路線・系統と固定OD設定は残ります。</p>
-   <ul>{frequencyBands.map(([id,label],i)=><li key={id}>{label} {clockMinutes(status.authored!.boundariesMinutes[i])}～{clockMinutes(status.authored!.boundariesMinutes[i+1])}：{status.authored!.overrides[id]??status.authored!.baseMinutes}分おき</li>)}</ul>
+  {status&&authored&&<>
+   <p>この系統の起点発車：{clock(authored.startMs)} ～ {clock(authored.endMs)}（終了時刻を含まない）。有効期間内に{status.departureCount}本。終了後に自動で延長しません。</p>
+   <ul>{frequencyBands.map(([id,label],i)=><li key={id}>{label} {clockMinutes(authored.boundariesMinutes[i])}～{clockMinutes(authored.boundariesMinutes[i+1])}：{authored.overrides[id]??authored.baseMinutes}分おき</li>)}</ul>
    <p>表示は設定ダイヤです。遅れや実際の輸送人数は含みません。</p>
-   {status.origin&&status.destinations.length>0&&<StandardOdForm status={status} stops={[status.origin,...status.destinations]} enabled={enabled}/>}</>:
-  status?.activeElsewhere?<p>別の系統が時間帯ダイヤを使用中です。この検証版では同時に1系統までです。</p>:
-  status?.canApply?<form onSubmit={save}>
+   {status.origin&&status.destinations.length>0&&<StandardOdForm status={status} stops={[status.origin,...status.destinations]} enabled={enabled}/>}
+   {!editing&&status.canApply&&<button type="button" disabled={!enabled} onClick={startEdit}>時間帯ダイヤを変更</button>}
+  </>}
+  {status?.activeElsewhere?<p>別の系統が時間帯ダイヤを使用中です。この検証版では同時に1系統までです。</p>:
+  status?.canApply&&(!authored||editing)?<form onSubmit={save}>
    <p>基本の間隔と、必要なら朝夕などの本数を調整できます。適用後、少なくとも1分先の分境界から24ゲーム時間だけ有効です。曜日・祝日で変わりません。</p>
-   {!inheritedBase&&<p>従来ダイヤの間隔をそのまま引き継げないため、基本の間隔を1～240分の整数で入力してください。</p>}
+   {!authored&&!inheritedBase&&<p>従来ダイヤの間隔をそのまま引き継げないため、基本の間隔を1～240分の整数で入力してください。</p>}
    <StandardRailFrequencyFields draft={draft} onChange={setDraft} disabled={!enabled}/>
    <details><summary>時間帯の境界（検証用の仮設定）</summary><p>ゲーム内の0時からの分数。既定の境界は仮設定で、現実の時刻表に基づきません。指定の外は基本間隔です。</p>
     {bounds.map((value,i)=><label key={i}>{bandNames[i]}（分）<input type="number" min="0" max="2879" step="1" value={value} onChange={e=>setBounds(old=>old.map((b,j)=>j===i?e.target.value:b))}/></label>)}
    </details>
-   <p>この系統の従来ダイヤを置き換えます。運行開始前は、この鉄道系統だけにダイヤがあれば適用できます。</p>
+   {authored?<p>この系統の今後の発車だけを置き換えます。新しい時間帯ダイヤの開始までにあった旧ダイヤの便も運行しません。他の系統や時刻はそのままです。</p>:
+    <p>この系統の従来ダイヤを置き換えます。運行開始前は、この鉄道系統だけにダイヤがあれば適用できます。</p>}
    {!canApply&&<p role="status">{applyBlocker??'車両がいない状態で運行を一時停止してください。'}</p>}
-   <button type="submit" disabled={!enabled||!canApply}>時間帯ダイヤを適用</button>
-  </form>:status?<p>この系統ではまだ利用できません。対応する往復系統を従来方式で設定してください。</p>:!error&&<p>利用条件を確認中…</p>}
+   <button type="submit" disabled={!enabled||!canApply}>{authored?'変更を適用':'時間帯ダイヤを適用'}</button>
+   {authored&&<button type="button" onClick={()=>{setEditing(false);setError('');}}>変更を取り消す</button>}
+  </form>:status&&!authored?<p>この系統ではまだ利用できません。対応する往復系統を従来方式で設定してください。</p>:!status&&!error&&<p>利用条件を確認中…</p>}
+  {authored&&<p>時間帯ダイヤをやめて従来の方式に戻すには「運行をリセット」を使います。時刻、運行中の車両、鉄道・バスの全ダイヤが消去されます。線路・駅・停留所・路線・系統と固定OD設定は残ります。</p>}
  </section>;
 }
 

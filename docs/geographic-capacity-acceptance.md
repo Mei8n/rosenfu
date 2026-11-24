@@ -91,6 +91,56 @@ This improves crossing assessment, not save size, JSON decoding, viewport or
 desktop responsiveness. It does not establish connected long-distance
 routing or nationwide capacity.
 
+## Bounded disk reopen memory
+
+The normal file-open APIs release their input buffer after parsing and
+computing the version of those exact bytes, before reconstructing the world.
+The byte-slice API still borrows bytes from its caller; the parsed document
+and all previously required validation are unchanged. Evidence decoding still
+requires canonical padded standard Base64, but no longer allocates an encoded
+copy of each decoded tile to make the same check a second time. No limits,
+archive versions, file bytes or route validation rules change. This does not
+implement per-region world paging or raise the 16 MiB capacity.
+
+The geographic integration regression reopens two regions with one shared
+proof and an active synthetic service on a 90 km alignment through both file
+APIs and the byte-slice API. It checks that harmless wire formatting is
+reflected in the exact version even when the same world and runtime reopen
+(including on the compatibility JSON path), that both scopes remain usable,
+and that bad Base64 padding or spare bits are still rejected. A disk-based
+test preserves the 29/30 and 31/32 labels' downgrade/capability diagnostics
+with the Standard feature both on and off; reading never changes these files.
+
+For an apples-to-apples Linux Release RSS/time comparison, generate one
+isolated fixture and use identical bytes in separate baseline and candidate
+processes. The fixture combines eight distinct 1 MiB synthetic MVT blobs
+(1,024 roads per tile, four distant regions) and the independently authored
+long synthetic rail service. It does not simulate a continuous real road
+between any of those regions.
+
+```sh
+scratch=$(mktemp -d)
+ROSENFU_GEOGRAPHIC_REOPEN_FIXTURE="$scratch/fixture.rosenfu" \
+  cargo test --locked --release -p rosenfu-storage --test geographic_capacity \
+    prepare_dense_and_long_geographic_reopen_fixture -- --ignored --exact --nocapture
+# Separately build baseline/candidate CLI with the same toolchain and features.
+sha256sum "$scratch/fixture.rosenfu"
+# Repeat and alternate these from fresh processes; compare complete stdout.
+time_bin=/usr/bin/time
+"$time_bin" -v BASELINE/target/release/rosenfu-cli world inspect "$scratch/fixture.rosenfu"
+"$time_bin" -v CANDIDATE/target/release/rosenfu-cli world inspect "$scratch/fixture.rosenfu"
+sha256sum "$scratch/fixture.rosenfu"
+```
+
+Also run the ordinary `geographic_capacity` suite, the
+`file_reopen_preserves_street_tram_header_and_downgrade_diagnostics` test with
+and without `standard-periodic-rail`, and the
+`exactly_16_mib_compact_save_reopens_and_keeps_exact_backups_and_cas` test.
+The removed restoration-time file allocation is at most the allowed input
+size, and one transient Base64 string per tile is also no longer allocated.
+Filesystem cache and parser peaks can differ; these counts do not establish a
+particular RSS or latency improvement without the paired measurement.
+
 ## Verify an independently approved captured alignment
 
 For an isolated existing save with an already authorized source capture,
@@ -140,8 +190,9 @@ is explicitly `manifest_only_not_validated`: a declared tile is not proof of
 valid bytes, a missing tile does not rule out roads or other geography, and
 the result never authorizes construction. Full world loading and raw proof
 validation remain unchanged; this is not an alternative loader or a new
-save format. It can inspect the shared manifest in known schemas 26–32
-without enabling the operation or street-tram capabilities of those saves.
+save format. It can inspect the shared manifest in known schemas 26–35; the
+combined schema requires a recognized ordered capability list. None of this
+enables the operation or street-tram capabilities of those saves.
 It does not page partial worlds for gameplay.
 
 Run the actual CLI integration checks with

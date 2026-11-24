@@ -472,3 +472,36 @@ test('time-band fixed OD can board an intermediate stop, only toward later stops
  expect(arrival.value).toBe('103');
  expect(ipc.mock.calls.filter(([command])=>command==='preview_standard_schedule_od')).toHaveLength(1);
 });
+
+test('an active time-band timetable can be edited without resetting the clock',async()=>{
+ const view={...snapshot,now_ms:1_000_000,configuration_token:'active',timetable_edit_token:'active:1000000',
+  services:[config],standard_schedule_active:true};
+ const authored={baseMinutes:30,overrides:{earlyMorning:null,morningRush:4,midday:null,eveningRush:7,lateNight:null},
+  boundariesMinutes:[60,420,600,960,1200,1440],startMs:1_080_000,endMs:87_480_000};
+ const ipc=vi.mocked(invoke);
+ ipc.mockImplementation(async command=>command==='standard_schedule_status'
+  ?{configurationToken:'active',serviceId:'12',canApply:true,activeElsewhere:false,
+    authored,departureCount:50,origin:null,destinations:[]}
+  :view);
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}>
+  <ServiceOperations serviceId="12" enabled standardEnabled/>
+ </OperationProvider>);
+ const edit=await screen.findByRole('button',{name:'時間帯ダイヤを変更'});
+ fireEvent.click(edit);
+ expect((screen.getByLabelText('基本の間隔（分）') as HTMLInputElement).value).toBe('30');
+ expect((screen.getByLabelText('朝ラッシュの間隔（分）') as HTMLInputElement).value).toBe('4');
+ expect((screen.getByLabelText('夕ラッシュの間隔（分）') as HTMLInputElement).value).toBe('7');
+ fireEvent.change(screen.getByLabelText('朝ラッシュの間隔（分）'),{target:{value:'2'}});
+ fireEvent.click(screen.getByRole('button',{name:'変更を取り消す'}));
+ expect(ipc.mock.calls.some(([name])=>name==='apply_standard_schedule'||name==='reset_operation')).toBe(false);
+ fireEvent.click(await screen.findByRole('button',{name:'時間帯ダイヤを変更'}));
+ expect((screen.getByLabelText('朝ラッシュの間隔（分）') as HTMLInputElement).value).toBe('4');
+ fireEvent.change(screen.getByLabelText('朝ラッシュの間隔（分）'),{target:{value:'3'}});
+ expect(screen.getByText(/他の系統や時刻はそのまま/u)).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'変更を適用'}));
+ await waitFor(()=>expect(ipc).toHaveBeenCalledWith('apply_standard_schedule',{
+  service:'12',expected:'active:1000000',baseMinutes:30,
+  overrides:{earlyMorning:null,morningRush:3,midday:null,eveningRush:7,lateNight:null},boundariesMinutes:[60,420,600,960,1200,1440],
+ }));
+ expect(ipc.mock.calls.some(([name])=>name==='reset_operation')).toBe(false);
+});

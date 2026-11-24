@@ -31,6 +31,78 @@ const STREET_TRAM_STANDARD_SCHEMA: u64 = 30;
 // adjacent proof as repairable corruption, even if shipped independently.
 const ADJACENT_TRAM_SCHEMA: u64 = 31;
 const ADJACENT_TRAM_STANDARD_SCHEMA: u64 = 32;
+// Unknown rail motion must not be treated as repairable data by old readers.
+const CONNECTED_TERMINAL_NECK_SCHEMA: u64 = 33;
+// 31–33 are independently reserved by adjacent Tram and terminal return.
+// Fractional Bus here is standalone/classic; mixed capabilities need a
+// separate explicit envelope, not a version number that hides a downgrade.
+const FRACTIONAL_BUS_SCHEMA: u64 = 34;
+// One combined envelope. New profiles require independently admitted
+// payload capabilities; the label never enables gameplay by itself.
+const COMBINED_CAPABILITIES_SCHEMA: u64 = 35;
+const FRACTIONAL_BUS_STREET_TRAM_PROFILE: &[&str] = &[
+    "fractional_bus_same_ground_atom_v1",
+    "street_tram_single_cell_v1",
+];
+const CLASSIC_BUS_NECK_PROFILE: &[&str] = &["classic_bus_run_v1", "rail_terminal_neck_v1"];
+const STREET_TRAM_CHAIN_PROFILE: &[&str] = &["street_tram_chain_v1"];
+const GENERAL_FRACTIONAL_BUS_PROFILE: &[&str] = &["fractional_bus_ground_route_v1"];
+const GENERAL_FRAC_STOPS: &str = "fractional_bus_ground_stops_v1";
+const GENERAL_FRAC_ROUTE: &str = "fractional_bus_ground_route_v1";
+const STREET_TRAM_SINGLE: &str = "street_tram_single_cell_v1";
+const STREET_TRAM_ADJACENT: &str = "street_tram_adjacent_cells_v1";
+const STREET_TRAM_CHAIN: &str = "street_tram_chain_v1";
+const STANDARD_DAILY: &str = "standard_daily_v1";
+const MAX_COMBINED_PROFILE_NAMES: usize = 4;
+const STANDARD_CHAIN_PROFILE: &[&str] = &[STREET_TRAM_CHAIN, STANDARD_DAILY];
+const GENERAL_FRAC_PROFILES: [[&[&str]; 4]; 2] = [
+    [
+        GENERAL_FRACTIONAL_BUS_PROFILE,
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_SINGLE],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_ADJACENT],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_CHAIN],
+    ],
+    [
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS],
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_SINGLE],
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_ADJACENT],
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_CHAIN],
+    ],
+];
+const STANDARD_GENERAL_FRAC_PROFILES: [[&[&str]; 4]; 2] = [
+    [
+        &[GENERAL_FRAC_ROUTE, STANDARD_DAILY],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_SINGLE, STANDARD_DAILY],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_ADJACENT, STANDARD_DAILY],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_CHAIN, STANDARD_DAILY],
+    ],
+    [
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STANDARD_DAILY],
+        &[
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_SINGLE,
+            STANDARD_DAILY,
+        ],
+        &[
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_ADJACENT,
+            STANDARD_DAILY,
+        ],
+        &[
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_CHAIN,
+            STANDARD_DAILY,
+        ],
+    ],
+];
+pub const GENERAL_FRACTIONAL_BUS_STOPS_SUPPORTED: bool = true;
+/// The codec checks the distinct multi-atom, evidence-derived Bus proof.
+pub const GENERAL_FRACTIONAL_BUS_SUPPORTED: bool = true;
+/// The codec has an explicit, checked profile for typed cardinal-chain proof.
+pub const STREET_TRAM_CHAIN_SAVE_ENABLED: bool = true;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -97,7 +169,12 @@ impl From<WorldError> for StorageError {
 fn current_wire_schema(version: u64) -> bool {
     matches!(
         version,
-        SCHEMA_VERSION | STREET_TRAM_SCHEMA | ADJACENT_TRAM_SCHEMA
+        SCHEMA_VERSION
+            | STREET_TRAM_SCHEMA
+            | ADJACENT_TRAM_SCHEMA
+            | CONNECTED_TERMINAL_NECK_SCHEMA
+            | FRACTIONAL_BUS_SCHEMA
+            | COMBINED_CAPABILITIES_SCHEMA
     ) || (cfg!(feature = "standard-periodic-rail")
         && matches!(
             version,
@@ -105,10 +182,224 @@ fn current_wire_schema(version: u64) -> bool {
         ))
 }
 
+fn check_terminal_neck_envelope(
+    version: u64,
+    has_neck: bool,
+    conflicts: bool,
+    with_classic_bus: bool,
+) -> Result<(), StorageError> {
+    let declared = if with_classic_bus {
+        version == COMBINED_CAPABILITIES_SCHEMA
+    } else {
+        version == CONNECTED_TERMINAL_NECK_SCHEMA
+    };
+    if declared != has_neck || (has_neck && conflicts) {
+        return Err(StorageError::UnsupportedVersion(CONNECTED_TERMINAL_NECK_SCHEMA));
+    }
+    Ok(())
+}
+
+fn check_fractional_envelope(
+    version: u64,
+    fractional: bool,
+    street: bool,
+    adjacent: bool,
+    standard: bool,
+    runtime: Option<u64>,
+) -> Result<(), StorageError> {
+    let expected = if street && !adjacent {
+        COMBINED_CAPABILITIES_SCHEMA
+    } else {
+        FRACTIONAL_BUS_SCHEMA
+    };
+    if !fractional {
+        if matches!(
+            version,
+            FRACTIONAL_BUS_SCHEMA
+        ) {
+            return Err(StorageError::UnsupportedVersion(version));
+        }
+    } else if version != expected
+        || adjacent
+        || standard
+        || runtime.is_some_and(|format| format > 7 || (street && format != 2))
+    {
+        return Err(StorageError::UnsupportedVersion(expected));
+    }
+    Ok(())
+}
+
+fn check_typed_fractional_envelope(
+    version: u64,
+    draft: &WorldDraft,
+    operation: Option<&rosenfu_core::world::WorldOperationSave>,
+) -> Result<(), StorageError> {
+    let standard = {
+        #[cfg(feature = "standard-periodic-rail")]
+        {
+            operation.is_some_and(|op| op.has_standard_timetable())
+        }
+        #[cfg(not(feature = "standard-periodic-rail"))]
+        {
+            false
+        }
+    };
+    if draft.carries_general_fractional_bus_proof() {
+        return if version == COMBINED_CAPABILITIES_SCHEMA
+            && combined_profile(draft, operation).is_some_and(|p| p.first() == Some(&GENERAL_FRAC_ROUTE))
+        {
+            Ok(())
+        } else {
+            Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+        };
+    }
+    let fractional = draft.carries_fractional_bus_proof();
+    check_fractional_envelope(
+        version,
+        fractional,
+        fractional && draft.carries_street_tram_proof(),
+        fractional
+            && (draft.carries_adjacent_street_tram_proof()
+                || draft.carries_chain_street_tram_proof()),
+        standard,
+        operation.map(|op| u64::from(op.runtime.format)),
+    )
+}
+
+/// A declared profile is checked against the persisted, validated
+/// capabilities, never used to infer missing proofs or opt in to a runtime.
+fn combined_profile(
+    draft: &WorldDraft,
+    operation: Option<&rosenfu_core::world::WorldOperationSave>,
+) -> Option<&'static [&'static str]> {
+    #[cfg(feature = "standard-periodic-rail")]
+    let standard = operation.is_some_and(|op| op.has_standard_timetable());
+    #[cfg(not(feature = "standard-periodic-rail"))]
+    let standard = false;
+    let fractional = draft.carries_fractional_bus_proof();
+    let general = draft.carries_general_fractional_bus_proof();
+    let street = draft.carries_street_tram_proof();
+    let chain = draft.carries_chain_street_tram_proof();
+    if operation.is_some_and(|op| op.has_connected_terminal_neck_with_independent_classic_bus())
+        && !fractional
+        && !general
+        && !street
+    {
+        return Some(CLASSIC_BUS_NECK_PROFILE);
+    }
+    if operation.is_some_and(|op| op.runtime.format != 2) {
+        return None;
+    }
+    if general {
+        let transit = if chain {
+            3
+        } else if draft.carries_adjacent_street_tram_proof() {
+            2
+        } else {
+            usize::from(street)
+        };
+        let profiles = if standard {
+            &STANDARD_GENERAL_FRAC_PROFILES
+        } else {
+            &GENERAL_FRAC_PROFILES
+        };
+        return Some(profiles[usize::from(draft.carries_general_fractional_bus_stops_proof())][transit]);
+    }
+    if standard {
+        return (chain && !fractional).then_some(STANDARD_CHAIN_PROFILE);
+    }
+    match (fractional, street, chain) {
+        (false, _, true) => Some(STREET_TRAM_CHAIN_PROFILE),
+        (true, true, false) if !draft.carries_adjacent_street_tram_proof() => {
+            Some(FRACTIONAL_BUS_STREET_TRAM_PROFILE)
+        }
+        _ => None,
+    }
+}
+
+fn known_combined_profile(declared: &[String]) -> bool {
+    let standard_profiles = cfg!(feature = "standard-periodic-rail")
+        .then_some(
+            std::iter::once(STANDARD_CHAIN_PROFILE)
+                .chain(STANDARD_GENERAL_FRAC_PROFILES.into_iter().flatten()),
+        )
+        .into_iter()
+        .flatten();
+    declared.len() <= MAX_COMBINED_PROFILE_NAMES
+        && [
+            FRACTIONAL_BUS_STREET_TRAM_PROFILE,
+            CLASSIC_BUS_NECK_PROFILE,
+            STREET_TRAM_CHAIN_PROFILE,
+        ]
+        .into_iter()
+        .chain(GENERAL_FRAC_PROFILES.into_iter().flatten())
+        .chain(standard_profiles)
+        .any(|expected| declared.iter().map(String::as_str).eq(expected.iter().copied()))
+}
+
+fn check_combined_profile(
+    version: u64,
+    declared: Option<&[String]>,
+    expected: Option<&[&str]>,
+) -> Result<(), StorageError> {
+    let matches = match (version, declared, expected) {
+        (COMBINED_CAPABILITIES_SCHEMA, Some(declared), Some(expected)) => {
+            known_combined_profile(declared)
+                && declared.iter().map(String::as_str).eq(expected.iter().copied())
+        }
+        (COMBINED_CAPABILITIES_SCHEMA, _, _) => false,
+        (_, None, None) => true,
+        _ => false,
+    };
+    if !matches {
+        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
+    }
+    Ok(())
+}
+
+fn present_combined_profile<'de, D: Deserializer<'de>>(
+    input: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    // Value fallback is not permitted to pick a last-wins capability field.
+    // This typed path also rejects explicit null rather than treating it as
+    // the absence of an old-shape optional field.
+    Vec::<String>::deserialize(input).map(Some)
+}
+
+fn typed_terminal_neck_conflicts(
+    draft: &WorldDraft,
+    operation: &rosenfu_core::world::WorldOperationSave,
+) -> bool {
+    #[cfg(feature = "standard-periodic-rail")]
+    if operation.has_standard_timetable() {
+        return true;
+    }
+    draft.carries_fractional_bus_proof()
+        || draft.carries_general_fractional_bus_proof()
+        || (!operation.bus_configs.is_empty()
+            && !operation.has_connected_terminal_neck_with_independent_classic_bus())
+        || operation.crossing_reservations
+        || operation.parallel_join_lanes
+        || draft.carries_street_tram_proof()
+        || draft.carries_adjacent_street_tram_proof()
+}
+
 fn wire_schema(
     draft: &WorldDraft,
     operation: Option<&rosenfu_core::world::WorldOperationSave>,
 ) -> u64 {
+    if draft.carries_chain_street_tram_proof()
+        || draft.carries_general_fractional_bus_proof()
+        || combined_profile(draft, operation).is_some()
+    {
+        return COMBINED_CAPABILITIES_SCHEMA;
+    }
+    if operation.is_some_and(|op| op.has_connected_terminal_neck()) {
+        return CONNECTED_TERMINAL_NECK_SCHEMA;
+    }
+    if draft.carries_fractional_bus_proof() {
+        return FRACTIONAL_BUS_SCHEMA;
+    }
     if draft.carries_adjacent_street_tram_proof() {
         #[cfg(feature = "standard-periodic-rail")]
         if operation.is_some_and(|op| op.has_standard_timetable()) {
@@ -127,8 +418,6 @@ fn wire_schema(
     if operation.is_some_and(|op| op.has_standard_timetable() && !op.bus_configs.is_empty()) {
         return MIXED_STANDARD_BUS_SCHEMA;
     }
-    #[cfg(not(feature = "standard-periodic-rail"))]
-    let _ = operation;
     SCHEMA_VERSION
 }
 
@@ -137,6 +426,12 @@ fn wire_schema(
 struct SaveDocument<W = WorldDraft> {
     format: String,
     schema_version: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_combined_profile"
+    )]
+    capabilities: Option<Vec<String>>,
     world: W,
     road_evidence: EvidenceEnvelope,
     operation: Option<rosenfu_core::world::WorldOperationSave>,
@@ -314,18 +609,41 @@ pub enum SaveOutcome {
     },
 }
 
-/// Parse the format/version first, then deserialize and validate the world.
-pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
-    if bytes.len() > MAX_SAVE_BYTES {
-        return Err(StorageError::TooLarge);
+// A parsed document owns its deserialized fields and never borrows the
+// bounded input buffer. Keep restoration separate from parsing so file
+// loaders can drop that buffer before rebuilding evidence and runtime state.
+enum ParsedSave {
+    Current(Box<SaveDocument<RequiredWorldDraft>>),
+    Compatibility(serde_json::Value),
+}
+
+impl ParsedSave {
+    fn parse(bytes: &[u8]) -> Result<Self, StorageError> {
+        if bytes.len() > MAX_SAVE_BYTES {
+            return Err(StorageError::TooLarge);
+        }
+        if let Ok(CurrentSave(document)) = serde_json::from_slice(bytes) {
+            if serde_json::from_slice::<CheckedJson>(bytes).is_ok() {
+                return Ok(Self::Current(Box::new(document)));
+            }
+        }
+        Ok(Self::Compatibility(serde_json::from_slice(bytes)?))
     }
-    if let Ok(CurrentSave(document)) = serde_json::from_slice(bytes) {
-        if serde_json::from_slice::<CheckedJson>(bytes).is_ok() {
-            let version = document.schema_version;
-            return restore_document(document, version);
+
+    fn restore(self) -> Result<World, StorageError> {
+        match self {
+            Self::Current(document) => {
+                let version = document.schema_version;
+                restore_document(*document, version)
+            }
+            Self::Compatibility(value) => decode_document(value),
         }
     }
-    decode_document(serde_json::from_slice(bytes)?)
+}
+
+/// Parse the format/version first, then deserialize and validate the world.
+pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
+    ParsedSave::parse(bytes)?.restore()
 }
 
 fn value_carries_descriptor_marker(
@@ -358,20 +676,67 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
     if version != 26 && !current_wire_schema(version) {
         return Err(StorageError::UnsupportedVersion(version));
     }
-    if version < ADJACENT_TRAM_SCHEMA
-        && value_carries_descriptor_marker(&value["world"], |path| {
-            path["tramGuide"].get("adjacentEnd").is_some()
-                || path["algorithm"].as_str() == Some("ofm_ground_tram_adjacent_v2")
-        })
-    {
-        return Err(StorageError::UnsupportedVersion(ADJACENT_TRAM_SCHEMA));
+    // Combined files must use the exact typed grammar. If this parser is
+    // reached, the label or declaration was attached to malformed typed
+    // data (possibly duplicate fields); never interpret that as repairable.
+    if version == COMBINED_CAPABILITIES_SCHEMA || value.get("capabilities").is_some() {
+        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
     }
-    if version < STREET_TRAM_SCHEMA
-        && value_carries_descriptor_marker(&value["world"], |path| {
+    let data = &value["world"];
+    // Recognize reserved proof fields so an early build never treats them as
+    // permission to repair/overwrite under a downgraded standalone label.
+    // Recognition is not support: only an admitted typed profile can load.
+    if value_carries_descriptor_marker(data, |path| {
+        path.get("tramChainGuide").is_some()
+            || path["algorithm"].as_str() == Some("ofm_ground_tram_chain_v1")
+    }) || data["ofm_gameplay_bus_routes"].as_object().is_some_and(|routes| {
+        routes.values().any(|proof| proof.get("fractionalTerminals").is_some())
+    }) {
+        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
+    }
+    let op = &value["operation"];
+    let fractional = data["ofm_gameplay_bus_routes"]
+        .as_object()
+        .is_some_and(|routes| routes.values().any(|b| b.get("sameAtomStops").is_some()));
+    let street = || {
+        value_carries_descriptor_marker(data, |path| {
             path.get("tramGuide").is_some()
                 || path["method"].as_str() == Some("ofm_authored_street_tram_v1")
         })
-    {
+    };
+    let adjacent = || {
+        value_carries_descriptor_marker(data, |path| {
+            path["tramGuide"].get("adjacentEnd").is_some()
+                || path["algorithm"].as_str() == Some("ofm_ground_tram_adjacent_v2")
+        })
+    };
+    let standard = op.get("standard_timetable").is_some_and(|v| !v.is_null());
+    let runtime_format = op["runtime"]["format"].as_u64();
+    check_fractional_envelope(
+        version,
+        fractional,
+        fractional && street(),
+        fractional && adjacent(),
+        standard,
+        runtime_format,
+    )?;
+    let neck_format =
+        u64::from(rosenfu_core::world::WorldOperationSave::CONNECTED_TERMINAL_NECK_FORMAT);
+    let has_neck = runtime_format == Some(neck_format);
+    if has_neck || version == CONNECTED_TERMINAL_NECK_SCHEMA {
+        let conflicts = fractional
+            || street()
+            || adjacent()
+            || standard
+            || op["bus_configs"].as_array().is_some_and(|v| !v.is_empty())
+            || op["crossing_reservations"].as_bool() == Some(true)
+            || op["parallel_join_lanes"].as_bool() == Some(true);
+        check_terminal_neck_envelope(version, has_neck, conflicts, false)?;
+    }
+    if version < ADJACENT_TRAM_SCHEMA && adjacent() {
+        return Err(StorageError::UnsupportedVersion(ADJACENT_TRAM_SCHEMA));
+    }
+    if version < STREET_TRAM_SCHEMA && street() {
         return Err(StorageError::UnsupportedVersion(STREET_TRAM_SCHEMA));
     }
     if matches!(version, STREET_TRAM_SCHEMA | ADJACENT_TRAM_SCHEMA)
@@ -449,6 +814,22 @@ fn restore_document<W: Into<WorldDraft>>(
     version: u64,
 ) -> Result<World, StorageError> {
     let draft = document.world.into();
+    check_combined_profile(
+        version,
+        document.capabilities.as_deref(),
+        combined_profile(&draft, document.operation.as_ref()),
+    )?;
+    check_typed_fractional_envelope(version, &draft, document.operation.as_ref())?;
+    let neck = document
+        .operation
+        .as_ref()
+        .filter(|op| op.has_connected_terminal_neck());
+    check_terminal_neck_envelope(
+        version,
+        neck.is_some(),
+        neck.is_some_and(|op| typed_terminal_neck_conflicts(&draft, op)),
+        neck.is_some_and(|op| op.has_connected_terminal_neck_with_independent_classic_bus()),
+    )?;
     let expected = wire_schema(&draft, document.operation.as_ref());
     if version < ADJACENT_TRAM_SCHEMA && expected >= ADJACENT_TRAM_SCHEMA {
         return Err(StorageError::UnsupportedVersion(ADJACENT_TRAM_SCHEMA));
@@ -514,6 +895,8 @@ fn restore_document<W: Into<WorldDraft>>(
 struct BorrowedSaveDocument<'a> {
     format: &'static str,
     schema_version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<&'static [&'static str]>,
     world: &'a WorldDraft,
     road_evidence: BorrowedEvidenceEnvelope<'a>,
     operation: Option<rosenfu_core::world::WorldOperationSave>,
@@ -587,7 +970,24 @@ fn checked_save_document(world: &World) -> Result<BorrowedSaveDocument<'_>, Stor
         // physical specification no longer exists. Never write such a file.
         return Err(StorageError::InvalidHeader);
     }
-    Ok(save_document(world))
+    let document = save_document(world);
+    if document.schema_version == COMBINED_CAPABILITIES_SCHEMA && document.capabilities.is_none() {
+        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
+    }
+    check_typed_fractional_envelope(
+        document.schema_version,
+        document.world,
+        document.operation.as_ref(),
+    )?;
+    if document
+        .operation
+        .as_ref()
+        .filter(|op| op.has_connected_terminal_neck())
+        .is_some_and(|op| typed_terminal_neck_conflicts(document.world, op))
+    {
+        return Err(StorageError::UnsupportedVersion(CONNECTED_TERMINAL_NECK_SCHEMA));
+    }
+    Ok(document)
 }
 
 fn save_document(world: &World) -> BorrowedSaveDocument<'_> {
@@ -596,6 +996,7 @@ fn save_document(world: &World) -> BorrowedSaveDocument<'_> {
     BorrowedSaveDocument {
         format: FORMAT,
         schema_version: wire_schema(data, operation.as_ref()),
+        capabilities: combined_profile(data, operation.as_ref()),
         world: data,
         road_evidence: BorrowedEvidenceEnvelope::from_store(&data.runtime_road_evidence),
         operation,
@@ -725,8 +1126,11 @@ pub fn load_world_with_version(
 ) -> Result<(World, FileVersion), StorageError> {
     let path = path.as_ref();
     regular_file_exists(path)?;
-    let bytes = read_bounded(path)?;
-    Ok((decode(&bytes)?, bytes_version(&bytes)))
+    let (parsed, version) = {
+        let bytes = read_bounded(path)?;
+        (ParsedSave::parse(&bytes)?, bytes_version(&bytes))
+    };
+    Ok((parsed.restore()?, version))
 }
 
 fn lock_save(path: &Path) -> Result<File, StorageError> {
@@ -768,7 +1172,8 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, StorageError> {
 pub fn load_world(path: impl AsRef<Path>) -> Result<World, StorageError> {
     let path = path.as_ref();
     regular_file_exists(path)?;
-    decode(&read_bounded(path)?)
+    let parsed = ParsedSave::parse(&read_bounded(path)?)?;
+    parsed.restore()
 }
 
 pub fn backup_path(path: impl AsRef<Path>) -> PathBuf {
@@ -1019,6 +1424,186 @@ mod tests {
     }
 
     #[test]
+    fn downgraded_fractional_bus_marker_is_never_repairable_corruption() {
+        let old = encode(&World::default()).unwrap();
+        let mut altered: serde_json::Value = serde_json::from_slice(&old).unwrap();
+        assert_eq!(encode(&decode(&old).unwrap()).unwrap(), old);
+        altered["world"]["ofm_gameplay_bus_routes"] =
+            serde_json::json!({"B1":{"sameAtomStops":null}});
+        assert!(matches!(
+            decode(&serde_json::to_vec(&altered).unwrap()),
+            Err(StorageError::UnsupportedVersion(FRACTIONAL_BUS_SCHEMA))
+        ));
+    }
+
+    #[test]
+    fn fractional_bus_cannot_hide_an_incompatible_capability_under_34() {
+        let ordinary = World::default();
+        let baseline: serde_json::Value =
+            serde_json::from_slice(&encode(&ordinary).unwrap()).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("world.json");
+        for (tram, operation) in [
+            (serde_json::json!({"tramGuide":null}), serde_json::Value::Null),
+            (
+                serde_json::json!({"algorithm":"ofm_ground_tram_adjacent_v2"}),
+                serde_json::Value::Null,
+            ),
+            (
+                serde_json::Value::Null,
+                serde_json::json!({"standard_timetable":{}}),
+            ),
+            (
+                serde_json::Value::Null,
+                serde_json::json!({"runtime":{"format":8}}),
+            ),
+        ] {
+            let mut wire = baseline.clone();
+            wire["schema_version"] = FRACTIONAL_BUS_SCHEMA.into();
+            wire["world"]["ofm_gameplay_bus_routes"] =
+                serde_json::json!({"B":{"sameAtomStops":[250_000, 600_000]}});
+            if !tram.is_null() {
+                wire["world"]["road_path_provenance"] = serde_json::json!([{"path":tram.clone()}]);
+            }
+            wire["operation"] = operation;
+            let expected = if tram.get("tramGuide").is_some() {
+                COMBINED_CAPABILITIES_SCHEMA
+            } else {
+                FRACTIONAL_BUS_SCHEMA
+            };
+            let invalid = serde_json::to_vec(&wire).unwrap();
+            assert!(matches!(
+                decode(&invalid),
+                Err(StorageError::UnsupportedVersion(version)) if version == expected
+            ));
+            std::fs::write(&path, &invalid).unwrap();
+            assert!(matches!(
+                save_world(&path, &ordinary),
+                Err(StorageError::UnsupportedVersion(version)) if version == expected
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), invalid);
+        }
+    }
+
+    #[test]
+    fn neither_standalone_envelope_can_disguise_a_neck_and_fractional_bus() {
+        let baseline: serde_json::Value =
+            serde_json::from_slice(&encode(&World::default()).unwrap()).unwrap();
+        for version in [SCHEMA_VERSION, CONNECTED_TERMINAL_NECK_SCHEMA, FRACTIONAL_BUS_SCHEMA] {
+            let mut malicious = baseline.clone();
+            malicious["schema_version"] = version.into();
+            malicious["operation"] = serde_json::json!({"runtime":{"format":8}});
+            malicious["world"]["ofm_gameplay_bus_routes"] =
+                serde_json::json!({"B":{"sameAtomStops":[250_000, 600_000]}});
+            assert!(matches!(
+                decode(&serde_json::to_vec(&malicious).unwrap()),
+                Err(StorageError::UnsupportedVersion(FRACTIONAL_BUS_SCHEMA))
+            ));
+        }
+    }
+
+    #[test]
+    fn combined_profile_rejects_duplicate_unknown_and_downgraded_declarations() {
+        let exact = FRACTIONAL_BUS_STREET_TRAM_PROFILE
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect::<Vec<_>>();
+        let expect = Some(FRACTIONAL_BUS_STREET_TRAM_PROFILE);
+        assert!(check_combined_profile(COMBINED_CAPABILITIES_SCHEMA, Some(&exact), expect).is_ok());
+        assert!(check_combined_profile(SCHEMA_VERSION, None, None).is_ok());
+        let complete = [GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_CHAIN]
+            .map(str::to_owned);
+        assert!(known_combined_profile(&complete));
+        let standard = [
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_CHAIN,
+            STANDARD_DAILY,
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            known_combined_profile(&standard),
+            cfg!(feature = "standard-periodic-rail")
+        );
+        let mut reordered = standard.clone();
+        reordered.swap(2, 3);
+        assert!(!known_combined_profile(&reordered));
+        assert!(!known_combined_profile(
+            &[STANDARD_DAILY, "rail_terminal_neck_v1"].map(str::to_owned)
+        ));
+        let extra = [GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_CHAIN, "extra_v1"]
+            .map(str::to_owned);
+        assert!(!known_combined_profile(&extra));
+        for labels in [
+            None,
+            Some(vec![]),
+            Some(vec![exact[0].clone(), exact[0].clone()]),
+            Some(vec![exact[1].clone(), exact[0].clone()]),
+            Some(vec![exact[0].clone(), "street_tram_chain_v1".into()]),
+        ] {
+            assert!(matches!(
+                check_combined_profile(COMBINED_CAPABILITIES_SCHEMA, labels.as_deref(), expect),
+                Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+            ));
+        }
+        assert!(matches!(
+            check_combined_profile(SCHEMA_VERSION, Some(&exact), None),
+            Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+        ));
+
+        let world = World::default();
+        let old = encode(&world).unwrap();
+        let mut forged: serde_json::Value = serde_json::from_slice(&old).unwrap();
+        forged["capabilities"] = serde_json::json!(exact);
+        // An ordinary file cannot acquire a proof by changing its header.
+        for version in [SCHEMA_VERSION, COMBINED_CAPABILITIES_SCHEMA] {
+            forged["schema_version"] = version.into();
+            let bytes = serde_json::to_vec(&forged).unwrap();
+            assert!(matches!(
+                decode(&bytes),
+                Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+            ));
+        }
+        assert_eq!(encode(&decode(&old).unwrap()).unwrap(), old);
+        for (path, proof) in [
+            (serde_json::json!({"tramChainGuide":null}), serde_json::Value::Null),
+            (serde_json::Value::Null, serde_json::json!({"fractionalTerminals":null})),
+        ] {
+            let mut downgraded: serde_json::Value = serde_json::from_slice(&old).unwrap();
+            if !path.is_null() {
+                downgraded["world"]["road_path_provenance"] = serde_json::json!([{"path":path}]);
+            }
+            if !proof.is_null() {
+                downgraded["world"]["ofm_gameplay_bus_routes"] = serde_json::json!({"B":proof});
+            }
+            assert!(matches!(
+                decode(&serde_json::to_vec(&downgraded).unwrap()),
+                Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA))
+            ));
+        }
+    }
+
+    #[test]
+    fn mixed_fractional_schema_requires_both_independent_capabilities_and_fixed_clock() {
+        let version = COMBINED_CAPABILITIES_SCHEMA;
+        assert!(check_fractional_envelope(version, true, true, false, false, None).is_ok());
+        assert!(check_fractional_envelope(version, true, true, false, false, Some(2)).is_ok());
+        for cases in [
+            (true, false, false, false, Some(2)),
+            (true, true, true, false, Some(2)),
+            (true, true, false, true, Some(2)),
+            (true, true, false, false, Some(4)),
+            (true, true, false, false, Some(8)),
+        ] {
+            let (bus, street, adjacent, standard, clock) = cases;
+            assert!(matches!(
+                check_fractional_envelope(version, bus, street, adjacent, standard, clock),
+                Err(StorageError::UnsupportedVersion(_))
+            ));
+        }
+    }
+
+    #[test]
     fn downgraded_street_tram_markers_cannot_be_mistaken_for_repairable_corruption() {
         let before = encode(&World::default()).unwrap();
         let old: serde_json::Value = serde_json::from_slice(&before).unwrap();
@@ -1100,6 +1685,55 @@ mod tests {
                 decode(&serde_json::to_vec(&disguised).unwrap()),
                 Err(StorageError::UnsupportedVersion(v)) if v == standard
             ));
+        }
+    }
+
+    #[test]
+    fn file_reopen_preserves_street_tram_header_and_downgrade_diagnostics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("schema-diagnostics.rosenfu");
+        let base = serde_json::from_slice::<serde_json::Value>(&encode(&World::default()).unwrap())
+            .unwrap();
+        let mut cases = vec![];
+        for (ordinary, standard) in [
+            (STREET_TRAM_SCHEMA, STREET_TRAM_STANDARD_SCHEMA),
+            (ADJACENT_TRAM_SCHEMA, ADJACENT_TRAM_STANDARD_SCHEMA),
+        ] {
+            let mut overspecified = base.clone();
+            overspecified["schema_version"] = ordinary.into();
+            overspecified["operation"] = serde_json::json!({ "standard_timetable": {} });
+            cases.push((overspecified, Some(standard)));
+            for label in [ordinary, standard] {
+                // A newer label alone does not make an ordinary save valid.
+                let mut mislabeled = base.clone();
+                mislabeled["schema_version"] = label.into();
+                let unsupported = (label == standard && !cfg!(feature = "standard-periodic-rail"))
+                    .then_some(standard);
+                cases.push((mislabeled, unsupported));
+            }
+        }
+        let mut downgraded = base;
+        downgraded["world"]["road_path_provenance"] =
+            serde_json::json!([{ "path": { "tramGuide": { "adjacentEnd": null } } }]);
+        cases.push((downgraded, Some(ADJACENT_TRAM_SCHEMA)));
+        for (document, unsupported) in cases {
+            let bytes = serde_json::to_vec(&document).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            for result in [
+                decode(&bytes),
+                load_world(&path),
+                load_world_with_version(&path).map(|(world, _)| world),
+            ] {
+                match unsupported {
+                    Some(expected) => assert!(matches!(
+                        result,
+                        Err(StorageError::UnsupportedVersion(actual)) if actual == expected
+                    )),
+                    None => assert!(matches!(result, Err(StorageError::InvalidHeader))),
+                }
+            }
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(!backup_path(&path).exists());
         }
     }
 

@@ -33,8 +33,8 @@ fn fixture() -> World {
             decoder_rule: DECODER_RULE.into(),
         })
         .collect();
-    let evidence = EvidenceStore::from_archive_parts(vec![RawEvidence { sha256: sha, bytes }], tiles)
-        .unwrap();
+    let evidence =
+        EvidenceStore::from_archive_parts(vec![RawEvidence { sha256: sha, bytes }], tiles).unwrap();
     World::new(WorldDraft::default().with_road_evidence(evidence).unwrap()).unwrap()
 }
 
@@ -75,15 +75,18 @@ fn cli_reads_only_selected_manifest_without_opening_or_writing_world() {
     assert!(rosenfu_storage::load_world(&path).is_err());
     let light = run(&path, local);
     assert!(light.status.success());
-    assert_eq!(serde_json::from_slice::<Value>(&light.stdout).unwrap(), report);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&light.stdout).unwrap(),
+        report
+    );
 }
 
 #[test]
 fn cli_rejects_bad_bounds_and_inconsistent_even_out_of_range_manifest() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bounded.json");
-    let mut wire: Value = serde_json::from_slice(&rosenfu_storage::encode(&fixture()).unwrap())
-        .unwrap();
+    let mut wire: Value =
+        serde_json::from_slice(&rosenfu_storage::encode(&fixture()).unwrap()).unwrap();
     let bounded = ["14552", "6451", "14553", "6452"];
     let write = |wire: &Value| fs::write(&path, serde_json::to_vec(wire).unwrap()).unwrap();
     let rejects = |bounds| {
@@ -115,7 +118,8 @@ fn cli_rejects_bad_bounds_and_inconsistent_even_out_of_range_manifest() {
     write(&wire);
     rejects(bounded);
     let file = fs::File::options().write(true).open(&path).unwrap();
-    file.set_len(rosenfu_storage::MAX_SAVE_BYTES as u64 + 1).unwrap();
+    file.set_len(rosenfu_storage::MAX_SAVE_BYTES as u64 + 1)
+        .unwrap();
     rejects(bounded);
 }
 
@@ -126,8 +130,8 @@ fn cli_inspects_known_envelopes_without_admitting_unknown_schemas() {
     let mut header: Value =
         serde_json::from_slice(&rosenfu_storage::encode(&fixture()).unwrap()).unwrap();
     // Only the evidence envelope is in scope. In particular, these relabeled
-    // fixtures do not claim to be valid playable 28–32 saves.
-    for version in [26, 27, 28, 29, 30, 31, 32] {
+    // fixtures do not claim to be valid playable 28–34 saves.
+    for version in [26, 27, 28, 29, 30, 31, 32, 33, 34] {
         header["schema_version"] = version.into();
         let bytes = serde_json::to_vec(&header).unwrap();
         fs::write(&path, &bytes).unwrap();
@@ -143,11 +147,90 @@ fn cli_inspects_known_envelopes_without_admitting_unknown_schemas() {
         assert_eq!(report["matching_tiles"].as_array().unwrap().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
-    for version in [25, 33] {
+    for version in [25, 36] {
         header["schema_version"] = version.into();
         fs::write(&path, serde_json::to_vec(&header).unwrap()).unwrap();
         let output = run(&path, ["14552", "6451", "14552", "6451"]);
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
     }
+}
+
+#[test]
+fn cli_requires_a_canonical_known_combined_profile_without_claiming_world_validation() {
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("capability-manifest.rosenfu");
+    let mut header: Value =
+        serde_json::from_slice(&rosenfu_storage::encode(&fixture()).unwrap()).unwrap();
+    let bounds = ["14552", "6451", "14552", "6451"];
+    let inspect = |wire: &[u8]| {
+        fs::write(&path, wire).unwrap();
+        let output = run(&path, bounds);
+        assert_eq!(fs::read(&path).unwrap(), wire);
+        assert!(!rosenfu_storage::backup_path(&path).exists());
+        output
+    };
+    header["schema_version"] = 35.into();
+    for profile in [
+        json!(["classic_bus_run_v1", "rail_terminal_neck_v1"]),
+        json!(["fractional_bus_same_ground_atom_v1", "street_tram_single_cell_v1"]),
+        json!(["street_tram_chain_v1"]),
+        json!(["fractional_bus_ground_route_v1"]),
+        json!([
+            "fractional_bus_ground_route_v1",
+            "street_tram_adjacent_cells_v1"
+        ]),
+        json!([
+            "fractional_bus_ground_route_v1",
+            "fractional_bus_ground_stops_v1",
+            "street_tram_chain_v1"
+        ]),
+    ] {
+        header["capabilities"] = profile;
+        let bytes = serde_json::to_vec(&header).unwrap();
+        let output = inspect(&bytes);
+        assert!(output.status.success(), "{:?}", output.stderr);
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["schema_version"], 35);
+        assert_eq!(report["status"], "manifest_only_not_validated");
+        assert!(report.get("capabilities").is_none());
+        assert!(rosenfu_storage::load_world(&path).is_err());
+    }
+
+    for profile in [
+        Value::Null,
+        json!([]),
+        json!([1]),
+        json!({"profile": "street_tram_chain_v1"}),
+        json!(["unsupported_v1"]),
+        json!(["street_tram_chain_v1", "street_tram_chain_v1"]),
+        json!(["rail_terminal_neck_v1", "classic_bus_run_v1"]),
+        json!(["street_tram_chain_v1", "classic_bus_run_v1", "rail_terminal_neck_v1"]),
+        json!(["fractional_bus_ground_stops_v1", "fractional_bus_ground_route_v1"]),
+        json!([
+            "fractional_bus_ground_route_v1",
+            "fractional_bus_ground_stops_v1",
+            "street_tram_single_cell_v1",
+            "street_tram_chain_v1"
+        ]),
+    ] {
+        header["capabilities"] = profile;
+        let output = inspect(&serde_json::to_vec(&header).unwrap());
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+    header.as_object_mut().unwrap().remove("capabilities");
+    assert!(!inspect(&serde_json::to_vec(&header).unwrap()).status.success());
+
+    header["capabilities"] = json!(["street_tram_chain_v1"]);
+    let encoded = serde_json::to_string(&header).unwrap();
+    let duplicate = format!("{{\"capabilities\":[\"street_tram_chain_v1\"],{}", &encoded[1..]);
+    assert!(!inspect(duplicate.as_bytes()).status.success());
+    let duplicate_version = format!("{{\"schema_version\":35,{}", &encoded[1..]);
+    assert!(!inspect(duplicate_version.as_bytes()).status.success());
+
+    header["schema_version"] = 34.into();
+    assert!(!inspect(&serde_json::to_vec(&header).unwrap()).status.success());
 }

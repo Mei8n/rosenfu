@@ -159,6 +159,8 @@ mod tests {
             let token = ed.ofm_world_token().unwrap();
             let mut binding = BusPathBinding {
                 rule: BUS_GRAPH_RULE.into(),
+                same_atom_stops: None,
+                fractional_terminals: None,
                 grade_policy: None,
                 tile_key: URL.into(),
                 tile_raw_sha256: sha.clone(),

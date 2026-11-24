@@ -1,9 +1,11 @@
 //! Streaming inspection of the declared road-evidence manifest. It is never
 //! used to approve construction, open a world, or adopt a recovery file.
 use crate::{
-    regular_file_exists, save_reader_error, StorageError, ADJACENT_TRAM_SCHEMA,
-    ADJACENT_TRAM_STANDARD_SCHEMA, FORMAT, MAX_SAVE_BYTES, MIXED_STANDARD_BUS_SCHEMA,
-    SCHEMA_VERSION, STREET_TRAM_SCHEMA, STREET_TRAM_STANDARD_SCHEMA,
+    known_combined_profile, regular_file_exists, save_reader_error, StorageError,
+    ADJACENT_TRAM_SCHEMA, ADJACENT_TRAM_STANDARD_SCHEMA, COMBINED_CAPABILITIES_SCHEMA,
+    CONNECTED_TERMINAL_NECK_SCHEMA, FORMAT, FRACTIONAL_BUS_SCHEMA, MAX_COMBINED_PROFILE_NAMES,
+    MAX_SAVE_BYTES, MIXED_STANDARD_BUS_SCHEMA, SCHEMA_VERSION, STREET_TRAM_SCHEMA,
+    STREET_TRAM_STANDARD_SCHEMA,
 };
 use rosenfu_core::ofm_evidence::{TileBinding, MAX_PINNED_BINDINGS, MAX_TILES};
 use rosenfu_core::world::WorldError;
@@ -62,6 +64,8 @@ pub struct RoadCoverage {
 struct SaveIndex {
     format: String,
     schema_version: u64,
+    #[serde(default, deserialize_with = "read_capabilities")]
+    capabilities: Option<Vec<String>>,
     #[serde(rename = "world")]
     _world: IgnoredAny,
     road_evidence: Object<EvidenceIndex>,
@@ -77,6 +81,40 @@ struct EvidenceIndex {
     #[serde(rename = "raw_blobs")]
     _raw_blobs: IgnoredAny,
     bindings: Bindings,
+}
+
+// Restrict discovery as well as retained items. The diagnostic never needs
+// to allocate an arbitrary-size capability list or inspect runtime state.
+fn read_capabilities<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    struct Profile;
+    impl<'de> Visitor<'de> for Profile {
+        type Value = Option<Vec<String>>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                f,
+                "a declared capability list of at most {MAX_COMBINED_PROFILE_NAMES} strings"
+            )
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut names = Vec::with_capacity(MAX_COMBINED_PROFILE_NAMES);
+            for _ in 0..MAX_COMBINED_PROFILE_NAMES {
+                let Some(name) = seq.next_element::<String>()? else {
+                    return Ok(Some(names));
+                };
+                names.push(name);
+            }
+            if seq.next_element::<IgnoredAny>()?.is_some() {
+                return Err(de::Error::custom("too many save capabilities"));
+            }
+            Ok(Some(names))
+        }
+    }
+
+    deserializer.deserialize_seq(Profile)
 }
 
 // A derived struct also accepts a positional sequence, which is not part of
@@ -164,8 +202,19 @@ pub fn read_road_coverage(
             | STREET_TRAM_STANDARD_SCHEMA
             | ADJACENT_TRAM_SCHEMA
             | ADJACENT_TRAM_STANDARD_SCHEMA
+            | CONNECTED_TERMINAL_NECK_SCHEMA
+            | FRACTIONAL_BUS_SCHEMA
+            | COMBINED_CAPABILITIES_SCHEMA
     ) {
         return Err(StorageError::UnsupportedVersion(version));
+    }
+    let known_header = match (version, index.capabilities.as_deref()) {
+        (COMBINED_CAPABILITIES_SCHEMA, Some(declared)) => known_combined_profile(declared),
+        (COMBINED_CAPABILITIES_SCHEMA, None) | (_, Some(_)) => false,
+        (_, None) => true,
+    };
+    if !known_header {
+        return Err(StorageError::UnsupportedVersion(COMBINED_CAPABILITIES_SCHEMA));
     }
     let rows = index.road_evidence.0.bindings.0;
     let invalid = || StorageError::InvalidWorld(WorldError::InvalidRoadEvidence);
@@ -181,7 +230,10 @@ pub fn read_road_coverage(
         }
     }
     let total_declared_tiles = rows.len();
-    let mut matching_tiles: Vec<_> = rows.into_iter().filter(|row| bounds.includes(row)).collect();
+    let mut matching_tiles: Vec<_> = rows
+        .into_iter()
+        .filter(|row| bounds.includes(row))
+        .collect();
     matching_tiles.sort_unstable_by_key(|b| (b.x, b.y));
     Ok(RoadCoverage {
         status: "manifest_only_not_validated",

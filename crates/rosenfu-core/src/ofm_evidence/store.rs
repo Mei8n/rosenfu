@@ -440,6 +440,8 @@ impl EvidenceStore {
             respect_oneway,
             start,
             end,
+            same_atom_stops,
+            fractional_terminals,
             additional_tiles,
             end_tile_key,
             pattern,
@@ -460,6 +462,8 @@ impl EvidenceStore {
                     && b.respect_oneway == *respect_oneway
                     && b.start == *start
                     && b.end == *end
+                    && b.same_atom_stops == *same_atom_stops
+                    && b.fractional_terminals == *fractional_terminals
                     && b.additional_tiles == *additional_tiles
                     && b.end_tile_key == *end_tile_key
                     && b.pattern == *pattern
@@ -652,6 +656,8 @@ mod bus_preview_cache_tests {
         };
         let mut q = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            same_atom_stops: None,
+            fractional_terminals: None,
             grade_policy: None,
             tile_key: key.into(),
             tile_raw_sha256: sha,

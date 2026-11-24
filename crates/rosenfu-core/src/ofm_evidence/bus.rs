@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
+mod tram_chain;
+pub use tram_chain::{reconstruct_authored_tram_chain, AuthoredTramChainGuide};
+mod fractional;
+pub use fractional::{resolve_fractional_bus_traversal, FractionalBusTraversal};
+
 pub const BUS_GRAPH_RULE: &str = "ofm_ground_bus_z14_v1";
 pub const BUS_RECTANGLE_RULE: &str = "ofm_ground_bus_rectangle_z14_v2";
 const MAX_GRAPH_POINTS: usize = 100_000;
@@ -79,6 +84,21 @@ pub struct BusPathBinding {
     pub respect_oneway: bool,
     pub start: BusVertex,
     pub end: BusVertex,
+    /// Optional interior boarding cuts along one complete directed raw atom.
+    /// Raw vertex endpoints and physical resource identity are unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_same_atom_stops"
+    )]
+    pub same_atom_stops: Option<[u32; 2]>,
+    /// Independently chosen lower raw atoms with forward-source millionths.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_same_atom_stops"
+    )]
+    pub fractional_terminals: Option<[u32; 2]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_tiles: Vec<BusTileProof>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,6 +111,12 @@ pub struct BusPathBinding {
     pub interior_stops: Vec<BusInteriorStop>,
 }
 
+fn read_same_atom_stops<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<[u32; 2]>, D::Error> {
+    <[u32; 2]>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BusPath {
     pub binding: BusPathBinding,
@@ -100,6 +126,7 @@ pub struct BusPath {
     pub length_m: f64,
     pub(crate) operation_length_mm: u64,
     pub(crate) atom_operation_micrometres: Vec<u64>,
+    pub(crate) resolved_terminal_cuts: Option<[u32; 2]>,
     /// Derived point indices in exact authored via order, not a stop decision.
     pub via_point_indices: Vec<usize>,
     pub(crate) steps: Vec<BusSourceStep>,
@@ -163,6 +190,12 @@ impl BusPath {
             other => other,
         }
     }
+    /// Bounds on the full oriented first/last atoms when the preview clips
+    /// those atoms for a fractional Bus route.
+    pub fn stop_target_terminal_cuts(&self) -> Option<[u32; 2]> {
+        self.resolved_terminal_cuts
+    }
+
     /// One token per outward drawn segment. Control IDs disambiguate revisits
     /// to the same directed atom without depending on editor array indices.
     pub fn stop_occurrence_keys(&self) -> Vec<String> {
@@ -449,9 +482,22 @@ struct Line<'a> {
 type Groups = BTreeMap<(Cell, [i32; 2]), Vec<(usize, usize, bool)>>;
 
 impl BusPathBinding {
+    pub fn has_fractional_stops(&self) -> bool {
+        self.same_atom_stops.is_some() || self.fractional_terminals.is_some()
+    }
+
     pub(crate) fn swapped_endpoints(&self) -> Result<Self> {
+        if self.fractional_terminals.is_some() {
+            return Err(Error::Unsupported);
+        }
         let mut reverse = self.clone();
         std::mem::swap(&mut reverse.start, &mut reverse.end);
+        if let Some([a, z]) = self.same_atom_stops {
+            reverse.same_atom_stops = Some([
+                BUS_STOP_DENOMINATOR.checked_sub(z).ok_or(Error::Binding)?,
+                BUS_STOP_DENOMINATOR.checked_sub(a).ok_or(Error::Binding)?,
+            ]);
+        }
         if let Some(key) = self
             .end_tile_key
             .as_deref()
@@ -485,6 +531,34 @@ impl BusPathBinding {
                             || self.additional_tiles.iter().any(|t| &t.tile_key == end)
                     }) => {}
             _ => return Err(Error::Unsupported),
+        }
+        if let Some(cuts) = self.fractional_terminals {
+            if self.same_atom_stops.is_some()
+                || self.pattern.is_some()
+                || !self.via.is_empty()
+                || cuts.iter().any(|q| !(1..BUS_STOP_DENOMINATOR).contains(q))
+                || (self.end_tile_key.as_deref().unwrap_or(&self.tile_key) == self.tile_key
+                    && self.start == self.end
+                    && cuts[0] == cuts[1])
+            {
+                return Err(Error::Binding);
+            }
+        }
+        if let Some([from, to]) = self.same_atom_stops {
+            if self.rule != BUS_GRAPH_RULE
+                || self.grade_policy.is_some()
+                || self.pattern == Some(BusPattern::ClosedOneWay)
+                || !self.via.is_empty()
+                || !self.interior_stops.is_empty()
+                || self.start.feature != self.end.feature
+                || self.start.line != self.end.line
+                || self.start.vertex.abs_diff(self.end.vertex) != 1
+                || from == 0
+                || from >= to
+                || to >= BUS_STOP_DENOMINATOR
+            {
+                return Err(Error::Binding);
+            }
         }
         let mut keys = vec![self.tile_key.clone()];
         keys.extend(self.additional_tiles.iter().map(|p| p.tile_key.clone()));
@@ -525,6 +599,8 @@ pub fn find_gameplay_bus_path(
     let tile = store.decoded(tile_key)?;
     let request = BusPathBinding {
         rule: BUS_GRAPH_RULE.into(),
+        same_atom_stops: None,
+        fractional_terminals: None,
         grade_policy: None,
         tile_key: tile_key.into(),
         tile_raw_sha256: tile.binding.raw_sha256.clone(),
@@ -542,6 +618,7 @@ pub fn find_gameplay_bus_path(
 
 #[derive(Debug)]
 struct BusGraphLine {
+    boardable_ground: bool,
     tile_key: String,
     fragment_id: String,
     extent: u32,
@@ -639,13 +716,14 @@ pub(super) fn build_gameplay_bus_graph(
     store: &EvidenceStore,
     query: &BusPathBinding,
 ) -> Result<GameplayBusGraph> {
-    build_observed_road_graph(store, query, false)
+    build_observed_road_graph(store, query, false, None)
 }
 
 fn build_observed_road_graph(
     store: &EvidenceStore,
     query: &BusPathBinding,
     authored_tram_guide: bool,
+    tram_chain: Option<&BTreeMap<Cell, usize>>,
 ) -> Result<GameplayBusGraph> {
     let keys = query.tile_keys()?;
     let mut tiles = keys
@@ -662,7 +740,8 @@ fn build_observed_road_graph(
     let max_x = cells.iter().map(|c| c.0).max().ok_or(Error::Binding)?;
     let max_y = cells.iter().map(|c| c.1).max().ok_or(Error::Binding)?;
     if cells.len() != keys.len()
-        || (max_x - min_x + 1) * (max_y - min_y + 1) != cells.len() as u32
+        || (tram_chain.is_none()
+            && (max_x - min_x + 1) * (max_y - min_y + 1) != cells.len() as u32)
         || tiles
             .iter()
             .any(|t| t.binding.revision != tiles[0].binding.revision)
@@ -676,13 +755,19 @@ fn build_observed_road_graph(
         }
     }
 
+    let has_west = |x, y| {
+        tram_chain.map_or(x > min_x, |_| x > 0 && cells.contains(&Cell(x - 1, y)))
+    };
+    let has_north = |x, y| {
+        tram_chain.map_or(y > min_y, |_| y > 0 && cells.contains(&Cell(x, y - 1)))
+    };
     let owned = |tile: &TileBinding, extent: i32, [x, y]: [i32; 2]| {
         x >= 0
             && x < extent
             && y >= 0
             && y < extent
-            && !(x == 0 && tile.x > min_x)
-            && !(y == 0 && tile.y > min_y)
+            && !(x == 0 && has_west(tile.x, tile.y))
+            && !(y == 0 && has_north(tile.x, tile.y))
     };
     let structured = query.grade_policy == Some(BusGradePolicy::ObservedConnectors);
     let mut groups: Groups = BTreeMap::new();
@@ -828,6 +913,7 @@ fn build_observed_road_graph(
         }
     }
 
+    let mut forward_seams = BTreeMap::new();
     if query.rule == BUS_RECTANGLE_RULE {
         let coords: Vec<_> = cells.iter().map(|c| (c.0, c.1)).collect();
         let seams = if authored_tram_guide {
@@ -886,6 +972,15 @@ fn build_observed_road_graph(
                 return Err(Error::Limit);
             }
             geometry.push(BusGridPoint::new(a_line.tile, extent, offsets));
+            if let Some(rank) = tram_chain {
+                let a = Cell(a_line.tile.x, a_line.tile.y);
+                let b = Cell(b_line.tile.x, b_line.tile.y);
+                // Only leave a seam towards the next requested tile. The
+                // caller validates that there are no nonconsecutive neighbors.
+                let a_rank = rank.get(&a).ok_or(Error::Binding)?;
+                let b_rank = rank.get(&b).ok_or(Error::Binding)?;
+                forward_seams.insert(node, if a_rank < b_rank { b } else { a });
+            }
             node_sources.push(
                 if a_line.grade.is_ground() && (!structured || !bus_grade::fast_class(a_line.raw)) {
                     NodeSource::Surface
@@ -912,6 +1007,11 @@ fn build_observed_road_graph(
 
     let mut adj = vec![Vec::new(); geometry.len()];
     for (line_index, line) in lines.iter().enumerate() {
+        let may_depart = |node| {
+            forward_seams
+                .get(&node)
+                .is_none_or(|cell| *cell == Cell(line.tile.x, line.tile.y))
+        };
         for i in 0..line.raw.coordinates.len() - 1 {
             let [a, b] = [line.raw.coordinates[i], line.raw.coordinates[i + 1]];
             let extent = line.raw.extent as i32;
@@ -954,10 +1054,10 @@ fn build_observed_road_graph(
                 to_pos: i as f64 + to.fraction.as_f64(),
                 weight: from.fraction.weight_to(to.fraction, whole),
             };
-            if !matches!(line.direction, Direction::Reverse) {
+            if !matches!(line.direction, Direction::Reverse) && may_depart(from.node) {
                 adj[from.node].push(arc);
             }
-            if !matches!(line.direction, Direction::Forward) {
+            if !matches!(line.direction, Direction::Forward) && may_depart(to.node) {
                 adj[to.node].push(Arc {
                     to: from.node,
                     from_pos: arc.to_pos,
@@ -971,6 +1071,7 @@ fn build_observed_road_graph(
     let lines = lines
         .into_iter()
         .map(|line| BusGraphLine {
+            boardable_ground: supports_ground_road_geometry(line.raw),
             tile_key: line.tile.canonical_url.clone(),
             fragment_id: super::raw_road_fragment_id(line.tile, line.raw),
             extent: line.raw.extent,
@@ -1073,6 +1174,9 @@ pub(super) fn solve_gameplay_bus_graph(
     graph: &GameplayBusGraph,
     query: &BusPathBinding,
 ) -> Result<Option<BusPath>> {
+    if let Some(cuts) = query.fractional_terminals {
+        return Ok(fractional::solve_fractional(graph, query, cuts)?.map(|result| result.path));
+    }
     let missing_anchor = |i| {
         if query.via.is_empty() {
             Ok(None)
@@ -1101,28 +1205,77 @@ pub(super) fn solve_gameplay_bus_graph(
     }
     nodes.push(target);
     let mut via_point_indices = Vec::with_capacity(query.via.len());
-    let mut scratch = SearchScratch::new(graph.geometry.len());
     let mut edges = Vec::new();
-    let mut budget = if query.via.is_empty() {
-        usize::MAX
+    if query.same_atom_stops.is_some() {
+        // A path search could take a detour through other roads to reach both
+        // vertices. A fractional route is valid only on the exact atom the
+        // player clicked, independently present in the requested direction.
+        let fragment = format!(
+            "ofm:{}:{}:{}",
+            query
+                .tile_key
+                .split("/planet/")
+                .nth(1)
+                .and_then(|part| part.strip_suffix(".pbf"))
+                .ok_or(Error::Binding)?
+                .replace('/', ":"),
+            query.start.feature,
+            query.start.line,
+        );
+        let mut direct = graph.adj[source].iter().filter(|arc| {
+            let line = &graph.lines[arc.line];
+            arc.to == target
+                && line.tile_key == query.tile_key
+                && line.fragment_id == fragment
+                && line.grade.is_ground()
+                && arc.ordinal == query.start.vertex.min(query.end.vertex) as usize
+                && arc.from_pos == f64::from(query.start.vertex)
+                && arc.to_pos == f64::from(query.end.vertex)
+        });
+        let arc = direct.next().ok_or(Error::NoBusLeg(0))?;
+        if direct.next().is_some() {
+            return Err(Error::Binding);
+        }
+        edges.push(*arc);
     } else {
-        MAX_MULTI_RELAXATIONS
-    };
-    for (i, leg) in nodes.windows(2).enumerate() {
-        if leg[0] == leg[1] {
-            return missing_anchor(i);
-        }
-        if !scratch.leg(graph, leg[0], leg[1], &mut budget, &mut edges)? {
-            // Report a genuine disconnected graph even without waypoints.
-            return Err(Error::NoBusLeg(i));
-        }
-        if !query.via.is_empty() && edges.len() > MAX_MULTI_ATOMS {
-            return Err(Error::Limit);
-        }
-        if i < query.via.len() {
-            via_point_indices.push(edges.len());
+        let mut scratch = SearchScratch::new(graph.geometry.len());
+        let mut budget = if query.via.is_empty() {
+            usize::MAX
+        } else {
+            MAX_MULTI_RELAXATIONS
+        };
+        for (i, leg) in nodes.windows(2).enumerate() {
+            if leg[0] == leg[1] {
+                return missing_anchor(i);
+            }
+            if !scratch.leg(graph, leg[0], leg[1], &mut budget, &mut edges)? {
+                // Report a genuine disconnection even without waypoints.
+                return Err(Error::NoBusLeg(i));
+            }
+            if !query.via.is_empty() && edges.len() > MAX_MULTI_ATOMS {
+                return Err(Error::Limit);
+            }
+            if i < query.via.len() {
+                via_point_indices.push(edges.len());
+            }
         }
     }
+    Ok(Some(materialize_bus_path(
+        graph,
+        query,
+        source,
+        edges,
+        via_point_indices,
+    )?))
+}
+
+fn materialize_bus_path(
+    graph: &GameplayBusGraph,
+    query: &BusPathBinding,
+    source: usize,
+    edges: Vec<Arc>,
+    via_point_indices: Vec<usize>,
+) -> Result<BusPath> {
     let mut spans: Vec<SourceSpan> = Vec::new();
     let mut steps = Vec::with_capacity(edges.len());
     let mut points_grid = vec![graph.geometry[source]];
@@ -1166,7 +1319,7 @@ pub(super) fn solve_gameplay_bus_graph(
     }
     let points: Vec<_> = points_grid.iter().map(|p| p.point()).collect();
     let length_m = points.windows(2).map(|p| distance(p[0], p[1])).sum();
-    Ok(Some(BusPath {
+    Ok(BusPath {
         binding: query.clone(),
         spans,
         steps,
@@ -1176,8 +1329,9 @@ pub(super) fn solve_gameplay_bus_graph(
         length_m,
         operation_length_mm: u64::try_from((length_um + 500) / 1000).map_err(|_| Error::Limit)?,
         atom_operation_micrometres,
+        resolved_terminal_cuts: None,
         via_point_indices,
-    }))
+    })
 }
 
 /// Web-Mercator's local ground scale is 1/cosh(y). Use tile-centre
@@ -1248,6 +1402,8 @@ impl AuthoredTramGuide {
             } else {
                 BUS_GRAPH_RULE.into()
             },
+            same_atom_stops: None,
+            fractional_terminals: None,
             grade_policy: None,
             tile_key: self.tile_key.clone(),
             tile_raw_sha256: self.tile_raw_sha256.clone(),
@@ -1287,9 +1443,11 @@ pub fn reconstruct_authored_tram_guide(
     } else {
         &query.tile_key
     };
-    let graph = build_observed_road_graph(&scope, &query, true)?;
+    let graph = build_observed_road_graph(&scope, &query, true, None)?;
     if proposed.start_fraction_q.is_none() && proposed.end_fraction_q.is_none() {
-        return Ok(untyped_unreachable(solve_gameplay_bus_graph(&graph, &query))?.map(|p| p.points));
+        return Ok(
+            untyped_unreachable(solve_gameplay_bus_graph(&graph, &query))?.map(|p| p.points),
+        );
     }
     let anchor: fn(&GameplayBusGraph, &str, BusVertex, Option<u32>) -> Option<TramAnchor> =
         if proposed.adjacent_end.is_some() {

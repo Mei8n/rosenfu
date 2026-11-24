@@ -538,12 +538,41 @@ impl WorldEditor {
             {
                 return Err("出典付き線路の区間削除には対応していません。".into());
             }
+            // The built street span is one original anchor interval. A later
+            // ordinary extension gives it neighbors; pruning one of those
+            // must not turn the street geometry into free track or reject it
+            // just because the alignment's complete point list has changed.
+            let mut selected_proofs = before
+                .road_path_provenance
+                .iter()
+                .filter(|p| p.alignment_id == id)
+                .peekable();
+            let has_road_proof = selected_proofs.peek().is_some();
+            for proof in selected_proofs {
+                if !proof.path.carries_street_tram_proof() {
+                    return Err("出典付き線路の区間削除には対応していません。".into());
+                }
+                let left = proof.end_point_index <= start;
+                let right = proof.start_point_index >= end;
+                let removed = start <= proof.start_point_index && proof.end_point_index <= end;
+                if !left && !right && !removed {
+                    return Err(
+                        "併用軌道の出典区間の途中は撤去できません。出典の区間全体を選択してください。"
+                            .into(),
+                    );
+                }
+            }
             let mut stripped = before.clone();
             // Groups require every member to have a placement. This private
             // intermediate candidate temporarily omits placements; restore the
             // exact groups only after all retained placements are remapped.
             // Private scratch state: all original route/service records are restored
             // and remapped before the single public commit below.
+            // Remove only the targeted ranges from scratch. Reattach their
+            // unchanged proof and point slice before validating the final world.
+            if has_road_proof {
+                stripped.road_path_provenance.retain(|p| p.alignment_id != id);
+            }
             stripped.routes.clear();
             stripped.route_paths.clear();
             stripped.services.clear();
@@ -662,6 +691,26 @@ impl WorldEditor {
             }
             let mut restored = candidate.snapshot();
             let right_id = *piece_ids.last().ok_or("残る線路がありません。")?;
+            if has_road_proof {
+                restored.road_path_provenance = before
+                    .road_path_provenance
+                    .iter()
+                    .cloned()
+                    .filter_map(|mut proof| {
+                        if proof.alignment_id != id || proof.end_point_index <= start {
+                            Some(proof)
+                        } else if proof.start_point_index >= end {
+                            proof.alignment_id = right_id;
+                            proof.start_point_index -= end;
+                            proof.end_point_index -= end;
+                            Some(proof)
+                        } else {
+                            // Only a wholly removed proof can reach here.
+                            None
+                        }
+                    })
+                    .collect();
+            }
             for placement in before
                 .station_placements
                 .iter()
@@ -882,6 +931,205 @@ mod tests {
         let id = snapshot.alignments[0].id;
         (editor, id)
     }
+    fn built_adjacent_street_tram() -> (WorldEditor, AlignmentId) {
+        use base64::Engine;
+        use rosenfu_core::ofm_evidence::{
+            AuthoredTramGuide, BusTileProof, BusVertex, DECODER_RULE,
+        };
+        let tiles: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../crates/rosenfu-core/tests/fixtures/ofm_authored_adjacent_tram_synthetic.json"
+        ))
+        .unwrap();
+        let claim = |i: usize| BusTileProof {
+            tile_key: tiles[i]["tileKey"].as_str().unwrap().into(),
+            tile_raw_sha256: tiles[i]["tileRawSha256"].as_str().unwrap().into(),
+        };
+        let inputs = || {
+            tiles
+                .iter()
+                .enumerate()
+                .map(|(i, tile)| {
+                    let claim = claim(i);
+                    let bytes: Vec<u8> = serde_json::from_value(tile["raw"].clone()).unwrap();
+                    let raw = OfmRawInput {
+                        sha256: claim.tile_raw_sha256.clone(),
+                        byte_length: bytes.len(),
+                        base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    };
+                    let binding = OfmBindingInput {
+                        key: claim.tile_key.clone(),
+                        url: claim.tile_key,
+                        raw_sha256: claim.tile_raw_sha256,
+                        revision: tile["revision"].as_str().unwrap().into(),
+                        z: 14,
+                        x: tile["x"].as_u64().unwrap() as u32,
+                        y: tile["y"].as_u64().unwrap() as u32,
+                        decoder_rule: DECODER_RULE.into(),
+                        license: "ODbL-1.0".into(),
+                        attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                    };
+                    (raw, binding)
+                })
+                .collect::<Vec<_>>()
+        };
+        let first = claim(0);
+        let vertex = BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: 0,
+        };
+        let guide = AuthoredTramGuide {
+            adjacent_end: Some(claim(1)),
+            tile_key: first.tile_key,
+            tile_raw_sha256: first.tile_raw_sha256,
+            start: vertex,
+            end: vertex,
+            start_fraction_q: Some(500_000),
+            end_fraction_q: Some(500_000),
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("Synthetic tram test".into()).unwrap();
+        let token = editor.ofm_world_token().unwrap();
+        let points = editor
+            .preview_authored_tram_road_guide(&token, &guide, inputs())
+            .unwrap();
+        let plan: PlannedAlignment = serde_json::from_value(serde_json::json!({
+            "name": "Synthetic adjacent street tram", "points": points,
+            "trackType": "tram", "stations": []
+        }))
+        .unwrap();
+        let built = editor
+            .build_authored_street_tram(&token, &guide, inputs(), plan, vec![])
+            .unwrap();
+        assert_eq!(built.road_evidence_descriptors.len(), 2);
+        (editor, built.alignments[0].id)
+    }
+
+    fn extend_tram_end(
+        editor: &mut WorldEditor,
+        id: AlignmentId,
+        endpoint: rosenfu_core::world::AlignmentEndpoint,
+    ) {
+        use rosenfu_core::world::AlignmentEndpoint::{End, Start};
+        let world = editor.snapshot();
+        let points = &world.alignments[0].points;
+        let (tip, inner) = match endpoint {
+            Start => (points[0], points[1]),
+            End => (points[points.len() - 1], points[points.len() - 2]),
+        };
+        let extended = GeoPoint {
+            latitude: tip.latitude + (tip.latitude - inner.latitude),
+            longitude: tip.longitude + (tip.longitude - inner.longitude),
+        };
+        editor
+            .extend_alignment(id, endpoint, vec![tip, extended])
+            .unwrap();
+    }
+
+    #[test]
+    fn adjacent_tram_removes_either_dedicated_end_and_keeps_exact_proof_through_history_and_save() {
+        use rosenfu_core::world::AlignmentEndpoint::{End, Start};
+        for (endpoint, remove) in [(Start, 0), (End, 1)] {
+            let (mut editor, id) = built_adjacent_street_tram();
+            let authored = editor.snapshot();
+            extend_tram_end(&mut editor, id, endpoint);
+            let mut before = editor.snapshot();
+            before.construction_plans = Some(plans());
+            let history = editor.world_edit_history();
+            let after = editor.delete_alignment_section(id, remove, plans()).unwrap();
+            assert_eq!(after.alignments[0].points, authored.alignments[0].points);
+            assert_eq!(after.road_path_provenance, authored.road_path_provenance);
+            assert_eq!(
+                after.road_evidence_descriptors,
+                authored.road_evidence_descriptors
+            );
+            assert_eq!(
+                editor.world_edit_history().undo_depth,
+                history.undo_depth + 1
+            );
+            assert_eq!(editor.undo_world_edit(after.clone()).unwrap(), before);
+            assert_eq!(editor.redo_world_edit(before).unwrap(), after);
+            let scratch = tempfile::tempdir().unwrap();
+            let save = scratch.path().join("trimmed-tram.rosenfu");
+            editor.save(&save).unwrap();
+            let mut reopened = WorldEditor::new();
+            assert_eq!(reopened.load(&save).unwrap(), after);
+            assert_eq!(reopened.world_edit_history().undo_depth, 0);
+        }
+    }
+
+    #[test]
+    fn adjacent_tram_removal_is_explicit_and_never_breaks_an_existing_service() {
+        use rosenfu_core::world::{
+            AlignmentEndpoint::{End, Start},
+            RouteSegment,
+        };
+
+        let (mut editor, id) = built_adjacent_street_tram();
+        let authored = editor.snapshot();
+        assert_eq!(authored.alignments[0].points.len(), 3);
+        editor.set_anchor_indices(id, vec![0, 1, 2]).unwrap();
+        let before = editor.snapshot();
+        let history = editor.world_edit_history();
+        let error = editor.delete_alignment_section(id, 0, plans()).unwrap_err();
+        assert!(error.contains("出典区間の途中"));
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.world_edit_history().revision, history.revision);
+        editor.set_anchor_indices(id, vec![0, 2]).unwrap();
+        let removed = editor.delete_alignment_section(id, 0, plans()).unwrap();
+        assert!(removed.alignments.is_empty() && removed.road_path_provenance.is_empty());
+        assert_eq!(
+            removed.road_evidence_descriptors,
+            authored.road_evidence_descriptors
+        );
+        let restored = editor.undo_world_edit(removed.clone()).unwrap();
+        assert_eq!(restored.road_path_provenance, authored.road_path_provenance);
+        assert_eq!(editor.redo_world_edit(restored).unwrap(), removed);
+
+        let (mut editor, id) = built_adjacent_street_tram();
+        extend_tram_end(&mut editor, id, Start);
+        extend_tram_end(&mut editor, id, End);
+        let unreferenced = editor.clone();
+        let a = editor
+            .world
+            .place_station_on_alignment(editor.company, "West".into(), id, 0.1, 20., 8.)
+            .unwrap();
+        let b = editor
+            .world
+            .place_station_on_alignment(editor.company, "East".into(), id, 0.9, 20., 8.)
+            .unwrap();
+        let segments = vec![RouteSegment::Alignment {
+            alignment_id: id,
+            from: a,
+            to: b,
+        }];
+        let stops = editor
+            .preview_service_path(a, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|stop| stop.reference)
+            .collect();
+        editor
+            .create_service_path("Synthetic tram service".into(), a, segments, stops)
+            .unwrap();
+        let before = editor.snapshot();
+        let history = editor.world_edit_history();
+        let error = editor.delete_alignment_section(id, 1, plans()).unwrap_err();
+        assert!(error.contains("路線・系統が通る区間"));
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.world_edit_history().revision, history.revision);
+
+        let mut editor = unreferenced;
+        let two_ends = editor.delete_alignment_section(id, 1, plans()).unwrap();
+        assert_eq!(two_ends.alignments.len(), 2);
+        assert!(two_ends.road_path_provenance.is_empty());
+        assert_eq!(
+            two_ends.road_evidence_descriptors,
+            authored.road_evidence_descriptors
+        );
+    }
+
     #[test]
     fn selected_track_type_splits_only_middle_and_is_final() {
         let (mut editor, id) = setup();

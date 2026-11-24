@@ -7,6 +7,9 @@ const keyPattern=/^[0-9a-f]{64}$/;
 const idPattern=/^[A-Za-z0-9_-]{1,80}$/;
 const STOP_DENOMINATOR=1_000_000;
 const MAX_STOPS=64;
+function segmentCuts(bounds:readonly [number,number]|undefined,index:number,count:number):readonly [number,number]{
+ return [index===0&&bounds?bounds[0]:0,index===count-1&&bounds?bounds[1]:STOP_DENOMINATOR];
+}
 export function acceptableBusStopName(value:string){
  const name=value.trim();
  return !!name&&!/\p{Cc}/u.test(name)&&new TextEncoder().encode(name).length<=200;
@@ -15,11 +18,16 @@ export function acceptableBusStopName(value:string){
 export function verifyBusStopPlacement(path:OrdinaryBusPath,reply:OrdinaryBusPreviewReply){
  const {preview}=restoreOrdinaryBusControls(path,reply);
  const keys=preview.stopOccurrenceKeys,data=path.interiorStops??[],views=preview.interiorStops??[];
+ const cuts=preview.stopTargetTerminalCuts;
  const invalid=()=>Error('停留所の位置を確認できません。バス経路を選び直してください。');
  if(!keys||!Array.isArray(keys)||keys.length<1||keys.length>4096||keys.length!==preview.points.length-1||
    keys.some(key=>typeof key!=='string'||!keyPattern.test(key))||new Set(keys).size!==keys.length||preview.returnUnavailableReason||
    data.length>MAX_STOPS||(path.pattern==='closedOneWay'&&!!preview.loopFallbackStop!==(data.length===0))||!Array.isArray(views)||views.length!==data.length||
    new Set(views.map(view=>view.id)).size!==views.length||new Set(views.map(view=>view.stopId)).size!==views.length)throw invalid();
+ if(path.fractionalTerminals){
+  if(!Array.isArray(cuts)||cuts.length!==2||!cuts.every(q=>Number.isSafeInteger(q)&&q>0&&q<STOP_DENOMINATOR)||
+     keys.length===1&&cuts[0]>=cuts[1])throw invalid();
+ }else if(cuts!==undefined)throw invalid();
  const index=new Map(keys.map((key,i)=>[key,i]));
  const positions=new Set<string>(),ids=new Set<string>();
  for(const stop of data){
@@ -30,7 +38,9 @@ export function verifyBusStopPlacement(path:OrdinaryBusPath,reply:OrdinaryBusPre
   const view=views.find(view=>view.id===id);
   if(!view||view.name!==name||typeof view.stopId!=='string'||!view.stopId||
      typeof view.servesReturn!=='boolean'||view.servesReturn&&!preview.returnPath)throw invalid();
-  const [a,b]=[preview.points[i],preview.points[i+1]],r=fractionQ/STOP_DENOMINATOR;
+  const [from,to]=segmentCuts(cuts,i,keys.length);
+  if(fractionQ<=from||fractionQ>=to)throw invalid();
+  const [a,b]=[preview.points[i],preview.points[i+1]],r=(fractionQ-from)/(to-from);
   if(!view.point||!Number.isFinite(view.point.latitude)||!Number.isFinite(view.point.longitude)||
      Math.abs(view.point.latitude-(a.latitude+(b.latitude-a.latitude)*r))>1e-8||
      Math.abs(view.point.longitude-(a.longitude+(b.longitude-a.longitude)*r))>1e-8)throw invalid();
@@ -51,8 +61,9 @@ export function pickBusStopOccurrences(preview:OrdinaryBusPreview & {stopOccurre
   if(square*scale*scale>=1){
    const t=((target.x-a.x)*dx+(target.y-a.y)*dy)/square;
    // Never clamp a hit at the node to a pretend interior location.
-   const fractionQ=Math.round(t*STOP_DENOMINATOR);
-   if(fractionQ>0&&fractionQ<STOP_DENOMINATOR){
+   const [from,to]=segmentCuts(preview.stopTargetTerminalCuts,i,preview.stopOccurrenceKeys.length);
+   const fractionQ=Math.round(from+t*(to-from));
+   if(fractionQ>from&&fractionQ<to){
     const distance=Math.hypot(target.x-a.x-t*dx,target.y-a.y-t*dy)*scale;
     if(distance<=14)candidates.push({segment:i,occurrenceKey:preview.stopOccurrenceKeys[i],fractionQ,distance});
    }
