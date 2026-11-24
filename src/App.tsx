@@ -755,6 +755,7 @@ export function App() {
   const [pathServiceEditingDirty,setPathServiceDirty]=useState(false);
   const [extensionServiceDirty,setExtensionServiceDirty]=useState(false);
   const pathServiceDirty=pathServiceEditingDirty||extensionServiceDirty;
+  const serviceActionHasEdits=serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty;
   const [pathDraftEpoch,setPathDraftEpoch]=useState(0);
   const [serviceHint, setServiceHint] = useState("");
   const [pendingServiceChoice, setPendingServiceChoice] = useState<{ id: string | null } | null>(null);
@@ -1224,6 +1225,14 @@ export function App() {
     const svg = svgRef.current;
     if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);
     if (gesture && svg?.hasPointerCapture?.(gesture.pointerId)) svg.releasePointerCapture(gesture.pointerId);
+  }
+  function constructionMapMode(tool:typeof constructionTools[number][0]) {
+    return tool==="tracks"?"draw":tool==="stations"?"place":"move";
+  }
+  function chooseConstructionTool(tool:typeof constructionTools[number][0]) {
+    if(seamMutationPending.current)return;
+    setActiveTool(tool);
+    changeMapMode(constructionMapMode(tool));
   }
   function changeMapMode(mode: "move" | "place" | "draw") {
     setError("");
@@ -2015,6 +2024,22 @@ export function App() {
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete||document.querySelector('[aria-label="系統削除の確認"]'))return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
+      if (mainTab==="construction" && enabled && !busyRef.current && !event.defaultPrevented &&
+        !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.repeat &&
+        !event.isComposing && event.keyCode!==229 && !gestureRef.current && !anchorGesture.current &&
+        !boxGesture.current && !ordinaryBus.mutating() && !ordinaryBusStops.mutating() &&
+        !document.querySelector('dialog[open], [role="dialog"]') &&
+        !(event.target instanceof Element && event.target.closest('[contenteditable]:not([contenteditable="false"]), [role="textbox"]'))) {
+        const match=constructionTools.find(([, ,shortcut])=>shortcut===event.key.toUpperCase());
+        if (match) {
+          event.preventDefault();
+          if (match[0]!==activeTool||mapMode!==constructionMapMode(match[0])) {
+            chooseConstructionTool(match[0]);
+            if(document.activeElement?.closest(".construction-tabs"))document.getElementById("tab-"+match[0])?.focus();
+          }
+          return;
+        }
+      }
       if(ordinaryBusStops.active&&(event.ctrlKey||event.metaKey)&&!event.altKey&&/^[zy]$/i.test(event.key)){
         event.preventDefault();return; // a draft must not undo the saved world.
       }
@@ -2151,6 +2176,17 @@ export function App() {
     if(!enabled||busyRef.current||serviceDirty||serviceId!==null)throw Error("別の系統を編集中です。");
     busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("create_service_path",draft);setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setNotice("系統を作成しました。保存でファイルに反映します。");}finally{busyRef.current=false;setBusy(false);}
   }
+  async function duplicateSelectedService() {
+    if(!enabled||serviceActionHasEdits||!world||!serviceId||!selectedServicePath)return;
+    const source=world.services.find(s=>s.id===serviceId);
+    if(!source)return;
+    await perform(async()=>{
+      const snapshot=await invoke<World>("duplicate_service",{serviceId,expectedPath:selectedServicePath,expectedName:source.name});
+      const created=snapshot.services.find(s=>!world.services.some(old=>old.id===s.id));
+      setWorld(snapshot);setDirty(true);setPathServiceDirty(false);resetService(created);
+      setNotice("別の系統として複製しました。元の系統は変更していません。保存でファイルに反映します。");
+    });
+  }
   function completeSave() {
     setSavedViewFingerprint(JSON.stringify(camera));setSavedPlanFingerprint(planFingerprint);
     setDirty(false);setStationUndo(history=>history.filter(entry=>entry.planned));setStationRedo(history=>history.filter(entry=>entry.planned));
@@ -2251,7 +2287,7 @@ export function App() {
   const showPlanHover=!!planHover&&!!hoveredPlan&&!referenceCopy.active&&!dragging&&(activeTool==="tracks"||activeTool==="inactive");
   const mapMetrics=mapRenderMetrics(camera.zoom,lineWidth,viewport.scale);
   const roadTransportAvailable=info?.road_transport_enabled===true;
-  const constructionTools=[["tracks","線路"],["stations","駅設置"],["delete","削除"],["select","選択"],...(ordinaryBusAvailable?[["ordinary-bus","バス"]] as const:[]),...(roadTransportAvailable?[["road-transport","道路交通（検証）"]] as const:[])] as const;
+  const constructionTools=[["tracks","線路","1"],["stations","駅設置","2"],["delete","削除","3"],["select","選択","4"],...(ordinaryBusAvailable?[["ordinary-bus","バス","U"]] as const:[]),...(roadTransportAvailable?[["road-transport","道路交通（検証）",undefined]] as const:[])] as const;
   const qaRoadEdges=useMemo(()=>{
     const edges=world?.road_transport?.edges??[];
     return edges.length<=150&&edges.every(edge=>edge.source==="synthetic-qa-not-real-roads")
@@ -2705,7 +2741,7 @@ export function App() {
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
           <div className="inspector-title"><span>RAILWAY WORKSPACE</span><button className="secondary" aria-label={panelCollapsed ? "操作パネルを開く" : "操作パネルを畳む"} onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? "+" : "−"}</button></div>
           <nav className="editor-tabs construction-tabs" role="tablist" aria-label="建設ツール" hidden={mainTab!=="construction"}>
-            {constructionTools.map(([tool,label],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{if(seamMutationPending.current)return;setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const length=constructionTools.length;const next=constructionTools[event.key==="Home"?0:event.key==="End"?length-1:(index+(event.key==="ArrowLeft"?length-1:1))%length][0];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
+            {constructionTools.map(([tool,label,shortcut],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} aria-keyshortcuts={shortcut} tabIndex={activeTool===tool?0:-1} onClick={()=>chooseConstructionTool(tool)} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const length=constructionTools.length;const next=constructionTools[event.key==="Home"?0:event.key==="End"?length-1:(index+(event.key==="ArrowLeft"?length-1:1))%length][0];chooseConstructionTool(next);document.getElementById("tab-"+next)?.focus();}}>{label}{shortcut&&<kbd aria-hidden="true">{shortcut}</kbd>}</button>)}
           </nav>
           {ordinaryBusActive&&world?.companies[0]&&<section id="panel-ordinary-bus" role="tabpanel" aria-labelledby="tab-ordinary-bus">
             {ordinaryBusStops.active?<OrdinaryBusStopsPanel state={ordinaryBusStops}/>:<OrdinaryBusPanel state={{...ordinaryBus,start:kind=>{
@@ -2789,30 +2825,33 @@ export function App() {
           <section className="service-editor" role="tabpanel" id="workspace-panel-services" aria-labelledby="workspace-tab-services" hidden={activeTool !== "services"}>
             <h3>系統</h3>
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
-            <ServiceDirectory key={`services-${worldEpoch}`} services={world?.services??[]} appearances={world?.service_appearances} selected={serviceId} enabled={enabled} onChoose={chooseService} onCreate={()=>{if(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty){chooseService(null);return;}chooseService(null);cancelRouteMapPick();setServiceCreating(true);setServiceSequenceKey(key=>key+1);}}/>
+            <ServiceDirectory key={`services-${worldEpoch}`} showLiveOperation={mainTab==="services"} services={world?.services??[]} appearances={world?.service_appearances} selected={serviceId} enabled={enabled} onChoose={chooseService} onCreate={()=>{if(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty){chooseService(null);return;}chooseService(null);cancelRouteMapPick();setServiceCreating(true);setServiceSequenceKey(key=>key+1);}}/>
             {serviceCreating&&serviceId===null&&<ServiceMapCreator onCandidateChange={setRouteSelectedCandidate} onSelectionChange={setRouteSelectedStations} key={`map-service-${pathDraftEpoch}`} world={world??previewWorld} stations={world?.stations??[]} enabled={enabled&&mainTab==="services"} defaultName={(()=>{let n=1;while(world?.services.some(row=>row.name===`系統${n}`))n++;return `系統${n}`;})()} onDirty={setPathServiceDirty} onSave={async draft=>{await createPathService(draft);setServiceCreating(false);cancelRouteMapPick();}} onCancel={()=>{setServiceCreating(false);setPathServiceDirty(false);cancelRouteMapPick();}} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="services")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} mapPickTarget={routeMapPick} startSequenceKey={serviceSequenceKey}/>}
             {!serviceCreating&&serviceId===null&&<ServiceFromRoute key={`route-service-${worldEpoch}-${pathDraftEpoch}`} routes={world?.routes??[]} paths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled&&!serviceDirty&&(!pathServiceDirty||routeServiceDirty)} onDirty={dirty=>{setRouteServiceDirty(dirty);setPathServiceDirty(dirty);}} onSave={createPathService}/>}
             <details><summary>区間・直通を指定して作成</summary>
             <ServicePathCreator key={pathDraftEpoch} routes={world?.routes??[]} routePaths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled} canStart={!serviceDirty&&serviceId===null&&!serviceCreating&&!routeServiceDirty} onDirty={setPathServiceDirty} onSave={createPathService}/></details>
 
             {pendingServiceChoice && <div className="inline-confirm" role="alert"><p>未適用の系統下書きを破棄して切り替えますか。</p><button className="secondary" disabled={busy} onClick={() => setPendingServiceChoice(null)}>系統編集を続ける</button><button disabled={busy} onClick={() => resetService(world?.services.find((service) => service.id === pendingServiceChoice.id))}>系統下書きを破棄して切替</button></div>}
+            {serviceId&&selectedServicePath&&world&&<div role="group" aria-label="系統の操作" key={`actions-${serviceId}-${worldEpoch}`}>
+              <button type="button" className="secondary" disabled={!enabled||serviceActionHasEdits} onClick={()=>void duplicateSelectedService()}>系統を複製</button>
+              <ServiceDelete key={`delete-${serviceId}-${worldEpoch}`} name={world.services.find(s=>s.id===serviceId)?.name??""} enabled={enabled} hasEdits={serviceActionHasEdits} onDelete={async()=>{
+                if(!enabled||busyRef.current||serviceActionHasEdits)throw Error("編集中の変更を適用または取り消してください。");
+                const source=world.services.find(s=>s.id===serviceId);if(!source)throw Error("系統が見つかりません。");
+                const args={serviceId,expectedName:source.name,expectedPath:selectedServicePath};
+                busyRef.current=true;setBusy(true);
+                try{const snapshot=await invoke<World>("delete_service",args);setWorld(snapshot);setDirty(true);setConfirmLoad(false);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint,command:"delete_service",args});resetService();setNotice("系統を削除しました。Ctrl+Zで元に戻せます。保存でファイルに反映します。");}
+                finally{busyRef.current=false;setBusy(false);}
+              }}/>
+            </div>}
             {serviceId&&selectedServicePath&&<ServiceOperations key={`${worldEpoch}-${serviceId}`} serviceId={serviceId} enabled={enabled&&!unapplied} standardEnabled={info?.standard_schedule_enabled===true}/>}
             {info?.crossing_planning_enabled===true&&mainTab==="services"&&<CrossingOperations key={worldEpoch} enabled={enabled&&!unapplied}/>}
             {serviceHint&&<p role="status">{serviceHint}</p>}
-            {serviceId&&selectedServicePath&&world&&<ServiceDelete key={`delete-${serviceId}-${worldEpoch}`} name={world.services.find(s=>s.id===serviceId)?.name??""} enabled={enabled} hasEdits={serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty} onDelete={async()=>{
-              if(!enabled||busyRef.current||serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty)throw Error("編集中の変更を適用または取り消してください。");
-              const source=world.services.find(s=>s.id===serviceId);if(!source)throw Error("系統が見つかりません。");
-              const args={serviceId,expectedName:source.name,expectedPath:selectedServicePath};
-              busyRef.current=true;setBusy(true);
-              try{const snapshot=await invoke<World>("delete_service",args);setWorld(snapshot);setDirty(true);setConfirmLoad(false);setTrackDeleteRedo(null);setTrackDeleteUndo({kind:"built",world:snapshot,plans:planFingerprint,command:"delete_service",args});resetService();setNotice("系統を削除しました。Ctrl+Zで元に戻せます。保存でファイルに反映します。");}
-              finally{busyRef.current=false;setBusy(false);}
-            }}/>}
             {serviceId&&world&&<ServiceRouteBindingEditor key={`binding-${serviceId}-${worldEpoch}`} binding={world.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding} routes={world.routes.filter(r=>r.owner===world.services.find(s=>s.id===serviceId)?.owner)} enabled={enabled&&!serviceDirty&&!pathServiceDirty&&!serviceAppearanceDirty} onDirty={setBindingDirty} onSave={async binding=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty)throw Error("別の系統編集を適用または破棄してください。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("set_service_route_binding",{serviceId,binding});const saved=snapshot.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding;if(!sameRouteBinding(saved,binding))throw Error("関連付けの適用結果を確認できません。");setWorld(snapshot);setDirty(true);setConfirmLoad(false);setBindingDirty(false);setNotice("系統の関連付けを適用しました。保存でファイルに反映します。");}finally{busyRef.current=false;setBusy(false);}}}/>}
             {selectedServicePath&&serviceId&&<ServicePathChangeNotice serviceId={serviceId}/>}
             {selectedServicePath&&serviceId&&world&&<ServiceMapEditor onCandidateChange={setRouteSelectedCandidate} onSelectionChange={setRouteSelectedStations} key={`map-edit-${serviceId}-${pathDraftEpoch}`} service={world.services.find(s=>s.id===serviceId)!} path={selectedServicePath} binding={world.service_route_bindings?.find(b=>b.service_id===serviceId)?.binding} world={world} stations={world.stations} candidateLength={candidateLength} enabled={enabled&&!serviceDirty&&!bindingDirty&&!serviceAppearanceDirty&&!pathServiceEditingDirty} onDirty={setExtensionServiceDirty} mapPickTarget={routeMapPick} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="services")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("経路と停車設定を更新しました。保存でファイルに反映します。");}finally{busyRef.current=false;setBusy(false);}}}/>}
 
             {selectedServicePath&&world&&<ServicePathCreator key={`replace-${serviceId}-${pathDraftEpoch}`} routes={world.routes} routePaths={world.route_paths??[]} stations={world.stations} world={world} enabled={enabled} canStart={!extensionServiceDirty&&!serviceDirty&&!bindingDirty&&!serviceAppearanceDirty} onDirty={setPathServiceDirty} replaceService={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,path:selectedServicePath}} onSave={async draft=>{if(!enabled||busyRef.current||serviceDirty)throw Error("別の系統編集を適用または破棄してください");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("replace_service_path",{serviceId,expectedPath:selectedServicePath,...draft});setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));setNotice("経路と停車設定を更新しました。保存でファイルに反映します。");}finally{busyRef.current=false;setBusy(false);}}}/>}
-            {serviceId&&selectedServicePath&&world&&<ServiceAppearanceControls key={`appearance-${serviceId}`} color={world.service_appearances?.find(row=>row.service_id===serviceId)?.color??null} serviceName={world.services.find(s=>s.id===serviceId)?.name??''} appearance={world.service_appearances?.find(row=>row.service_id===serviceId)} onSaveAppearance={async(color,shape,symbol)=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty||bindingDirty)throw Error("別の系統編集を適用または取り消してください。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("set_service_appearance",{serviceId,color,shape,symbol,expectedAppearance:world.service_appearances?.find(row=>row.service_id===serviceId)??null});setWorld(snapshot);setDirty(true);setServiceAppearanceDirty(false);setNotice("系統の色・記号・形を適用しました。保存でファイルに反映します。");}finally{busyRef.current=false;setBusy(false);}}} enabled={enabled&&!serviceDirty&&!pathServiceDirty&&!bindingDirty} onDirty={setServiceAppearanceDirty} onDuplicate={async()=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty)throw Error("編集中の変更を適用または取り消してください。");const source=world.services.find(s=>s.id===serviceId);if(!source)throw Error("系統が見つかりません。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("duplicate_service",{serviceId,expectedPath:selectedServicePath,expectedName:source.name});const created=snapshot.services.find(s=>!world.services.some(old=>old.id===s.id));setWorld(snapshot);setDirty(true);setPathServiceDirty(false);resetService(created);setNotice("別の系統として複製しました。元の系統は変更していません。保存でファイルに反映します。");}finally{busyRef.current=false;setBusy(false);}}}/>}
+            {serviceId&&selectedServicePath&&world&&<ServiceAppearanceControls key={`appearance-${serviceId}`} color={world.service_appearances?.find(row=>row.service_id===serviceId)?.color??null} serviceName={world.services.find(s=>s.id===serviceId)?.name??''} appearance={world.service_appearances?.find(row=>row.service_id===serviceId)} onSaveAppearance={async(color,shape,symbol)=>{if(!enabled||busyRef.current||serviceDirty||pathServiceDirty||bindingDirty)throw Error("別の系統編集を適用または取り消してください。");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("set_service_appearance",{serviceId,color,shape,symbol,expectedAppearance:world.service_appearances?.find(row=>row.service_id===serviceId)??null});setWorld(snapshot);setDirty(true);setServiceAppearanceDirty(false);setNotice("系統の色・記号・形を適用しました。保存でファイルに反映します。");}finally{busyRef.current=false;setBusy(false);}}} enabled={enabled&&!serviceDirty&&!pathServiceDirty&&!bindingDirty} onDirty={setServiceAppearanceDirty}/>}
             {selectedServicePath&&world&&<ServicePathEditor key={serviceId!} service={{id:serviceId!,name:world.services.find(s=>s.id===serviceId)!.name,start:serviceStart}} path={selectedServicePath} world={world} stations={world.stations} enabled={enabled&&!pathServiceDirty&&!bindingDirty&&!serviceAppearanceDirty} onDirty={setServiceDirty} onSaved={()=>setNotice("系統名と停車設定を適用しました。保存でファイルに反映します。")} onSave={async(name,stops)=>{if(!enabled||busyRef.current)throw Error("処理中です");busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("update_service_path",{serviceId,name,stops});setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetService(snapshot.services.find(s=>s.id===serviceId));}finally{busyRef.current=false;setBusy(false);}}}/> }
           </section>
           <section className="company-editor" role="tabpanel" id="workspace-panel-settings" aria-labelledby="workspace-tab-settings" hidden={activeTool !== "company"}>

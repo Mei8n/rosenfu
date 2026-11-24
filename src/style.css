@@ -352,6 +352,7 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .workspace-tabs button[aria-selected="true"] { background:var(--accent); }
 .workbench .construction-tabs { grid-template-columns:repeat(2,1fr); position:static; }
 .workbench .construction-tabs[hidden] { display:none; }
+.workbench .construction-tabs kbd { margin-inline-start:.4em; font:inherit; font-size:.8em; opacity:.75; }
 .workbench .side-panel { width:min(var(--panel-width),calc(100vw - 120px)); }
 .workbench .map-panel { left:min(var(--panel-width),calc(100vw - 120px)); }
 .panel-resizer { position:absolute; top:0; bottom:0; left:calc(min(var(--panel-width),100vw - 120px) - 4px); width:8px; z-index:12; cursor:col-resize; touch-action:none; }

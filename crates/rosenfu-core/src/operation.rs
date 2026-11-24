@@ -1569,6 +1569,8 @@ impl OperationRuntime {
             .filter_map(|service| service.next_departure)
             .min();
         let mut arrivals = Vec::new();
+        let mut due_movements = Vec::new();
+        let progressive_rail = self.progressive_rail();
         let mut events = 0;
         loop {
             let next = self.next_event(departure);
@@ -1591,9 +1593,26 @@ impl OperationRuntime {
             events += 1;
             self.started = true;
             self.now_ms = at;
+            // Retain train-key order for simultaneous events without cloning idle
+            // trains or movements whose arrival/clearance is still in the future.
             // Arrivals release resources only after the rear has cleared them.
-            let keys: Vec<_> = self.trains.keys().cloned().collect();
-            for key in keys {
+            due_movements.extend(self.trains.values().filter_map(|train| {
+                let TrainState::Moving {
+                    entered_ms,
+                    arrival_ms,
+                    release_ms,
+                } = train.state
+                else {
+                    return None;
+                };
+                let early_release = progressive_rail
+                    && self.services[&train.key.service_id].legs[train.leg]
+                        .release_events
+                        .contains(&(at - entered_ms));
+                (arrival_ms == at || release_ms == at || early_release)
+                    .then(|| (train.key.clone(), early_release))
+            }));
+            for (key, early_release) in due_movements.drain(..) {
                 let train = &self.trains[&key];
                 if let TrainState::Moving {
                     entered_ms,
@@ -1621,15 +1640,14 @@ impl OperationRuntime {
                             delay_ms: train.delay_ms,
                         });
                     }
-                    if self.progressive_rail() {
-                        let leg = &self.services[&key.service_id].legs[train.leg];
-                        if leg.release_events.contains(&(at - entered_ms)) {
-                            for (resource, &offset) in &leg.early_releases {
-                                if offset == at - entered_ms
-                                    && self.occupied.get(resource) == Some(&key)
-                                {
-                                    self.occupied.remove(resource);
-                                }
+                    if early_release {
+                        for (resource, &offset) in
+                            &self.services[&key.service_id].legs[train.leg].early_releases
+                        {
+                            if offset == at - entered_ms
+                                && self.occupied.get(resource) == Some(&key)
+                            {
+                                self.occupied.remove(resource);
                             }
                         }
                     }
