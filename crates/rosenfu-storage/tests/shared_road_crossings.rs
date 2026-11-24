@@ -30,10 +30,17 @@ fn fixture() -> (RawEvidence, TileBinding) {
     (RawEvidence { sha256, bytes }, tile)
 }
 
+fn copy_raw(raw: &RawEvidence) -> RawEvidence {
+    RawEvidence {
+        sha256: raw.sha256.clone(),
+        bytes: raw.bytes.clone(),
+    }
+}
+
 #[test]
 fn ordinary_bus_retains_one_tile_for_tram_guide_and_observed_crossing_after_reopen() {
     let (raw, tile) = fixture();
-    let store = EvidenceStore::from_parts(vec![raw.clone()], vec![tile.clone()]).unwrap();
+    let store = EvidenceStore::from_parts(vec![copy_raw(&raw)], vec![tile.clone()]).unwrap();
     let vertex = |vertex| BusVertex {
         feature: 0,
         line: 0,
@@ -217,11 +224,10 @@ fn buffered_adjacent_tiles_report_only_interior_crossings_in_warm_and_cold_scope
         "GjgKDnRyYW5zcG9ydGF0aW9ueAIogCASERICAAAYAiIJCf8CgBQKgAYAGgVjbGFzcyIHCgVtaW5vcg==",
     );
 
-    for store in [
-        EvidenceStore::from_parts(vec![a.clone(), b.clone()], vec![ab.clone(), bb.clone()])
-            .unwrap(),
-        EvidenceStore::from_archive_parts(vec![a, b], vec![ab, bb]).unwrap(),
-    ] {
+    let warm_raw = vec![copy_raw(&a), copy_raw(&b)];
+    let warm = EvidenceStore::from_parts(warm_raw, vec![ab.clone(), bb.clone()]).unwrap();
+    let cold = EvidenceStore::from_archive_parts(vec![a, b], vec![ab, bb]).unwrap();
+    for store in [warm, cold] {
         let draft = WorldDraft::default().with_road_evidence(store).unwrap();
         let mut world = World::new(draft).unwrap();
         let player = world.add_player("P".into()).unwrap();
