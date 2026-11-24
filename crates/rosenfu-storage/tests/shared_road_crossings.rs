@@ -1,8 +1,8 @@
 use base64::Engine;
 use rosenfu_core::{
     ofm_evidence::{
-        find_gameplay_bus_path, raw_sha256, AuthoredTramGuide, BusVertex, EvidenceStore, RawEvidence,
-        TileBinding, DECODER_RULE,
+        find_gameplay_bus_path, raw_sha256, AuthoredTramGuide, BusVertex, EvidenceStore,
+        RawEvidence, TileBinding, DECODER_RULE,
     },
     world::{CoverageBounds, GeoPoint, RoadSnapshot, World, WorldDraft},
 };
@@ -282,7 +282,9 @@ fn distant_alignments_and_retained_cells_do_not_erase_a_local_crossing() {
         line: 0,
         vertex,
     };
-    let local_store = store.scope(std::slice::from_ref(&tile.canonical_url)).unwrap();
+    let local_store = store
+        .scope(std::slice::from_ref(&tile.canonical_url))
+        .unwrap();
     let bus = find_gameplay_bus_path(
         &local_store,
         &tile.canonical_url,

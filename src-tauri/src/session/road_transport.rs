@@ -269,11 +269,7 @@ impl WorldEditor {
                 .add_road_snapshot(road)
                 .map_err(|e| e.to_string())?;
         }
-        candidate.prepare_construction_candidate(
-            self.world.snapshot(),
-            vec![alignment],
-            vec![],
-        )?;
+        candidate.prepare_construction_candidate(self.world.snapshot(), vec![alignment], vec![])?;
         candidate.deleted_alignment = None;
         self.commit_edit(candidate, true)?;
         Ok(self.snapshot())

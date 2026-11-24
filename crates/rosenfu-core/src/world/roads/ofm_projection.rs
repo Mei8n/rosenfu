@@ -65,10 +65,13 @@ fn observed_surface_class(line: &TileLine) -> Option<&str> {
         class,
         "motorway" | "trunk" | "primary" | "secondary" | "tertiary" | "minor" | "busway"
     ) || line.attributes.contains_key("brunnel")
-        || !line.attributes.get("layer").is_none_or(|value| match value {
-            RawValue::String(s) => s.parse::<f64>() == Ok(0.),
-            other => number(other) == Some(0.),
-        })
+        || !line
+            .attributes
+            .get("layer")
+            .is_none_or(|value| match value {
+                RawValue::String(s) => s.parse::<f64>() == Ok(0.),
+                other => number(other) == Some(0.),
+            })
     {
         return None;
     }
@@ -111,14 +114,12 @@ fn project(tile: &DecodedTile, bounds: CoverageBounds, points: &mut usize) -> Op
             id: raw_road_fragment_id(binding, line),
             points: shape,
             coverage: None,
-            layer: text(line, "layer")
-                .map(str::to_owned)
-                .or_else(|| {
-                    line.attributes
-                        .get("layer")
-                        .and_then(number)
-                        .map(|n| n.to_string())
-                }),
+            layer: text(line, "layer").map(str::to_owned).or_else(|| {
+                line.attributes
+                    .get("layer")
+                    .and_then(number)
+                    .map(|n| n.to_string())
+            }),
             level: None,
             bridge: Some("no".into()),
             tunnel: Some("no".into()),
@@ -126,14 +127,12 @@ fn project(tile: &DecodedTile, bounds: CoverageBounds, points: &mut usize) -> Op
                 class: class.into(),
                 subclass: text(line, "subclass").map(str::to_owned),
                 access: text(line, "access").map(str::to_owned),
-                oneway: text(line, "oneway")
-                    .map(str::to_owned)
-                    .or_else(|| {
-                        line.attributes
-                            .get("oneway")
-                            .and_then(number)
-                            .map(|n| n.to_string())
-                    }),
+                oneway: text(line, "oneway").map(str::to_owned).or_else(|| {
+                    line.attributes
+                        .get("oneway")
+                        .and_then(number)
+                        .map(|n| n.to_string())
+                }),
             }),
         });
     }
@@ -231,9 +230,9 @@ impl<'a> RetainedObservations<'a> {
         {
             return None;
         }
-        let bytes = selected.iter().try_fold(0usize, |sum, &i| {
-            sum.checked_add(self.candidates[i].bytes)
-        })?;
+        let bytes = selected
+            .iter()
+            .try_fold(0usize, |sum, &i| sum.checked_add(self.candidates[i].bytes))?;
         if bytes > MAX_REQUEST_BYTES {
             return None;
         }
@@ -259,7 +258,11 @@ impl<'a> RetainedObservations<'a> {
         let key = &candidate.binding.canonical_url;
         let scope = self.store.scope(std::slice::from_ref(key)).ok()?;
         let mut points = 0;
-        let snapshot = Arc::new(project(scope.decoded(key).ok()?, candidate.bounds, &mut points)?);
+        let snapshot = Arc::new(project(
+            scope.decoded(key).ok()?,
+            candidate.bounds,
+            &mut points,
+        )?);
         while self.cache.len() >= MAX_TILES || self.cached_points + points > MAX_PROJECTED_POINTS {
             self.cached_points -= self.cache.pop_front()?.points;
         }
@@ -296,6 +299,8 @@ mod tests {
 
         adjacent.revision = "b".into();
         adjacent.canonical_url = "https://tiles.openfreemap.org/planet/b/14/14553/6451.pbf".into();
-        assert!(!one_revision_distinct_cells([&first, &adjacent].into_iter()));
+        assert!(!one_revision_distinct_cells(
+            [&first, &adjacent].into_iter()
+        ));
     }
 }

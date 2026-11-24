@@ -257,8 +257,12 @@ impl World {
         &self,
         guide: &crate::ofm_evidence::AuthoredTramGuide,
         cached: Vec<(RawEvidence, TileBinding)>,
-    ) -> Result<(Self, crate::ofm_evidence::DerivedPath), crate::road_transport::RoadTransportError> {
-        let (draft, path) = self.snapshot().clone().stage_authored_street_tram(guide, cached)?;
+    ) -> Result<(Self, crate::ofm_evidence::DerivedPath), crate::road_transport::RoadTransportError>
+    {
+        let (draft, path) = self
+            .snapshot()
+            .clone()
+            .stage_authored_street_tram(guide, cached)?;
         let mut candidate = self.clone();
         candidate.data = draft.into();
         Ok((candidate, path))

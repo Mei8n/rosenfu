@@ -91,7 +91,10 @@ impl From<WorldError> for StorageError {
 fn current_wire_schema(version: u64) -> bool {
     matches!(version, SCHEMA_VERSION | STREET_TRAM_SCHEMA)
         || (cfg!(feature = "standard-periodic-rail")
-            && matches!(version, MIXED_STANDARD_BUS_SCHEMA | STREET_TRAM_STANDARD_SCHEMA))
+            && matches!(
+                version,
+                MIXED_STANDARD_BUS_SCHEMA | STREET_TRAM_STANDARD_SCHEMA
+            ))
 }
 
 fn wire_schema(
@@ -343,7 +346,9 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
         return Err(StorageError::UnsupportedVersion(version));
     }
     if version < STREET_TRAM_SCHEMA
-        && value.get("world").is_some_and(value_carries_street_tram_proof)
+        && value
+            .get("world")
+            .is_some_and(value_carries_street_tram_proof)
     {
         return Err(StorageError::UnsupportedVersion(STREET_TRAM_SCHEMA));
     }
@@ -352,7 +357,9 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
             .get("standard_timetable")
             .is_some_and(|v| !v.is_null())
     {
-        return Err(StorageError::UnsupportedVersion(STREET_TRAM_STANDARD_SCHEMA));
+        return Err(StorageError::UnsupportedVersion(
+            STREET_TRAM_STANDARD_SCHEMA,
+        ));
     }
     if version == 26 && value.get("fixed_od_scenario").is_some() {
         return Err(StorageError::InvalidHeader);
@@ -995,8 +1002,7 @@ mod tests {
                     data["world"]["construction_plans"] =
                         serde_json::json!({"parkedPaths":[{"ofmPath":marker}]});
                 } else {
-                    data["world"]["road_path_provenance"] =
-                        serde_json::json!([{"path":marker}]);
+                    data["world"]["road_path_provenance"] = serde_json::json!([{"path":marker}]);
                 }
                 let expected = if version == MIXED_STANDARD_BUS_SCHEMA
                     && !cfg!(feature = "standard-periodic-rail")
