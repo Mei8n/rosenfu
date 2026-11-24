@@ -300,7 +300,7 @@ fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_
                         .state,
                     TrainState::Moving { entered_ms: 0, .. }
                 ));
-                // More than one birth is deliberately not prioritized.
+                // Dense repeat schedules cannot guarantee independent meets.
                 let mut repeating = configs.clone();
                 for c in &mut repeating {
                     c.timetable.last_departure_ms = 60_000;
@@ -317,6 +317,7 @@ fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_
                         .state,
                     TrainState::Moving { entered_ms: 0, .. }
                 ));
+                assert_spaced_opposing_repeats(&world, &configs, &ids);
             }
 
             let replay = rt.preview_passenger_replay(1_000_000, 64).unwrap();
@@ -359,4 +360,140 @@ fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_
             }
         }
     }
+}
+
+fn assert_spaced_opposing_repeats(
+    base: &World,
+    configs: &[OperationServiceConfig; 2],
+    ids: &[String; 2],
+) {
+    use rosenfu_core::operation::OperationRuntime;
+    const START: u64 = 10_000;
+    const GAP: u64 = 900_000;
+    let mut spaced = (*configs).clone();
+    for config in &mut spaced {
+        config.timetable = Timetable {
+            first_departure_ms: START,
+            last_departure_ms: START + 2 * GAP,
+            headway_ms: GAP,
+        };
+    }
+    let mut world = World::new(base.snapshot().clone()).unwrap();
+    world.configure_operation(spaced.to_vec()).unwrap();
+    assert_eq!(world.operation_save().unwrap().runtime.format, 2);
+    let state = |rt: &OperationRuntime, i: usize, birth: u64| {
+        rt.trains()
+            .find(|t| t.key.service_id == ids[i] && t.key.scheduled_ms == birth)
+            .unwrap()
+            .state
+            .clone()
+    };
+    let confirm_pair = |w: &mut World, at: u64| {
+        let rt = &mut w.operation_mut().unwrap().runtime;
+        rt.advance_to(at - 1, 64).unwrap();
+        assert_eq!(rt.trains().count(), 0, "previous pair must be clear");
+        rt.advance_to(at, 64).unwrap();
+        assert_eq!(rt.trains().count(), 2);
+        assert_eq!(state(rt, 0, at), TrainState::Waiting { ready_ms: at });
+        let TrainState::Moving {
+            entered_ms,
+            arrival_ms,
+            release_ms,
+        } = state(rt, 1, at)
+        else {
+            panic!("siding service must own its inbound route");
+        };
+        assert_eq!(entered_ms, at);
+        assert!(arrival_ms < release_ms);
+        rt.advance_to(release_ms - 1, 64).unwrap();
+        assert_eq!(state(rt, 0, at), TrainState::Waiting { ready_ms: at });
+        rt.advance_to(release_ms, 64).unwrap();
+        assert!(matches!(
+            state(rt, 0, at), TrainState::Moving { entered_ms, .. } if entered_ms == release_ms
+        ));
+    };
+    confirm_pair(&mut world, START);
+    confirm_pair(&mut world, START + GAP);
+    let active = rosenfu_storage::encode(&world).unwrap();
+    let mut reopened = rosenfu_storage::decode(&active).unwrap();
+    assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), active);
+    confirm_pair(&mut world, START + 2 * GAP);
+    confirm_pair(&mut reopened, START + 2 * GAP);
+    assert_eq!(reopened.operation_save(), world.operation_save());
+
+    // An active saved pair keeps its original trains and leases. A change
+    // to only the future local grid leaves the third common birth on the
+    // timetable but removes the recurrence proof for that new pair.
+    let third = START + 2 * GAP;
+    let mut changed = rosenfu_storage::decode(&active).unwrap();
+    let trains = changed.operation_save().unwrap().runtime.trains;
+    let mut replacement = spaced[1].clone();
+    replacement.timetable.first_departure_ms = third;
+    replacement.timetable.last_departure_ms = third;
+    changed.handoff_active_rail_timetable(replacement).unwrap();
+    assert_eq!(changed.operation_save().unwrap().runtime.trains, trains);
+    let bytes = rosenfu_storage::encode(&changed).unwrap();
+    let mut changed = rosenfu_storage::decode(&bytes).unwrap();
+    assert_eq!(rosenfu_storage::encode(&changed).unwrap(), bytes);
+    let rt = &mut changed.operation_mut().unwrap().runtime;
+    rt.advance_to(third - 1, 64).unwrap();
+    assert_eq!(rt.trains().count(), 0);
+    rt.advance_to(third, 64).unwrap();
+    assert!(matches!(
+        state(rt, 0, third), TrainState::Moving { entered_ms, .. } if entered_ms == third
+    ));
+
+    // Conversely a future handoff can align the grids. Expired records
+    // pruned at the end of advance must not make the choice depend on the
+    // caller's event batching (nor affect the resumed result).
+    let second = START + GAP;
+    let mut initially_mismatched = spaced.clone();
+    initially_mismatched[1].timetable.last_departure_ms = second;
+    let mut aligning = World::new(base.snapshot().clone()).unwrap();
+    aligning
+        .configure_operation(initially_mismatched.to_vec())
+        .unwrap();
+    aligning
+        .operation_mut()
+        .unwrap()
+        .runtime
+        .advance_to(START, 64)
+        .unwrap();
+    assert!(matches!(
+        state(&aligning.operation().unwrap().runtime, 0, START),
+        TrainState::Moving { entered_ms, .. } if entered_ms == START
+    ));
+    aligning
+        .handoff_active_rail_timetable(spaced[1].clone())
+        .unwrap();
+    let mut aligning_reopened =
+        rosenfu_storage::decode(&rosenfu_storage::encode(&aligning).unwrap()).unwrap();
+    let split = &mut aligning_reopened.operation_mut().unwrap().runtime;
+    split.advance_to(second - 1, 64).unwrap();
+    assert_eq!(split.trains().count(), 0);
+    split.advance_to(second, 64).unwrap();
+    let whole = &mut aligning.operation_mut().unwrap().runtime;
+    whole.advance_to(second, 64).unwrap();
+    assert_eq!(
+        state(whole, 0, second),
+        TrainState::Waiting { ready_ms: second }
+    );
+    assert!(matches!(
+        state(whole, 1, second), TrainState::Moving { entered_ms, .. } if entered_ms == second
+    ));
+    assert_eq!(
+        aligning.operation_save(),
+        aligning_reopened.operation_save()
+    );
+
+    // Both services still have births at START, but later grids disagree.
+    // The original deterministic ordering must win rather than special ties.
+    spaced[1].timetable.headway_ms += 60_000;
+    let mut mismatch = World::new(base.snapshot().clone()).unwrap();
+    mismatch.configure_operation(spaced.to_vec()).unwrap();
+    let rt = &mut mismatch.operation_mut().unwrap().runtime;
+    rt.advance_to(START, 64).unwrap();
+    assert!(matches!(
+        state(rt, 0, START), TrainState::Moving { entered_ms, .. } if entered_ms == START
+    ));
 }

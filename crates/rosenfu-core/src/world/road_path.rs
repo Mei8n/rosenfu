@@ -52,6 +52,28 @@ impl WorldDraft {
         self.has_road_descriptor(PathDescriptor::carries_adjacent_street_tram_proof)
     }
 
+    pub fn carries_fractional_bus_proof(&self) -> bool {
+        self.ofm_gameplay_bus_routes
+            .values()
+            .any(|binding| binding.same_atom_stops.is_some())
+    }
+
+    pub fn carries_chain_street_tram_proof(&self) -> bool {
+        self.has_road_descriptor(PathDescriptor::carries_chain_street_tram_proof)
+    }
+
+    pub fn carries_general_fractional_bus_proof(&self) -> bool {
+        self.ofm_gameplay_bus_routes
+            .values()
+            .any(|binding| binding.fractional_terminals.is_some())
+    }
+
+    pub fn carries_general_fractional_bus_stops_proof(&self) -> bool {
+        self.ofm_gameplay_bus_routes.values().any(|binding| {
+            binding.fractional_terminals.is_some() && !binding.interior_stops.is_empty()
+        })
+    }
+
     fn has_road_descriptor(&self, check: fn(&PathDescriptor) -> bool) -> bool {
         self.road_path_provenance
             .iter()
@@ -230,6 +252,50 @@ impl WorldDraft {
     }
 }
 impl World {
+    fn can_mix_fractional_with_street_tram(&self) -> bool {
+        self.operation()
+            .is_none_or(|op| op.runtime.admission_model() as u32 == 2)
+    }
+
+    /// Test the saved capability before doing a preview search or a write.
+    pub fn can_author_fractional_bus(&self) -> bool {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.has_standard_timetable() {
+            return false;
+        }
+        let data = self.snapshot();
+        !data.carries_adjacent_street_tram_proof()
+            && !data.carries_chain_street_tram_proof()
+            && (!data.carries_street_tram_proof() || self.can_mix_fractional_with_street_tram())
+            && !self
+                .operation()
+                .is_some_and(|op| op.runtime.admission_model() as u32 > 7)
+    }
+
+    pub fn can_author_general_fractional_bus(&self) -> bool {
+        self.can_mix_fractional_with_street_tram()
+    }
+
+    pub fn can_author_street_tram_with_bus_capabilities(
+        &self,
+        guide: crate::ofm_evidence::AuthoredTramProof<'_>,
+    ) -> bool {
+        use crate::ofm_evidence::AuthoredTramProof;
+        let data = self.snapshot();
+        let fixed = self.can_mix_fractional_with_street_tram();
+        match guide {
+            AuthoredTramProof::SingleOrAdjacent(guide) => {
+                (!data.carries_general_fractional_bus_proof() || fixed)
+                    && (!data.carries_fractional_bus_proof()
+                        || (guide.adjacent_end.is_none()
+                            && !data.carries_adjacent_street_tram_proof()
+                            && !data.carries_chain_street_tram_proof()
+                            && self.can_author_fractional_bus()))
+            }
+            AuthoredTramProof::Chain(_) => !data.carries_fractional_bus_proof() && fixed,
+        }
+    }
+
     /// An ordinary OFM Bus edit owns only its addressed raw tiles and the
     /// route reconstructed from it. Never permits arbitrary draft replacement.
     pub fn candidate_with_gameplay_ofm_bus(
@@ -240,6 +306,11 @@ impl World {
         path: crate::ofm_evidence::BusPathBinding,
         cached: Vec<(RawEvidence, TileBinding)>,
     ) -> Result<Self, crate::road_transport::RoadTransportError> {
+        if (path.fractional_terminals.is_some() && !self.can_author_general_fractional_bus())
+            || (path.same_atom_stops.is_some() && !self.can_author_fractional_bus())
+        {
+            return Err(crate::road_transport::RoadTransportError::InvalidData);
+        }
         let mut candidate = self.clone();
         candidate.data = self
             .snapshot()
@@ -259,16 +330,18 @@ impl World {
     /// Return a detached candidate containing the single tile and its exact
     /// street-tram derivation. The editor uses this only with its ordinary
     /// construction transaction and can discard it on any later rejection.
-    pub fn staged_street_tram_for_construction(
+    pub fn staged_street_tram_for_construction<'a>(
         &self,
-        guide: &crate::ofm_evidence::AuthoredTramGuide,
+        guide: impl Into<crate::ofm_evidence::AuthoredTramProof<'a>>,
         cached: Vec<(RawEvidence, TileBinding)>,
     ) -> Result<(Self, crate::ofm_evidence::DerivedPath), crate::road_transport::RoadTransportError>
     {
-        let (draft, path) = self
-            .snapshot()
-            .clone()
-            .stage_authored_street_tram(guide, cached)?;
+        let draft = self.snapshot();
+        let guide = guide.into();
+        if !self.can_author_street_tram_with_bus_capabilities(guide) {
+            return Err(crate::road_transport::RoadTransportError::InvalidData);
+        }
+        let (draft, path) = draft.clone().stage_authored_street_tram(guide, cached)?;
         let mut candidate = self.clone();
         candidate.data = draft.into();
         Ok((candidate, path))

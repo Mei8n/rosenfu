@@ -513,6 +513,16 @@ impl RoadTransport {
         if let Some(proof) = world
             .ofm_gameplay_bus_routes
             .get(route_id)
+            .filter(|proof| proof.has_fractional_stops())
+        {
+            if !std::ptr::eq(self, &world.road_transport) && self != &world.road_transport {
+                return Err(StaleSnapshot);
+            }
+            return world.gameplay_bus_fractional_legs(route, proof);
+        }
+        if let Some(proof) = world
+            .ofm_gameplay_bus_routes
+            .get(route_id)
             .filter(|proof| proof.pattern == Some(crate::ofm_evidence::BusPattern::ClosedOneWay))
         {
             if !std::ptr::eq(self, &world.road_transport) && self != &world.road_transport {

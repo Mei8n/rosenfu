@@ -36,7 +36,7 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean}){
+async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;savedOpenVia?:boolean;savedInterior?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean;fractional?:boolean;generalFractional?:boolean;generalFractionalStops?:boolean}){
  const authored=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
   ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
  ]}]}:tile;
@@ -74,13 +74,15 @@ async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?
    rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,respectOneway:!!config.retainedOneway,
    start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:config.closedSaved?0:1},
    ...(config.retainedGrade?{gradePolicy:'observedConnectors'}:{}),
+   ...(config.savedOpenVia?{via:[{id:'saved-via',tileKey:key,vertex:{feature:0,line:0,vertex:2}}]}:{}),
+   ...(config.savedInterior?{interiorStops:[{id:'saved-stop',name:'途中停留所',occurrenceKey:'saved-occurrence',fractionQ:500000}]}:{}),
    ...(config.closedSaved?{pattern:'closedOneWay',via:[{id:'closed-via',tileKey:key,vertex:{feature:0,line:0,vertex:1}}]}:{}),
   }:{},[second.id]:{},[foreign.id]:{}},
   road_transport:{nodes:[],edges:[{id:'native-edge',geometry:[a,bend,b]}],bus_stops:[],tram_sections:[],
    bus_routes:[first,second,foreign,nonordinary]},
  }:undefined;
  vi.mocked(invoke).mockImplementation(async (command,args)=>{
-  if(command==='engine_info')return {version:'ordinary-test',road_transport_enabled:true,ordinary_ofm_bus_enabled:config.ordinary!==false,ordinary_ofm_bus_rectangle_enabled:config.rectangle===true,ordinary_ofm_bus_multiple_enabled:config.multiple===true,ordinary_ofm_bus_round_trip_enabled:config.roundTrip===true,ordinary_ofm_bus_waypoints_enabled:config.waypoints===true,ordinary_ofm_bus_interior_stops_enabled:config.interiorStops===true,ordinary_ofm_bus_auto_stops_enabled:config.autoStops===true,ordinary_ofm_bus_closed_loop_enabled:config.closed===true,ordinary_ofm_bus_observed_grade_enabled:config.observedGrade===true,operation_enabled:config.operation===true,bus_operation_enabled:config.operation===true};
+  if(command==='engine_info')return {version:'ordinary-test',road_transport_enabled:true,ordinary_ofm_bus_enabled:config.ordinary!==false,ordinary_ofm_bus_fractional_enabled:config.fractional===true,ordinary_ofm_bus_ground_fractional_enabled:config.generalFractional===true,ordinary_ofm_bus_ground_fractional_stops_enabled:config.generalFractionalStops===true,ordinary_ofm_bus_rectangle_enabled:config.rectangle===true,ordinary_ofm_bus_multiple_enabled:config.multiple===true,ordinary_ofm_bus_round_trip_enabled:config.roundTrip===true,ordinary_ofm_bus_waypoints_enabled:config.waypoints===true,ordinary_ofm_bus_interior_stops_enabled:config.interiorStops===true,ordinary_ofm_bus_auto_stops_enabled:config.autoStops===true,ordinary_ofm_bus_closed_loop_enabled:config.closed===true,ordinary_ofm_bus_observed_grade_enabled:config.observedGrade===true,operation_enabled:config.operation===true,bus_operation_enabled:config.operation===true};
   if(command==='ofm_world_token')return 'world-exact';
   if(command==='operation_snapshot')return {now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,
     timetable_edit_token:'fixture-operation-token',services:[],trains:[],bus_services:[]};
@@ -92,7 +94,14 @@ async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?
     road_transport:{...baseline.road_transport,bus_routes:[
      ...baseline.road_transport.bus_routes.filter(route=>route.id!==req.routeId),{...first,id:req.routeId,name:req.name},
     ]}};
-   return {...world,ofm_gameplay_bus:req.path,road_transport:{nodes:[],edges:[{id:'native-edge',geometry:[a,bend,b]}],bus_stops:[],tram_sections:[],bus_routes:[{id:req.routeId,owner:'2',name:req.name,edges:['native-edge'],stops:[]}]}};
+   if(config.generalFractional){
+    const {fractionalTerminals:cuts}=req.path as {fractionalTerminals:[number,number]};
+    const stops=[{id:'s1',edge_id:'edge-a',position:cuts[0]/1_000_000,name:'起点'},{id:'s2',edge_id:'edge-b',position:cuts[1]/1_000_000,name:'終点'}];
+    return {...world,ofm_gameplay_bus:req.path,road_transport:{nodes:[],edges:[{id:'edge-a',geometry:[a,b]},{id:'edge-b',geometry:[b,waypoint]}],
+     bus_stops:stops,tram_sections:[],bus_routes:[{id:req.routeId,owner:'2',name:req.name,edges:['edge-a','edge-b'],
+      stops:stops.map((s,i)=>({stop_id:s.id,edge_index:i}))}]}};
+   }
+   return {...world,ofm_gameplay_bus:req.path,road_transport:{nodes:[],edges:[{id:'native-edge',geometry:config.fractional?[a,b]:[a,bend,b]}],bus_stops:[],tram_sections:[],bus_routes:[{id:req.routeId,owner:'2',name:req.name,edges:['native-edge'],stops:[]}]}};
   }
   if(command==='remove_gameplay_ofm_bus'&&baseline){
    const routeId=(args as {routeId:string}).routeId;
@@ -417,6 +426,54 @@ test('existing bus opens edit without extending; deliberate endpoint click exten
  expect(screen.getByRole('button',{name:'バス系統を引き直す'})).toBeTruthy();
 });
 
+test('shorten a saved open bus at either end, keeping the change local until confirmation',async()=>{
+ const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ await setup({waypoints:true,multiple:true,savedProof:true,savedOpenVia:true,autoStart:false,preview:async()=>{
+  const {path}=requests().at(-1)![1] as {path:{start:{vertex:number};end:{vertex:number};via?:unknown[]}};
+  if(path.via?.length)return {points:[a,waypoint,b],lengthM:650,viaPointIndices:[1]};
+  return path.start.vertex===2?{points:[waypoint,b],lengthM:300}:{points:[a,waypoint],lengthM:350};
+ }});
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を引き直す'}));
+ await screen.findByText('道路経路 650 m・停留所2か所');
+ fireEvent.click(screen.getByRole('button',{name:'起点を1点短縮'}));
+ await screen.findByText('道路経路 300 m・停留所2か所');
+ expect(requests().at(-1)?.[1]).toMatchObject({routeId:'owned-a',path:{start:{vertex:2},end:{vertex:1}}});
+ expect(screen.queryByRole('button',{name:'起点を1点短縮'})).toBeNull();
+ fireEvent.keyDown(window,{key:'z',ctrlKey:true});
+ expect(screen.getByLabelText('バスの経由点 1')).toBeTruthy();
+ fireEvent.keyDown(window,{key:'Z',ctrlKey:true,shiftKey:true});
+ expect(screen.queryByLabelText('バスの経由点 1')).toBeNull();
+ fireEvent.keyDown(window,{key:'z',ctrlKey:true});
+ fireEvent.click(screen.getByRole('button',{name:'終点を1点短縮'}));
+ await screen.findByText('道路経路 350 m・停留所2か所');
+ expect(requests().at(-1)?.[1]).toMatchObject({routeId:'owned-a',path:{start:{vertex:0},end:{vertex:2}}});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ expect(vi.mocked(invoke).mock.calls.some(([cmd])=>cmd.includes('undo'))).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',
+   expect.objectContaining({routeId:'owned-a',path:expect.objectContaining({start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:2}})})));
+});
+
+test('native refusal to retain a stop cannot shorten the saved line or drop the stop from its proof',async()=>{
+ const requests=()=>vi.mocked(invoke).mock.calls.filter(c=>c[0]==='preview_gameplay_ofm_bus');
+ await setup({waypoints:true,multiple:true,savedProof:true,savedOpenVia:true,savedInterior:true,autoStart:false,preview:async()=>{
+  const {path}=requests().at(-1)![1] as {path:{via?:unknown[]}};
+  if(path.via?.length)return {points:[a,waypoint,b],lengthM:650,viaPointIndices:[1]};
+  throw Error('停留所の位置を確認できません。');
+ }});
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を引き直す'}));
+ await screen.findByText('道路経路 650 m・停留所2か所');
+ fireEvent.click(screen.getByRole('button',{name:'起点を1点短縮'}));
+ await screen.findByText('停留所の位置を確認できません。');
+ expect(requests().at(-1)?.[1]).toMatchObject({path:{start:{vertex:2},interiorStops:[{id:'saved-stop',occurrenceKey:'saved-occurrence',fractionQ:500000}]}});
+ const confirm=screen.getByRole<HTMLButtonElement>('button',{name:'バス系統を確定'});
+ expect(confirm.disabled).toBe(true);fireEvent.click(confirm);fireEvent.keyDown(window,{key:'Enter'});
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.keyDown(window,{key:'z',ctrlKey:true});
+ expect(screen.getByLabelText('バスの経由点 1')).toBeTruthy();
+ expect(confirm.disabled).toBe(false);
+});
+
 test('Escape and tool change retire an outstanding waypoint proof even after double-click finish intent',async()=>{
  let resolve!:(value:unknown)=>void;
  const {pressPoint}=(await setup({waypoints:true,preview:()=>new Promise(r=>{resolve=r;})}))!;
@@ -648,6 +705,7 @@ test('saved circuit reopens without extending; native fallback is read-only and 
  fireEvent.click(screen.getByRole('button',{name:'バス系統を引き直す'}));
  await screen.findByText('中間停留所（自動）');
  expect(screen.getAllByLabelText('バスの起終点')).toHaveLength(1);
+ expect(screen.queryByRole('button',{name:'終点を1点短縮'})).toBeNull();
  pressPoint(waypoint);
  expect(requests()).toHaveLength(1);
  fireEvent.keyDown(window,{key:'Escape'});
@@ -801,4 +859,179 @@ test.each([true,false])('an alternate in another cell is used only inside an unc
   expect(observe).not.toHaveBeenCalled();
  }
  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+});
+
+test('extends a free bus start across an already verified seam without reversing its directed route',async()=>{
+ const requests:unknown[]=[];
+ const app=(await setup({waypoints:true,rectangle:true,seamAlternative:true,autoStart:false,preview:async args=>{
+  requests.push(args);
+  const {path}=args as {path:{start:{feature:number;vertex:number}}};
+  if(path.start.feature===9)return {points:[],lengthM:0,failedLegIndex:0};
+  if(path.start.feature===0)return {points:[seamReachable,left,a],lengthM:620,viaPointIndices:[1]};
+  return {points:[left,a],lengthM:400};
+ }}))!;
+ fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
+ app.pressPoint(left);app.pressPoint(a);
+ await screen.findByText('道路経路 400 m・停留所2か所');
+ app.pressPoint(left,1,screen.getByLabelText('バスの起点'));
+ app.pressPoint(seamStub);
+ await screen.findByText('道路経路 620 m・停留所2か所');
+ expect(requests).toHaveLength(3);
+ expect(requests[1]).toMatchObject({path:{tileKey:leftKey,start:{feature:9,line:0,vertex:0}}});
+ expect(requests[2]).toMatchObject({expectedWorldToken:'world-exact',rawEvidence:null,tileBinding:null,
+  path:{tileKey:key,tileRawSha256:raw,endTileKey:key,respectOneway:true,
+   start:{feature:0,line:0,vertex:1},end:{feature:0,line:0,vertex:0},
+   additionalTiles:[{tileKey:leftKey,tileRawSha256:leftRaw}],
+   via:[{tileKey:leftKey,vertex:{feature:4,line:2,vertex:0}}],
+  },
+  contextTiles:(requests[1] as {contextTiles:unknown}).contextTiles,
+ });
+ expect(read).toHaveBeenCalledTimes(1);
+ expect(observe).toHaveBeenCalledTimes(1);
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',requests[2]));
+});
+
+const fractionalStart={latitude:a.latitude,longitude:a.longitude+(b.longitude-a.longitude)*0.25};
+const fractionalEnd={latitude:a.latitude,longitude:a.longitude+(b.longitude-a.longitude)*0.625};
+const fractionalMode='道路の途中に起終点を置く（片道）';
+test('an engine without the fractional capability keeps the old Bus action only',async()=>{
+ await setup({waypoints:true,autoStart:false,preview:async()=>null});
+ expect(screen.queryByRole('button',{name:fractionalMode})).toBeNull();
+ expect(screen.getByRole('button',{name:'新しいバス系統'})).toBeTruthy();
+});
+
+test('fractional Bus projects actual midpoint clicks, then commits only the approved exact source',async()=>{
+ let request:unknown;
+ const app=(await setup({fractional:true,waypoints:true,roundTrip:true,observedGrade:true,autoStart:false,preview:async args=>{
+  request=args;
+  const {path:{sameAtomStops:[from,to]}}=args as {path:{sameAtomStops:[number,number]}};
+  const position=(q:number)=>({latitude:a.latitude,longitude:a.longitude+(b.longitude-a.longitude)*q/1_000_000});
+  return {points:[position(from),position(to)],lengthM:135.7};
+ }}))!;
+ fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
+ fireEvent.click(screen.getByRole('button',{name:fractionalMode}));
+ expect(screen.getByText(/同じ道路の一部分だけ/)).toBeTruthy();
+ app.pressPoint(fractionalStart);
+ app.pressPoint(fractionalEnd,1);
+ app.pressPoint(fractionalEnd,2);
+ await screen.findByText('道路経路 135.7 m・停留所2か所');
+ const approvedLine=screen.getByLabelText('バス系統のプレビュー').getAttribute('d');
+ fireEvent.keyDown(window,{key:'Enter'});
+ expect(request).toMatchObject({expectedWorldToken:'world-exact',path:{
+  rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,respectOneway:true,
+  start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:1},
+  sameAtomStops:[250_000,625_000],
+ }});
+ expect(request).not.toHaveProperty('path.pattern');
+ expect(request).not.toHaveProperty('path.gradePolicy');
+ expect(observe).not.toHaveBeenCalled();
+ expect(read).toHaveBeenCalledTimes(1);
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',request));
+ expect((await screen.findByLabelText('作成済みのバス経路')).getAttribute('d')).toBe(approvedLine);
+ expect(screen.queryByRole('button',{name:'停留所を編集'})).toBeNull();
+});
+
+test('a fractional bus cannot join another source atom or fall back to the nearest vertex',async()=>{
+ const app=(await setup({fractional:true,waypoints:true,autoStart:false,preview:async()=>{throw Error('no native job was intended');}}))!;
+ fireEvent.click(screen.getByRole('button',{name:fractionalMode}));
+ app.pressPoint(fractionalStart);
+ app.pressPoint({longitude:(b.longitude+waypoint.longitude)/2,latitude:(b.latitude+waypoint.latitude)/2});
+ await screen.findByText('起点と終点は同じ道路区間の異なる位置を選んでください。');
+ expect(read).not.toHaveBeenCalled();
+ expect(observe).not.toHaveBeenCalled();
+ expect(invoke).not.toHaveBeenCalledWith('preview_gameplay_ofm_bus',expect.anything());
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+});
+
+test.each([false,true])('fractional Bus does not save zero-length or replaced road evidence (%s)',async stale=>{
+ const app=(await setup({fractional:true,waypoints:true,autoStart:false,preview:async()=>({points:[fractionalStart,fractionalEnd],lengthM:stale?135.7:0})}))!;
+ fireEvent.click(screen.getByRole('button',{name:fractionalMode}));
+ app.pressPoint(fractionalStart);app.pressPoint(fractionalEnd);
+ if(stale){
+  await screen.findByText('道路経路 135.7 m・停留所2か所');
+  snapshots=snapshots.map(cell=>({...cell,bundle:{...cell.bundle,sourceSha256:'4'.repeat(64)}}));
+  fireEvent.change(screen.getByLabelText('バス系統名'),{target:{value:'New name'}});
+  fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+  await screen.findByText('道路の元データが変わりました。起点から選び直してください。');
+ }else{
+  await screen.findByText('経路の確認結果が一致しません。位置を選び直してください。');
+ }
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ expect(screen.queryByRole('button',{name:'バス系統を確定'})).toBeNull();
+});
+
+test('reverse fractional clicks ask native for the reverse atom, never an invented forward route',async()=>{
+ let request:unknown;
+ const app=(await setup({fractional:true,waypoints:true,autoStart:false,preview:async args=>{
+  request=args;return {points:[],lengthM:0,failedLegIndex:0};
+ }}))!;
+ fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
+ fireEvent.click(screen.getByRole('button',{name:fractionalMode}));
+ app.pressPoint(fractionalEnd);app.pressPoint(fractionalStart);
+ await screen.findByText('この区間を道路でつなげません。');
+ expect(request).toMatchObject({path:{respectOneway:true,sameAtomStops:[375_000,750_000],
+  start:{feature:0,line:0,vertex:1},end:{feature:0,line:0,vertex:0},
+ }});
+ expect(screen.queryByRole('button',{name:'バス系統を確定'})).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+});
+
+
+test('general fractional Bus crosses a junction on the exact native preview and persists both cuts',async()=>{
+ const pick={longitude:b.longitude+(waypoint.longitude-b.longitude)*.375,latitude:b.latitude+(waypoint.latitude-b.latitude)*.375};
+ let request:unknown;
+ const app=(await setup({fractional:true,generalFractional:true,waypoints:true,autoStart:false,preview:async args=>{
+  request=args;return {points:[fractionalStart,b,pick],lengthM:238.236};
+ }}))!;
+ fireEvent.click(screen.getByRole('button',{name:fractionalMode}));
+ expect(screen.getByText(/確認できる道路を経由する片道/)).toBeTruthy();
+ app.pressPoint(fractionalStart);app.pressPoint(pick);
+ await screen.findByText('道路経路 238.236 m・停留所2か所');
+ const previewPath=screen.getByLabelText('バス系統のプレビュー').getAttribute('d');
+ expect(request).toMatchObject({expectedWorldToken:'world-exact',path:{
+  rule:'ofm_ground_bus_z14_v1',tileKey:key,tileRawSha256:raw,
+  start:{feature:0,line:0,vertex:0},end:{feature:0,line:0,vertex:1},fractionalTerminals:[250_000,375_000]
+ }});
+ expect(request).not.toHaveProperty('path.sameAtomStops');
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',request));
+ expect((await screen.findByLabelText('作成済みのバス経路')).getAttribute('d')).toBe(previewPath);
+});
+
+
+test('fractional Bus stop editor keeps the exact source cut while publishing only on confirm',async()=>{
+ const finish={longitude:b.longitude+(waypoint.longitude-b.longitude)*.375,latitude:b.latitude+(waypoint.latitude-b.latitude)*.375};
+ const mid={longitude:a.longitude+(b.longitude-a.longitude)*.625,latitude:a.latitude};
+ const keys=['a','b'].map(key=>key.repeat(64));
+ const app=(await setup({fractional:true,generalFractional:true,generalFractionalStops:true,
+  interiorStops:true,waypoints:true,autoStart:false,preview:async (args)=>{
+   const req=args as {requestStopTargets?:boolean;path:{interiorStops?:{id:string;name:string}[]}};
+   const placed=req.path.interiorStops??[];
+   return {
+    points:[fractionalStart,b,finish],lengthM:235,
+    ...(req.requestStopTargets?{stopOccurrenceKeys:keys,stopTargetTerminalCuts:[250_000,375_000]}:{}),
+    ...(placed.length?{interiorStops:placed.map(st=>({id:st.id,stopId:'mid',name:st.name,point:mid,servesReturn:false}))}:{}),
+   };
+  }}))!;
+ fireEvent.click(screen.getByRole('button',{name:fractionalMode}));
+ app.pressPoint(fractionalStart);app.pressPoint(finish);
+ await screen.findByText('道路経路 235 m・停留所2か所');
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ fireEvent.click(await screen.findByRole('button',{name:'停留所を編集'}));
+ await screen.findByRole('button',{name:'停留所の編集を確定'});
+ app.pressPoint(mid);
+ await screen.findByRole('textbox',{name:'停留所名 1'});
+ expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='put_gameplay_ofm_bus')).toHaveLength(1);
+ fireEvent.click(screen.getByRole('button',{name:'停留所の編集を確定'}));
+ await waitFor(()=>expect(vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='put_gameplay_ofm_bus')).toHaveLength(2));
+ const confirmed=vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='put_gameplay_ofm_bus').at(-1)?.[1];
+ expect(confirmed).toMatchObject({path:{fractionalTerminals:[250_000,375_000],interiorStops:[
+  {name:'停留所 1',occurrenceKey:keys[0],fractionQ:625_000},
+ ]}});
 });

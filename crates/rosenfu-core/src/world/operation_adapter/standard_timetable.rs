@@ -61,20 +61,24 @@ impl World {
             return Err(OperationError::ReservationScopeChanged);
         }
         let op = self.operation().ok_or(OperationError::InvalidClock)?;
+        let key = service.0.to_string();
+        if let Some((active, _)) = op.runtime.standard_intervals() {
+            if active != key || op.standard_owner != Some((player, company)) {
+                return Err(OperationError::InvalidTimetable);
+            }
+        }
         if op.invalidated
             || op.pending_target.is_some()
             || !op.runtime.paused()
             || (!op.runtime.has_started() && (op.configs.len() != 1 || !op.bus_configs.is_empty()))
             || op.runtime.trains().next().is_some()
             || op.runtime.rail_timetable_handoff_in_progress()
-            || op.runtime.has_standard_timetable()
         {
             return Err(OperationError::InvalidClock);
         }
         self.validate_standard_physics(expected, service)?;
         let op = self.operation_mut().ok_or(OperationError::InvalidClock)?;
-        op.runtime
-            .set_standard_timetable(service.0.to_string(), authored)?;
+        op.runtime.set_standard_timetable(key, authored)?;
         op.standard_owner = Some((player, company));
         Ok(())
     }

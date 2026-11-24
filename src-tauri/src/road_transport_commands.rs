@@ -130,12 +130,29 @@ fn cached_tiles(
     Ok(cached)
 }
 
+// Hook up to the typed storage format only after the exact chain save/reopen
+// regression has been validated. Never expose a live writer under an old tag.
+pub(crate) const TRAM_CHAIN_SAVE_ENABLED: bool = rosenfu_storage::STREET_TRAM_CHAIN_SAVE_ENABLED;
+
+fn authored_tram_proof<'a>(
+    guide: Option<&'a rosenfu_core::ofm_evidence::AuthoredTramGuide>,
+    chain: Option<&'a rosenfu_core::ofm_evidence::AuthoredTramChainGuide>,
+) -> Result<rosenfu_core::ofm_evidence::AuthoredTramProof<'a>, String> {
+    match (guide, chain) {
+        (Some(guide), None) => Ok(guide.into()),
+        (None, Some(chain)) if TRAM_CHAIN_SAVE_ENABLED => Ok(chain.into()),
+        (None, Some(_)) => Err("この版では複数境界の併用軌道を保存できません。".into()),
+        _ => Err("道路に沿う軌道の元データを一つ指定してください。".into()),
+    }
+}
+
 /// Geometry for the game track guide, not permission to operate a real tram.
 #[tauri::command]
 pub async fn preview_authored_tram_road_guide(
     editor: State<'_, Mutex<WorldEditor>>,
     expected_world_token: String,
-    guide: rosenfu_core::ofm_evidence::AuthoredTramGuide,
+    guide: Option<rosenfu_core::ofm_evidence::AuthoredTramGuide>,
+    chain_guide: Option<rosenfu_core::ofm_evidence::AuthoredTramChainGuide>,
     raw_evidence: Option<crate::session::OfmRawInput>,
     tile_binding: Option<crate::session::OfmBindingInput>,
     context_tiles: Option<Vec<CachedOfmBusTile>>,
@@ -146,17 +163,20 @@ pub async fn preview_authored_tram_road_guide(
         .map_err(|_| "world state unavailable")?
         .clone();
     tauri::async_runtime::spawn_blocking(move || {
-        snapshot.preview_authored_tram_road_guide(&expected_world_token, &guide, cached)
+        let proof = authored_tram_proof(guide.as_ref(), chain_guide.as_ref())?;
+        snapshot.preview_authored_tram_road_guide(&expected_world_token, proof, cached)
     })
     .await
     .map_err(|_| "道路に沿う軌道の経路を確認できません。".to_owned())?
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Keep the existing IPC fields compatible.
 pub async fn build_authored_street_tram(
     app: tauri::AppHandle,
     expected_world_token: String,
-    guide: rosenfu_core::ofm_evidence::AuthoredTramGuide,
+    guide: Option<rosenfu_core::ofm_evidence::AuthoredTramGuide>,
+    chain_guide: Option<rosenfu_core::ofm_evidence::AuthoredTramChainGuide>,
     raw_evidence: Option<crate::session::OfmRawInput>,
     tile_binding: Option<crate::session::OfmBindingInput>,
     context_tiles: Option<Vec<CachedOfmBusTile>>,
@@ -168,9 +188,10 @@ pub async fn build_authored_street_tram(
         use tauri::Manager;
         let editor = app.state::<Mutex<WorldEditor>>();
         let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+        let proof = authored_tram_proof(guide.as_ref(), chain_guide.as_ref())?;
         editor.build_authored_street_tram(
             &expected_world_token,
-            &guide,
+            proof,
             cached,
             alignment,
             roads.unwrap_or_default(),

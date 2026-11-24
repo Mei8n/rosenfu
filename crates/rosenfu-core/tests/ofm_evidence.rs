@@ -115,7 +115,7 @@ fn same_raw_different_tile_is_separately_bound() {
 #[test]
 fn invalid_known_attributes_are_not_ground_defaults() {
     for (k, value) in [
-        ("brunnel", field(1, b"ford")),
+        ("brunnel", field(1, b"unknown")),
         ("access", scalar(7, 1)),
         ("subclass", scalar(4, 1)),
         ("layer", field(1, b"unknown")),
@@ -1493,6 +1493,52 @@ fn ordinary_bus_does_not_snap_connect_grade_or_infer_an_interior_crossing() {
 }
 
 #[test]
+fn supplier_ford_does_not_poison_same_tile_but_is_not_routable() {
+    let (binding, store) = bus_fixture(&[
+        (&[[100, 100], [200, 100], [300, 100]], None),
+        (&[[200, 100], [200, 200]], Some(("brunnel", "ford"))),
+    ]);
+    let raw = store.raw(&binding.raw_sha256).unwrap();
+    let decoded = decode_tile(&binding, raw).unwrap();
+    assert_eq!(
+        decoded.lines[1].attributes["brunnel"],
+        RawValue::String("ford".into())
+    );
+    let start = bus_vertex(0, 0);
+    let ordinary = bus_vertex(0, 2);
+    let ford = bus_vertex(1, 1);
+    let bus =
+        |end| find_gameplay_bus_path(&store, &binding.canonical_url, start, end, true).unwrap();
+    let accepted = bus(ordinary).unwrap();
+    assert_eq!(accepted.points.len(), 3);
+    assert!(bus(ford).is_none());
+    let mut structured = accepted.binding.clone();
+    structured.end = ford;
+    structured.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+    assert!(reconstruct_gameplay_bus_path(&store, &structured)
+        .unwrap()
+        .is_none());
+
+    let tram = |end| {
+        reconstruct_authored_tram_guide(
+            &store,
+            &AuthoredTramGuide {
+                tile_key: binding.canonical_url.clone(),
+                tile_raw_sha256: binding.raw_sha256.clone(),
+                start,
+                end,
+                start_fraction_q: None,
+                end_fraction_q: None,
+                adjacent_end: None,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(tram(ordinary).unwrap(), accepted.points);
+    assert!(tram(ford).is_none());
+}
+
+#[test]
 fn ordinary_bus_refuses_denied_unknown_or_buffered_edges() {
     for tag in [
         Some(("access", "private")),
@@ -1579,6 +1625,8 @@ fn bus_rectangle(cells: &[(u32, u32, &[BusFixtureLine<'_>])]) -> (Vec<TileBindin
 fn bus_rectangle_query(tiles: &[TileBinding], end: BusVertex, oneway: bool) -> BusPathBinding {
     BusPathBinding {
         rule: BUS_RECTANGLE_RULE.into(),
+        same_atom_stops: None,
+        fractional_terminals: None,
         grade_policy: None,
         tile_key: tiles[0].canonical_url.clone(),
         tile_raw_sha256: tiles[0].raw_sha256.clone(),
@@ -2410,4 +2458,228 @@ fn ordinary_street_tram_adjacent_seam_rejects_wrong_hash_and_buffer_pick() {
     assert!(reconstruct_authored_tram_guide(&store, &guide)
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn authored_tram_chain_two_north_south_seams_require_exact_order_and_evidence() {
+    use rosenfu_core::ofm_evidence::{
+        reconstruct_authored_tram_chain, AuthoredTramChainGuide, BusTileProof,
+    };
+    let north: &[BusFixtureLine<'_>] = &[(&[[2000, 3400], [2000, 4196]], None)];
+    let middle: &[BusFixtureLine<'_>] = &[(
+        &[[2000, -100], [2000, 1200], [2000, 2900], [2000, 4196]],
+        None,
+    )];
+    let south: &[BusFixtureLine<'_>] = &[(&[[2000, -100], [2000, 600]], None)];
+    let cells: [(u32, u32, &[BusFixtureLine<'_>]); 3] = [
+        (14391, 6428, north),
+        (14391, 6429, middle),
+        (14391, 6430, south),
+    ];
+    let make = |bindings: &[TileBinding]| AuthoredTramChainGuide {
+        tiles: bindings
+            .iter()
+            .map(|t| BusTileProof {
+                tile_key: t.canonical_url.clone(),
+                tile_raw_sha256: t.raw_sha256.clone(),
+            })
+            .collect(),
+        start: bus_vertex(0, 0),
+        end: bus_vertex(0, 0),
+        start_fraction_q: Some(500_000),
+        end_fraction_q: Some(500_000),
+    };
+    let (tiles, store) = bus_rectangle(&cells);
+    let guide = make(&tiles);
+    let path = reconstruct_authored_tram_chain(&store, &guide)
+        .unwrap()
+        .unwrap();
+    let latitude = |y: f64| {
+        (std::f64::consts::PI * (1. - 2. * y / 16384.))
+            .sinh()
+            .atan()
+            .to_degrees()
+    };
+    assert!(path.windows(2).all(|p| p[0][1] > p[1][1]));
+    for seam in [6429., 6430.] {
+        let cut = latitude(seam);
+        assert_eq!(path.iter().filter(|p| (p[1] - cut).abs() < 1e-8).count(), 1);
+    }
+    let mut reverse = make(&tiles);
+    reverse.tiles.reverse();
+    assert!(reconstruct_authored_tram_chain(&store, &reverse)
+        .unwrap()
+        .unwrap()
+        .iter()
+        .rev()
+        .eq(path.iter()));
+
+    let mut outside = make(&tiles);
+    outside.start_fraction_q = Some(950_000);
+    assert!(reconstruct_authored_tram_chain(&store, &outside)
+        .unwrap()
+        .is_none());
+    let mut digest = make(&tiles);
+    digest.tiles[1].tile_raw_sha256 = "0".repeat(64);
+    assert_eq!(
+        reconstruct_authored_tram_chain(&store, &digest),
+        Err(Error::Hash)
+    );
+    let mut repeat = make(&tiles);
+    repeat.tiles[1] = repeat.tiles[0].clone();
+    assert_eq!(
+        reconstruct_authored_tram_chain(&store, &repeat),
+        Err(Error::Binding)
+    );
+    let mut skip = make(&tiles);
+    skip.tiles.swap(1, 2);
+    assert_eq!(
+        reconstruct_authored_tram_chain(&store, &skip),
+        Err(Error::Binding)
+    );
+
+    let doubled = [middle[0], middle[0]];
+    let (tiles, ambiguous) = bus_rectangle(&[
+        (14391, 6428, north),
+        (14391, 6429, &doubled),
+        (14391, 6430, south),
+    ]);
+    assert!(reconstruct_authored_tram_chain(&ambiguous, &make(&tiles))
+        .unwrap()
+        .is_none());
+    let (tiles, corner) = bus_rectangle(&[
+        (14391, 6428, north),
+        (14392, 6429, middle),
+        (14392, 6430, south),
+    ]);
+    assert_eq!(
+        reconstruct_authored_tram_chain(&corner, &make(&tiles)),
+        Err(Error::Binding)
+    );
+}
+
+#[test]
+fn authored_tram_chain_can_turn_through_an_observed_middle_tile_not_a_rectangle() {
+    use rosenfu_core::ofm_evidence::{
+        reconstruct_authored_tram_chain, AuthoredTramChainGuide, BusTileProof,
+    };
+    let north: &[BusFixtureLine<'_>] = &[(&[[2000, 3400], [2000, 4196]], None)];
+    let corner: &[BusFixtureLine<'_>] = &[(&[[2000, -100], [2000, 2100], [4196, 2100]], None)];
+    let east: &[BusFixtureLine<'_>] = &[(&[[-100, 2100], [700, 2100]], None)];
+    let (tiles, store) = bus_rectangle(&[
+        (14391, 6428, north),
+        (14391, 6429, corner),
+        (14392, 6429, east),
+    ]);
+    let guide = AuthoredTramChainGuide {
+        tiles: tiles
+            .iter()
+            .map(|t| BusTileProof {
+                tile_key: t.canonical_url.clone(),
+                tile_raw_sha256: t.raw_sha256.clone(),
+            })
+            .collect(),
+        start: bus_vertex(0, 0),
+        end: bus_vertex(0, 1),
+        start_fraction_q: None,
+        end_fraction_q: None,
+    };
+    let path = reconstruct_authored_tram_chain(&store, &guide)
+        .unwrap()
+        .unwrap();
+    assert_eq!(path.len(), 5);
+    assert!(path[0][0] == path[1][0] && path[1][0] == path[2][0]);
+    assert!(path[0][1] > path[1][1] && path[1][1] > path[2][1]);
+    assert!(path[2][0] < path[3][0] && path[3][0] < path[4][0]);
+    assert!(path[2..].iter().all(|p| p[1] == path[2][1]));
+}
+
+#[test]
+fn fractional_bus_traversal_preserves_regular_atom_ids_and_exact_terminal_positions() {
+    let (tile, store) = bus_fixture(&[
+        (&[[100, 100], [300, 100], [500, 100]], None),
+        (&[[500, 100], [500, 300]], None),
+    ]);
+    let anchor = |feature| BusVertex {
+        feature,
+        line: 0,
+        vertex: 0,
+    };
+    let request = BusPathBinding {
+        tile_key: tile.canonical_url.clone(),
+        tile_raw_sha256: tile.raw_sha256.clone(),
+        start: anchor(0),
+        end: anchor(1),
+        rule: BUS_GRAPH_RULE.into(),
+        respect_oneway: true,
+        same_atom_stops: None,
+        fractional_terminals: None,
+        grade_policy: None,
+        additional_tiles: vec![],
+        end_tile_key: None,
+        pattern: None,
+        interior_stops: vec![],
+        via: vec![],
+    };
+    let route = resolve_fractional_bus_traversal(&store, &request, [250_000, 750_000])
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.atom_count(), 3);
+    let vertex_route = find_gameplay_bus_path(
+        &store,
+        &tile.canonical_url,
+        anchor(0),
+        bus_vertex(1, 1),
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    for i in 0..route.atom_count() {
+        assert_eq!(route.directed_atom_id(i), vertex_route.source_atom_id(i));
+    }
+    assert_eq!(route.terminal_cuts(), [250_000, 750_000]);
+    let points = route.oriented_route_points();
+    assert_eq!(points[1..3], vertex_route.points[1..3]);
+    assert!(points[0][0] > vertex_route.points[0][0]);
+    assert!(points[3][1] > vertex_route.points[3][1]);
+    assert!(route.length_mm() > 1);
+    assert!((route.length_mm() as f64) < vertex_route.length_m * 1000.);
+
+    let reverse = BusPathBinding {
+        start: request.end,
+        end: request.start,
+        ..request.clone()
+    };
+    let back = resolve_fractional_bus_traversal(&store, &reverse, [750_000, 250_000])
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.atom_count(), 3);
+    assert!((0..3).all(|i| back.physical_atom_id(i) == route.physical_atom_id(2 - i)));
+    assert_ne!(back.directed_atom_id(0), route.directed_atom_id(2));
+    for (a, b) in points.iter().zip(back.oriented_route_points().iter().rev()) {
+        assert!((a[0] - b[0]).abs() < 1e-10 && (a[1] - b[1]).abs() < 1e-10);
+    }
+
+    let one_way = bus_fixture(&[
+        (&[[100, 100], [300, 100], [500, 100]], None),
+        (&[[500, 100], [500, 300]], Some(("oneway", "yes"))),
+    ]);
+    let denied = BusPathBinding {
+        tile_key: one_way.0.canonical_url.clone(),
+        tile_raw_sha256: one_way.0.raw_sha256.clone(),
+        ..reverse
+    };
+    assert!(
+        resolve_fractional_bus_traversal(&one_way.1, &denied, [750_000, 250_000])
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        resolve_fractional_bus_traversal(&one_way.1, &request, [250_000, 750_000]),
+        Err(Error::Hash)
+    ));
+    assert!(matches!(
+        resolve_fractional_bus_traversal(&store, &request, [0, 750_000]),
+        Err(Error::Binding)
+    ));
 }

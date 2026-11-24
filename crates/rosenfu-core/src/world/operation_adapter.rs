@@ -1,8 +1,9 @@
 //! Authoritative physical service path adapter. Never uses screen coordinates.
 use super::*;
 use crate::operation::{
-    fixed_refuge_resources, inline_lane_key, inline_platform_handoff, OperationError,
-    OperationRuntime, RailAdmissionModel, RunLeg, Section, ServiceRunSpec, Timetable, Vehicle,
+    fixed_refuge_resources, independent_neck_bus, inline_lane_key, inline_platform_handoff,
+    terminal_neck, OperationError, OperationRuntime, RailAdmissionModel, RunLeg, Section,
+    ServiceRunSpec, Timetable, Vehicle,
 };
 use std::collections::{BTreeMap, BTreeSet};
 mod opposing_birth_priority;
@@ -746,8 +747,8 @@ impl World {
             .and_then(|l| l.sections.first())
             .ok_or_else(invalid)?;
         // No cross-track switch may be inferred from a shared station marker.
-        // Our directional selectors coincide on a physical lane only for a
-        // single-track section; crossover routing is not modeled here.
+        // At reversal the berth must be on the same physical lane. An explicit
+        // mixed-count join elsewhere on the path may lead to a different lane.
         if lane_resource(incoming).is_none() || lane_resource(incoming) != lane_resource(departing)
         {
             return Err(invalid());
@@ -871,6 +872,33 @@ pub struct WorldOperationSave {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     standard_timetable: Option<StandardWorldSchedule>,
 }
+impl WorldOperationSave {
+    pub const CONNECTED_TERMINAL_NECK_FORMAT: u32 =
+        RailAdmissionModel::ConnectedTerminalNeck as u32;
+    pub fn has_connected_terminal_neck(&self) -> bool {
+        self.runtime.format == Self::CONNECTED_TERMINAL_NECK_FORMAT
+    }
+
+    /// Identifies the declared classic-Bus + neck wire shape. Opening it still
+    /// requires `World::restore_operation` to recompile and prove the terrain.
+    pub fn has_connected_terminal_neck_with_independent_classic_bus(&self) -> bool {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.has_standard_timetable() {
+            return false;
+        }
+        self.has_connected_terminal_neck()
+            && self.bus_configs.len() == 1
+            && !self.crossing_reservations
+            && !self.parallel_join_lanes
+            && World::connected_neck_run_specs(
+                &self.configs,
+                &self.bus_configs,
+                &self.runtime.services,
+            )
+            .is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldOperation {
     pub configs: Vec<OperationServiceConfig>,
@@ -1045,9 +1073,13 @@ impl World {
         for config in &bus_configs {
             specs.push(self.compile_bus_operation(config)?);
         }
+        self.check_fractional_bus_street_separation(&specs)?;
         use RailAdmissionModel::*;
         let qualifies = |mode| match mode {
             Fixed => true,
+            ConnectedTerminalNeck => {
+                self.connected_neck_world_qualified(&configs, &bus_configs, &specs, false)
+            }
             _ if !bus_configs.is_empty() => false,
             TurnbackHold => self.terminal_hold_eligible(&configs, &specs),
             FixedRefuge => self.fixed_refuge_eligible(&configs, &specs),
@@ -1062,6 +1094,7 @@ impl World {
             Some(_) => return Err(OperationError::ReservationScopeChanged),
             None => [
                 TurnbackHold,
+                ConnectedTerminalNeck,
                 FixedRefuge,
                 InlinePlatformHandoff,
                 InlineTerminalDwell,
@@ -1075,6 +1108,7 @@ impl World {
             Fixed => OperationRuntime::new(specs)?,
             Progressive => OperationRuntime::new_with_progressive_rail(specs)?,
             TurnbackHold => OperationRuntime::new_with_terminal_hold(specs)?,
+            ConnectedTerminalNeck => OperationRuntime::new_with_connected_terminal_neck(specs)?,
             FixedRefuge => OperationRuntime::new_with_fixed_refuge(specs)?,
             InlineTerminalDwell => OperationRuntime::new_with_inline_terminal_dwell(specs)?,
             InlinePlatformHandoff => OperationRuntime::new_with_inline_platform_handoff(specs)?,
@@ -1147,6 +1181,17 @@ impl World {
         }
         let progressive = saved.runtime.format == 3;
         let holding = saved.runtime.format == 4;
+        let neck = saved.has_connected_terminal_neck();
+        let neck_qualified = neck
+            && !saved.parallel_join_lanes
+            && !saved.crossing_reservations
+            && (!saved.invalidated || saved.runtime.paused)
+            && self.connected_neck_world_qualified(
+                &saved.configs,
+                &saved.bus_configs,
+                &saved.runtime.services,
+                saved.invalidated,
+            );
         let refuge = saved.runtime.format == 7;
         let refuge_qualified = refuge
             && saved.bus_configs.is_empty()
@@ -1193,6 +1238,7 @@ impl World {
             };
         if saved.runtime.format != 2
             && !holding
+            && !neck_qualified
             && !progressive_qualified
             && !platform_qualified
             && !handoff_qualified
@@ -1225,6 +1271,7 @@ impl World {
             return Err(OperationError::InvalidPath);
         }
         if !saved.invalidated {
+            self.check_fractional_bus_street_separation(&saved.runtime.services)?;
             if saved
                 .runtime
                 .services
@@ -1271,7 +1318,7 @@ impl World {
                         },
                     )
                     .is_ok_and(|current| current == *spec)
-                } else if progressive || holding || platform || handoff || refuge {
+                } else if progressive || holding || neck || platform || handoff || refuge {
                     self.compile_operation(config)
                         .is_ok_and(|current| current == *spec)
                 } else {
@@ -1308,6 +1355,8 @@ impl World {
         }
         let mut runtime = if holding {
             crate::operation::OperationRuntime::restore_with_terminal_hold(saved.runtime)?
+        } else if neck_qualified {
+            crate::operation::OperationRuntime::restore_with_connected_terminal_neck(saved.runtime)?
         } else if refuge_qualified {
             crate::operation::OperationRuntime::restore_with_fixed_refuge(saved.runtime)?
         } else if handoff_qualified {
@@ -1404,6 +1453,375 @@ impl World {
                         })
                 })
             })
+    }
+
+    fn connected_terminal_neck_specs(
+        config: &OperationServiceConfig,
+        spec: &ServiceRunSpec,
+    ) -> bool {
+        spec.service_id == config.service_id.0.to_string()
+            && spec.vehicle == config.vehicle
+            && spec.vehicle.length_m <= 80.
+            && spec.timetable == config.timetable
+            && spec.legs.iter().all(|l| l.dwell_ms == config.dwell_ms)
+            && terminal_neck(spec).is_some()
+    }
+
+    fn connected_neck_run_specs<'a>(
+        configs: &[OperationServiceConfig],
+        buses: &[BusOperationConfig],
+        specs: &'a [ServiceRunSpec],
+    ) -> Option<(&'a ServiceRunSpec, Option<&'a ServiceRunSpec>)> {
+        let [config] = configs else {
+            return None;
+        };
+        if specs.len() != 1 + buses.len() || buses.len() > 1 {
+            return None;
+        }
+        let rail = specs
+            .iter()
+            .find(|spec| Self::connected_terminal_neck_specs(config, spec))?;
+        let bus = if let [config] = buses {
+            let bus_id = format!("bus:{}", config.route_id);
+            let spec = specs.iter().find(|spec| spec.service_id == bus_id)?;
+            if !independent_neck_bus(spec)
+                || spec.vehicle != config.vehicle
+                || spec.timetable != config.timetable
+                || spec.legs.iter().any(|leg| {
+                    leg.dwell_ms != config.dwell_ms && Some(leg.dwell_ms) != config.turnaround_ms
+                })
+            {
+                return None;
+            }
+            Some(spec)
+        } else {
+            None
+        };
+        Some((rail, bus))
+    }
+
+    /// Fixed mode has a shared clock but separate road and rail locks.
+    /// New coactive fractional-bus/street-tram routes must therefore prove
+    /// disjoint swept strips before admission. Whole traversed atoms and
+    /// authored alignments are intentionally conservative (including tails).
+    fn check_fractional_bus_street_separation<'a>(
+        &self,
+        specs: impl IntoIterator<Item = &'a ServiceRunSpec>,
+    ) -> Result<(), OperationError> {
+        const MAX_WORK: usize = 32_768;
+        const BUFFER_DEGREES: f64 = 0.0002;
+        let error = OperationError::ReservationScopeChanged;
+        if !self.data.carries_general_fractional_bus_proof()
+            || !self.data.carries_street_tram_proof()
+        {
+            return Ok(());
+        }
+        let selected = specs.into_iter().collect::<Vec<_>>();
+        let is_road = |spec: &ServiceRunSpec| {
+            spec.service_id
+                .strip_prefix("bus:")
+                .and_then(|id| self.data.ofm_gameplay_bus_routes.get(id))
+                .is_some_and(|b| b.fractional_terminals.is_some())
+        };
+        if !selected.iter().any(|spec| is_road(spec))
+            || !selected
+                .iter()
+                .any(|spec| !spec.service_id.starts_with("bus:"))
+        {
+            return Ok(());
+        }
+        let authored: BTreeSet<_> = self
+            .data
+            .road_path_provenance
+            .iter()
+            .filter(|p| p.path.carries_street_tram_proof())
+            .map(|p| p.alignment_id.0)
+            .collect();
+        let mut rails = BTreeSet::new();
+        let mut roads = BTreeSet::new();
+        let mut remaining = MAX_WORK;
+        for spec in selected {
+            let is_road = is_road(spec);
+            if spec.service_id.starts_with("bus:") && !is_road {
+                continue;
+            }
+            for key in spec
+                .legs
+                .iter()
+                .flat_map(|l| &l.sections)
+                .flat_map(|s| &s.resources)
+            {
+                remaining = remaining.checked_sub(1).ok_or_else(|| error.clone())?;
+                if is_road {
+                    roads.insert(
+                        key.strip_prefix("road:edge:")
+                            .ok_or_else(|| error.clone())?,
+                    );
+                } else if let Some((id, _, _)) = inline_lane_key(key) {
+                    if authored.contains(&id) {
+                        rails.insert(id);
+                    }
+                }
+            }
+        }
+        if rails.is_empty() || roads.is_empty() {
+            return Ok(());
+        }
+        let bbox = |p: &[GeoPoint]| {
+            let [a, b] = p else { return None };
+            if [a, b].iter().any(|pt| {
+                !(122.0..=154.).contains(&pt.longitude) || !(20.0..=46.).contains(&pt.latitude)
+            }) {
+                return None;
+            }
+            Some([
+                a.longitude.min(b.longitude),
+                a.latitude.min(b.latitude),
+                a.longitude.max(b.longitude),
+                a.latitude.max(b.latitude),
+            ])
+        };
+        let mut strips = Vec::new();
+        for line in self
+            .data
+            .alignments
+            .iter()
+            .filter(|line| rails.contains(&line.id.0))
+        {
+            for segment in line.points.windows(2) {
+                remaining = remaining.checked_sub(1).ok_or_else(|| error.clone())?;
+                strips.push(bbox(segment).ok_or_else(|| error.clone())?);
+            }
+        }
+        let mut found = 0;
+        for edge in self
+            .data
+            .road_transport
+            .edges
+            .iter()
+            .filter(|edge| roads.contains(edge.id.as_str()))
+        {
+            found += 1;
+            for segment in edge.geometry.windows(2) {
+                let b = bbox(segment).ok_or_else(|| error.clone())?;
+                remaining = remaining
+                    .checked_sub(strips.len())
+                    .ok_or_else(|| error.clone())?;
+                if strips.iter().any(|r| {
+                    b[0] <= r[2] + BUFFER_DEGREES
+                        && r[0] <= b[2] + BUFFER_DEGREES
+                        && b[1] <= r[3] + BUFFER_DEGREES
+                        && r[1] <= b[3] + BUFFER_DEGREES
+                }) {
+                    return Err(error);
+                }
+            }
+        }
+        if found != roads.len() || strips.is_empty() {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn connected_neck_wire_conflicts(&self) -> bool {
+        self.data.carries_street_tram_proof()
+            || self.data.carries_adjacent_street_tram_proof()
+            || self.data.carries_fractional_bus_proof()
+            || self.data.carries_general_fractional_bus_proof()
+    }
+
+    fn connected_neck_world_qualified(
+        &self,
+        configs: &[OperationServiceConfig],
+        buses: &[BusOperationConfig],
+        specs: &[ServiceRunSpec],
+        frozen: bool,
+    ) -> bool {
+        if self.connected_neck_wire_conflicts() {
+            return false;
+        }
+        let Some((rail, bus)) = Self::connected_neck_run_specs(configs, buses, specs) else {
+            return false;
+        };
+        frozen
+            || (self.connected_terminal_neck_eligible(&configs[0], rail)
+                && bus.is_none_or(|bus| self.separated_neck_bus(rail, bus)))
+    }
+
+    /// Do not infer physical separation from the road/rail key prefixes.
+    /// Compare actual full traversed edge geometries with both rail lines.
+    /// Rectangles overapproximate segments and unsupported/large cases stay
+    /// on the legacy mode. No road access validation is inferred from boxes.
+    fn separated_neck_bus(&self, rail: &ServiceRunSpec, bus: &ServiceRunSpec) -> bool {
+        const MAX_EDGES: usize = 4_096;
+        const MAX_POINTS: usize = 16_384;
+        const BUFFER_DEGREES: f64 = 0.001;
+        let bounds = |points: &[GeoPoint]| {
+            let mut b = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            if points.len() < 2 {
+                return None;
+            }
+            for p in points {
+                if !(122.0..=154.).contains(&p.longitude) || !(20.0..=46.).contains(&p.latitude) {
+                    return None;
+                }
+                b[0] = b[0].min(p.longitude);
+                b[1] = b[1].min(p.latitude);
+                b[2] = b[2].max(p.longitude);
+                b[3] = b[3].max(p.latitude);
+            }
+            Some(b)
+        };
+        let Some((main, lead)) = terminal_neck(rail) else {
+            return false;
+        };
+        let rail_bounds = |id| {
+            let line = self.data.alignments.iter().find(|a| a.id.0 == id)?;
+            if self
+                .data
+                .station_placements
+                .iter()
+                .any(|p| p.alignment_id == line.id && p.width_m > 50.)
+            {
+                return None;
+            }
+            bounds(&line.points)
+        };
+        let (Some(main), Some(lead)) = (rail_bounds(main), rail_bounds(lead)) else {
+            return false;
+        };
+        let edges = &self.data.road_transport.edges;
+        if edges.len() > MAX_EDGES {
+            return false;
+        }
+        let mut wanted = BTreeSet::new();
+        for (index, key) in bus
+            .legs
+            .iter()
+            .flat_map(|leg| &leg.sections)
+            .flat_map(|section| &section.resources)
+            .enumerate()
+        {
+            if index == MAX_POINTS {
+                return false;
+            }
+            let Some(id) = key.strip_prefix("road:edge:") else {
+                return false;
+            };
+            wanted.insert(id);
+            if wanted.len() > edges.len() {
+                return false;
+            }
+        }
+        if wanted.is_empty() {
+            return false;
+        }
+        let mut found = 0;
+        let mut points = 0usize;
+        for edge in edges.iter().filter(|e| wanted.contains(e.id.as_str())) {
+            found += 1;
+            points = points.saturating_add(edge.geometry.len());
+            if points > MAX_POINTS {
+                return false;
+            }
+            let Some(b) = bounds(&edge.geometry) else {
+                return false;
+            };
+            if [main, lead].iter().any(|r| {
+                b[0] <= r[2] + BUFFER_DEGREES
+                    && r[0] <= b[2] + BUFFER_DEGREES
+                    && b[1] <= r[3] + BUFFER_DEGREES
+                    && r[1] <= b[3] + BUFFER_DEGREES
+            }) {
+                return false;
+            }
+        }
+        found == wanted.len()
+    }
+
+    /// One Normal double approach explicitly merged into one single terminal
+    /// lead. Never turn between two parallel lanes on a shared station marker.
+    fn connected_terminal_neck_eligible(
+        &self,
+        config: &OperationServiceConfig,
+        spec: &ServiceRunSpec,
+    ) -> bool {
+        let fits = || {
+            if !Self::connected_terminal_neck_specs(config, spec) {
+                return None;
+            }
+            let (main_id, lead_id) = terminal_neck(spec)?;
+            let get = |id| self.data.alignments.iter().find(|a| a.id.0 == id);
+            let (main, lead) = (get(main_id)?, get(lead_id)?);
+            let is_track = |a: &Alignment, tracks| {
+                a.track_type == TrackType::Normal
+                    && a.section_count() == 1
+                    && a.points.len() == 2
+                    && a.vertical_profile
+                        .iter()
+                        .chain(&a.section_profiles)
+                        .all(|p| p.start_height_m == 0. && p.end_height_m == 0.)
+                    && a.section_infrastructure(0).is_some_and(|i| {
+                        i.track_count == tracks && i.level == InfrastructureLevel::Ground
+                    })
+            };
+            if main.owner != lead.owner || !is_track(main, 2) || !is_track(lead, 1) {
+                return None;
+            }
+            let mut links = self.data.alignment_connections.iter().filter(|l| {
+                [main.id, lead.id].contains(&l.a.alignment_id)
+                    || [main.id, lead.id].contains(&l.b.alignment_id)
+            });
+            let one = links.next()?;
+            if links.next().is_some() {
+                return None;
+            }
+            let (main_port, lead_port) = if one.a.alignment_id == main.id {
+                (one.a, one.b)
+            } else {
+                (one.b, one.a)
+            };
+            if main_port.alignment_id != main.id || lead_port.alignment_id != lead.id {
+                return None;
+            }
+            let mut locks = spec
+                .legs
+                .iter()
+                .flat_map(|l| &l.sections)
+                .flat_map(|s| &s.resources);
+            let lock = |p: AlignmentEndpointRef| {
+                format!("rail:join:{}:{:?}", p.alignment_id.0, p.endpoint)
+            };
+            let (main_lock, lead_lock) = (lock(main_port), lock(lead_port));
+            if !locks.clone().any(|r| r == &main_lock) || !locks.any(|r| r == &lead_lock) {
+                return None;
+            }
+            let terminal = StationId(spec.legs[0].to.parse().ok()?);
+            let stop = self
+                .data
+                .station_placements
+                .iter()
+                .find(|p| p.station_id == terminal && p.alignment_id == lead.id)?;
+            if stop.length_m < spec.vehicle.length_m + 4. || stop.width_m < 4.1 {
+                return None;
+            }
+            // Allow either heading after reversal: the whole train fits past
+            // the furthest possible 30 m point lead and before the buffer.
+            let position_from_join = if lead_port.endpoint == AlignmentEndpoint::Start {
+                stop.position
+            } else {
+                1. - stop.position
+            };
+            let distance = position_from_join * lead.length_m();
+            let safe = spec.vehicle.length_m.max(stop.length_m / 2.) + 4.;
+            (distance >= safe + 30. && lead.length_m() - distance >= safe).then_some(())
+        };
+        fits().is_some()
     }
 
     /// Frozen runtimes no longer have the original geometry, but still must
@@ -2037,7 +2455,30 @@ impl World {
                     .collect::<Result<Vec<_>, _>>();
                 return match current {
                     Ok(specs) => {
-                        !self.terminal_hold_eligible(&o.configs, &specs)
+                        let qualified = if o.runtime.admission_model()
+                            == RailAdmissionModel::ConnectedTerminalNeck
+                        {
+                            match (o.configs.as_slice(), specs.as_slice()) {
+                                ([config], [spec]) => {
+                                    !self.connected_neck_wire_conflicts()
+                                        && self.connected_terminal_neck_eligible(config, spec)
+                                        && match o.bus_configs.as_slice() {
+                                            [] => true,
+                                            [bus] => o
+                                                .runtime
+                                                .service_spec(&format!("bus:{}", bus.route_id))
+                                                .is_some_and(|run| {
+                                                    self.separated_neck_bus(spec, run)
+                                                }),
+                                            _ => false,
+                                        }
+                                }
+                                _ => false,
+                            }
+                        } else {
+                            self.terminal_hold_eligible(&o.configs, &specs)
+                        };
+                        !qualified
                             || specs
                                 .iter()
                                 .any(|spec| o.runtime.service_spec(&spec.service_id) != Some(spec))
@@ -2052,6 +2493,21 @@ impl World {
             })
         });
         let invalid = invalid
+            || self.operation.as_ref().is_some_and(|o| {
+                !o.invalidated
+                    && self
+                        .check_fractional_bus_street_separation(
+                            o.configs
+                                .iter()
+                                .filter_map(|rail| {
+                                    o.runtime.service_spec(&rail.service_id.0.to_string())
+                                })
+                                .chain(o.bus_configs.iter().filter_map(|bus| {
+                                    o.runtime.service_spec(&format!("bus:{}", bus.route_id))
+                                })),
+                        )
+                        .is_err()
+            })
             || self.operation.as_ref().is_some_and(|o| {
                 !o.invalidated
                     && o.bus_configs.iter().any(|config| {
@@ -2070,7 +2526,7 @@ impl World {
             let lost_active_siding_proof = o
                 .runtime
                 .active_preferred_opposing_birth()
-                .is_some_and(|started| Some(started) != priority.as_ref());
+                .is_some_and(|started| Some(started) != priority.as_deref());
             o.runtime.set_preferred_opposing_birth(priority);
             if invalid || lost_active_siding_proof {
                 o.invalidated = true;

@@ -959,6 +959,10 @@ mod tests {
     }
 
     fn editor() -> WorldEditor {
+        editor_with_middle_stop(false)
+    }
+
+    fn editor_with_middle_stop(middle: bool) -> WorldEditor {
         let mut e = WorldEditor::new();
         e.company_setup_required = false;
         let a = e
@@ -982,6 +986,14 @@ mod tests {
             .world
             .place_station_on_alignment(e.company, "A".into(), a, 0.1, 100., 10.)
             .unwrap();
+        let passed = middle.then(|| {
+            e.world
+                .place_station_on_alignment(e.company, "途中駅".into(), a, 0.5, 100., 10.)
+                .unwrap();
+            e.world
+                .place_station_on_alignment(e.company, "通過駅".into(), a, 0.7, 100., 10.)
+                .unwrap()
+        });
         let t = e
             .world
             .place_station_on_alignment(e.company, "B".into(), a, 0.9, 100., 10.)
@@ -995,6 +1007,7 @@ mod tests {
         let stops = preview
             .occurrences
             .iter()
+            .filter(|o| Some(o.station_id) != passed)
             .map(|o| o.reference.clone())
             .collect();
         let id = e
@@ -1274,6 +1287,161 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn standard_od_can_board_a_departure_from_an_intermediate_stop_after_reopening() {
+        use super::standard_schedule::StandardOdRequest;
+        use rosenfu_core::operation::periodic_dispatch::standard::NamedBandOverrides;
+        use rosenfu_core::operation::TrainState;
+        let mut e = editor_with_middle_stop(true);
+        let config = e.operation_snapshot().services[0].clone();
+        let view = e
+            .apply_standard_schedule(
+                config.service_id,
+                &e.operation_edit_token(),
+                10,
+                NamedBandOverrides {
+                    early_morning: None,
+                    morning_rush: Some(6),
+                    midday: None,
+                    evening_rush: None,
+                    late_night: None,
+                },
+                [0, 360, 600, 960, 1200, 1440],
+            )
+            .unwrap();
+        let status = serde_json::to_value(
+            e.standard_schedule_status(config.service_id, &view.configuration_token)
+                .unwrap(),
+        )
+        .unwrap();
+        let origin = status["origin"]["id"].as_str().unwrap();
+        let middle = status["destinations"][0]["id"].as_str().unwrap();
+        let destination = status["destinations"][1]["id"].as_str().unwrap();
+        assert_eq!(status["destinations"][0]["name"], "途中駅");
+        assert_eq!(status["destinations"].as_array().unwrap().len(), 2);
+        let passed = e
+            .world
+            .snapshot()
+            .stations
+            .iter()
+            .find(|station| station.name == "通過駅")
+            .unwrap()
+            .id
+            .0
+            .to_string();
+        let now = e.world.operation_save();
+        let bytes = rosenfu_storage::encode(&e.world).unwrap();
+        let mut playback = rosenfu_storage::decode(&bytes).unwrap();
+        let rt = &mut playback.operation_mut().unwrap().runtime;
+        let grid = rt
+            .standard_departure_grid(&config.service_id.0.to_string())
+            .unwrap();
+        let active = grid.active_window();
+        let birth = grid.cursor_after(None).next_departure().unwrap();
+        rt.advance_to(birth, 64).unwrap();
+        let (arriving, release) = match rt.trains().next().unwrap().state {
+            TrainState::Moving {
+                arrival_ms,
+                release_ms,
+                ..
+            } => (arrival_ms, release_ms),
+            ref other => panic!("expected initial movement, got {other:?}"),
+        };
+        rt.advance_to(release, 64).unwrap();
+        let ready = match rt.trains().next().unwrap().state {
+            TrainState::Waiting { ready_ms } => ready_ms,
+            TrainState::Moving { entered_ms, .. } => entered_ms,
+        };
+        assert_eq!(ready, arriving + 30_000);
+        assert!(ready >= release && arriving > birth);
+        rt.advance_to(ready, 64).unwrap();
+        let train = rt.trains().next().unwrap();
+        assert_eq!(train.leg, 1);
+        assert_eq!(train.key.scheduled_ms, birth);
+        let ride_ms = match train.state {
+            TrainState::Moving {
+                entered_ms,
+                arrival_ms,
+                ..
+            } => {
+                assert_eq!(entered_ms, ready);
+                arrival_ms - entered_ms
+            }
+            ref other => panic!("expected movement from middle stop, got {other:?}"),
+        };
+
+        let query = |editor: &WorldEditor, from: &str, to: &str, start_ms, end_ms| {
+            editor
+                .preview_standard_schedule_od(
+                    config.service_id,
+                    &editor.operation_configuration_token(),
+                    StandardOdRequest {
+                        origin: from.into(),
+                        destination: to.into(),
+                        trips: 100.,
+                        alternative_seconds: Some(1_000.),
+                        start_ms,
+                        end_ms,
+                    },
+                )
+                .map(|result| serde_json::to_value(result).unwrap())
+        };
+        let first = query(&e, middle, destination, ready - 500, ready + 1).unwrap();
+        assert_eq!(first["status"], "scheduled");
+        assert_eq!(first["first_departure_ms"], ready);
+        assert_eq!(first["scheduled_departures"], 1);
+        let row = &first["assignment"]["rail"][0];
+        assert_eq!(row["time"]["wait_seconds"], 0.5);
+        assert_eq!(row["time"]["ride_seconds"], ride_ms as f64 / 1000.);
+        let rail_trips = row["trips"].as_f64().unwrap();
+        let alternative = first["assignment"]["alternative_trips"].as_f64().unwrap();
+        assert!((rail_trips + alternative - 100.).abs() < 1e-9);
+        let at_departure = query(&e, middle, destination, ready, ready + 1).unwrap();
+        assert_eq!(
+            at_departure["assignment"]["rail"][0]["time"]["wait_seconds"],
+            0.
+        );
+        let excludes_departure = query(&e, middle, destination, ready - 500, ready).unwrap();
+        assert_eq!(excludes_departure["status"], "no_departure_in_window");
+        assert_eq!(excludes_departure["scheduled_departures"], 0);
+        let shift = ready - birth;
+        let before_coverage = query(&e, middle, destination, 0, active.start + shift).unwrap();
+        let after_coverage = query(
+            &e,
+            middle,
+            destination,
+            active.end + shift - 1,
+            active.end + shift + 1,
+        )
+        .unwrap();
+        for unknown in [before_coverage, after_coverage] {
+            assert_eq!(unknown["status"], "unverified_schedule");
+            assert_eq!(unknown["assignment"]["unresolved_trips"], 100.);
+        }
+        assert!(query(&e, middle, origin, ready, ready + 1).is_err());
+        assert!(query(&e, middle, &passed, ready, ready + 1).is_err());
+        assert!(query(&e, middle, middle, ready, ready + 1).is_err());
+        let from_origin = query(&e, origin, destination, birth, birth + 1).unwrap();
+        assert_eq!(from_origin["first_departure_ms"], birth);
+        let through_ride = from_origin["assignment"]["rail"][0]["time"]["ride_seconds"]
+            .as_f64()
+            .unwrap();
+        assert!((through_ride - ((ready - birth + ride_ms) as f64 / 1000.)).abs() < 1e-9);
+        assert_eq!(e.world.operation_save(), now);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("standard-intermediate.rosenfu");
+        e.save(&file).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&file).unwrap();
+        assert_eq!(
+            query(&reopened, middle, destination, ready - 500, ready + 1).unwrap(),
+            first
+        );
+        assert_eq!(rosenfu_storage::encode(&reopened.world).unwrap(), bytes);
     }
 
     #[cfg(feature = "standard-periodic-rail")]
@@ -1914,6 +2082,192 @@ mod tests {
         )
         .unwrap();
     }
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn replace_same_standard_schedule_changes_only_future_departures_and_od() {
+        use super::standard_schedule::StandardOdRequest;
+        use rosenfu_core::operation::periodic_dispatch::standard::NamedBandOverrides;
+
+        let mut e = editor();
+        add_test_bus(
+            &mut e,
+            Timetable {
+                first_departure_ms: 1_140_000,
+                last_departure_ms: 1_440_000,
+                headway_ms: 300_000,
+            },
+        );
+        let advance = |e: &mut WorldEditor, at| {
+            e.world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(at, 256)
+                .unwrap();
+        };
+        advance(&mut e, 1_000_000);
+        let service = e.operation_snapshot().services[0].service_id;
+        let service_key = service.0.to_string();
+        let apply = |e: &mut WorldEditor, token: &str, base_minutes| {
+            e.apply_standard_schedule(
+                service,
+                token,
+                base_minutes,
+                NamedBandOverrides {
+                    early_morning: None,
+                    morning_rush: Some(3),
+                    midday: None,
+                    evening_rush: Some(5),
+                    late_night: None,
+                },
+                [0, 360, 600, 960, 1200, 1440],
+            )
+        };
+        let token = e.operation_edit_token();
+        let first = apply(&mut e, &token, 1).unwrap();
+        let pairs = serde_json::to_value(
+            e.standard_schedule_status(service, &first.configuration_token)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pairs["canApply"], true);
+        let query_od = |e: &WorldEditor| {
+            let query = StandardOdRequest {
+                origin: pairs["origin"]["id"].as_str().unwrap().into(),
+                destination: pairs["destinations"][0]["id"].as_str().unwrap().into(),
+                trips: 100.,
+                alternative_seconds: Some(250.),
+                start_ms: 1_100_000,
+                end_ms: 1_280_000,
+            };
+            serde_json::to_value(
+                e.preview_standard_schedule_od(service, &e.operation_configuration_token(), query)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let mut other_service = e.clone();
+        let draft = e.snapshot();
+        let source = draft
+            .service_paths
+            .iter()
+            .find(|p| p.service_id == service)
+            .unwrap();
+        let selected = draft.services.iter().find(|s| s.id == service).unwrap();
+        let other_id = other_service
+            .world
+            .add_service_path(
+                e.company,
+                "Another service".into(),
+                selected.start,
+                source.legs.iter().map(|leg| leg.segment.clone()).collect(),
+                source.stops.clone(),
+            )
+            .unwrap();
+        let status = serde_json::to_value(
+            other_service
+                .standard_schedule_status(other_id, &other_service.operation_configuration_token())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["activeElsewhere"], true);
+        assert_eq!(status["canApply"], false);
+        let exact = rosenfu_storage::encode(&other_service.world).unwrap();
+        let current = other_service.operation_edit_token();
+        assert!(other_service
+            .apply_standard_schedule(
+                other_id,
+                &current,
+                20,
+                NamedBandOverrides {
+                    early_morning: None,
+                    morning_rush: None,
+                    midday: None,
+                    evening_rush: None,
+                    late_night: None,
+                },
+                [0, 360, 600, 960, 1200, 1440],
+            )
+            .is_err());
+        assert_eq!(
+            rosenfu_storage::encode(&other_service.world).unwrap(),
+            exact
+        );
+
+        let before_od = query_od(&e);
+        assert_eq!(before_od["first_departure_ms"], 1_140_000);
+        let before = e.world.operation_save().unwrap();
+        let old_bytes = rosenfu_storage::encode(&e.world).unwrap();
+        assert!(apply(&mut e, &token, 20).is_err());
+        assert!(apply(&mut e, &first.timetable_edit_token, 0).is_err());
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), old_bytes);
+        let second = apply(&mut e, &first.timetable_edit_token, 20).unwrap();
+        let after = e.world.operation_save().unwrap();
+        assert_ne!(first.timetable_edit_token, second.timetable_edit_token);
+        assert_eq!(after.runtime.now_ms, before.runtime.now_ms);
+        assert_eq!(after.runtime.speed, before.runtime.speed);
+        assert_eq!(after.runtime.services, before.runtime.services);
+        assert_eq!(after.bus_configs, before.bus_configs);
+        let cursor = |saved: &rosenfu_core::world::WorldOperationSave, id: &str| {
+            saved
+                .runtime
+                .next_departures
+                .iter()
+                .find(|row| row.0 == id)
+                .unwrap()
+                .1
+        };
+        assert_eq!(cursor(&before, "bus:R"), cursor(&after, "bus:R"));
+        assert_eq!(cursor(&after, &service_key), Some(1_200_000));
+        let after_od = query_od(&e);
+        assert_eq!(after_od["first_departure_ms"], 1_200_000);
+        assert_eq!(
+            after_od["assignment"]["rail"][0]["time"]["wait_seconds"],
+            100.
+        );
+        assert!(
+            after_od["assignment"]["rail"][0]["trips"].as_f64().unwrap()
+                < before_od["assignment"]["rail"][0]["trips"]
+                    .as_f64()
+                    .unwrap()
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("standard-replacement.rosenfu");
+        e.save(&file).unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load(&file).unwrap();
+        assert_eq!(e.world.operation_save(), reopened.world.operation_save());
+        assert_eq!(query_od(&reopened), after_od);
+        for r in [&mut e, &mut reopened] {
+            advance(r, 1_080_000);
+            assert!(r.operation_snapshot().trains.is_empty());
+            advance(r, 1_140_000);
+            let running = rosenfu_storage::encode(&r.world).unwrap();
+            let token = r.operation_edit_token();
+            assert!(apply(r, &token, 10).is_err());
+            assert_eq!(rosenfu_storage::encode(&r.world).unwrap(), running);
+            assert!(r
+                .operation_snapshot()
+                .trains
+                .iter()
+                .any(|t| t.key.service_id == "bus:R"));
+            advance(r, 1_200_000);
+            assert!(r
+                .operation_snapshot()
+                .trains
+                .iter()
+                .any(|t| t.key.service_id == service_key && t.key.scheduled_ms == 1_200_000));
+            advance(r, 2_200_000);
+            assert!(r.operation_snapshot().trains.is_empty());
+            let token = r.operation_edit_token();
+            let third = apply(r, &token, 10).unwrap();
+            assert_eq!(third.now_ms, 2_200_000);
+            assert!(third.trains.is_empty());
+        }
+        assert_eq!(e.world.operation_save(), reopened.world.operation_save());
+    }
+
     #[cfg(feature = "standard-periodic-rail")]
     #[test]
     fn standard_fixed_rail_preserves_absolute_bus_births_and_mixed_reopen() {
@@ -3080,6 +3434,170 @@ mod tests {
             assert_eq!(opposite.unserved_trips, 50.);
             assert_eq!(before, rosenfu_storage::encode(&e.world).unwrap());
         }
+    }
+
+    #[test]
+    fn synthetic_bus_walk_od_responds_to_active_headway_edit_after_slot_reopen() {
+        use rosenfu_core::demand::OdAssignment;
+        use std::time::{Duration, Instant};
+
+        let mut e = editor();
+        add_test_bus(
+            &mut e,
+            Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 60_000,
+                headway_ms: 60_000,
+            },
+        );
+        // These stations and the QA route have no automatic transfer.
+        let service = e.operation_snapshot().services[0].service_id;
+        let stations = &e.world.snapshot().stations;
+        let origin = stations.iter().find(|s| s.name == "A").unwrap().id;
+        let station = stations.iter().find(|s| s.name == "B").unwrap().id;
+        let scenario = FixedOdScenario {
+            origin_station_id: origin.0.to_string(),
+            destination_station_id: "bus:B".into(),
+            trips: Some(50.0),
+            alternative_seconds: Some(540.0),
+        };
+        let token = e.fixed_od_scenario().token;
+        e.set_fixed_od_scenario(&token, Some(scenario.clone()))
+            .unwrap();
+        let transfer = || FixedOdRoadTransfer {
+            station_id: station.0.to_string(),
+            bus_stop_id: "bus:A".into(),
+            walk_seconds: 180,
+        };
+        let preview = |editor: &WorldEditor, walk, fallback| {
+            editor
+                .preview_fixed_od_with_transfer(
+                    scenario.origin_station_id.clone(),
+                    scenario.destination_station_id.clone(),
+                    scenario.trips,
+                    fallback,
+                    walk,
+                )
+                .unwrap()
+        };
+        let check_conservation = |od: &OdAssignment| {
+            assert!(od.search_complete);
+            assert!(od.partial_candidates.is_empty());
+            assert_eq!(od.unresolved_trips, 0.0);
+            let distributed = od.rail.iter().map(|p| p.trips).sum::<f64>()
+                + od.alternative_trips
+                + od.unserved_trips
+                + od.unresolved_trips;
+            assert!((distributed - 50.0).abs() < 1e-8);
+        };
+        let start = Instant::now();
+        e.set_operation_clock_at(false, 1, start).unwrap();
+        let at = start + Duration::from_secs(1);
+        e.advance_operation_at(at).unwrap();
+        let live = e.set_operation_clock_at(true, 1, at).unwrap();
+        assert_eq!(live.now_ms, 1_000);
+        let rail_id = service.0.to_string();
+        assert!(live.trains.iter().any(|t| t.key.service_id == rail_id));
+        assert!(live.trains.iter().any(|t| t.key.service_id == "bus:R"));
+
+        let before = preview(&e, Some(transfer()), scenario.alternative_seconds);
+        check_conservation(&before);
+        assert_eq!(before.rail.len(), 1);
+        assert!(before.rail[0].trips > 0.0 && before.alternative_trips > 0.0);
+        assert_eq!(before.unserved_trips, 0.0);
+        assert_eq!(before.rail[0].time.wait_seconds, 60.0);
+        assert_eq!(before.rail[0].time.walk_seconds, 180.0);
+        assert_eq!(before.rail[0].time.transfers, 1);
+        assert_eq!(before.rail[0].services, vec![rail_id, "bus:R".to_owned()]);
+        let no_walk = preview(&e, None, None);
+        check_conservation(&no_walk);
+        assert!(no_walk.rail.is_empty());
+        assert_eq!(no_walk.unserved_trips, 50.0);
+        let fallback_only = preview(&e, None, scenario.alternative_seconds);
+        check_conservation(&fallback_only);
+        assert!(fallback_only.rail.is_empty());
+        assert_eq!(fallback_only.alternative_trips, 50.0);
+
+        let rail = live
+            .services
+            .iter()
+            .find(|row| row.service_id == service)
+            .unwrap();
+        let edited = e
+            .configure_operation_service(
+                service,
+                Timetable {
+                    first_departure_ms: 180_000,
+                    last_departure_ms: 360_000,
+                    headway_ms: 180_000,
+                },
+                rail.vehicle.clone(),
+                rail.dwell_ms,
+                &live.timetable_edit_token,
+            )
+            .unwrap();
+        assert_eq!(edited.now_ms, live.now_ms);
+        assert_eq!(edited.trains, live.trains);
+        assert_eq!(edited.bus_services, live.bus_services);
+        assert!(edited.rail_timetable_handoff_in_progress);
+        let slower = preview(&e, Some(transfer()), scenario.alternative_seconds);
+        check_conservation(&slower);
+        assert_eq!(slower.rail.len(), 1);
+        let (old, new) = (&before.rail[0], &slower.rail[0]);
+        assert_eq!(new.steps, old.steps);
+        assert_eq!(new.time.walk_seconds, old.time.walk_seconds);
+        assert_eq!(new.time.ride_seconds, old.time.ride_seconds);
+        assert_eq!(new.time.transfers, old.time.transfers);
+        assert_eq!(new.time.wait_seconds, 120.0);
+        assert!((new.generalized_seconds - old.generalized_seconds - 60.0).abs() < 1e-8);
+        assert!(new.trips > 0.0 && new.trips < old.trips);
+        assert!(slower.alternative_trips > before.alternative_trips);
+        assert_eq!(slower.unserved_trips, 0.0);
+        assert_eq!(preview(&e, None, None), no_walk);
+        assert_eq!(
+            preview(&e, None, scenario.alternative_seconds),
+            fallback_only
+        );
+
+        // Save from the player slot entry point while both departures are live
+        // and the former rail schedule is still required to validate the train.
+        let mixed_epoch = e.world.operation_save();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            e.save_world_as_slot(dir.path(), "Synthetic transfer".into(), None, None)
+                .unwrap()
+                .saved
+        );
+        let path = e.active_save_path(dir.path()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let slot = e
+            .list_save_slots(dir.path())
+            .unwrap()
+            .active_slot_id
+            .unwrap();
+        let mut reopened = WorldEditor::new();
+        reopened.load_save_slot(dir.path(), slot).unwrap();
+        assert_eq!(reopened.world.operation_save(), mixed_epoch);
+        let restored = reopened.operation_snapshot();
+        assert_eq!(restored.now_ms, edited.now_ms);
+        assert_eq!(restored.trains, edited.trains);
+        assert!(restored.rail_timetable_handoff_in_progress);
+        assert_eq!(
+            reopened.fixed_od_scenario().scenario,
+            Some(scenario.clone())
+        );
+        // The explicit walking link is a per-preview assumption, not a saved
+        // transfer. Re-enter the identical assumption to reproduce the result.
+        assert_eq!(
+            preview(&reopened, Some(transfer()), scenario.alternative_seconds),
+            slower
+        );
+        assert_eq!(preview(&reopened, None, None), no_walk);
+        assert_eq!(
+            preview(&reopened, None, scenario.alternative_seconds),
+            fallback_only
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 }
 

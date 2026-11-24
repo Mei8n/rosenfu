@@ -185,6 +185,7 @@ struct CompiledService {
     spec: ServiceRunSpec,
     legs: Vec<CompiledLeg>,
     journey_ms: u64,
+    terminal_hold: bool,
     departure_source: DepartureSource,
     next_departure: Option<u64>,
 }
@@ -197,6 +198,7 @@ pub(crate) enum RailAdmissionModel {
     InlineTerminalDwell = 5,
     InlinePlatformHandoff = 6,
     FixedRefuge = 7,
+    ConnectedTerminalNeck = 8,
 }
 
 impl RailAdmissionModel {
@@ -227,7 +229,7 @@ pub struct OperationRuntime {
     rail_admission: RailAdmissionModel,
     // Re-derived from checked World geometry on configuration/restore. The
     // public runtime alone has no authority to choose this exact-meet tie.
-    preferred_opposing_birth: Option<TrainKey>,
+    preferred_opposing_birth: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -433,6 +435,93 @@ pub(crate) fn inline_lane_key(resource: &str) -> Option<(u64, usize, u8)> {
     }
 }
 
+/// The ordinary Bus adapter uses only these disjoint road resources. Recheck
+/// the namespace on load too; IDs in a serialized run are not authority.
+pub(crate) fn independent_neck_bus(spec: &ServiceRunSpec) -> bool {
+    let bus_id = |s: &str| s.strip_prefix("bus:").is_some_and(|id| !id.is_empty());
+    bus_id(&spec.service_id)
+        && !spec.legs.is_empty()
+        && spec.legs.iter().all(|leg| {
+            bus_id(&leg.from)
+                && bus_id(&leg.to)
+                && !leg.sections.is_empty()
+                && leg.sections.iter().all(|section| {
+                    !section.resources.is_empty()
+                        && section.resources.iter().all(|key| {
+                            key.strip_prefix("road:edge:")
+                                .is_some_and(|id| !id.is_empty())
+                        })
+                })
+        })
+}
+
+/// The terminal is on a common single lead; departure and arrival on the
+/// double approach use distinct lanes. These are resource-shape checks only:
+/// the World must independently prove the actual points and berth.
+pub(crate) fn terminal_neck(spec: &ServiceRunSpec) -> Option<(u64, u64)> {
+    let [out, back] = spec.legs.as_slice() else {
+        return None;
+    };
+    if out.from == out.to || out.from != back.to || out.to != back.from {
+        return None;
+    }
+    let layout = |leg: &RunLeg| {
+        let mut lanes = Vec::new();
+        let mut joins = BTreeSet::new();
+        for s in &leg.sections {
+            let mut lane = None;
+            for r in &s.resources {
+                if let Some(key) = inline_lane_key(r) {
+                    if lane.replace(key).is_some() {
+                        return None;
+                    }
+                    continue;
+                }
+                let tail = r.strip_prefix("rail:join:")?;
+                let (id, side) = tail.split_once(':')?;
+                let id: u64 = id.parse().ok()?;
+                let is_end = match side {
+                    "Start" => false,
+                    "End" => true,
+                    _ => return None,
+                };
+                if r != &format!("rail:join:{id}:{side}") {
+                    return None;
+                }
+                joins.insert((id, is_end));
+                if joins.len() > 2 {
+                    return None;
+                }
+            }
+            let lane = lane?;
+            if lanes.last() != Some(&lane) {
+                lanes.push(lane);
+                if lanes.len() > 2 {
+                    return None;
+                }
+            }
+        }
+        let [first, last]: [_; 2] = lanes.try_into().ok()?;
+        let two_ports: [_; 2] = joins.into_iter().collect::<Vec<_>>().try_into().ok()?;
+        Some((first, last, two_ports))
+    };
+    let ((main, 0, arriving), (lead, 0, 0), out_ports) = layout(out)? else {
+        return None;
+    };
+    let ((back_lead, 0, 0), (back_main, 0, leaving), back_ports) = layout(back)? else {
+        return None;
+    };
+    (main != lead
+        && lead == back_lead
+        && main == back_main
+        && arriving <= 1
+        && leaving == 1 - arriving
+        && out_ports == back_ports
+        && out_ports.iter().any(|&(id, _)| id == main)
+        && out_ports.iter().any(|&(id, _)| id == lead))
+    .then_some((main, lead))
+}
+
 /// Only one alignment and one direction per run. Inside each leg blocks
 /// are contiguous and cannot retreat. Consecutive legs share exactly their
 /// boundary block (regardless of speed-profile subdivisions inside it).
@@ -601,6 +690,12 @@ impl OperationRuntime {
         Self::compile(specs, RailAdmissionModel::TurnbackHold)
     }
 
+    pub(crate) fn new_with_connected_terminal_neck(
+        specs: Vec<ServiceRunSpec>,
+    ) -> Result<Self, OperationError> {
+        Self::compile(specs, RailAdmissionModel::ConnectedTerminalNeck)
+    }
+
     /// Qualified one-way inline terminal. The final physical lane block
     /// remains occupied while passengers detrain, then the train retires.
     pub(crate) fn new_with_inline_terminal_dwell(
@@ -627,6 +722,18 @@ impl OperationRuntime {
     ) -> Result<Self, OperationError> {
         let mut services = BTreeMap::new();
         let mut time_margin_ms = 0;
+        let neck_mode = rail_admission == RailAdmissionModel::ConnectedTerminalNeck;
+        if neck_mode {
+            let mut rail = specs.iter().filter(|spec| !independent_neck_bus(spec));
+            if specs.len() > 2
+                || !rail.next().is_some_and(|spec| {
+                    spec.service_id.parse::<u64>().is_ok() && terminal_neck(spec).is_some()
+                })
+                || rail.next().is_some()
+            {
+                return Err(OperationError::InvalidPath);
+            }
+        }
         for spec in specs {
             let t = &spec.timetable;
             if spec.service_id.trim().is_empty()
@@ -644,6 +751,8 @@ impl OperationRuntime {
             {
                 return Err(OperationError::InvalidPath);
             }
+            let neck_hold = neck_mode && spec.service_id.parse::<u64>().is_ok();
+            let terminal_hold = rail_admission == RailAdmissionModel::TurnbackHold || neck_hold;
             let mut legs = Vec::new();
             let mut journey = 0u64;
             let mut nominal_entry_ms = 0u64;
@@ -701,7 +810,7 @@ impl OperationRuntime {
                 let physical_clearance_ms = millis(spec.vehicle.length_m / lowest)?;
                 let clearance_ms = if platform
                     || (handoff && index + 1 == spec.legs.len())
-                    || (rail_admission == RailAdmissionModel::TurnbackHold && index == 0)
+                    || (index == 0 && terminal_hold)
                 {
                     physical_clearance_ms.max(l.dwell_ms)
                 } else {
@@ -757,7 +866,7 @@ impl OperationRuntime {
                         None
                     },
                 });
-                if handoff {
+                if handoff || neck_hold {
                     nominal_entry_ms = nominal_entry_ms
                         .checked_add(duration_ms)
                         .and_then(|t| t.checked_add(clearance_ms.max(l.dwell_ms)))
@@ -787,6 +896,7 @@ impl OperationRuntime {
                     spec,
                     legs,
                     journey_ms: journey,
+                    terminal_hold,
                     departure_source: DepartureSource::Absolute,
                     next_departure,
                 },
@@ -813,7 +923,10 @@ impl OperationRuntime {
     }
 
     pub(crate) fn terminal_hold(&self) -> bool {
-        self.rail_admission == RailAdmissionModel::TurnbackHold
+        matches!(
+            self.rail_admission,
+            RailAdmissionModel::TurnbackHold | RailAdmissionModel::ConnectedTerminalNeck
+        )
     }
 
     pub(crate) fn inline_terminal_dwell(&self) -> bool {
@@ -832,14 +945,14 @@ impl OperationRuntime {
         self.inline_platform_handoff() || self.fixed_refuge()
     }
 
-    fn own_lease_allows_admission(&self) -> bool {
-        self.terminal_hold() || self.parked_platform_handoff()
+    fn own_lease_allows_admission(&self, service: &str) -> bool {
+        self.services[service].terminal_hold || self.parked_platform_handoff()
     }
 
     fn reservation_blocks(&self, resource: &str, key: &TrainKey) -> bool {
         self.occupied
             .get(resource)
-            .is_some_and(|owner| !self.own_lease_allows_admission() || owner != key)
+            .is_some_and(|owner| !self.own_lease_allows_admission(&key.service_id) || owner != key)
     }
 
     /// First current rail reservation conflict in deterministic resource order.
@@ -1006,16 +1119,57 @@ impl OperationRuntime {
         self.rail_admission
     }
 
-    pub(crate) fn set_preferred_opposing_birth(&mut self, key: Option<TrainKey>) {
-        self.preferred_opposing_birth = key;
+    /// Two matching absolute schedules only. Serializing the complete pair
+    /// cannot take longer than the sum of their compiled run, dwell and
+    /// rear-clear times: the proved two-throat layout has no third holder,
+    /// and the initial ready through train is older than the siding exit.
+    /// A strict gap beyond that bound keeps successive pairs independent.
+    fn opposing_birth_schedule_qualifies(&self, siding: &str, through: &str) -> bool {
+        // Expired handoff records are pruned after a whole advance, not
+        // each event. Compare the current grids: the caller requires two
+        // fresh births and no older train or occupied resource.
+        if self.rail_admission != RailAdmissionModel::Fixed
+            || self.services.len() != 2
+            || siding == through
+        {
+            return false;
+        }
+        let Some(a) = self.services.get(siding) else {
+            return false;
+        };
+        let Some(b) = self.services.get(through) else {
+            return false;
+        };
+        let (ta, tb) = (&a.spec.timetable, &b.spec.timetable);
+        !a.departure_source.is_periodic()
+            && !b.departure_source.is_periodic()
+            && ta.first_departure_ms == tb.first_departure_ms
+            && ta.last_departure_ms == tb.last_departure_ms
+            && (ta.last_departure_ms == ta.first_departure_ms
+                || (ta.headway_ms == tb.headway_ms
+                    && a.journey_ms
+                        .checked_add(b.journey_ms)
+                        .is_some_and(|bound| ta.headway_ms > bound)))
     }
 
-    /// A siding train already moving or dwelling after this approved tie
+    pub(crate) fn set_preferred_opposing_birth(&mut self, service: Option<String>) {
+        self.preferred_opposing_birth = service;
+    }
+
+    /// A siding train already moving or dwelling after an approved tie
     /// must not lose its physical clearance proof during a world edit.
-    pub(crate) fn active_preferred_opposing_birth(&self) -> Option<&TrainKey> {
-        let key = self.preferred_opposing_birth.as_ref()?;
-        let train = self.trains.get(key)?;
-        (train.leg > 0 || matches!(train.state, TrainState::Moving { .. })).then_some(key)
+    pub(crate) fn active_preferred_opposing_birth(&self) -> Option<&str> {
+        let service = self.preferred_opposing_birth.as_deref()?;
+        // The active train can outlive its opposing train and a future-grid
+        // handoff. The proof is not serialized, so guard the certified siding
+        // while any of its trains has entered, not just on today's grid.
+        self.trains
+            .values()
+            .any(|train| {
+                train.key.service_id == service
+                    && (train.leg > 0 || matches!(train.state, TrainState::Moving { .. }))
+            })
+            .then_some(service)
     }
 
     /// Verify neither the admission model nor another service's run changes.
@@ -1485,7 +1639,9 @@ impl OperationRuntime {
                         for resource in &service.legs[train.leg].resources {
                             // This train may have cleared the lane earlier and
                             // another train may now own it.
-                            let retain = (self.terminal_hold() && train.leg == 0)
+                            let retain = (service.terminal_hold
+                                && train.leg == 0
+                                && service.legs[1].resources.contains(resource))
                                 || service.legs[train.leg].through_lane.as_ref() == Some(resource);
                             if !retain && self.occupied.get(resource) == Some(&key) {
                                 self.occupied.remove(resource);
@@ -1544,9 +1700,7 @@ impl OperationRuntime {
             if let [(first_ready, first), (second_ready, second)] = waiting.as_slice() {
                 // Only a proved two-train birth tie. Never jump the queue,
                 // preempt locks, or swap already-waiting/returning trains.
-                if self.preferred_opposing_birth.as_ref() == Some(second)
-                    && self.rail_admission == RailAdmissionModel::Fixed
-                    && self.services.len() == 2
+                if self.preferred_opposing_birth.as_deref() == Some(second.service_id.as_str())
                     && self.trains.len() == 2
                     && self.occupied.is_empty()
                     && *first_ready == at
@@ -1558,6 +1712,7 @@ impl OperationRuntime {
                                 .get(k)
                                 .is_some_and(|t| t.leg == 0 && t.delay_ms == 0)
                     })
+                    && self.opposing_birth_schedule_qualifies(&second.service_id, &first.service_id)
                 {
                     waiting.swap(0, 1);
                 }
@@ -1658,6 +1813,12 @@ impl OperationRuntime {
         Self::restore_checked(saved, Some(RailAdmissionModel::TurnbackHold))
     }
 
+    pub(crate) fn restore_with_connected_terminal_neck(
+        saved: OperationSave,
+    ) -> Result<Self, OperationError> {
+        Self::restore_checked(saved, Some(RailAdmissionModel::ConnectedTerminalNeck))
+    }
+
     pub(crate) fn restore_with_progressive_rail(
         saved: OperationSave,
     ) -> Result<Self, OperationError> {
@@ -1708,6 +1869,9 @@ impl OperationRuntime {
             }
             7 if admitted == Some(RailAdmissionModel::FixedRefuge) => {
                 RailAdmissionModel::FixedRefuge
+            }
+            8 if admitted == Some(RailAdmissionModel::ConnectedTerminalNeck) => {
+                RailAdmissionModel::ConnectedTerminalNeck
             }
             _ => return Err(OperationError::InvalidClock),
         };
@@ -1809,6 +1973,23 @@ impl OperationRuntime {
                     return Err(OperationError::InvalidClock);
                 }
             }
+            if rail_admission == RailAdmissionModel::ConnectedTerminalNeck && service.terminal_hold
+            {
+                let valid = match train.state {
+                    TrainState::Waiting { ready_ms } => {
+                        train.leg == 0 && ready_ms == birth && train.delay_ms == 0
+                    }
+                    TrainState::Moving { entered_ms, .. } => {
+                        birth
+                            .checked_add(leg.nominal_entry_ms)
+                            .and_then(|at| at.checked_add(train.delay_ms))
+                            == Some(entered_ms)
+                    }
+                };
+                if !valid {
+                    return Err(OperationError::InvalidClock);
+                }
+            }
             if runtime.parked_platform_handoff() {
                 let scheduled = train
                     .key
@@ -1893,7 +2074,8 @@ impl OperationRuntime {
                 return Err(OperationError::InvalidClock);
             }
             if let TrainState::Waiting { ready_ms } = train.state {
-                if ready_ms < train.key.scheduled_ms || (runtime.terminal_hold() && train.leg != 0)
+                if ready_ms < train.key.scheduled_ms
+                    || (runtime.services[&train.key.service_id].terminal_hold && train.leg != 0)
                 {
                     return Err(OperationError::InvalidClock);
                 }
@@ -1901,7 +2083,8 @@ impl OperationRuntime {
                 if ready_ms <= saved.now_ms
                     && !resources.iter().any(|r| {
                         runtime.occupied.get(r).is_some_and(|owner| {
-                            !runtime.parked_platform_handoff() || *owner != train.key
+                            !runtime.own_lease_allows_admission(&train.key.service_id)
+                                || *owner != train.key
                         })
                     })
                 {

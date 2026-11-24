@@ -89,6 +89,12 @@ pub(super) fn inputs(
 }
 
 impl WorldEditor {
+    /// Cheap immutable archive handle for a display-only worker. No world
+    /// snapshot or edit history is copied and no raw bytes cross IPC.
+    pub fn retained_road_archive(&self) -> rosenfu_core::ofm_evidence::EvidenceStore {
+        self.world.snapshot().runtime_road_evidence.clone()
+    }
+
     /// Park a complete draft and its raw evidence together. Failure leaves world,
     /// IDs, deletion Undo, save destination and previously parked drafts unchanged.
     pub fn stage_ofm_construction_plan(
@@ -201,6 +207,141 @@ mod tests {
             end_fraction_q: Some(500_000),
         };
         (guide, cached)
+    }
+
+    fn fractional_bus_on_tram_source(
+        guide: &AuthoredTramGuide,
+    ) -> rosenfu_core::ofm_evidence::BusPathBinding {
+        use rosenfu_core::ofm_evidence::{BusPathBinding, BUS_GRAPH_RULE};
+        BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
+            tile_key: guide.tile_key.clone(),
+            tile_raw_sha256: guide.tile_raw_sha256.clone(),
+            respect_oneway: false,
+            start: guide.start,
+            end: guide.end,
+            same_atom_stops: Some([250_000, 650_000]),
+            fractional_terminals: None,
+            additional_tiles: vec![],
+            end_tile_key: None,
+            pattern: None,
+            via: vec![],
+            interior_stops: vec![],
+        }
+    }
+
+    #[test]
+    fn fractional_bus_and_single_cell_street_tram_save_in_either_commit_order() {
+        let (guide, cached) = street_tram_inputs();
+        let bus = fractional_bus_on_tram_source(&guide);
+        let mut base = WorldEditor::new();
+        base.rename_company("道路会社".into()).unwrap();
+        let epoch = base.ofm_world_token().unwrap();
+        let points = base
+            .preview_authored_tram_road_guide(&epoch, &guide, cached())
+            .unwrap();
+        let plan = || -> PlannedAlignment {
+            serde_json::from_value(serde_json::json!({
+                "name": "併用軌道", "points": points, "trackType": "tram", "stations": []
+            }))
+            .unwrap()
+        };
+        for rail_first in [false, true] {
+            let mut candidate = base.clone();
+            let add_bus = |editor: &mut WorldEditor| {
+                let epoch = editor.ofm_world_token().unwrap();
+                editor
+                    .put_gameplay_ofm_bus(
+                        &epoch,
+                        "B".into(),
+                        "Bus".into(),
+                        bus.clone(),
+                        cached().into_iter().collect(),
+                    )
+                    .unwrap();
+            };
+            let add_tram = |editor: &mut WorldEditor| {
+                let epoch = editor.ofm_world_token().unwrap();
+                editor
+                    .build_authored_street_tram(&epoch, &guide, cached(), plan(), vec![])
+                    .unwrap();
+            };
+            if rail_first {
+                add_tram(&mut candidate);
+                add_bus(&mut candidate);
+            } else {
+                add_bus(&mut candidate);
+                add_tram(&mut candidate);
+            }
+            let before = rosenfu_storage::encode(&candidate.world).unwrap();
+            let wire: serde_json::Value = serde_json::from_slice(&before).unwrap();
+            assert_eq!(wire["schema_version"], 35);
+            assert_eq!(
+                wire["capabilities"],
+                serde_json::json!([
+                    "fractional_bus_same_ground_atom_v1",
+                    "street_tram_single_cell_v1"
+                ])
+            );
+            assert_eq!(
+                rosenfu_storage::encode(&rosenfu_storage::decode(&before).unwrap()).unwrap(),
+                before
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let manual = dir.path().join("world.json");
+            let auto = dir.path().join("autosave.json");
+            let previous = rosenfu_storage::encode(&base.world).unwrap();
+            std::fs::write(&auto, &previous).unwrap();
+            let original = std::str::from_utf8(&before).unwrap();
+            let duplicate = format!(
+                "{{\"capabilities\":[] , {}",
+                original.trim_start_matches('{')
+            );
+            for broken in [
+                duplicate.into_bytes(),
+                {
+                    let mut bad = wire.clone();
+                    bad["capabilities"] = serde_json::json!(["street_tram_chain_v1"]);
+                    serde_json::to_vec(&bad).unwrap()
+                },
+                {
+                    let mut bad = wire.clone();
+                    bad["capabilities"] = serde_json::Value::Null;
+                    serde_json::to_vec(&bad).unwrap()
+                },
+                {
+                    let mut bad = wire.clone();
+                    bad.as_object_mut().unwrap().remove("capabilities");
+                    serde_json::to_vec(&bad).unwrap()
+                },
+            ] {
+                std::fs::write(&manual, &broken).unwrap();
+                assert!(matches!(
+                    rosenfu_storage::load_world(&manual),
+                    Err(rosenfu_storage::StorageError::UnsupportedVersion(35))
+                ));
+                let mut reader = WorldEditor::new();
+                assert!(reader.load_autosave(&auto, &manual).is_err());
+                assert!(!reader.manual_repair_allowed);
+                assert_eq!(std::fs::read(&manual).unwrap(), broken);
+            }
+            for version in [27, 29, 31, 33, 34, 96] {
+                let mut wrong = wire.clone();
+                wrong["schema_version"] = version.into();
+                let bytes = serde_json::to_vec(&wrong).unwrap();
+                std::fs::write(&manual, &bytes).unwrap();
+                assert!(matches!(
+                    rosenfu_storage::load_world(&manual),
+                    Err(rosenfu_storage::StorageError::UnsupportedVersion(_))
+                ));
+                let mut reader = WorldEditor::new();
+                assert!(reader.load_autosave(&auto, &manual).is_err());
+                assert!(!reader.manual_repair_allowed);
+                assert_eq!(std::fs::read(&manual).unwrap(), bytes);
+                assert_eq!(std::fs::read(&auto).unwrap(), previous);
+            }
+        }
     }
 
     #[test]
@@ -382,6 +523,32 @@ mod tests {
         let reopened = rosenfu_storage::decode(&saved).unwrap();
         assert_eq!(reopened.snapshot(), &after);
         assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), saved);
+        // The real adjacent authoring save is readable by both inspection
+        // paths. Neither the manifest nor viewport grants new path authority.
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("adjacent-tram.rosenfu");
+        editor.save(&file).unwrap();
+        let on_disk = std::fs::read(&file).unwrap();
+        let x = tiles[0]["x"].as_u64().unwrap() as u32;
+        let y = tiles[0]["y"].as_u64().unwrap() as u32;
+        let coverage = rosenfu_storage::read_road_coverage(
+            &file,
+            rosenfu_storage::TileBounds::new(x, y, x, y).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(coverage.schema_version, 31);
+        assert_eq!(coverage.total_declared_tiles, 2);
+        assert_eq!(coverage.matching_tiles.len(), 1);
+        let mut loaded = WorldEditor::new();
+        loaded.load(&file).unwrap();
+        let view = rosenfu_core::ofm_evidence::retained_road_view(
+            &loaded.retained_road_archive(),
+            [x, y, x, y],
+        )
+        .unwrap();
+        assert_eq!((view.requested_tiles, view.retained_tiles), (1, 1));
+        assert!(!view.segments.is_empty());
+        assert_eq!(std::fs::read(&file).unwrap(), on_disk);
         for former in [26, 27, 29, 30] {
             archive["schema_version"] = former.into();
             assert!(matches!(
@@ -389,6 +556,559 @@ mod tests {
                 Err(rosenfu_storage::StorageError::UnsupportedVersion(_))
             ));
         }
+    }
+
+    fn chain_fixture_cached(tiles: &[serde_json::Value]) -> Vec<(OfmRawInput, OfmBindingInput)> {
+        use rosenfu_core::ofm_evidence::DECODER_RULE;
+        tiles
+            .iter()
+            .map(|tile| {
+                let key = tile["tileKey"].as_str().unwrap().to_owned();
+                let sha256 = tile["tileRawSha256"].as_str().unwrap().to_owned();
+                let bytes: Vec<u8> = serde_json::from_value(tile["raw"].clone()).unwrap();
+                (
+                    OfmRawInput {
+                        base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                        byte_length: bytes.len(),
+                        sha256: sha256.clone(),
+                    },
+                    OfmBindingInput {
+                        key: key.clone(),
+                        url: key,
+                        raw_sha256: sha256,
+                        revision: tile["revision"].as_str().unwrap().into(),
+                        x: tile["x"].as_u64().unwrap() as u32,
+                        y: tile["y"].as_u64().unwrap() as u32,
+                        z: 14,
+                        decoder_rule: DECODER_RULE.into(),
+                        license: "ODbL-1.0".into(),
+                        attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn authored_chain_tram_preview_and_durable_build_share_exact_three_tile_proof() {
+        use rosenfu_core::ofm_evidence::AuthoredTramChainGuide;
+        let tiles: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../crates/rosenfu-core/tests/fixtures/ofm_authored_chain_tram_synthetic.json"
+        ))
+        .unwrap();
+        let guide: AuthoredTramChainGuide = serde_json::from_value(serde_json::json!({
+            "tiles": tiles.iter().map(|tile| serde_json::json!({
+                "tileKey": tile["tileKey"], "tileRawSha256": tile["tileRawSha256"]
+            })).collect::<Vec<_>>(),
+            "start": {"feature":0,"line":0,"vertex":0},
+            "end": {"feature":0,"line":0,"vertex":0},
+            "startFractionQ":500000, "endFractionQ":500000
+        }))
+        .unwrap();
+        let cached = || chain_fixture_cached(&tiles);
+
+        let mut editor = WorldEditor::new();
+        editor.rename_company("3セル併用軌道".into()).unwrap();
+        let before = editor.snapshot();
+        let token = editor.ofm_world_token().unwrap();
+        assert!(editor
+            .preview_authored_tram_road_guide(
+                &token,
+                &guide,
+                cached()
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, tile)| (i != 1).then_some(tile))
+            )
+            .is_err());
+        let points = editor
+            .preview_authored_tram_road_guide(&token, &guide, cached())
+            .unwrap();
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(points.len(), 6);
+        assert!(points.windows(2).all(|p| p[0].latitude > p[1].latitude));
+        let alignment: PlannedAlignment = serde_json::from_value(serde_json::json!({
+            "name":"南北の2境界を渡る", "points":points, "trackType":"tram", "stations":[]
+        }))
+        .unwrap();
+        let after = editor.build_authored_street_tram(&token, &guide, cached(), alignment, vec![]);
+        if !rosenfu_storage::STREET_TRAM_CHAIN_SAVE_ENABLED {
+            assert!(after.is_err());
+            assert_eq!(editor.snapshot(), before);
+            return;
+        }
+        let after = after.unwrap();
+        assert_eq!(after.alignments[0].points, points);
+        assert!(after.carries_chain_street_tram_proof());
+        assert_eq!(after.road_evidence_descriptors.len(), 3);
+        assert_eq!(
+            after.road_path_provenance[0].path.tram_chain_guide,
+            Some(guide)
+        );
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("chain-tram.rosenfu");
+        editor.save(&file).unwrap();
+        let exact = std::fs::read(&file).unwrap();
+        let archive: serde_json::Value = serde_json::from_slice(&exact).unwrap();
+        assert_eq!(archive["schema_version"], 35);
+        assert_eq!(
+            archive["capabilities"],
+            serde_json::json!(["street_tram_chain_v1"])
+        );
+        let mut loaded = WorldEditor::new();
+        loaded.load(&file).unwrap();
+        assert_eq!(loaded.snapshot(), after);
+        assert_eq!(rosenfu_storage::encode(&loaded.world).unwrap(), exact);
+
+        {
+            let mut removal = loaded.clone();
+            // A chain still represents one indivisible original source interval.
+            let id = after.alignments[0].id;
+            let last = points.len() - 1;
+            let plans: rosenfu_core::world::ConstructionPlans =
+                serde_json::from_value(serde_json::json!({
+                    "version": 1, "plans": [{"id": 1, "name": "計画"}], "parkedPaths": [],
+                    "activePathId": 1, "activePlanId": 1, "draftPoints": [], "redoPoints": [],
+                    "draftExtension": null, "trackType": "tram", "designSpeedKmh": 40,
+                    "roadFollowing": true, "plannedStations": [], "draftFinished": false
+                }))
+                .unwrap();
+            removal.set_anchor_indices(id, vec![0, 1, last]).unwrap();
+            let before_refusal = removal.snapshot();
+            let history = removal.world_edit_history();
+            let error = removal
+                .delete_alignment_section(id, 0, plans.clone())
+                .unwrap_err();
+            assert!(error.contains("出典区間の途中"));
+            assert_eq!(removal.snapshot(), before_refusal);
+            assert_eq!(removal.world_edit_history().revision, history.revision);
+
+            removal.set_anchor_indices(id, vec![0, last]).unwrap();
+            let removed = removal.delete_alignment_section(id, 0, plans).unwrap();
+            assert!(removed.alignments.is_empty() && removed.road_path_provenance.is_empty());
+            assert_eq!(
+                removed.road_evidence_descriptors,
+                after.road_evidence_descriptors
+            );
+            assert!(!removed.carries_chain_street_tram_proof());
+            assert_eq!(std::fs::read(&file).unwrap(), exact);
+
+            let restored = removal.undo_world_edit(removed).unwrap();
+            assert_eq!(restored.road_path_provenance, after.road_path_provenance);
+            assert_eq!(
+                restored.road_evidence_descriptors,
+                after.road_evidence_descriptors
+            );
+            let restored_file = folder.path().join("chain-tram-restored.rosenfu");
+            removal.save(&restored_file).unwrap();
+            let mut fresh = WorldEditor::new();
+            assert_eq!(fresh.load(&restored_file).unwrap(), restored);
+        }
+
+        // The Bus evidence is a separate geographic region. The active route
+        // below must traverse (not merely contain) all three authored cells.
+        use rosenfu_core::{
+            operation::{Timetable, TrainState, Vehicle},
+            world::{AlignmentEndpoint, RouteSegment},
+        };
+        let street_line = after.alignments[0].id;
+        let first = points[0];
+        let last = points[points.len() - 1];
+        let away = |origin: GeoPoint, inside: GeoPoint| GeoPoint {
+            longitude: origin.longitude + 0.5 * (origin.longitude - inside.longitude),
+            latitude: origin.latitude + 0.5 * (origin.latitude - inside.latitude),
+        };
+        let approach = |name: &str, points: [GeoPoint; 2], endpoint| -> PlannedAlignment {
+            serde_json::from_value(serde_json::json!({
+                "name":name, "points": points, "trackType":"tram",
+                "anchorLevels":["ground","ground"], "stations":[],
+                "destination":{"alignmentId":street_line,"endpoint":endpoint}
+            }))
+            .unwrap()
+        };
+        let tracks = loaded
+            .build_construction_plan(
+                vec![
+                    approach(
+                        "北側の専用線",
+                        [away(first, points[1]), first],
+                        AlignmentEndpoint::Start,
+                    ),
+                    approach(
+                        "南側の専用線",
+                        [away(last, points[points.len() - 2]), last],
+                        AlignmentEndpoint::End,
+                    ),
+                ],
+                vec![],
+            )
+            .unwrap();
+        let mut stop = |name: &str| {
+            let line = tracks.alignments.iter().find(|a| a.name == name).unwrap();
+            loaded
+                .place_station_on_alignment(name.into(), line.id, 0.5, 20., 8.)
+                .unwrap()
+                .stations
+                .last()
+                .unwrap()
+                .id
+        };
+        let (from, to) = (stop("北側の専用線"), stop("南側の専用線"));
+        let routes = loaded.preview_route_candidates_via(from, to, &[]).unwrap();
+        let [route] = routes.candidates.as_slice() else {
+            panic!("exact chain route")
+        };
+        assert!(matches!(
+            route.segments.as_slice(),
+            [RouteSegment::ConnectedAlignments {connections,..}] if connections.len() == 2
+        ));
+        let stops = loaded
+            .preview_service_path(from, route.segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|stop| stop.reference)
+            .collect();
+        let street = loaded
+            .create_service_path_with_source_routes(
+                "3区画軌道".into(),
+                from,
+                route.segments.clone(),
+                stops,
+                None,
+                None,
+            )
+            .unwrap()
+            .services
+            .last()
+            .unwrap()
+            .id;
+        let revision = tiles[0]["revision"].as_str().unwrap();
+        attach_general_fractional_bus(&mut loaded, "independent", Some(revision));
+        let timetable = Timetable {
+            first_departure_ms: 1_000,
+            last_departure_ms: 1_000,
+            headway_ms: 60_000,
+        };
+        let vehicle = Vehicle {
+            max_speed_kmh: 30.,
+            acceleration_mps2: 1.,
+            braking_mps2: 1.,
+            length_m: 10.,
+        };
+        let token = loaded.operation_snapshot().timetable_edit_token.clone();
+        loaded
+            .configure_operation_service(street, timetable.clone(), vehicle.clone(), 1_000, &token)
+            .unwrap();
+        let token = loaded.operation_snapshot().timetable_edit_token.clone();
+        loaded
+            .configure_bus_operation(
+                "independent".into(),
+                timetable,
+                vehicle,
+                30.,
+                1_000,
+                None,
+                &token,
+            )
+            .unwrap();
+        let advanced = |world: &mut World, at| {
+            world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(at, 128)
+                .unwrap()
+        };
+        #[cfg(feature = "standard-periodic-rail")]
+        {
+            use rosenfu_core::operation::periodic_dispatch::standard::NamedBandOverrides;
+
+            // Run the same proved three-cell tram and independent fractional
+            // Bus on one actual Standard/absolute Fixed clock. Move the
+            // absolute departures forward to validate their unconsumed cursors.
+            let mut periodic = loaded.clone();
+            let before = periodic.world.operation_save().unwrap();
+            let mut rail = before.configs;
+            let mut bus = before.bus_configs;
+            rail[0].timetable.first_departure_ms = 120_000;
+            rail[0].timetable.last_departure_ms = 120_000;
+            bus[0].timetable.first_departure_ms = 120_000;
+            bus[0].timetable.last_departure_ms = 120_000;
+            periodic.world.configure_all_operation(rail, bus).unwrap();
+            assert!(advanced(&mut periodic.world, 1_000).reached_target);
+            assert!(periodic.operation_snapshot().trains.is_empty());
+            let token = periodic.operation_snapshot().timetable_edit_token.clone();
+            periodic
+                .apply_standard_schedule(
+                    street,
+                    &token,
+                    1,
+                    NamedBandOverrides {
+                        early_morning: None,
+                        morning_rush: None,
+                        midday: None,
+                        evening_rush: None,
+                        late_night: None,
+                    },
+                    [0, 360, 600, 960, 1200, 1440],
+                )
+                .unwrap();
+            assert!(periodic.world.can_author_general_fractional_bus());
+            assert!(advanced(&mut periodic.world, 120_000).reached_target);
+            let running = periodic.world.operation_save().unwrap();
+            assert!(running.has_standard_timetable());
+            assert_eq!(running.runtime.format, 2);
+            assert_eq!(running.runtime.trains.len(), 2);
+            let exact = rosenfu_storage::encode(&periodic.world).unwrap();
+            let mut declared: serde_json::Value = serde_json::from_slice(&exact).unwrap();
+            assert_eq!(declared["schema_version"], 35);
+            assert_eq!(
+                declared["capabilities"],
+                serde_json::json!([
+                    "fractional_bus_ground_route_v1",
+                    "street_tram_chain_v1",
+                    "standard_daily_v1"
+                ])
+            );
+            let mut reopened = rosenfu_storage::decode(&exact).unwrap();
+            assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), exact);
+            assert_eq!(
+                advanced(&mut reopened, 230_000),
+                advanced(&mut periodic.world, 230_000)
+            );
+            assert_eq!(reopened.operation_save(), periodic.world.operation_save());
+
+            // Removing the label or downgrading the envelope is not a
+            // repairable save and cannot discard the verified proof.
+            declared["capabilities"].as_array_mut().unwrap().pop();
+            assert!(matches!(
+                rosenfu_storage::decode(&serde_json::to_vec(&declared).unwrap()),
+                Err(rosenfu_storage::StorageError::UnsupportedVersion(35))
+            ));
+            declared["schema_version"] = 32.into();
+            declared.as_object_mut().unwrap().remove("capabilities");
+            assert!(matches!(
+                rosenfu_storage::decode(&serde_json::to_vec(&declared).unwrap()),
+                Err(rosenfu_storage::StorageError::UnsupportedVersion(35))
+            ));
+        }
+        assert!(advanced(&mut loaded.world, 1_001).reached_target);
+        let shared = loaded.world.operation_save().unwrap();
+        assert_eq!(shared.runtime.format, 2);
+        assert_eq!(shared.runtime.trains.len(), 2);
+        assert!(shared.runtime.trains.iter().all(|t| matches!(
+            t.state,
+            TrainState::Moving {
+                entered_ms: 1_000,
+                ..
+            }
+        )));
+        let rail = shared
+            .runtime
+            .services
+            .iter()
+            .find(|spec| spec.service_id == street.0.to_string())
+            .unwrap();
+        let street_key = format!("rail:{}:section:", street_line.0);
+        assert!(rail.legs.iter().all(|leg| leg
+            .sections
+            .iter()
+            .flat_map(|s| &s.resources)
+            .any(|lock| lock.starts_with(&street_key))));
+        let bytes = rosenfu_storage::encode(&loaded.world).unwrap();
+        let archive: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            archive["capabilities"],
+            serde_json::json!(["fractional_bus_ground_route_v1", "street_tram_chain_v1"])
+        );
+        let mut restored = rosenfu_storage::decode(&bytes).unwrap();
+        assert_eq!(rosenfu_storage::encode(&restored).unwrap(), bytes);
+        assert_eq!(
+            advanced(&mut restored, 1_000_000),
+            advanced(&mut loaded.world, 1_000_000)
+        );
+        assert_eq!(restored.operation_save(), loaded.world.operation_save());
+        let mut downgrade = archive;
+        downgrade["schema_version"] = 34.into();
+        assert!(matches!(
+            rosenfu_storage::decode(&serde_json::to_vec(&downgrade).unwrap()),
+            Err(rosenfu_storage::StorageError::UnsupportedVersion(35))
+        ));
+    }
+
+    fn attach_general_fractional_bus(
+        editor: &mut WorldEditor,
+        id: &str,
+        synthetic_revision: Option<&str>,
+    ) {
+        use rosenfu_core::ofm_evidence::BusVertex;
+        let (guide, cached) = street_tram_inputs();
+        let mut proof = fractional_bus_on_tram_source(&guide);
+        proof.same_atom_stops = None;
+        proof.fractional_terminals = Some([200_000, 700_000]);
+        proof.end = BusVertex {
+            feature: 1,
+            line: 0,
+            vertex: 0,
+        };
+        let (raw, mut binding) = cached().unwrap();
+        if let Some(revision) = synthetic_revision {
+            // Disjoint coordinates can share one world, but provider revisions
+            // cannot. Verify that the original mixed fixture is still rejected.
+            let token = editor.ofm_world_token().unwrap();
+            let before = editor.snapshot();
+            assert!(editor
+                .put_gameplay_ofm_bus(
+                    &token,
+                    id.into(),
+                    "途中起終点バス".into(),
+                    proof.clone(),
+                    cached().into_iter().collect(),
+                )
+                .is_err());
+            assert_eq!(editor.snapshot(), before);
+
+            binding.revision = revision.to_owned();
+            binding.key = format!(
+                "https://tiles.openfreemap.org/planet/{revision}/14/{}/{}.pbf",
+                binding.x, binding.y
+            );
+            binding.url = binding.key.clone();
+            proof.tile_key = binding.key.clone();
+        }
+        let token = editor.ofm_world_token().unwrap();
+        editor
+            .put_gameplay_ofm_bus(
+                &token,
+                id.into(),
+                "途中起終点バス".into(),
+                proof,
+                vec![(raw, binding)],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn authored_chain_tram_continuation_connects_two_proven_spans_and_reopens() {
+        use rosenfu_core::{
+            ofm_evidence::{AuthoredTramChainGuide, BusTileProof, BusVertex},
+            world::{AlignmentEndpoint, AlignmentEndpointRef},
+        };
+        if !rosenfu_storage::STREET_TRAM_CHAIN_SAVE_ENABLED {
+            return;
+        }
+        let tiles: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../crates/rosenfu-core/tests/fixtures/ofm_authored_following_tram_synthetic.json"
+        ))
+        .unwrap();
+        let guide = |tiles: &[serde_json::Value], start, end| AuthoredTramChainGuide {
+            tiles: tiles
+                .iter()
+                .map(|tile| BusTileProof {
+                    tile_key: tile["tileKey"].as_str().unwrap().to_owned(),
+                    tile_raw_sha256: tile["tileRawSha256"].as_str().unwrap().to_owned(),
+                })
+                .collect(),
+            start: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: start,
+            },
+            end: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: end,
+            },
+            start_fraction_q: Some(500_000),
+            end_fraction_q: Some(500_000),
+        };
+        let plan = |points: &[GeoPoint], from: Option<AlignmentEndpointRef>| -> PlannedAlignment {
+            serde_json::from_value(serde_json::json!({
+                "name": if from.is_some() {"後続の併用軌道"} else {"最初の併用軌道"},
+                "points": points, "trackType": "tram", "stations": [],
+                "extension": from.map(|a| serde_json::json!({"alignmentId": a.alignment_id, "endpoint": a.endpoint}))
+            })).unwrap()
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("長い南北併用軌道".into()).unwrap();
+        let first = guide(&tiles[..3], 0, 1);
+        let before = editor.ofm_world_token().unwrap();
+        let points = editor
+            .preview_authored_tram_road_guide(&before, &first, chain_fixture_cached(&tiles[..3]))
+            .unwrap();
+        let old = editor
+            .build_authored_street_tram(
+                &before,
+                &first,
+                chain_fixture_cached(&tiles[..3]),
+                plan(&points, None),
+                vec![],
+            )
+            .unwrap();
+        let source = AlignmentEndpointRef {
+            alignment_id: old.alignments[0].id,
+            endpoint: AlignmentEndpoint::End,
+        };
+        let second = guide(&tiles[2..], 1, 0);
+        let token = editor.ofm_world_token().unwrap();
+        let moved = AuthoredTramChainGuide {
+            start_fraction_q: Some(500_010),
+            ..second.clone()
+        };
+        let wrong_points = editor
+            .preview_authored_tram_road_guide(&token, &moved, chain_fixture_cached(&tiles[3..]))
+            .unwrap();
+        assert!(editor
+            .build_authored_street_tram(
+                &token,
+                &moved,
+                chain_fixture_cached(&tiles[3..]),
+                plan(&wrong_points, Some(source)),
+                vec![],
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), old);
+
+        let following = editor
+            .preview_authored_tram_road_guide(&token, &second, chain_fixture_cached(&tiles[3..]))
+            .unwrap();
+        assert_eq!(points.last(), following.first());
+        let after = editor
+            .build_authored_street_tram(
+                &token,
+                &second,
+                chain_fixture_cached(&tiles[3..]),
+                plan(&following, Some(source)),
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(after.road_evidence_descriptors.len(), 5);
+        assert_eq!(after.alignments.len(), 2);
+        assert_eq!(after.alignments[0], old.alignments[0]);
+        assert_eq!(after.road_path_provenance[0], old.road_path_provenance[0]);
+        assert_eq!(after.alignment_connections.len(), 1);
+        assert_eq!(after.alignment_connections[0].a, source);
+        assert_eq!(
+            after.alignment_connections[0].b.alignment_id,
+            after.alignments[1].id
+        );
+        assert_eq!(
+            after.alignment_connections[0].b.endpoint,
+            AlignmentEndpoint::Start
+        );
+        // Completed construction stays a history boundary, like one span.
+        assert!(editor.undo_world_edit(after.clone()).is_err());
+        assert_eq!(editor.snapshot(), after);
+
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("connected-chain-tram.rosenfu");
+        editor.save(&file).unwrap();
+        let exact = std::fs::read(&file).unwrap();
+        let mut loaded = WorldEditor::new();
+        loaded.load(&file).unwrap();
+        assert_eq!(loaded.snapshot(), after);
+        assert_eq!(rosenfu_storage::encode(&loaded.world).unwrap(), exact);
     }
 
     #[test]
@@ -568,6 +1288,110 @@ mod tests {
                 .sum();
             assert!((distance - middle.length_m()).abs() < 0.01);
         }
+        // On the exact same source road both proofs may be saved, but Fixed
+        // cannot arbitrate road-vs-rail occupancy and thus must not arm both.
+        let mut overlapping = editor.clone();
+        attach_general_fractional_bus(&mut overlapping, "overlapping", None);
+        let before = rosenfu_storage::encode(&overlapping.world).unwrap();
+        let token = overlapping
+            .operation_snapshot()
+            .timetable_edit_token
+            .clone();
+        assert!(overlapping
+            .configure_bus_operation(
+                "overlapping".into(),
+                Timetable {
+                    first_departure_ms: 1000,
+                    last_departure_ms: 1000,
+                    headway_ms: 60_000
+                },
+                Vehicle {
+                    max_speed_kmh: 30.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.,
+                    length_m: 12.
+                },
+                30.,
+                1000,
+                None,
+                &token
+            )
+            .is_err());
+        assert_eq!(rosenfu_storage::encode(&overlapping.world).unwrap(), before);
+
+        let mut combined = editor.clone();
+        combined
+            .put_gameplay_ofm_bus(
+                &combined.ofm_world_token().unwrap(),
+                "mix".into(),
+                "短区間バス".into(),
+                fractional_bus_on_tram_source(&guide),
+                vec![],
+            )
+            .unwrap();
+        let bus_token = combined.operation_snapshot().timetable_edit_token.clone();
+        combined
+            .configure_bus_operation(
+                "mix".into(),
+                Timetable {
+                    first_departure_ms: 1000,
+                    last_departure_ms: 1000,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 30.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.,
+                    length_m: 12.,
+                },
+                30.,
+                1000,
+                None,
+                &bus_token,
+            )
+            .unwrap();
+        let step = |world: &mut World, target| {
+            world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(target, 128)
+                .unwrap()
+        };
+        assert!(step(&mut combined.world, 1_001).reached_target);
+        let shared = combined.world.operation_save().unwrap();
+        assert_eq!(shared.runtime.format, 2);
+        assert_eq!(shared.runtime.trains.len(), 2);
+        assert!(shared.runtime.trains.iter().all(|train| {
+            matches!(
+                train.state,
+                TrainState::Moving {
+                    entered_ms: 1000,
+                    ..
+                }
+            )
+        }));
+        assert!(shared
+            .runtime
+            .trains
+            .iter()
+            .any(|t| t.key.service_id == "bus:mix"));
+        assert!(shared
+            .runtime
+            .trains
+            .iter()
+            .any(|t| t.key.service_id == service.0.to_string()));
+        let bytes = rosenfu_storage::encode(&combined.world).unwrap();
+        let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(wire["schema_version"], 35);
+        let mut reopened = rosenfu_storage::decode(&bytes).unwrap();
+        assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), bytes);
+        assert_eq!(
+            step(&mut reopened, 1_000_000),
+            step(&mut combined.world, 1_000_000)
+        );
+        assert_eq!(reopened.operation_save(), combined.world.operation_save());
+
         let (train_key, first_arrival) = {
             let runtime = &mut editor.world.operation_mut().unwrap().runtime;
             runtime.set_paused(false);
@@ -634,6 +1458,200 @@ mod tests {
         assert_eq!(inbound.arrivals[0].station_id, origin.0.to_string());
         assert_eq!(inbound.arrivals[0].train, train_key);
         assert_eq!(runtime.trains().count(), 0);
+    }
+
+    #[test]
+    fn general_fractional_bus_preserves_corridor_stop_distance_and_active_save() {
+        use rosenfu_core::{
+            ofm_evidence::{BusInteriorStop, BusPathBinding, BusVertex, BUS_GRAPH_RULE},
+            operation::{Timetable, TrainState, Vehicle},
+        };
+        let (guide, cached) = street_tram_inputs();
+        let mut path = BusPathBinding {
+            rule: BUS_GRAPH_RULE.into(),
+            grade_policy: None,
+            tile_key: guide.tile_key,
+            tile_raw_sha256: guide.tile_raw_sha256,
+            respect_oneway: true,
+            start: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: 0,
+            },
+            end: BusVertex {
+                feature: 1,
+                line: 0,
+                vertex: 0,
+            },
+            same_atom_stops: None,
+            fractional_terminals: Some([200_000, 700_000]),
+            additional_tiles: vec![],
+            end_tile_key: None,
+            pattern: None,
+            via: vec![],
+            interior_stops: vec![],
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("途中起終点の会社".into()).unwrap();
+        let token = editor.ofm_world_token().unwrap();
+        let before = editor.snapshot();
+        let preview = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "route".into(),
+                "路線".into(),
+                path.clone(),
+                cached().into_iter().collect(),
+            )
+            .unwrap();
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(preview.points.len(), 3);
+
+        let after = editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "route".into(),
+                "路線".into(),
+                path.clone(),
+                cached().into_iter().collect(),
+            )
+            .unwrap();
+        assert!(after.carries_general_fractional_bus_proof());
+        assert!(!after.carries_fractional_bus_proof());
+        let route = &after.road_transport.bus_routes[0];
+        let legs = after.road_transport.bus_legs(&after, "route").unwrap();
+        let [leg] = legs.as_slice() else {
+            panic!("one complete passenger span");
+        };
+        assert_eq!(route.edges.len(), 2);
+        assert_eq!(route.edges, leg.traversed_edges);
+        assert_eq!(leg.length_m, preview.length_m);
+        let cuts: Vec<_> = route
+            .stops
+            .iter()
+            .map(|occurrence| {
+                after
+                    .road_transport
+                    .bus_stops
+                    .iter()
+                    .find(|stop| stop.id == occurrence.stop_id)
+                    .unwrap()
+                    .position
+            })
+            .collect();
+        assert_eq!(cuts, vec![0.2, 0.7]);
+        let whole_length = leg.length_m;
+
+        // The clipped first atom starts at .2. The existing stop editor must
+        // retain a raw-oriented .5 cut, not .5 of the drawn subsegment.
+        let world_token = editor.ofm_world_token().unwrap();
+        let checked = editor
+            .preview_gameplay_ofm_bus_details(
+                &world_token,
+                "route".into(),
+                "路線".into(),
+                path.clone(),
+                vec![],
+                super::super::road_transport::GameplayBusPreviewOptions {
+                    request_stop_targets: true,
+                    request_auto_stop_suggestions: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(checked.stop_target_terminal_cuts, Some([200_000, 700_000]));
+        assert_eq!(checked.stop_occurrence_keys.len(), 2);
+        path.interior_stops.push(BusInteriorStop {
+            id: "mid".into(),
+            name: "途中".into(),
+            occurrence_key: checked.stop_occurrence_keys[0].clone(),
+            fraction_q: 200_000,
+        });
+        assert!(editor
+            .put_gameplay_ofm_bus(
+                &world_token,
+                "route".into(),
+                "路線".into(),
+                path.clone(),
+                vec![],
+            )
+            .is_err());
+        assert_eq!(editor.snapshot(), after);
+        path.interior_stops[0].fraction_q = 500_000;
+        let after = editor
+            .put_gameplay_ofm_bus(&world_token, "route".into(), "路線".into(), path, vec![])
+            .unwrap();
+        assert!(after.carries_general_fractional_bus_stops_proof());
+        let legs = after.road_transport.bus_legs(&after, "route").unwrap();
+        assert_eq!(legs.len(), 2);
+        assert_eq!(legs[0].to_stop_id, legs[1].from_stop_id);
+        assert!((legs.iter().map(|leg| leg.length_m).sum::<f64>() - whole_length).abs() < 1e-9);
+        let token = editor.operation_snapshot().timetable_edit_token.clone();
+        editor
+            .configure_bus_operation(
+                "route".into(),
+                Timetable {
+                    first_departure_ms: 1000,
+                    last_departure_ms: 1000,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 55.,
+                    acceleration_mps2: 1.,
+                    braking_mps2: 1.,
+                    length_m: 10.,
+                },
+                40.,
+                1_000,
+                None,
+                &token,
+            )
+            .unwrap();
+        let (key, arrival_ms) = {
+            let runtime = &mut editor.world.operation_mut().unwrap().runtime;
+            runtime.set_paused(false);
+            assert!(runtime.advance_to(2000, 128).unwrap().reached_target);
+            let train = runtime.trains().next().unwrap();
+            let TrainState::Moving { arrival_ms, .. } = train.state else {
+                panic!("bus not dispatched");
+            };
+            let key = train.key.clone();
+            runtime.set_paused(true);
+            (key, arrival_ms)
+        };
+        let archive = rosenfu_storage::encode(&editor.world).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&archive).unwrap();
+        assert_eq!(value["schema_version"], 35);
+        assert!(value["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "fractional_bus_ground_route_v1"));
+        assert!(value["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "fractional_bus_ground_stops_v1"));
+        let mut restored = rosenfu_storage::decode(&archive).unwrap();
+        assert_eq!(restored.snapshot(), &after);
+        assert_eq!(restored.operation_save(), editor.world.operation_save());
+        let runtime = &mut restored.operation_mut().unwrap().runtime;
+        runtime.set_paused(false);
+        let arrival = runtime.advance_to(arrival_ms, 128).unwrap();
+        assert!(arrival.reached_target);
+        assert_eq!(arrival.arrivals.len(), 1);
+        assert_eq!(arrival.arrivals[0].train, key);
+        assert_eq!(
+            arrival.arrivals[0].station_id,
+            format!("bus:{}", legs[0].to_stop_id)
+        );
+        let end = runtime.advance_to(arrival_ms + 120_000, 128).unwrap();
+        assert!(end.reached_target);
+        assert_eq!(end.arrivals.len(), 1);
+        assert_eq!(end.arrivals[0].train, key);
+        assert_eq!(
+            end.arrivals[0].station_id,
+            format!("bus:{}", legs[1].to_stop_id)
+        );
     }
 
     fn stage(editor: &mut WorldEditor) {
@@ -723,6 +1741,8 @@ mod tests {
         };
         let request = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            same_atom_stops: None,
+            fractional_terminals: None,
             grade_policy: None,
             tile_key: key.clone(),
             tile_raw_sha256: sha.clone(),
@@ -945,6 +1965,8 @@ mod tests {
             );
             let binding = BusPathBinding {
                 rule: BUS_GRAPH_RULE.into(),
+                same_atom_stops: None,
+                fractional_terminals: None,
                 grade_policy: None,
                 tile_key: key.clone(),
                 tile_raw_sha256: sha,
@@ -967,10 +1989,183 @@ mod tests {
             };
             (binding, cached)
         };
+        // Same-atom termini move boarding positions, not the physical
+        // arc. The ordinary solver's separate reverse detour may not stand
+        // in for a forbidden raw-atom traversal.
+        let mut fractional_world = editor.clone();
+        let fractional_token = fractional_world.ofm_world_token().unwrap();
+        let (mut full, evidence) = setup(two_way);
+        full.pattern = None;
+        let whole = fractional_world
+            .put_gameplay_ofm_bus(
+                &fractional_token,
+                "full".into(),
+                "Entire road".into(),
+                full.clone(),
+                vec![evidence],
+            )
+            .unwrap();
+        let fractional_token = fractional_world.ofm_world_token().unwrap();
+        let mut cuts = full.clone();
+        cuts.same_atom_stops = Some([250_000, 600_000]);
+        let preview_cuts = |editor: &WorldEditor, proof| {
+            editor.preview_gameplay_ofm_bus(
+                &fractional_token,
+                "interior".into(),
+                "Partial road".into(),
+                proof,
+                vec![],
+            )
+        };
+        let mut flipped = cuts.clone();
+        std::mem::swap(&mut flipped.start, &mut flipped.end);
+        assert_eq!(
+            preview_cuts(&fractional_world, flipped)
+                .unwrap()
+                .failed_leg_index,
+            Some(0)
+        );
+        let mut looped = cuts.clone();
+        looped.pattern = Some(BusPattern::ClosedOneWay);
+        assert!(preview_cuts(&fractional_world, looped).is_err());
+        let mut bad_cut = cuts.clone();
+        bad_cut.same_atom_stops = Some([250_000, 250_000]);
+        assert!(preview_cuts(&fractional_world, bad_cut).is_err());
+        let mut alternate_return = cuts.clone();
+        alternate_return.pattern = Some(BusPattern::OpenRoundTrip);
+        assert!(preview_cuts(&fractional_world, alternate_return.clone())
+            .unwrap()
+            .return_unavailable_reason
+            .is_some());
+        assert_eq!(fractional_world.snapshot(), whole);
+        let route_preview = preview_cuts(&fractional_world, cuts.clone()).unwrap();
+        assert_eq!(route_preview.points.len(), 2);
+        // Relaxed game direction can replay the same full raw atom in
+        // reverse; the geographic boarding cuts must still be the same.
+        alternate_return.respect_oneway = false;
+        let relaxed = preview_cuts(&fractional_world, alternate_return).unwrap();
+        let back = relaxed.return_path.unwrap();
+        for (a, b) in relaxed.points.iter().zip(back.points.iter().rev()) {
+            assert!((a.latitude - b.latitude).abs() < 1e-12);
+            assert!((a.longitude - b.longitude).abs() < 1e-12);
+        }
+        assert!((relaxed.length_m - back.length_m).abs() <= 0.001_001);
+        let made = fractional_world
+            .put_gameplay_ofm_bus(
+                &fractional_token,
+                "interior".into(),
+                "Partial road".into(),
+                cuts,
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(made.road_transport.edges, whole.road_transport.edges);
+        assert_eq!(
+            made.road_transport.bus_routes[0].edges,
+            made.road_transport.bus_routes[1].edges
+        );
+        assert_eq!(made.road_transport.bus_stops[2].position, 0.25);
+        assert_eq!(made.road_transport.bus_stops[3].position, 0.6);
+        let timetable = Timetable {
+            first_departure_ms: 1_000,
+            last_departure_ms: 1_000,
+            headway_ms: 60_000,
+        };
+        let vehicle = Vehicle {
+            max_speed_kmh: 60.,
+            acceleration_mps2: 1.,
+            braking_mps2: 1.2,
+            length_m: 12.,
+        };
+        for route in ["full", "interior"] {
+            let token = fractional_world
+                .operation_snapshot()
+                .timetable_edit_token
+                .clone();
+            fractional_world
+                .configure_bus_operation(
+                    route.into(),
+                    timetable.clone(),
+                    vehicle.clone(),
+                    30.,
+                    1_000,
+                    None,
+                    &token,
+                )
+                .unwrap();
+        }
+        let runtime = &mut fractional_world.world.operation_mut().unwrap().runtime;
+        let whole_leg = &runtime.service_spec("bus:full").unwrap().legs[0].sections[0];
+        let clipped_leg = &runtime.service_spec("bus:interior").unwrap().legs[0].sections[0];
+        assert_eq!(clipped_leg.resources, whole_leg.resources);
+        assert_eq!(clipped_leg.length_m, route_preview.length_m);
+        assert!(clipped_leg.length_m < whole_leg.length_m);
+        runtime.advance_to(1_001, 32).unwrap();
+        let moving = runtime
+            .trains()
+            .filter(|t| matches!(t.state, rosenfu_core::operation::TrainState::Moving { .. }))
+            .count();
+        assert_eq!(moving, 1);
+        assert_eq!(runtime.trains().count(), 2);
+        let bytes = rosenfu_storage::encode(&fractional_world.world).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["schema_version"], 34);
+        let restored = rosenfu_storage::decode(&bytes).unwrap();
+        assert_eq!(restored.snapshot(), &made);
+        assert_eq!(
+            restored.operation_save().unwrap(),
+            fractional_world.world.operation_save().unwrap()
+        );
+        assert_eq!(rosenfu_storage::encode(&restored).unwrap(), bytes);
+        let mut downgraded = json;
+        downgraded["schema_version"] = 27.into();
+        assert!(matches!(
+            rosenfu_storage::decode(&serde_json::to_vec(&downgraded).unwrap()),
+            Err(rosenfu_storage::StorageError::UnsupportedVersion(34))
+        ));
+
         let before = editor.snapshot();
         let history = editor.world_edit_history();
         let token = editor.ofm_world_token().unwrap();
         let (out, cached) = setup(no_return);
+        // Both clicked vertices are real, but the route cannot drive the
+        // one-way edge backwards. A normal two-click edit must expose the
+        // actual unreachable leg so the frontend can try an observed free-end
+        // alternative. This does not make absent vertices or bytes routable.
+        let mut reversed = out.clone();
+        std::mem::swap(&mut reversed.start, &mut reversed.end);
+        let refused = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "B2".into(),
+                "往復".into(),
+                reversed.clone(),
+                vec![setup(no_return).1],
+            )
+            .unwrap();
+        assert_eq!(refused.failed_leg_index, Some(0));
+        assert!(refused.points.is_empty() && refused.length_m == 0.0);
+        assert!(refused.return_path.is_none() && refused.return_unavailable_reason.is_none());
+        assert!(editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "B2".into(),
+                "往復".into(),
+                reversed.clone(),
+                vec![setup(no_return).1],
+            )
+            .is_err());
+        let mut absent = reversed.clone();
+        absent.start.vertex = 500;
+        for (candidate, evidence) in [(reversed, vec![]), (absent, vec![setup(no_return).1])] {
+            assert!(editor
+                .preview_gameplay_ofm_bus(&token, "B2".into(), "往復".into(), candidate, evidence)
+                .is_err());
+        }
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.world_edit_history().revision, history.revision);
+        assert_eq!(editor.ofm_world_token().unwrap(), token);
+
         let preview = editor
             .preview_gameplay_ofm_bus(
                 &token,
@@ -1290,6 +2485,8 @@ mod tests {
         };
         let request = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            same_atom_stops: None,
+            fractional_terminals: None,
             grade_policy: None,
             tile_key: key.clone(),
             tile_raw_sha256: sha.clone(),
@@ -1606,6 +2803,8 @@ mod tests {
         let all = cached();
         let request = BusPathBinding {
             rule: BUS_RECTANGLE_RULE.into(),
+            same_atom_stops: None,
+            fractional_terminals: None,
             grade_policy: None,
             tile_key: all[0].1.key.clone(),
             tile_raw_sha256: all[0].0.sha256.clone(),
@@ -1837,6 +3036,8 @@ mod tests {
         };
         let proof = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            same_atom_stops: None,
+            fractional_terminals: None,
             grade_policy: None,
             tile_key: key.into(),
             tile_raw_sha256: digest.clone(),
@@ -2173,6 +3374,8 @@ mod tests {
         editor.rename_company("停留所の検証".into()).unwrap();
         let actual = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            same_atom_stops: None,
+            fractional_terminals: None,
             grade_policy: None,
             tile_key: key.into(),
             tile_raw_sha256: sha.clone(),
@@ -2421,6 +3624,8 @@ mod tests {
         };
         let legacy = BusPathBinding {
             rule: BUS_GRAPH_RULE.into(),
+            same_atom_stops: None,
+            fractional_terminals: None,
             tile_key: key.into(),
             tile_raw_sha256: sha,
             respect_oneway: false,

@@ -95,6 +95,14 @@ fn resolve_interior_stops<'a>(
         let atom = *occurrences
             .get(&data.occurrence_key)
             .ok_or(MissingBusStopOccurrence)?;
+        if let Some([from, to]) = outward.stop_target_terminal_cuts() {
+            if !outward.atom_is_ground(atom)
+                || (atom == 0 && data.fraction_q <= from)
+                || (atom + 1 == outward.steps.len() && data.fraction_q >= to)
+            {
+                return Err(InvalidStopOrder);
+            }
+        }
         let position = StopPosition {
             atom,
             fraction_q: data.fraction_q,
@@ -181,6 +189,47 @@ impl BusPath {
             latitude: a[1] + (b[1] - a[1]) * q,
         })
     }
+
+    fn terminal_fractions(&self) -> [u32; 2] {
+        self.binding
+            .same_atom_stops
+            .or(self.resolved_terminal_cuts)
+            .unwrap_or([0, BUS_STOP_DENOMINATOR])
+    }
+
+    /// Passenger geometry clips only the two terminal atoms; saved road
+    /// geometry and shared lock identities remain the complete source atoms.
+    pub fn fractional_bus_view(&self) -> Result<Option<(Vec<GeoPoint>, f64)>, RoadTransportError> {
+        if !self.binding.has_fractional_stops() {
+            return Ok(None);
+        }
+        let [from, to] = self.terminal_fractions();
+        let end_atom = self.steps.len().checked_sub(1).ok_or(InvalidData)?;
+        let first = self.stop_point(StopPosition {
+            atom: 0,
+            fraction_q: from,
+        })?;
+        let last = self.stop_point(StopPosition {
+            atom: end_atom,
+            fraction_q: to,
+        })?;
+        let mut points = Vec::with_capacity(self.points.len());
+        points.push(first);
+        points.extend(
+            self.points[1..self.points.len() - 1]
+                .iter()
+                .map(|p| GeoPoint {
+                    longitude: p[0],
+                    latitude: p[1],
+                }),
+        );
+        points.push(last);
+        let legs = metric_legs(self, "@start", "@end", vec![])?;
+        let [leg] = legs.as_slice() else {
+            return Err(InvalidData);
+        };
+        Ok(Some((points, leg.length_m)))
+    }
 }
 
 const AUTO_BOARDING_GAP_UM: u128 = 2_000_000_000;
@@ -190,6 +239,9 @@ fn auto_stop_suggestions(
     binding: &BusPathBinding,
     path: &BusPath,
 ) -> Result<Vec<BusInteriorStop>, RoadTransportError> {
+    if binding.has_fractional_stops() {
+        return Ok(vec![]);
+    }
     let placed = resolve_interior_stops(binding, path, None)?;
     let capacity = MAX_INTERIOR_STOPS.saturating_sub(placed.len());
     if capacity == 0 || path.steps.is_empty() {
@@ -426,7 +478,9 @@ fn project_route(
             edge_index: index,
         });
     };
-    add(format!("ofm-bus:{}:起点", route.id), "起点".into(), 0, 0);
+    let [from, to] = path.terminal_fractions();
+    path.fractional_bus_view()?;
+    add(format!("ofm-bus:{}:起点", route.id), "起点".into(), 0, from);
     for stop in resolve_interior_stops(binding, path, None)? {
         add(
             interior_stop_id(&route.id, &stop.data.id),
@@ -452,7 +506,7 @@ fn project_route(
             format!("ofm-bus:{}:終点", route.id),
             "終点".into(),
             ids.len() - 1,
-            BUS_STOP_DENOMINATOR,
+            to,
         );
     }
     Ok(BusRoute {
@@ -473,10 +527,11 @@ fn metric_legs(
     if path.steps.is_empty() || path.steps.len() != path.atom_operation_micrometres.len() {
         return Err(InvalidData);
     }
+    let [from_fraction, to_fraction] = path.terminal_fractions();
     let mut points = vec![(
         StopPosition {
             atom: 0,
-            fraction_q: 0,
+            fraction_q: from_fraction,
         },
         from.to_owned(),
     )];
@@ -484,7 +539,7 @@ fn metric_legs(
     points.push((
         StopPosition {
             atom: path.steps.len() - 1,
-            fraction_q: BUS_STOP_DENOMINATOR,
+            fraction_q: to_fraction,
         },
         to.to_owned(),
     ));
@@ -729,7 +784,9 @@ impl WorldDraft {
     ) -> Option<(&RoadEdge, f64)> {
         const MAX_OUTWARD_ATOMS: usize = 16;
         let binding = self.ofm_gameplay_bus_routes.get(route_id)?;
-        if binding.pattern != Some(BusPattern::OpenRoundTrip) {
+        if binding.pattern != Some(BusPattern::OpenRoundTrip)
+            && binding.fractional_terminals.is_none()
+        {
             return None;
         }
         let (edges, first, from, to) = self.road_transport.gameplay_bus_leg_span(
@@ -856,13 +913,14 @@ impl WorldDraft {
         {
             return None;
         }
+        let [from_cut, to_cut] = path.terminal_fractions();
         let initial = StopPosition {
             atom: 0,
-            fraction_q: 0,
+            fraction_q: from_cut,
         };
         let final_stop = StopPosition {
             atom: lengths.len() - 1,
-            fraction_q: BUS_STOP_DENOMINATOR,
+            fraction_q: to_cut,
         };
         let terminal = &route.stops.last()?.stop_id;
         let origin = &route.stops.first()?.stop_id;
@@ -985,6 +1043,38 @@ impl WorldDraft {
                 })
             })
             .collect()
+    }
+
+    pub(super) fn gameplay_bus_fractional_legs(
+        &self,
+        route: &BusRoute,
+        binding: &BusPathBinding,
+    ) -> Result<Vec<BusLeg>, RoadTransportError> {
+        let path = self
+            .runtime_road_evidence
+            .stored_gameplay_bus_path(binding)
+            .map_err(outward_evidence_error)?
+            .ok_or(DisconnectedPath)?;
+        let (start, end) = route
+            .stops
+            .first()
+            .zip(route.stops.last())
+            .ok_or(InvalidData)?;
+        let middle = resolve_interior_stops(binding, &path, None)?
+            .into_iter()
+            .map(|stop| (stop.outward, interior_stop_id(&route.id, &stop.data.id)))
+            .collect::<Vec<_>>();
+        if route.stops.len() != middle.len() + 2 {
+            return Err(InvalidData);
+        }
+        if route.stops[1..route.stops.len() - 1]
+            .iter()
+            .zip(&middle)
+            .any(|(saved, (pos, id))| saved.stop_id != *id || saved.edge_index != pos.atom)
+        {
+            return Err(InvalidData);
+        }
+        metric_legs(&path, &start.stop_id, &end.stop_id, middle)
     }
 
     pub(super) fn gameplay_bus_closed_legs(
@@ -1167,16 +1257,19 @@ impl WorldDraft {
     /// One local authoring preview from the existing immutable road-tile input.
     /// This consumes a detached draft: the real world does not gain a Bus
     /// route, new authority or retained data merely by looking at a guide.
-    pub fn authored_tram_road_guide(
+    pub fn authored_tram_road_guide<'a>(
         self,
-        request: &crate::ofm_evidence::AuthoredTramGuide,
+        request: impl Into<crate::ofm_evidence::AuthoredTramProof<'a>>,
         cached: Vec<(
             crate::ofm_evidence::RawEvidence,
             crate::ofm_evidence::TileBinding,
         )>,
     ) -> Result<Option<Vec<[f64; 2]>>, RoadTransportError> {
-        let staged = self.admit_gameplay_ofm_bus_tiles(&request.evidence_request(), cached)?;
-        crate::ofm_evidence::reconstruct_authored_tram_guide(&staged.runtime_road_evidence, request)
+        let request = request.into();
+        let evidence = request.evidence_request().map_err(outward_evidence_error)?;
+        let staged = self.admit_gameplay_ofm_bus_tiles(&evidence, cached)?;
+        request
+            .geometry(&staged.runtime_road_evidence)
             .map_err(outward_evidence_error)
     }
 
@@ -1184,13 +1277,14 @@ impl WorldDraft {
     /// with the authored tram mode. Issuing the preview doesn't publish it.
     pub(crate) fn stage_authored_street_tram(
         self,
-        request: &crate::ofm_evidence::AuthoredTramGuide,
+        request: crate::ofm_evidence::AuthoredTramProof<'_>,
         cached: Vec<(
             crate::ofm_evidence::RawEvidence,
             crate::ofm_evidence::TileBinding,
         )>,
     ) -> Result<(Self, crate::ofm_evidence::DerivedPath), RoadTransportError> {
-        let staged = self.admit_gameplay_ofm_bus_tiles(&request.evidence_request(), cached)?;
+        let evidence = request.evidence_request().map_err(outward_evidence_error)?;
+        let staged = self.admit_gameplay_ofm_bus_tiles(&evidence, cached)?;
         let path = crate::ofm_evidence::reconstruct_street_tram_path(
             &staged.runtime_road_evidence,
             request,

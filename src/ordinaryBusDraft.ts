@@ -7,7 +7,7 @@ import type {RawTileEvidence,TileEvidenceBinding} from './ofmSharedEvidenceDraft
 
 type Vertex={feature:number;line:number;vertex:number};
 type Tile={binding:OpenFreeMapEvidenceRequest;lines:OpenFreeMapRoadLine[]};
-export type BusAnchor={point:GeoPoint;raw:Vertex;tile:OpenFreeMapEvidenceRequest};
+export type BusAnchor={point:GeoPoint;raw:Vertex;tile:OpenFreeMapEvidenceRequest;fractionQ?:number};
 type TileProof={tileKey:string;tileRawSha256:string};
 export type OrdinaryBusGradePolicy='observedConnectors';
 export type OrdinaryBusPattern='openRoundTrip'|'closedOneWay';
@@ -17,13 +17,14 @@ export type BusWaypoint={id:string;anchor:BusAnchor};
 type BusWaypointProof={id:string;tileKey:string;vertex:Vertex};
 export type OrdinaryBusPreviewReply=OrdinaryBusPreview|{points:[];lengthM:0;failedLegIndex:number};
 export type OrdinaryBusPath=TileProof & {respectOneway:boolean;start:Vertex;end:Vertex;pattern?:OrdinaryBusPattern;gradePolicy?:OrdinaryBusGradePolicy;via?:BusWaypointProof[];interiorStops?:BusInteriorStop[]} & (
- {rule:'ofm_ground_bus_z14_v1'}|{rule:'ofm_ground_bus_rectangle_z14_v2';endTileKey:string;additionalTiles:TileProof[]});
+ {rule:'ofm_ground_bus_z14_v1';sameAtomStops?:readonly [number,number];fractionalTerminals?:readonly [number,number]}|
+ {rule:'ofm_ground_bus_rectangle_z14_v2';endTileKey:string;additionalTiles:TileProof[];sameAtomStops?:never;fractionalTerminals?:readonly [number,number]});
 type RawTilePair={rawEvidence:RawTileEvidence;tileBinding:TileEvidenceBinding};
 export type RouteTileObserver=(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal)=>Promise<OpenFreeMapEvidenceRequest[]>;
 export type OrdinaryBusQuery={expectedWorldToken:string;routeId:string;name:string;path:OrdinaryBusPath;rawEvidence:RawTileEvidence|null;tileBinding:TileEvidenceBinding|null;contextTiles?:RawTilePair[]};
 export type OrdinaryBusPreviewQuery=OrdinaryBusQuery & {requestStopTargets?:true;requestAutoStopSuggestions?:true};
 type BusLegPreview={points:GeoPoint[];lengthM:number};
-export type OrdinaryBusPreview=BusLegPreview & {returnPath?:BusLegPreview;returnUnavailableReason?:string;viaPointIndices?:number[];stopOccurrenceKeys?:string[];interiorStops?:OrdinaryBusStopView[];autoStopSuggestions?:BusInteriorStop[];loopFallbackStop?:OrdinaryBusStopView};
+export type OrdinaryBusPreview=BusLegPreview & {returnPath?:BusLegPreview;returnUnavailableReason?:string;viaPointIndices?:number[];stopOccurrenceKeys?:string[];stopTargetTerminalCuts?:readonly [number,number];interiorStops?:OrdinaryBusStopView[];autoStopSuggestions?:BusInteriorStop[];loopFallbackStop?:OrdinaryBusStopView};
 export type BusEvidenceReader=(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal)=>Promise<CurrentRoadEvidenceResult>;
 const supported=new Set(['primary','secondary','tertiary','minor','service','busway','bus_guideway']);
 const access=new Set(['yes','permissive','designated']);
@@ -33,6 +34,59 @@ const sha=(value:string)=>/^[a-f0-9]{64}$/.test(value);
 const validIdx=(n:number)=>Number.isSafeInteger(n)&&n>=0&&n<16384;
 const sameTile=(a:OpenFreeMapEvidenceRequest,b:OpenFreeMapEvidenceRequest)=>territory(a)===territory(b)&&a.rawSha256===b.rawSha256;
 const finitePoint=(p:GeoPoint)=>Number.isFinite(p.latitude)&&Number.isFinite(p.longitude)&&Math.abs(p.latitude)<=85.05112878&&Math.abs(p.longitude)<=180;
+const BUS_CUT_DEN=1_000_000;
+function observedBusLine(l:OpenFreeMapRoadLine,binding:OpenFreeMapEvidenceRequest){
+ if(l.revision!==binding.revision||l.z!==14||l.x!==binding.x||l.y!==binding.y||
+    !supported.has(l.class)||l.brunnel!==undefined||l.layer!==undefined&&l.layer!==0||
+    l.access!==undefined&&!access.has(l.access)||l.oneway!==undefined&&!oneway.has(l.oneway))return;
+ const prefix=`ofm:${binding.revision}:14:${binding.x}:${binding.y}:`;
+ if(!l.id.startsWith(prefix))return;
+ const match=l.id.slice(prefix.length).match(/^(0|[1-9]\d*):(0|[1-9]\d*)$/);
+ if(!match||!match.slice(1).every(n=>Number.isSafeInteger(Number(n))&&Number(n)<=0xffffffff))return;
+ return {feature:Number(match[1]),line:Number(match[2])};
+}
+const sameAtom=(a:BusAnchor,b:BusAnchor)=>sameTile(a.tile,b.tile)&&a.raw.feature===b.raw.feature&&a.raw.line===b.raw.line&&a.raw.vertex===b.raw.vertex;
+/** This resolves a display hit only. The directed usable atom comes from the native solver. */
+export function snapOrdinaryBusSegment(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number):BusAnchor{
+ if(!finitePoint(at)||!Number.isFinite(scale)||scale<=0)throw Error('地図上の道路を選んでください。');
+ const tiles=tilesOf(snapshot);
+ if(tiles.length>16)throw Error('道路が多すぎます。地図を拡大してください。');
+ const p=project(at.latitude,at.longitude,camera),radius=24*360/(scale*256*2**camera.zoom);
+ let best:{anchor:BusAnchor;distance:number}|undefined,ambiguous=false,seen=0;
+ for(const {binding,lines} of tiles){
+  const cell=roadTileBounds(binding.x,binding.y);
+  const inside=({latitude,longitude}:GeoPoint)=>longitude>cell.west&&longitude<cell.east&&latitude<cell.north&&latitude>cell.south;
+  for(const l of lines){
+   seen+=l.coordinates.length;
+   if(seen>160_000)throw Error('道路が多すぎます。地図を拡大してください。');
+   const id=observedBusLine(l,binding);
+   if(!id)continue;
+   for(let vertex=0;vertex+1<l.coordinates.length;vertex++){
+    const [[x,y],[u,v]]=[l.coordinates[vertex],l.coordinates[vertex+1]];
+    if(at.longitude<Math.min(x,u)-radius||at.longitude>Math.max(x,u)+radius||
+       at.latitude<Math.min(y,v)-radius||at.latitude>Math.max(y,v)+radius)continue;
+    const a={longitude:x,latitude:y},b={longitude:u,latitude:v};
+    if(!finitePoint(a)||!finitePoint(b)||!inside(a)||!inside(b))continue;
+    const aa=project(y,x,camera),bb=project(v,u,camera),dx=bb.x-aa.x,dy=bb.y-aa.y;
+    const len2=dx*dx+dy*dy;
+    if(len2===0)continue;
+    const q=Math.round(((p.x-aa.x)*dx+(p.y-aa.y)*dy)/len2*BUS_CUT_DEN);
+    if(q<=0||q>=BUS_CUT_DEN)continue;
+    const t=q/BUS_CUT_DEN;
+    const distance=Math.hypot(p.x-aa.x-t*dx,p.y-aa.y-t*dy)*scale;
+    if(distance>24)continue;
+    const point={longitude:x+(u-x)*t,latitude:y+(v-y)*t};
+    const next={anchor:{tile:binding,point,raw:{...id,vertex},fractionQ:q},distance};
+    if(!best||distance<best.distance-0.001){best=next;ambiguous=false;}
+    else if(Math.abs(distance-best.distance)<=0.001&&!sameAtom(next.anchor,best.anchor))ambiguous=true;
+   }
+  }
+ }
+ if(ambiguous)throw Error('道路が重なっています。地図を拡大して選び直してください。');
+ if(!best)throw Error('道路の途中を選んでください。交差点・タイルの境界は指定できません。');
+ return best.anchor;
+}
+
 
 function tilesOf(snapshot?:RoadSnapshot):Tile[]{
  if(!snapshot)return [];
@@ -65,19 +119,14 @@ function snapOrdinaryBusChoices(snapshot:RoadSnapshot|undefined,at:GeoPoint,came
   for(const l of lines){
    seen+=l.coordinates.length;
    if(seen>160_000)throw Error('道路が多すぎます。地図を拡大してください。');
-   if(l.revision!==binding.revision||l.z!==14||l.x!==binding.x||l.y!==binding.y||
-      !supported.has(l.class)||l.brunnel!==undefined||l.layer!==undefined&&l.layer!==0||
-      l.access!==undefined&&!access.has(l.access)||l.oneway!==undefined&&!oneway.has(l.oneway))continue;
-   const prefix=`ofm:${binding.revision}:14:${binding.x}:${binding.y}:`;
-   if(!l.id.startsWith(prefix))continue;
-   const match=l.id.slice(prefix.length).match(/^(0|[1-9]\d*):(0|[1-9]\d*)$/);
-   if(!match||!match.slice(1).every(n=>Number.isSafeInteger(Number(n))&&Number(n)<=0xffffffff))continue;
+   const id=observedBusLine(l,binding);
+   if(!id)continue;
    for(let vertex=0;vertex<l.coordinates.length;vertex++){
     const [longitude,latitude]=l.coordinates[vertex],point={longitude,latitude};
     if(!finitePoint(point)||longitude<cell.west||longitude>=cell.east||latitude>cell.north||latitude<=cell.south||Math.abs(at.longitude-longitude)>geoRadius||Math.abs(at.latitude-latitude)>geoRadius)continue;
     const q=project(latitude,longitude,camera),d=Math.hypot(p.x-q.x,p.y-q.y)*scale;
     if(d>24)continue;
-    candidates.push({anchor:{point,raw:{feature:Number(match[1]),line:Number(match[2]),vertex},tile:binding},distance:d});
+    candidates.push({anchor:{point,raw:{...id,vertex},tile:binding},distance:d});
    }
   }
  }
@@ -109,8 +158,7 @@ function snapOrdinaryBusChoices(snapshot:RoadSnapshot|undefined,at:GeoPoint,came
 export function snapOrdinaryBusVertex(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number,previous?:BusAnchor,rectangle=false):BusAnchor{
  return snapOrdinaryBusChoices(snapshot,at,camera,scale,previous,rectangle)[0];
 }
-/** Up to two distinct alternatives from the same confirmed rectangle. A
- * placed start cannot change the primary tile key of the existing proof. */
+/** Up to two distinct alternatives from the same confirmed rectangle. */
 export function snapOrdinaryBusFreeEnd(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number,fixed:readonly BusAnchor[]=[]):BusAnchor[]{
  return snapOrdinaryBusChoices(snapshot,at,camera,scale,undefined,true,fixed);
 }
@@ -156,8 +204,27 @@ export function ordinaryBusCells(start:OpenFreeMapEvidenceRequest,end:OpenFreeMa
 
 export async function prepareOrdinaryBusQuery(
  start:BusAnchor,end:BusAnchor,name:string,routeId:string,expectedWorldToken:string,read:BusEvidenceReader,
- descriptors:readonly unknown[],signal?:AbortSignal,observe?:RouteTileObserver,pattern?:OrdinaryBusPattern,via:readonly BusWaypoint[]=[],respectOneway=false,interiorStops:readonly BusInteriorStop[]=[],gradePolicy?:OrdinaryBusGradePolicy,
+ descriptors:readonly unknown[],signal?:AbortSignal,observe?:RouteTileObserver,pattern?:OrdinaryBusPattern,via:readonly BusWaypoint[]=[],respectOneway=false,interiorStops:readonly BusInteriorStop[]=[],gradePolicy?:OrdinaryBusGradePolicy,allowGeneralFractional=false,
 ):Promise<OrdinaryBusQuery>{
+ const fractional=start.fractionQ!==undefined||end.fractionQ!==undefined;
+ let sameAtomStops:readonly [number,number]|undefined;
+ let fractionalTerminals:readonly [number,number]|undefined;
+ let rawStart=start.raw,rawEnd=end.raw;
+ if(fractional){
+  const [from,to]=[start.fractionQ,end.fractionQ];
+  const valid=(q:number|undefined):q is number=>q!==undefined&&Number.isSafeInteger(q)&&q>0&&q<BUS_CUT_DEN;
+  if(!valid(from)||!valid(to)||start.raw.vertex>=0xffffffff||end.raw.vertex>=0xffffffff||
+     pattern!==undefined||via.length||(!allowGeneralFractional&&interiorStops.length)||gradePolicy)
+   throw Error('道路の途中にある起点と終点を選んでください。');
+  if(allowGeneralFractional){
+   fractionalTerminals=[from,to];
+  }else{
+   if(from===to||!sameAtom(start,end))throw Error('起点と終点は同じ道路区間の異なる位置を選んでください。');
+   const tail={...start.raw,vertex:start.raw.vertex+1};
+   if(from<to){rawEnd=tail;sameAtomStops=[from,to];}
+   else{rawStart=tail;rawEnd=start.raw;sameAtomStops=[BUS_CUT_DEN-from,BUS_CUT_DEN-to];}
+  }
+ }
  const anchors=[start,...via.map(w=>w.anchor),end];
  if(pattern==='closedOneWay'?
     !via.length||!sameRawAnchor(start,end)||!samePlace(start.point,end.point):
@@ -165,8 +232,8 @@ export async function prepareOrdinaryBusQuery(
  if(anchors.some((a,i)=>i>0&&samePlace(anchors[i-1].point,a.point)))throw Error('連続する点は別の道路位置を選んでください。');
  if(via.length>30||new Set(via.map(w=>w.id)).size!==via.length||via.some(w=>!/^[-_A-Za-z0-9]{1,80}$/.test(w.id)))throw Error('経由点の指定が不正です。');
  const a=start.tile,b=end.tile;
- const base={...(gradePolicy?{gradePolicy}:{}),...(interiorStops.length?{interiorStops:[...interiorStops]}:{}),tileKey:territory(a),tileRawSha256:a.rawSha256,respectOneway,start:start.raw,end:end.raw,...(pattern?{pattern}:{}),...(via.length?{via:via.map(w=>({id:w.id,tileKey:territory(w.anchor.tile),vertex:w.anchor.raw}))}:{})};
- let refs=[a],path:OrdinaryBusPath={...base,rule:'ofm_ground_bus_z14_v1'};
+ const base={...(fractionalTerminals?{fractionalTerminals}:{}),...(gradePolicy?{gradePolicy}:{}),...(interiorStops.length?{interiorStops:[...interiorStops]}:{}),tileKey:territory(a),tileRawSha256:a.rawSha256,respectOneway,start:rawStart,end:rawEnd,...(pattern?{pattern}:{}),...(via.length?{via:via.map(w=>({id:w.id,tileKey:territory(w.anchor.tile),vertex:w.anchor.raw}))}:{})};
+ let refs=[a],path:OrdinaryBusPath={...base,rule:'ofm_ground_bus_z14_v1',...(sameAtomStops?{sameAtomStops}:{})};
  if(anchors.some(w=>!sameTile(a,w.tile))){
   if(!observe)throw Error('経由点を含む道路データを確認できません。');
   const cells=ordinaryBusCells(a,b,via.map(w=>w.anchor.tile));
@@ -185,13 +252,17 @@ export async function prepareOrdinaryBusQuery(
   path={...base,rule:'ofm_ground_bus_rectangle_z14_v2',endTileKey:territory(b),additionalTiles:refs.filter(t=>!sameTile(t,a)).map(t=>({tileKey:territory(t),tileRawSha256:t.rawSha256}))};
  }
  const out:OrdinaryBusQuery={expectedWorldToken,routeId,name,path,rawEvidence:null,tileBinding:null};
+ const pairs=await readObservedRoadTilePairs(refs,read,descriptors,signal);
+ return !pairs.length?out:path.rule==='ofm_ground_bus_z14_v1'?{...out,...pairs[0]}:{...out,contextTiles:pairs};
+}
+async function readObservedRoadTilePairs(refs:OpenFreeMapEvidenceRequest[],read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal):Promise<RawTilePair[]>{
  // Retained descriptors are hints; Rust still validates the chosen scope and bytes.
  const toFetch=refs.filter(t=>!descriptors.some(item=>{
   if(!item||typeof item!=='object'||!('binding' in item)||!item.binding||typeof item.binding!=='object')return false;
   const b=item.binding as Record<string,unknown>;
   return b.canonical_url===territory(t)&&b.raw_sha256===t.rawSha256;
  }));
- if(!toFetch.length)return out;
+ if(!toFetch.length)return [];
  const result=await read(toFetch,signal);
  if(signal?.aborted||result.status==='stale')throw Error('道路が更新されました。位置を選び直してください。');
  if(result.status==='unavailable')throw Error('道路データを確認できませんでした。拡大するか、もう一度お試しください。');
@@ -201,7 +272,7 @@ export async function prepareOrdinaryBusQuery(
  const needed=new Set(toFetch.map(t=>t.rawSha256));
  if(bindings.length!==toFetch.length||byKey.size!==toFetch.length||rawTiles.length!==needed.size||rawBySha.size!==needed.size)throw Error('道路の元データが揃っていません。');
  let sum=0;
- const pairs=toFetch.map(t=>{
+ return toFetch.map(t=>{
   const tileKey=territory(t),blob=rawBySha.get(t.rawSha256),b=byKey.get(tileKey);
   if(!blob||!b||b.url!==tileKey||!sameTile(t,b)||b.z!==14||b.decoderRule!==OFM_EVIDENCE_RULE||b.license!=='ODbL-1.0'||b.attribution!==OFM_ATTRIBUTION||
      !blob.bytes.length||blob.bytes.length>OFM_EVIDENCE_LIMITS.batchBytes)throw Error('選択した道路のデータが変わりました。');
@@ -211,8 +282,59 @@ export async function prepareOrdinaryBusQuery(
   for(let offset=0;offset<blob.bytes.length;offset+=8190)chunks.push(btoa(String.fromCharCode(...blob.bytes.subarray(offset,offset+8190))));
   return {tileBinding:b,rawEvidence:{sha256:t.rawSha256,byteLength:blob.bytes.length,base64:chunks.join('')}};
  });
- return path.rule==='ofm_ground_bus_z14_v1'?{...out,...pairs[0]}:{...out,contextTiles:pairs};
 }
+export type AuthoredTramChainGuide={
+ tiles:TileProof[];start:Vertex;end:Vertex;startFractionQ:number;endFractionQ:number;
+};
+/** Only a single shortest cardinal cell order already observed in this view.
+ * The backend independently reconstructs every seam from the bound bytes. */
+function observedTramChain(snapshot:RoadSnapshot|undefined,start:OpenFreeMapEvidenceRequest,end:OpenFreeMapEvidenceRequest){
+ const manhattan=(a:OpenFreeMapEvidenceRequest,b:OpenFreeMapEvidenceRequest)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
+ const hops=manhattan(start,end);
+ if(hops<2||hops>3||start.revision!==end.revision)throw Error('併用軌道は近くの連続した道路範囲で選んでください。');
+ const observed=tilesOf(snapshot);
+ if(observed.length>OFM_EVIDENCE_LIMITS.batchTiles)throw Error('道路の確認範囲が広すぎます。');
+ const byCell=new Map<string,OpenFreeMapEvidenceRequest>();
+ const cellKey=(x:number,y:number)=>x+'/'+y;
+ for(const {binding:t} of observed){
+  if(t.x<Math.min(start.x,end.x)||t.x>Math.max(start.x,end.x)||
+     t.y<Math.min(start.y,end.y)||t.y>Math.max(start.y,end.y))continue;
+  const key=cellKey(t.x,t.y);
+  if(t.revision!==start.revision||byCell.has(key))throw Error('道路の版が変わりました。位置を選び直してください。');
+  byCell.set(key,t);
+ }
+ if(!sameTile(start,byCell.get(cellKey(start.x,start.y))??end)||
+    !sameTile(end,byCell.get(cellKey(end.x,end.y))??start))
+  throw Error('選択した道路のデータが変わりました。');
+ const paths:OpenFreeMapEvidenceRequest[][]=[];
+ function step(path:OpenFreeMapEvidenceRequest[]){
+  if(paths.length>1)return;
+  const last=path.at(-1)!,remaining=manhattan(last,end);
+  if(!remaining){paths.push(path);return;}
+  for(const [x,y] of [[last.x-1,last.y],[last.x+1,last.y],[last.x,last.y-1],[last.x,last.y+1]]){
+   const t=byCell.get(cellKey(x,y));
+   if(t&&manhattan(t,end)===remaining-1)step([...path,t]);
+  }
+ }
+ step([start]);
+ if(paths.length!==1)throw Error(paths.length
+  ?'道路範囲の経由が複数あります。区間を分けて選び直してください。'
+  :'途中の道路データが揃っていません。道路を表示してから選び直してください。');
+ return paths[0];
+}
+export async function prepareAuthoredTramChainQuery(
+ snapshot:RoadSnapshot|undefined,from:ReturnType<typeof observedTramRoadAnchor>,to:ReturnType<typeof observedTramRoadAnchor>,
+ expectedWorldToken:string,read:BusEvidenceReader,descriptors:readonly unknown[],
+){
+ const refs=observedTramChain(snapshot,from.anchor.tile,to.anchor.tile);
+ const contextTiles=await readObservedRoadTilePairs(refs,read,descriptors);
+ const chainGuide:AuthoredTramChainGuide={
+  tiles:refs.map(t=>({tileKey:territory(t),tileRawSha256:t.rawSha256})),
+  start:from.anchor.raw,end:to.anchor.raw,startFractionQ:from.fractionQ,endFractionQ:to.fractionQ,
+ };
+ return {expectedWorldToken,chainGuide,rawEvidence:null,tileBinding:null,...(contextTiles.length?{contextTiles}:{})};
+}
+
 function matchLeg(result:BusLegPreview,start:BusAnchor,end:BusAnchor){
  return result&&Array.isArray(result.points)&&result.points.length>=2&&result.points.length<=4096&&result.points.every(finitePoint)&&
     Number.isFinite(result.lengthM)&&result.lengthM>0&&samePlace(result.points[0],start.point)&&samePlace(result.points.at(-1)!,end.point);
@@ -278,12 +400,14 @@ export function restoreOrdinaryBusControls(path:OrdinaryBusPath,result:OrdinaryB
 }
 
 
-/** A hover can use only the immutable evidence already prepared by a click.
- * It cannot widen the tile scope, touch the provider, or fabricate a leg. */
-export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly BusWaypoint[]):OrdinaryBusQuery|undefined{
- if(controls.length<2||controls.length>32)return;
+/** A hover or a refused free endpoint may reuse immutable click evidence.
+ * An alternate start can change the address roles, never the tile scope. */
+export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly BusWaypoint[],allowStartRebind=false):OrdinaryBusQuery|undefined{
+ if(controls.length<2||controls.length>32||(prior.path.sameAtomStops||prior.path.fractionalTerminals))return;
  const [first,last]=[controls[0].anchor,controls.at(-1)!.anchor],previous=prior.path;
- if(territory(first.tile)!==previous.tileKey||first.tile.rawSha256!==previous.tileRawSha256||
+ const startKey=territory(first.tile);
+ const newStart=startKey!==previous.tileKey;
+ if((newStart&&(!allowStartRebind||previous.rule!=='ofm_ground_bus_rectangle_z14_v2'))||
    (previous.pattern==='closedOneWay'?!sameRawAnchor(first,last):samePlace(first.point,last.point))||controls.some((c,i)=>i>0&&samePlace(controls[i-1].anchor.point,c.anchor.point)))return;
  const proof=[previous,...(previous.rule==='ofm_ground_bus_rectangle_z14_v2'?previous.additionalTiles:[])];
  if(controls.some(c=>!proof.some(p=>p.tileKey===territory(c.anchor.tile)&&p.tileRawSha256===c.anchor.tile.rawSha256)))return;
@@ -294,7 +418,18 @@ export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly Bus
  const {via:_,...base}=previous;
  const via=controls.slice(1,-1).map(({id,anchor})=>({id,tileKey:territory(anchor.tile),vertex:anchor.raw}));
  const path:OrdinaryBusPath={...base,start:first.raw,end:last.raw,...(via.length?{via}:{})};
- if(path.rule==='ofm_ground_bus_rectangle_z14_v2')path.endTileKey=territory(last.tile);
+ if(path.rule==='ofm_ground_bus_rectangle_z14_v2'){
+  path.endTileKey=territory(last.tile);
+  if(newStart){
+   path.tileKey=startKey;path.tileRawSha256=first.tile.rawSha256;
+   path.additionalTiles=cells.flatMap(([x,y])=>{
+    const k=territory({...first.tile,x,y});
+    if(k===startKey)return [];
+    const tile=proof.find(p=>p.tileKey===k)!; // every cell was verified above
+    return [{tileKey:k,tileRawSha256:tile.tileRawSha256}];
+   });
+  }
+ }
  return {...prior,path};
 }
 

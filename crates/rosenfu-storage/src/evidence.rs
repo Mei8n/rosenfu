@@ -104,8 +104,11 @@ impl EvidenceEnvelope {
             .raw_blobs
             .into_iter()
             .map(|b| {
+                // STANDARD rejects noncanonical padding, spare bits, and
+                // non-alphabet characters. Do not allocate an encoded copy
+                // solely to compare it with the input.
                 let bytes = STANDARD.decode(&b.base64).map_err(|_| invalid())?;
-                if bytes.len() != b.byte_length || STANDARD.encode(&bytes) != b.base64 {
+                if bytes.len() != b.byte_length {
                     return Err(invalid());
                 }
                 Ok(RawEvidence {

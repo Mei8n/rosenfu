@@ -6,8 +6,8 @@ use rosenfu_core::ofm_evidence::{
 };
 use rosenfu_core::world::{ConstructionPlans, TrackType, World, WorldDraft, WorldError};
 use rosenfu_storage::{
-    backup_path, encode, file_version, load_world_with_version, save_world, save_world_if_version,
-    StorageError, MAX_SAVE_BYTES,
+    backup_path, decode, encode, file_version, load_world, load_world_with_version, save_world,
+    save_world_if_version, StorageError, MAX_SAVE_BYTES,
 };
 use std::{collections::BTreeMap, fs, time::Instant};
 
@@ -422,4 +422,197 @@ fn archive_weighted_limit_and_scope_are_independent_of_unique_saved_bytes() {
     assert_eq!(fs::read(&backup).unwrap(), staged);
     assert_ne!(load_world_with_version(&backup).unwrap().0, world);
     eprintln!("synthetic binding weight: 64 keys, {} unique raw bytes, {weighted} bytes weighted, {} save bytes, restore archive {admit:?}, file reopen {reopen:?}", 2 * MIB, saved.len());
+}
+
+// A real core service on explicitly invented rail geometry. The long train
+// path is independent of the distant synthetic provider-format road tiles.
+fn add_synthetic_long_service(world: &mut World) {
+    use rosenfu_core::operation::{Timetable, Vehicle};
+    use rosenfu_core::world::{GeoPoint, OperationServiceConfig, RouteSegment};
+
+    let player = world.add_player("Long service fixture".into()).unwrap();
+    let owner = world
+        .add_company(player, "Synthetic operator".into())
+        .unwrap();
+    let points = (0..=64)
+        .map(|i| GeoPoint {
+            latitude: 35.,
+            longitude: 138.9 + f64::from(i) / 64.,
+        })
+        .collect();
+    let alignment_id = world
+        .build_alignment(owner, "Synthetic long route".into(), points)
+        .unwrap();
+    assert!(world
+        .snapshot()
+        .alignments
+        .iter()
+        .any(|line| line.id == alignment_id && line.length_m() > 90_000.));
+    let from = world
+        .place_station_on_alignment(owner, "West".into(), alignment_id, 0.05, 100., 10.)
+        .unwrap();
+    let to = world
+        .place_station_on_alignment(owner, "East".into(), alignment_id, 0.95, 100., 10.)
+        .unwrap();
+    let segments = vec![RouteSegment::Alignment {
+        alignment_id,
+        from,
+        to,
+    }];
+    let stops = world
+        .preview_service_path(from, segments.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .map(|stop| stop.reference)
+        .collect();
+    let service_id = world
+        .add_service_path(
+            owner,
+            "Synthetic long service".into(),
+            from,
+            segments,
+            stops,
+        )
+        .unwrap();
+    world
+        .configure_operation(vec![OperationServiceConfig {
+            service_id,
+            timetable: Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 0,
+                headway_ms: 60_000,
+            },
+            vehicle: Vehicle {
+                max_speed_kmh: 100.,
+                acceleration_mps2: 1.,
+                braking_mps2: 1.,
+                length_m: 80.,
+            },
+            dwell_ms: 30_000,
+        }])
+        .unwrap();
+    let runtime = &mut world.operation_mut().unwrap().runtime;
+    runtime.advance_to(1_000, 100).unwrap();
+    assert_eq!(runtime.trains().count(), 1);
+}
+
+#[test]
+fn geographic_file_reads_preserve_original_versions_and_require_canonical_evidence() {
+    // Distinct geographic scopes with a shared immutable blob. Adjust the
+    // ignored protobuf fields so that the source needs exactly two '=' pads.
+    let mut raw = synthetic_mvt(128, 0);
+    while raw.len() % 3 != 1 {
+        raw.extend([8, 0]);
+    }
+    let sha = raw_sha256(&raw);
+    let bindings = vec![bound(REV, 14624, 6016, &sha), bound(REV, 14552, 6451, &sha)];
+    let store = EvidenceStore::from_archive_parts(
+        vec![RawEvidence {
+            bytes: raw,
+            sha256: sha.clone(),
+        }],
+        bindings.clone(),
+    )
+    .unwrap();
+    let mut world = World::new(WorldDraft::default().with_road_evidence(store).unwrap()).unwrap();
+    add_synthetic_long_service(&mut world);
+    let original_operation = world.operation_save();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dense-two-regions.json");
+    save_world(&path, &world).unwrap();
+    let canonical = fs::read_to_string(&path).unwrap();
+    let original = file_version(&path).unwrap();
+    let compat = canonical.replacen(r#""format":"#, r#""format": null, "format":"#, 1);
+    for (i, mut wire) in [canonical.clone(), compat].into_iter().enumerate() {
+        // Distinguish exact file version from the same restored/canonical world.
+        wire.push_str(if i == 0 { "\r\n " } else { "   " });
+        fs::write(&path, wire.as_bytes()).unwrap();
+        let version = file_version(&path).unwrap();
+        let (loaded, observed) = load_world_with_version(&path).unwrap();
+        assert_eq!(observed, version);
+        assert_ne!(observed, original);
+        assert_eq!(loaded, world);
+        assert_eq!(loaded.operation_save(), original_operation);
+        assert_eq!(load_world(&path).unwrap(), world);
+        assert_eq!(decode(wire.as_bytes()).unwrap(), world);
+        assert_eq!(encode(&loaded).unwrap(), canonical.as_bytes());
+        for b in &bindings {
+            let scope = loaded
+                .snapshot()
+                .runtime_road_evidence
+                .scope(&keys(std::slice::from_ref(b)))
+                .unwrap();
+            assert_eq!(scope.decoded(&b.canonical_url).unwrap().lines.len(), 128);
+        }
+    }
+
+    let mut wire: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+    let base64 = &wire["road_evidence"]["raw_blobs"][0]["base64"];
+    let mut spare_bits = base64.as_str().unwrap().as_bytes().to_vec();
+    let end = spare_bits.len();
+    let alpha = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let sextet = alpha
+        .iter()
+        .position(|&c| c == spare_bits[end - 3])
+        .unwrap();
+    assert_eq!(sextet % 16, 0);
+    spare_bits[end - 3] = alpha[sextet + 1];
+    let mut wrong_padding = base64.as_str().unwrap().as_bytes().to_vec();
+    wrong_padding[end - 2] = b'A';
+    for noncanonical in [spare_bits, wrong_padding] {
+        wire["road_evidence"]["raw_blobs"][0]["base64"] =
+            String::from_utf8(noncanonical).unwrap().into();
+        let bytes = serde_json::to_vec(&wire).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        for result in [
+            decode(&bytes),
+            load_world(&path),
+            load_world_with_version(&path).map(|(world, _)| world),
+        ] {
+            assert!(matches!(
+                result,
+                Err(StorageError::InvalidWorld(WorldError::InvalidRoadEvidence))
+            ));
+        }
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+/// Generate only. Measure a separate process that opens these exact bytes;
+/// measuring this generator would also count build/serialize memory.
+#[test]
+#[ignore = "explicit benchmark fixture output path required"]
+fn prepare_dense_and_long_geographic_reopen_fixture() {
+    const MIB: usize = 1024 * 1024;
+    let path = std::env::var_os("ROSENFU_GEOGRAPHIC_REOPEN_FIXTURE")
+        .expect("set an explicit nonexistent output path in a scratch directory");
+    let mut raw = vec![];
+    let mut bindings = vec![];
+    // Four separated geographic regions, two independent dense blobs each.
+    for (region, (x, y)) in [(14624, 6016), (14552, 6451), (14358, 6506), (14126, 6567)]
+        .into_iter()
+        .enumerate()
+    {
+        for i in 0..2 {
+            let mut tile = synthetic_mvt(1_024, (region as u32) * 2 + i);
+            bytes(9, &vec![0; MIB - tile.len() - 4], &mut tile);
+            assert_eq!(tile.len(), MIB);
+            let sha256 = raw_sha256(&tile);
+            bindings.push(bound(REV, x + i, y, &sha256));
+            raw.push(RawEvidence {
+                bytes: tile,
+                sha256,
+            });
+        }
+    }
+    let store = EvidenceStore::from_archive_parts(raw, bindings).unwrap();
+    let mut world = World::new(WorldDraft::default().with_road_evidence(store).unwrap()).unwrap();
+    add_synthetic_long_service(&mut world);
+    rosenfu_storage::create_world(&path, &world).unwrap();
+    let file_bytes = fs::metadata(&path).unwrap().len();
+    assert!(((10 * MIB) as u64..=MAX_SAVE_BYTES as u64).contains(&file_bytes));
+    eprintln!(
+        "synthetic dense+long fixture: 8 distinct MVT blobs, 1,024 lines each, {file_bytes} save bytes"
+    );
 }

@@ -58,6 +58,19 @@ impl WorldEditor {
         self.publish_reconciled_edit(candidate, final_edit)
     }
 
+    /// Confirmed construction counts the actual final archive exactly once,
+    /// including the reconciled runtime/OD and Standard's source contract.
+    /// These guards run before clearing history, changing a revision or
+    /// publishing the draft. Standalone editors keep their existing checks.
+    pub(super) fn commit_construction_edit(&mut self, mut candidate: Self) -> Result<(), String> {
+        candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
+        self.check_standard_source_retained(&candidate.world)?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        self.publish_edit_history(candidate, true, None);
+        Ok(())
+    }
+
     // Standard archives require a still-valid source and runtime. Validate the
     // reconciled candidate, not the earlier input draft, before touching the
     // live world or its history. Legacy edits retain their existing checks.
@@ -93,11 +106,21 @@ impl WorldEditor {
     }
     pub(super) fn publish_reconciled_edit_with_service_path(
         &mut self,
-        mut candidate: Self,
+        candidate: Self,
         final_edit: bool,
         guarded_service_path: Option<ServiceId>,
     ) -> Result<(), String> {
         self.ensure_retained_standard(&candidate.world)?;
+        self.publish_edit_history(candidate, final_edit, guarded_service_path);
+        Ok(())
+    }
+
+    fn publish_edit_history(
+        &mut self,
+        mut candidate: Self,
+        final_edit: bool,
+        guarded_service_path: Option<ServiceId>,
+    ) {
         let before_source = self.world.shared_snapshot();
         let before = self
             .edit_history
@@ -130,7 +153,6 @@ impl WorldEditor {
             candidate.deleted_alignment = self.deleted_alignment.clone();
         }
         *self = candidate;
-        Ok(())
     }
     pub fn undo_world_edit(&mut self, expected_world: WorldDraft) -> Result<WorldDraft, String> {
         self.restore_world_edit(expected_world, false)

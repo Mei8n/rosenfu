@@ -170,7 +170,11 @@ impl OperationRuntime {
         service_id: String,
         authored: StandardIntervals,
     ) -> Result<(), OperationError> {
-        if self.standard_timetable.is_some() {
+        if self
+            .standard_timetable
+            .as_ref()
+            .is_some_and(|active| active.service_id != service_id)
+        {
             return Err(OperationError::InvalidTimetable);
         }
         let source = ScheduleSource::StandardDailyV1(StandardDailyV1 {

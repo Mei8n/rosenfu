@@ -53,6 +53,8 @@ pub struct GameplayBusPathPreview {
     pub return_unavailable_reason: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stop_occurrence_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_target_terminal_cuts: Option<[u32; 2]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub interior_stops: Vec<rosenfu_core::road_transport::GameplayBusInteriorStopView>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -180,10 +182,10 @@ impl WorldEditor {
         self.commit_edit(candidate, false)?;
         Ok(result)
     }
-    pub fn preview_authored_tram_road_guide(
+    pub fn preview_authored_tram_road_guide<'a>(
         &self,
         expected_world_token: &str,
-        guide: &rosenfu_core::ofm_evidence::AuthoredTramGuide,
+        guide: impl Into<rosenfu_core::ofm_evidence::AuthoredTramProof<'a>>,
         cached: impl IntoIterator<Item = (OfmRawInput, OfmBindingInput)>,
     ) -> Result<Vec<GeoPoint>, String> {
         if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
@@ -215,17 +217,37 @@ impl WorldEditor {
 
     /// Bank exactly the confirmed game-authored street path. A world switch,
     /// tile change or changed geometry may not silently downgrade to free track.
-    pub fn build_authored_street_tram(
+    pub fn build_authored_street_tram<'a>(
         &mut self,
         expected_world_token: &str,
-        guide: &rosenfu_core::ofm_evidence::AuthoredTramGuide,
+        guide: impl Into<rosenfu_core::ofm_evidence::AuthoredTramProof<'a>>,
         cached: impl IntoIterator<Item = (OfmRawInput, OfmBindingInput)>,
         mut alignment: PlannedAlignment,
         roads: Vec<rosenfu_core::world::RoadSnapshot>,
     ) -> Result<WorldDraft, String> {
-        use rosenfu_core::world::{InfrastructureLevel::Ground, TrackType};
+        use rosenfu_core::{
+            ofm_evidence::AuthoredTramProof,
+            world::{
+                AlignmentEndpoint, AlignmentEndpointRef, InfrastructureLevel::Ground, TrackType,
+            },
+        };
+        let guide = guide.into();
+        if matches!(guide, AuthoredTramProof::Chain(_))
+            && !rosenfu_storage::STREET_TRAM_CHAIN_SAVE_ENABLED
+        {
+            return Err("この版では複数境界の併用軌道を保存できません。".into());
+        }
         if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
             return Err("ワールドが変更されました。道路を選び直してください。".into());
+        }
+        if !self
+            .world
+            .can_author_street_tram_with_bus_capabilities(guide)
+        {
+            return Err(
+                "この併用軌道は、道路の途中に起終点を置いたバス系統と同じワールドに置けません。"
+                    .into(),
+            );
         }
         if alignment.track_type != TrackType::Tram
             || alignment.infrastructure.level != Ground
@@ -236,11 +258,10 @@ impl WorldEditor {
                 .is_some_and(|levels| levels.as_slice() != [Ground, Ground])
             || alignment.ofm_path.is_some()
             || alignment.reference.is_some()
-            || alignment.extension.is_some()
             || alignment.destination.is_some()
             || alignment.junction_source.is_some()
         {
-            return Err("併用軌道は地上の独立した一区間として敷設してください。".into());
+            return Err("併用軌道は地上の一区間として敷設してください。".into());
         }
         let (raw, bindings): (Vec<_>, Vec<_>) = cached.into_iter().unzip();
         let (raw, bindings) = super::ofm::inputs(raw, bindings)?;
@@ -257,6 +278,53 @@ impl WorldEditor {
         {
             return Err("確認した道路と敷設位置が一致しません。道路を選び直してください。".into());
         }
+        let before = self.world.snapshot();
+        let continuation = if let Some(extension) = alignment.extension.take() {
+            let source = before
+                .alignments
+                .iter()
+                .find(|a| {
+                    a.id == extension.alignment_id
+                        && a.owner == self.company
+                        && a.track_type == TrackType::Tram
+                })
+                .ok_or("延伸できる自社の併用軌道がありません。")?;
+            let end = AlignmentEndpointRef {
+                alignment_id: source.id,
+                endpoint: AlignmentEndpoint::End,
+            };
+            if extension.endpoint != end.endpoint
+                || before
+                    .alignment_connections
+                    .iter()
+                    .any(|link| link.a == end || link.b == end)
+                || source.points.last() != alignment.points.first()
+            {
+                return Err("併用軌道の未接続の終点を選び直してください。".into());
+            }
+            let proof = before
+                .road_path_provenance
+                .iter()
+                .find(|range| {
+                    range.alignment_id == source.id
+                        && range.path.carries_street_tram_proof()
+                        && range.end_point_index + 1 == source.points.len()
+                        && range.to_position == 1.
+                })
+                .ok_or("終点を敷設したときの道路の証明が確認できません。")?;
+            let (old, new) = (&proof.path.end, &derived.descriptor.start);
+            // Same immutable raw occurrence. The two adjacent segment
+            // representations of a raw vertex have the same segment position.
+            if old.fragment_id != new.fragment_id
+                || old.segment_index as f64 + old.fraction
+                    != new.segment_index as f64 + new.fraction
+            {
+                return Err("延伸先は終点と同じ道路の位置から描き始めてください。".into());
+            }
+            Some(end)
+        } else {
+            None
+        };
         alignment.anchor_indices = None;
         alignment.anchor_levels = None;
         alignment.start_level = None;
@@ -269,7 +337,31 @@ impl WorldEditor {
                 .add_road_snapshot(road)
                 .map_err(|e| e.to_string())?;
         }
-        candidate.prepare_construction_candidate(self.world.snapshot(), vec![alignment], vec![])?;
+        candidate.prepare_construction_candidate(before, vec![alignment], vec![])?;
+        if let Some(source) = continuation {
+            // The shared builder adds one separately identified alignment.
+            // Connecting it preserves old geometry and IDs (including stations
+            // and service references). Any failure discards the same candidate.
+            let after = candidate.world.snapshot();
+            let id = after
+                .alignments
+                .get(before.alignments.len())
+                .filter(|_| after.alignments.len() == before.alignments.len() + 1)
+                .ok_or("新しい併用軌道を確認できません。")?
+                .id;
+            candidate
+                .world
+                .connect_alignment_endpoints(
+                    candidate.company,
+                    source,
+                    AlignmentEndpointRef {
+                        alignment_id: id,
+                        endpoint: AlignmentEndpoint::Start,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        }
         candidate.deleted_alignment = None;
         self.commit_edit(candidate, true)?;
         Ok(self.snapshot())
@@ -324,6 +416,9 @@ impl WorldEditor {
         cached: Vec<(OfmRawInput, OfmBindingInput)>,
         options: GameplayBusPreviewOptions,
     ) -> Result<GameplayBusPathPreview, String> {
+        if path.fractional_terminals.is_some() && path.pattern.is_some() {
+            return Err("道路の途中を起終点にする経路は片道のみ対応しています。".into());
+        }
         // A partial outward preview must not permit a partial round-trip commit.
         let mut outward = path.clone();
         if path.pattern == Some(BusPattern::OpenRoundTrip) {
@@ -346,6 +441,7 @@ impl WorldEditor {
                     return_path: None,
                     return_unavailable_reason: None,
                     stop_occurrence_keys: vec![],
+                    stop_target_terminal_cuts: None,
                     interior_stops: vec![],
                     auto_stop_suggestions: vec![],
                     loop_fallback_stop: None,
@@ -374,6 +470,19 @@ impl WorldEditor {
             points.extend(edge.geometry.iter().copied());
         }
         points.dedup();
+        if outward.has_fractional_stops() {
+            let selected = rosenfu_core::ofm_evidence::reconstruct_gameplay_bus_path(
+                &draft.runtime_road_evidence,
+                &outward,
+            )
+            .map_err(|_| "停留所の道路を確認できません。")?
+            .ok_or("停留所の道路を確認できません。")?;
+            let (clipped, _) = selected
+                .fractional_bus_view()
+                .map_err(road_path_help)?
+                .ok_or("停留所の位置を確認できません。")?;
+            points = clipped;
+        }
         let mut verified_return = None;
         let (return_path, return_unavailable_reason) =
             if path.pattern == Some(BusPattern::OpenRoundTrip) {
@@ -382,16 +491,22 @@ impl WorldEditor {
                     .map_err(road_path_help)?
                 {
                     Some(back) if return_in_edit_extent(&back) => {
-                        let preview = GameplayBusReturnPreview {
-                            points: back
-                                .points
-                                .iter()
-                                .map(|p| GeoPoint {
-                                    latitude: p[1],
-                                    longitude: p[0],
-                                })
-                                .collect(),
-                            length_m: back.length_m,
+                        let preview = match back.fractional_bus_view().map_err(road_path_help)? {
+                            Some((clipped, length_m)) => GameplayBusReturnPreview {
+                                points: clipped,
+                                length_m,
+                            },
+                            None => GameplayBusReturnPreview {
+                                points: back
+                                    .points
+                                    .iter()
+                                    .map(|p| GeoPoint {
+                                        latitude: p[1],
+                                        longitude: p[0],
+                                    })
+                                    .collect(),
+                                length_m: back.length_m,
+                            },
                         };
                         verified_return = Some(back);
                         (Some(preview), None)
@@ -410,9 +525,9 @@ impl WorldEditor {
             } else {
                 (None, None)
             };
-        let (via_point_indices, stop_occurrence_keys) =
+        let (via_point_indices, stop_occurrence_keys, stop_target_terminal_cuts) =
             if outward.via.is_empty() && !options.request_stop_targets {
-                (vec![], vec![])
+                (vec![], vec![], None)
             } else {
                 let selected = rosenfu_core::ofm_evidence::reconstruct_gameplay_bus_path(
                     &draft.runtime_road_evidence,
@@ -429,7 +544,11 @@ impl WorldEditor {
                 } else {
                     vec![]
                 };
-                (selected.via_point_indices, keys)
+                let terminal_cuts = options
+                    .request_stop_targets
+                    .then(|| selected.stop_target_terminal_cuts())
+                    .flatten();
+                (selected.via_point_indices, keys, terminal_cuts)
             };
         let interior_stops = if path.interior_stops.is_empty() {
             vec![]
@@ -454,6 +573,7 @@ impl WorldEditor {
             return_path,
             return_unavailable_reason,
             stop_occurrence_keys,
+            stop_target_terminal_cuts,
             interior_stops,
             auto_stop_suggestions,
             loop_fallback_stop: draft
@@ -472,6 +592,22 @@ impl WorldEditor {
     ) -> Result<World, GameplayBusCandidateError> {
         if self.company_setup_required || expected_world_token != self.ofm_world_token()? {
             return Err("ワールドが変更されました。道路を選び直してください。".into());
+        }
+        if path.fractional_terminals.is_some()
+            && !path.interior_stops.is_empty()
+            && !rosenfu_storage::GENERAL_FRACTIONAL_BUS_STOPS_SUPPORTED
+        {
+            return Err("この版では、途中に起終点のあるバス経路の停留所を追加できません。".into());
+        }
+        if path.fractional_terminals.is_some() && !rosenfu_storage::GENERAL_FRACTIONAL_BUS_SUPPORTED
+        {
+            return Err("この版では、道路を経由する途中起終点に対応していません。".into());
+        }
+        if path.fractional_terminals.is_some() && !self.world.can_author_general_fractional_bus() {
+            return Err("この道路バスは通常運行方式でのみ設定できます。".into());
+        }
+        if path.same_atom_stops.is_some() && !self.world.can_author_fractional_bus() {
+            return Err("このワールドの時間帯ダイヤ・複数の地図区画をまたぐ併用軌道・特別な鉄道運行とは、まだ併用できません。".into());
         }
         let (raw, bindings): (Vec<_>, Vec<_>) = cached.into_iter().unzip();
         let (raw, bindings) = super::ofm::inputs(raw, bindings)?;

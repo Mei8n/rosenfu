@@ -5,19 +5,22 @@ mod bus;
 mod bus_grade;
 pub(crate) use bus::BUS_STOP_DENOMINATOR;
 pub use bus::{
-    find_gameplay_bus_path, reconstruct_authored_tram_guide, reconstruct_gameplay_bus_path,
+    find_gameplay_bus_path, reconstruct_authored_tram_chain, reconstruct_authored_tram_guide,
+    reconstruct_gameplay_bus_path, resolve_fractional_bus_traversal, AuthoredTramChainGuide,
     AuthoredTramGuide, BusGradePolicy, BusInteriorStop, BusPath, BusPathBinding, BusPattern,
-    BusTileProof, BusVertex, BusVia, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
+    BusTileProof, BusVertex, BusVia, FractionalBusTraversal, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
 };
 mod candidates;
 mod path;
 pub(crate) use path::reconstruct_street_tram_path;
 pub use path::{
-    reconstruct_path, validate_path_descriptor, DerivedPath, PathDescriptor, PathJoin, PathPick,
-    SourceSpan,
+    reconstruct_path, validate_path_descriptor, AuthoredTramProof, DerivedPath, PathDescriptor,
+    PathJoin, PathPick, SourceSpan,
 };
 mod store;
+mod viewport;
 pub use candidates::{boundary_candidates, validate_boundary_candidates, BoundaryCandidate};
+pub use viewport::{retained_road_view, RetainedRoadView};
 mod wire;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -404,8 +407,14 @@ fn validate_attributes(attrs: &BTreeMap<String, RawValue>) -> Result<()> {
             _ if matches!(key.as_str(), "layer" | "oneway") && number(v).is_some() => {}
             _ => return Err(Error::InvalidAttribute),
         }
-        if key == "brunnel" && !matches!(v,RawValue::String(s) if s=="bridge"||s=="tunnel") {
-            return Err(Error::InvalidAttribute);
+        if key == "brunnel" {
+            let valid_structure = match v {
+                RawValue::String(value) => matches!(value.as_str(), "bridge" | "tunnel" | "ford"),
+                _ => false,
+            };
+            if !valid_structure {
+                return Err(Error::InvalidAttribute);
+            }
         }
         if key == "layer" {
             let n = match v {

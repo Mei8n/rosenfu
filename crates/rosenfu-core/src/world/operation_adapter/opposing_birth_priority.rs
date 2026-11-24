@@ -1,6 +1,5 @@
 //! Small default tie preference only. Reservations and rear-clear stay Fixed.
 use super::*;
-use crate::operation::TrainKey;
 
 const MAX_FIT_POINTS: usize = 256;
 const MAX_PROOF_ALIGNMENTS: usize = 1_024;
@@ -13,13 +12,12 @@ const MAX_MAIN_OFFSET_M: f64 = 0.25;
 const MAX_BAY_OFFSET_M: f64 = 250.0;
 
 impl World {
-    pub(super) fn opposing_birth_priority(&self, op: &WorldOperation) -> Option<TrainKey> {
+    pub(super) fn opposing_birth_priority(&self, op: &WorldOperation) -> Option<String> {
         let [a, b] = op.configs.as_slice() else {
             return None;
         };
-        // An isolated testable shape and a single same-time departure each.
-        // No third dispatch contender, recurrent service, road operation or
-        // partially resolved/truncated computed batch enters this proof.
+        // An isolated shape and two opposing services only. No third
+        // contender, road operation or partially resolved batch enters.
         if op.invalidated
             || op.runtime.admission_model() != RailAdmissionModel::Fixed
             || self.data.alignments.len() > MAX_PROOF_ALIGNMENTS
@@ -34,11 +32,9 @@ impl World {
             (1, 2) => (b, a),
             _ => return None,
         };
-        let at = local.timetable.first_departure_ms;
-        if local.timetable.last_departure_ms != at
-            || through.timetable.first_departure_ms != at
-            || through.timetable.last_departure_ms != at
-            || has_crossing_locks(local)
+        // Geometry proof also protects a train already in the siding when
+        // future timetable changes disqualify the next matched birth.
+        if has_crossing_locks(local)
             || has_crossing_locks(through)
             || has_parallel_join_locks(local)
             || has_parallel_join_locks(through)
@@ -208,10 +204,7 @@ impl World {
         {
             return None;
         }
-        Some(TrainKey {
-            service_id: local.service_id.clone(),
-            scheduled_ms: at,
-        })
+        Some(local.service_id.clone())
     }
 }
 
