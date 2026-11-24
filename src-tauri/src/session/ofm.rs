@@ -783,7 +783,8 @@ mod tests {
             .last()
             .unwrap()
             .id;
-        attach_general_fractional_bus(&mut loaded, "independent");
+        let revision = tiles[0]["revision"].as_str().unwrap();
+        attach_general_fractional_bus(&mut loaded, "independent", Some(revision));
         let timetable = Timetable {
             first_departure_ms: 1_000,
             last_departure_ms: 1_000,
@@ -936,7 +937,11 @@ mod tests {
         ));
     }
 
-    fn attach_general_fractional_bus(editor: &mut WorldEditor, id: &str) {
+    fn attach_general_fractional_bus(
+        editor: &mut WorldEditor,
+        id: &str,
+        synthetic_revision: Option<&str>,
+    ) {
         use rosenfu_core::ofm_evidence::BusVertex;
         let (guide, cached) = street_tram_inputs();
         let mut proof = fractional_bus_on_tram_source(&guide);
@@ -947,6 +952,31 @@ mod tests {
             line: 0,
             vertex: 0,
         };
+        let (raw, mut binding) = cached().unwrap();
+        if let Some(revision) = synthetic_revision {
+            // Disjoint coordinates can share one world, but provider revisions
+            // cannot. Verify that the original mixed fixture is still rejected.
+            let token = editor.ofm_world_token().unwrap();
+            let before = editor.snapshot();
+            assert!(editor
+                .put_gameplay_ofm_bus(
+                    &token,
+                    id.into(),
+                    "途中起終点バス".into(),
+                    proof.clone(),
+                    cached().into_iter().collect(),
+                )
+                .is_err());
+            assert_eq!(editor.snapshot(), before);
+
+            binding.revision = revision.to_owned();
+            binding.key = format!(
+                "https://tiles.openfreemap.org/planet/{revision}/14/{}/{}.pbf",
+                binding.x, binding.y
+            );
+            binding.url = binding.key.clone();
+            proof.tile_key = binding.key.clone();
+        }
         let token = editor.ofm_world_token().unwrap();
         editor
             .put_gameplay_ofm_bus(
@@ -954,7 +984,7 @@ mod tests {
                 id.into(),
                 "途中起終点バス".into(),
                 proof,
-                cached().into_iter().collect(),
+                vec![(raw, binding)],
             )
             .unwrap();
     }
@@ -1261,7 +1291,7 @@ mod tests {
         // On the exact same source road both proofs may be saved, but Fixed
         // cannot arbitrate road-vs-rail occupancy and thus must not arm both.
         let mut overlapping = editor.clone();
-        attach_general_fractional_bus(&mut overlapping, "overlapping");
+        attach_general_fractional_bus(&mut overlapping, "overlapping", None);
         let before = rosenfu_storage::encode(&overlapping.world).unwrap();
         let token = overlapping
             .operation_snapshot()
