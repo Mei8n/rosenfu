@@ -15,10 +15,10 @@ const alignment = { id:"3",owner:"2",name:"試験線",points:[{latitude:35.67504
 const empty = {next_id:"3",players:[{id:"1",name:"Player"}],companies:[{id:"2",owner:"1",name:"Railway"}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
 const built = {...empty,next_id:"4",alignments:[alignment]};
 const placed = {...built,next_id:"5",stations:[{id:"4",owner:"2",name:"新駅",latitude:35.67504,longitude:139.75}],station_placements:[{station_id:"4",alignment_id:"3",position:.5,length_m:200,width_m:12}]};
-async function start(snapshot: unknown = empty) {
+async function start(snapshot: unknown = empty, busAvailable = false) {
   vi.mocked(isTauri).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async command => {if(command==="preview_construction_plan")return {validationError:null};
-    if(command==="engine_info") return {name:"Rosenfu",version:"construction-test"};
+    if(command==="engine_info") return {name:"Rosenfu",version:"construction-test",ordinary_ofm_bus_enabled:busAvailable};
     if(command==="world_snapshot") return snapshot;
     if(command==="list_save_slots") return {active_slot_id:"test-slot",slots:[{id:"test-slot",name:"試験",loadable:true}]};
     if(command==="autosave_status") return {available:false};
@@ -326,3 +326,58 @@ test("automatic drawing dragging at the endpoint never finishes or adds an ancho
  test("construction omits redundant controls without removing keyboard editing",async()=>{await start();expect(screen.queryByRole("button",{name:"1点戻す"})).toBeNull();expect(screen.getByRole("button",{name:"やり直す"})).toBeTruthy();expect(document.querySelector(".reference-tools")?.hasAttribute("hidden")).toBe(true);expect(document.querySelector(".track-editor")?.textContent).not.toContain("運行経路用：駅間接続");});
 
 test("station placement hides management controls while retaining management access",async()=>{await start(placed);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));expect(screen.queryByRole("region",{name:"駅名の自動設定"})).toBeNull();expect(screen.queryByRole("button",{name:"指定座標に配置"})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置を取り消す"})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置をやり直す"})).toBeNull();expect(screen.queryByRole("heading",{name:"配置済みの駅"})).toBeNull();fireEvent.click(screen.getByRole("tab",{name:"駅"}));expect(screen.getByRole("heading",{name:"配置済みの駅"})).toBeTruthy();expect(screen.queryByRole("button",{name:"指定座標に配置",hidden:true})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置を取り消す",hidden:true})).toBeNull();expect(screen.queryByRole("button",{name:"駅設置をやり直す",hidden:true})).toBeNull();});
+
+test("construction tool shortcuts select visible tools without changing the world",async()=>{
+  const map=await start(empty,true);
+  await settledMapClick(map,{clientX:180,clientY:130,detail:1});
+  await settledMapClick(map,{clientX:300,clientY:170,detail:1});
+  const tools=[["2","駅設置"],["3","削除"],["4","選択"],["u","バス"],["1","線路"]];
+  for(const [key,label] of tools){
+    fireEvent.keyDown(map,{key});
+    const tab=screen.getByRole("tab",{name:label});
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    expect(tab.getAttribute("aria-keyshortcuts")).toBe(key.toUpperCase());
+  }
+  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
+  expect(vi.mocked(invoke).mock.calls.some(([command])=>/^(build_alignment|delete|commit)/.test(command))).toBe(false);
+});
+
+test("construction shortcuts ignore editing, dialogs, composition, modifiers, and inactive tools",async()=>{
+  const map=await start();
+  const track=screen.getByRole("tab",{name:"線路"});
+  const input=screen.getByRole("textbox",{name:"計画名（任意）"});
+  const dialog=document.createElement("div");dialog.setAttribute("role","dialog");document.body.append(dialog);
+  fireEvent.keyDown(map,{key:"3"});
+  expect(track.getAttribute("aria-selected")).toBe("true");
+  dialog.remove();
+  fireEvent.keyDown(input,{key:"3"});
+  fireEvent.keyDown(map,{key:"4",isComposing:true});
+  fireEvent.keyDown(map,{key:"4",keyCode:229});
+  fireEvent.keyDown(map,{key:"4",ctrlKey:true});
+  fireEvent.keyDown(map,{key:"u"});
+  fireEvent.keyDown(map,{key:"4",repeat:true});
+  expect(track.getAttribute("aria-selected")).toBe("true");
+  fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+  fireEvent.keyDown(map,{key:"1"});
+  expect(screen.getByRole("tab",{name:"駅"}).getAttribute("aria-selected")).toBe("true");
+});
+
+test("a tool shortcut moves focus only when it was on the construction tab strip",async()=>{
+  const map=await start();
+  const track=screen.getByRole("tab",{name:"線路"});track.focus();
+  fireEvent.keyDown(track,{key:"4"});
+  expect(document.activeElement).toBe(screen.getByRole("tab",{name:"選択"}));
+  map.focus();fireEvent.keyDown(map,{key:"1"});
+  expect(document.activeElement).toBe(map);
+});
+
+
+test("station shortcut resumes map placement after escape without changing tools",async()=>{
+  const map=await start(built);
+  fireEvent.keyDown(map,{key:"2"});
+  fireEvent.keyDown(map,{key:"Escape"});
+  expect(screen.getByRole("tab",{name:"駅設置"}).getAttribute("aria-selected")).toBe("true");
+  expect(screen.queryByText("線路にカーソルを重ねてクリックで駅を配置")).toBeNull();
+  fireEvent.keyDown(map,{key:"2"});
+  expect(screen.getByText("線路にカーソルを重ねてクリックで駅を配置")).toBeTruthy();
+});

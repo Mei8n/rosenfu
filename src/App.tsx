@@ -1225,6 +1225,14 @@ export function App() {
     if(selection&&svg?.hasPointerCapture?.(selection.pointerId))svg.releasePointerCapture(selection.pointerId);
     if (gesture && svg?.hasPointerCapture?.(gesture.pointerId)) svg.releasePointerCapture(gesture.pointerId);
   }
+  function constructionMapMode(tool:typeof constructionTools[number][0]) {
+    return tool==="tracks"?"draw":tool==="stations"?"place":"move";
+  }
+  function chooseConstructionTool(tool:typeof constructionTools[number][0]) {
+    if(seamMutationPending.current)return;
+    setActiveTool(tool);
+    changeMapMode(constructionMapMode(tool));
+  }
   function changeMapMode(mode: "move" | "place" | "draw") {
     setError("");
     const wasGesturing = gestureRef.current !== null;
@@ -2015,6 +2023,22 @@ export function App() {
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete||document.querySelector('[aria-label="系統削除の確認"]'))return;
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
+      if (mainTab==="construction" && enabled && !busyRef.current && !event.defaultPrevented &&
+        !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.repeat &&
+        !event.isComposing && event.keyCode!==229 && !gestureRef.current && !anchorGesture.current &&
+        !boxGesture.current && !ordinaryBus.mutating() && !ordinaryBusStops.mutating() &&
+        !document.querySelector('dialog[open], [role="dialog"]') &&
+        !(event.target instanceof Element && event.target.closest('[contenteditable]:not([contenteditable="false"]), [role="textbox"]'))) {
+        const match=constructionTools.find(([, ,shortcut])=>shortcut===event.key.toUpperCase());
+        if (match) {
+          event.preventDefault();
+          if (match[0]!==activeTool||mapMode!==constructionMapMode(match[0])) {
+            chooseConstructionTool(match[0]);
+            if(document.activeElement?.closest(".construction-tabs"))document.getElementById("tab-"+match[0])?.focus();
+          }
+          return;
+        }
+      }
       if(ordinaryBusStops.active&&(event.ctrlKey||event.metaKey)&&!event.altKey&&/^[zy]$/i.test(event.key)){
         event.preventDefault();return; // a draft must not undo the saved world.
       }
@@ -2251,7 +2275,7 @@ export function App() {
   const showPlanHover=!!planHover&&!!hoveredPlan&&!referenceCopy.active&&!dragging&&(activeTool==="tracks"||activeTool==="inactive");
   const mapMetrics=mapRenderMetrics(camera.zoom,lineWidth,viewport.scale);
   const roadTransportAvailable=info?.road_transport_enabled===true;
-  const constructionTools=[["tracks","線路"],["stations","駅設置"],["delete","削除"],["select","選択"],...(ordinaryBusAvailable?[["ordinary-bus","バス"]] as const:[]),...(roadTransportAvailable?[["road-transport","道路交通（検証）"]] as const:[])] as const;
+  const constructionTools=[["tracks","線路","1"],["stations","駅設置","2"],["delete","削除","3"],["select","選択","4"],...(ordinaryBusAvailable?[["ordinary-bus","バス","U"]] as const:[]),...(roadTransportAvailable?[["road-transport","道路交通（検証）",undefined]] as const:[])] as const;
   const qaRoadEdges=useMemo(()=>{
     const edges=world?.road_transport?.edges??[];
     return edges.length<=150&&edges.every(edge=>edge.source==="synthetic-qa-not-real-roads")
@@ -2705,7 +2729,7 @@ export function App() {
           <WorkspaceTabs value={mainTab} onChange={chooseMainTab}/>
           <div className="inspector-title"><span>RAILWAY WORKSPACE</span><button className="secondary" aria-label={panelCollapsed ? "操作パネルを開く" : "操作パネルを畳む"} onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? "+" : "−"}</button></div>
           <nav className="editor-tabs construction-tabs" role="tablist" aria-label="建設ツール" hidden={mainTab!=="construction"}>
-            {constructionTools.map(([tool,label],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} tabIndex={activeTool===tool?0:-1} onClick={()=>{if(seamMutationPending.current)return;setError("");setActiveTool(tool);changeMapMode(tool==="tracks"?"draw":tool==="stations"?"place":"move");}} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const length=constructionTools.length;const next=constructionTools[event.key==="Home"?0:event.key==="End"?length-1:(index+(event.key==="ArrowLeft"?length-1:1))%length][0];setActiveTool(next);changeMapMode(next==="tracks"?"draw":next==="stations"?"place":"move");document.getElementById("tab-"+next)?.focus();}}>{label}</button>)}
+            {constructionTools.map(([tool,label,shortcut],index)=><button key={tool} disabled={seamStageSending} role="tab" id={"tab-"+tool} aria-controls={"panel-"+tool} aria-selected={activeTool===tool} aria-keyshortcuts={shortcut} tabIndex={activeTool===tool?0:-1} onClick={()=>chooseConstructionTool(tool)} onKeyDown={event=>{if(seamMutationPending.current)return;if(!["ArrowLeft","ArrowRight","Home","End"].includes(event.key))return;event.preventDefault();const length=constructionTools.length;const next=constructionTools[event.key==="Home"?0:event.key==="End"?length-1:(index+(event.key==="ArrowLeft"?length-1:1))%length][0];chooseConstructionTool(next);document.getElementById("tab-"+next)?.focus();}}>{label}{shortcut&&<kbd aria-hidden="true">{shortcut}</kbd>}</button>)}
           </nav>
           {ordinaryBusActive&&world?.companies[0]&&<section id="panel-ordinary-bus" role="tabpanel" aria-labelledby="tab-ordinary-bus">
             {ordinaryBusStops.active?<OrdinaryBusStopsPanel state={ordinaryBusStops}/>:<OrdinaryBusPanel state={{...ordinaryBus,start:kind=>{
