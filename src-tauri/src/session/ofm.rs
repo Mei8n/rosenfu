@@ -460,7 +460,7 @@ mod tests {
             installed.road_path_provenance
         );
         assert!(infrastructure.road_transport.tram_sections.is_empty());
-        let stop = |editor: &mut WorldEditor, name| {
+        let stop = |editor: &mut WorldEditor, name: &str| {
             let line = infrastructure
                 .alignments
                 .iter()
