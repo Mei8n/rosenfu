@@ -91,6 +91,7 @@ fn ordinary_bus_retains_one_tile_for_tram_guide_and_observed_crossing_after_reop
     );
     assert!(world.snapshot().road_snapshots.is_empty());
     let guide = AuthoredTramGuide {
+        adjacent_end: None,
         tile_key: tile.canonical_url.clone(),
         tile_raw_sha256: tile.raw_sha256.clone(),
         start: vertex(0),

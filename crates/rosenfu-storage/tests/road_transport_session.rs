@@ -119,6 +119,7 @@ fn ordinary_authored_tram_intersection_build_operate_and_reopen() {
     let tile_key = fixture["tileKey"].as_str().unwrap();
     let digest = fixture["tileRawSha256"].as_str().unwrap();
     let guide = AuthoredTramGuide {
+        adjacent_end: None,
         start_fraction_q: None,
         end_fraction_q: None,
         tile_key: tile_key.into(),

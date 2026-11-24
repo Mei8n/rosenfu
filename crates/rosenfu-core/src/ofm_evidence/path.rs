@@ -8,6 +8,7 @@ const RULE: &str = "ofm_overlap_blend_v1";
 const METHOD: &str = "ofm_tile_path_v1";
 const TRAM_METHOD: &str = "ofm_authored_street_tram_v1";
 const TRAM_RULE: &str = "ofm_ground_tram_guide_v1";
+const ADJACENT_TRAM_RULE: &str = "ofm_ground_tram_adjacent_v2";
 const SEGMENTS: usize = 256;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -69,6 +70,14 @@ impl PathDescriptor {
     /// Wire capability marker; its presence doesn't certify any geometry.
     pub fn carries_street_tram_proof(&self) -> bool {
         self.method == TRAM_METHOD || self.tram_guide.is_some()
+    }
+
+    pub fn carries_adjacent_street_tram_proof(&self) -> bool {
+        self.algorithm == ADJACENT_TRAM_RULE
+            || self
+                .tram_guide
+                .as_ref()
+                .is_some_and(|guide| guide.adjacent_end.is_some())
     }
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -378,26 +387,35 @@ pub(crate) fn reconstruct_street_tram_path(
     let points = super::reconstruct_authored_tram_guide(store, guide)?
         .filter(|line| (2..=4096).contains(&line.len()))
         .ok_or(Error::Binding)?;
-    let fragment_prefix = guide
-        .tile_key
-        .split_once("/planet/")
-        .and_then(|(_, tile)| tile.strip_suffix(".pbf"))
-        .ok_or(Error::Binding)?
-        .replace('/', ":");
-    let pick = |vertex: super::BusVertex, q: Option<u32>| PathPick {
-        fragment_id: format!("ofm:{fragment_prefix}:{}:{}", vertex.feature, vertex.line),
-        segment_index: vertex.vertex as usize,
-        fraction: f64::from(q.unwrap_or(0)) / 1_000_000.,
+    let pick = |key: &str, vertex: super::BusVertex, q: Option<u32>| -> Result<PathPick> {
+        let fragment_prefix = key
+            .split_once("/planet/")
+            .and_then(|(_, tile)| tile.strip_suffix(".pbf"))
+            .ok_or(Error::Binding)?
+            .replace('/', ":");
+        Ok(PathPick {
+            fragment_id: format!("ofm:{fragment_prefix}:{}:{}", vertex.feature, vertex.line),
+            segment_index: vertex.vertex as usize,
+            fraction: f64::from(q.unwrap_or(0)) / 1_000_000.,
+        })
     };
+    let end_key = guide
+        .adjacent_end
+        .as_ref()
+        .map_or(guide.tile_key.as_str(), |end| end.tile_key.as_str());
     Ok(DerivedPath {
         descriptor: PathDescriptor {
             method: TRAM_METHOD.into(),
-            algorithm: TRAM_RULE.into(),
+            algorithm: if guide.adjacent_end.is_some() {
+                ADJACENT_TRAM_RULE.into()
+            } else {
+                TRAM_RULE.into()
+            },
             geometry_derived: true,
             coverage_verified: false,
-            required_binding_keys: vec![guide.tile_key.clone()],
-            start: pick(guide.start, guide.start_fraction_q),
-            end: pick(guide.end, guide.end_fraction_q),
+            required_binding_keys: guide.evidence_request().tile_keys()?,
+            start: pick(&guide.tile_key, guide.start, guide.start_fraction_q)?,
+            end: pick(end_key, guide.end, guide.end_fraction_q)?,
             ordered_spans: vec![],
             joins: vec![],
             tram_guide: Some(guide.clone()),
@@ -418,10 +436,9 @@ pub fn validate_path_descriptor(
 ) -> Result<DerivedPath> {
     if let Some(guide) = claim.tram_guide.as_ref() {
         if claim.method != TRAM_METHOD
-            || claim.algorithm != TRAM_RULE
+            || claim.required_binding_keys != guide.evidence_request().tile_keys()?
             || !claim.ordered_spans.is_empty()
             || !claim.joins.is_empty()
-            || claim.required_binding_keys.as_slice() != std::slice::from_ref(&guide.tile_key)
         {
             return Err(Error::Binding);
         }

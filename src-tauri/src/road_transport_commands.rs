@@ -138,12 +138,9 @@ pub async fn preview_authored_tram_road_guide(
     guide: rosenfu_core::ofm_evidence::AuthoredTramGuide,
     raw_evidence: Option<crate::session::OfmRawInput>,
     tile_binding: Option<crate::session::OfmBindingInput>,
+    context_tiles: Option<Vec<CachedOfmBusTile>>,
 ) -> Result<Vec<rosenfu_core::world::GeoPoint>, String> {
-    let cached = match (raw_evidence, tile_binding) {
-        (Some(raw), Some(binding)) => Some((raw, binding)),
-        (None, None) => None,
-        _ => return Err("道路のキャッシュ情報が揃っていません。".into()),
-    };
+    let cached = cached_tiles(raw_evidence, tile_binding, context_tiles)?;
     let snapshot = editor
         .lock()
         .map_err(|_| "world state unavailable")?
@@ -162,14 +159,11 @@ pub async fn build_authored_street_tram(
     guide: rosenfu_core::ofm_evidence::AuthoredTramGuide,
     raw_evidence: Option<crate::session::OfmRawInput>,
     tile_binding: Option<crate::session::OfmBindingInput>,
+    context_tiles: Option<Vec<CachedOfmBusTile>>,
     alignment: crate::session::PlannedAlignment,
     roads: Option<Vec<rosenfu_core::world::RoadSnapshot>>,
 ) -> Result<WorldDraft, String> {
-    let cached = match (raw_evidence, tile_binding) {
-        (Some(raw), Some(binding)) => Some((raw, binding)),
-        (None, None) => None,
-        _ => return Err("道路のキャッシュ情報が揃っていません。".into()),
-    };
+    let cached = cached_tiles(raw_evidence, tile_binding, context_tiles)?;
     tauri::async_runtime::spawn_blocking(move || {
         use tauri::Manager;
         let editor = app.state::<Mutex<WorldEditor>>();

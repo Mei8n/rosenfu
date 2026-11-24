@@ -2062,6 +2062,7 @@ fn authored_tram_uses_exact_ground_junction_without_treating_motor_direction_as_
     };
     let (b, store) = t(None);
     let guide = |binding: &TileBinding, start, end| AuthoredTramGuide {
+        adjacent_end: None,
         start_fraction_q: None,
         end_fraction_q: None,
         tile_key: binding.canonical_url.clone(),
@@ -2332,4 +2333,85 @@ fn ordinary_bus_markers_follow_both_verified_return_intervals_at_an_interior_sto
     assert_eq!(direct_markers.len(), 1);
     assert_eq!(direct_markers[0].edge_start, point(0));
     assert_eq!(direct_markers[0].edge_end, point(1));
+}
+
+#[test]
+fn ordinary_street_tram_adjacent_seam_rejects_wrong_hash_and_buffer_pick() {
+    use rosenfu_core::ofm_evidence::BusTileProof;
+    let left: &[BusFixtureLine<'_>] = &[(
+        &[[3200, 2010], [4200, 2010]],
+        Some(("oneway", "yes")),
+    )];
+    let test = |right: &[BusFixtureLine<'_>], right_x, right_y| {
+        let (tiles, store) = bus_rectangle(&[(14552, 6451, left), (right_x, right_y, right)]);
+        let guide = AuthoredTramGuide {
+            adjacent_end: Some(BusTileProof {
+                tile_key: tiles[1].canonical_url.clone(),
+                tile_raw_sha256: tiles[1].raw_sha256.clone(),
+            }),
+            tile_key: tiles[0].canonical_url.clone(),
+            tile_raw_sha256: tiles[0].raw_sha256.clone(),
+            start: bus_vertex(0, 0),
+            end: bus_vertex(0, 0),
+            start_fraction_q: Some(500_000),
+            end_fraction_q: Some(500_000),
+        };
+        (tiles, store, guide)
+    };
+    let right: &[BusFixtureLine<'_>] = &[(
+        &[[-104, 2010], [896, 2010]],
+        Some(("oneway", "yes")),
+    )];
+    let (tiles, store, guide) = test(right, 14553, 6451);
+    let route = reconstruct_authored_tram_guide(&store, &guide)
+        .unwrap()
+        .unwrap();
+    let cutoff = f64::from(14553_u32) / 16384. * 360. - 180.;
+    assert_eq!(route.len(), 3);
+    assert!(route[0][0] < cutoff && route[2][0] > cutoff);
+    assert_eq!(route[1][0], cutoff);
+
+    let reverse = AuthoredTramGuide {
+        adjacent_end: Some(BusTileProof {
+            tile_key: tiles[0].canonical_url.clone(),
+            tile_raw_sha256: tiles[0].raw_sha256.clone(),
+        }),
+        tile_key: tiles[1].canonical_url.clone(),
+        tile_raw_sha256: tiles[1].raw_sha256.clone(),
+        ..guide.clone()
+    };
+    let reversed = reconstruct_authored_tram_guide(&store, &reverse)
+        .unwrap()
+        .unwrap();
+    assert!(reversed.iter().rev().eq(route.iter()));
+    let mut changed = guide.clone();
+    changed.adjacent_end.as_mut().unwrap().tile_raw_sha256 = "0".repeat(64);
+    assert_eq!(
+        reconstruct_authored_tram_guide(&store, &changed),
+        Err(Error::Hash)
+    );
+    let mut buffer = guide;
+    buffer.start_fraction_q = Some(950_000);
+    assert!(reconstruct_authored_tram_guide(&store, &buffer)
+        .unwrap()
+        .is_none());
+
+    let (_, diagonal, diagonal_guide) = test(right, 14553, 6452);
+    assert_eq!(
+        reconstruct_authored_tram_guide(&diagonal, &diagonal_guide),
+        Err(Error::Binding)
+    );
+    let (_, disconnected, disconnected_guide) = test(
+        &[(&[[-104, 2011], [896, 2011]], Some(("oneway", "yes")))],
+        14553,
+        6451,
+    );
+    assert!(reconstruct_authored_tram_guide(&disconnected, &disconnected_guide)
+        .unwrap()
+        .is_none());
+    let ambiguous = [right[0], right[0]];
+    let (_, store, guide) = test(&ambiguous, 14553, 6451);
+    assert!(reconstruct_authored_tram_guide(&store, &guide)
+        .unwrap()
+        .is_none());
 }

@@ -198,7 +198,7 @@ pub fn boundary_candidates(
     store: &EvidenceStore,
     required_tiles: &[(u32, u32)],
 ) -> Result<Vec<BoundaryCandidate>> {
-    boundary_candidates_impl(store, required_tiles, false, false)
+    boundary_candidates_impl(store, required_tiles, false, false, false)
 }
 
 /// Only remove lines that cannot intersect both sides of any required seam.
@@ -209,7 +209,14 @@ pub(super) fn boundary_candidates_for_bus(
     required_tiles: &[(u32, u32)],
     structured: bool,
 ) -> Result<Vec<BoundaryCandidate>> {
-    boundary_candidates_impl(store, required_tiles, true, structured)
+    boundary_candidates_impl(store, required_tiles, true, structured, false)
+}
+
+pub(super) fn boundary_candidates_for_tram(
+    store: &EvidenceStore,
+    required_tiles: &[(u32, u32)],
+) -> Result<Vec<BoundaryCandidate>> {
+    boundary_candidates_impl(store, required_tiles, true, false, true)
 }
 
 fn crosses_context_boundary(
@@ -239,6 +246,7 @@ fn boundary_candidates_impl(
     required_tiles: &[(u32, u32)],
     prefilter_interior_only: bool,
     structured_bus: bool,
+    authored_tram: bool,
 ) -> Result<Vec<BoundaryCandidate>> {
     let required: BTreeSet<_> = required_tiles.iter().copied().collect();
     let available: BTreeSet<_> = store.bindings().map(|b| (b.x, b.y)).collect();
@@ -336,7 +344,9 @@ fn boundary_candidates_impl(
             let ac: Vec<_> = a
                 .iter()
                 .filter(|l| {
-                    if structured_bus {
+                    if authored_tram {
+                        super::bus::supports_authored_ground_tram(l.raw)
+                    } else if structured_bus {
                         grade_context(l.raw)
                     } else {
                         eligible(l.raw)
@@ -347,7 +357,9 @@ fn boundary_candidates_impl(
             let bc: Vec<_> = b
                 .iter()
                 .filter(|l| {
-                    if structured_bus {
+                    if authored_tram {
+                        super::bus::supports_authored_ground_tram(l.raw)
+                    } else if structured_bus {
                         grade_context(l.raw)
                     } else {
                         eligible(l.raw)
@@ -362,7 +374,11 @@ fn boundary_candidates_impl(
                     if !same(a.line.raw, b.line.raw) {
                         continue;
                     }
-                    let directed = if structured_bus {
+                    let directed = if authored_tram {
+                        // Motor direction is a correspondence attribute,
+                        // not an in-game requirement for tram links.
+                        false
+                    } else if structured_bus {
                         super::bus_grade::one_way(a.line.raw).is_some_and(|v| v != 0)
                     } else {
                         a.line

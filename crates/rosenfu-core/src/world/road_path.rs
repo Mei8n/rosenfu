@@ -45,15 +45,21 @@ impl WorldDraft {
     /// Inspect parked descriptors, too, even though the current authoring
     /// transaction doesn't let a street-tram preview become a parked plan.
     pub fn carries_street_tram_proof(&self) -> bool {
+        self.has_road_descriptor(PathDescriptor::carries_street_tram_proof)
+    }
+
+    pub fn carries_adjacent_street_tram_proof(&self) -> bool {
+        self.has_road_descriptor(PathDescriptor::carries_adjacent_street_tram_proof)
+    }
+
+    fn has_road_descriptor(&self, check: fn(&PathDescriptor) -> bool) -> bool {
         self.road_path_provenance
             .iter()
-            .any(|range| range.path.carries_street_tram_proof())
+            .any(|range| check(&range.path))
             || self.construction_plans.as_ref().is_some_and(|p| {
-                p.parked_paths.iter().any(|path| {
-                    path.ofm_path
-                        .as_ref()
-                        .is_some_and(PathDescriptor::carries_street_tram_proof)
-                })
+                p.parked_paths
+                    .iter()
+                    .any(|path| path.ofm_path.as_ref().is_some_and(check))
             })
     }
 

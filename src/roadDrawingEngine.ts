@@ -5,7 +5,7 @@ import type {ReferenceGraphBundle} from './referenceGraphBundle';
 import {eligibleRoadGraph} from './roadFollowing';
 import {createRoadFollowRouter} from './roadFollowRoute';
 import {fitRoadFollow} from './roadFollowFit';
-export type RoadDrawingQuery={point:GraphPoint;start?:GraphPoint;radiusM:number;authoredTramCue?:boolean;resolveAuthoredSeam?:boolean};
+export type RoadDrawingQuery={point:GraphPoint;start?:GraphPoint;radiusM:number;authoredTramCue?:boolean;resolveAuthoredSeam?:boolean;nativeAdjacentTram?:boolean};
 export type RoadDrawingPick=TilePathPick & {point:GraphPoint};
 export type RoadDrawingResult={kind:'junction';from:RoadDrawingPick;to:RoadDrawingPick}|{kind:'seam';point:GraphPoint}|{kind:'free'}|{kind:'point';point:GraphPoint;roadSnap?:RoadDrawingPick}|{kind:'route';point:GraphPoint;line:GraphPoint[];roadSnap?:RoadDrawingPick}|{kind:'error';error:string};
 export const ROAD_TILE_BOUNDARY_LIMIT_HINT = 'この道路の境界をまたいで敷設できません。別の道路を選ぶか、境界の手前まで敷設してください。';
@@ -38,6 +38,11 @@ export function createRoadDrawingEngine(bundle:ReferenceGraphBundle,tileLines:re
     if(l.id!==other.id){
      const from=raw(start),to=raw(end);
      if(l.x===other.x&&l.y===other.y)return {kind:'junction',from,to};
+     if(query.nativeAdjacentTram){
+      if(l.revision!==other.revision||Math.abs(l.x-other.x)+Math.abs(l.y-other.y)!==1)
+       return {kind:'error',error:'併用軌道の起点と終点を隣接する道路範囲に置いてください。'};
+      return {kind:'junction',from,to};
+     }
      // An existing cached seam remains available using the established
      // bounded raw overlap evidence, never the coordinate graph fallback.
      if(!query.resolveAuthoredSeam)return {kind:'seam',point};

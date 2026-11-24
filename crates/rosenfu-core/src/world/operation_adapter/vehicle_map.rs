@@ -9,7 +9,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LiveRailMarker {
     pub key: TrainKey,
-    /// Whole painted alignment chord, not endpoints at the stations.
+    /// Exact painted chord containing the native position, not station coordinates.
     pub alignment_start: GeoPoint,
     pub alignment_end: GeoPoint,
     /// Authoritative distance fraction on that chord at the committed clock.
@@ -129,6 +129,79 @@ impl World {
                 })
             })
             .take(MAX_MARKERS)
+            .collect()
+    }
+
+    /// Ordinary native marker response. Preserve the old straight Normal
+    /// subset, then add only positively proven street-tram movements.
+    pub fn live_ground_rail_markers(&self) -> Vec<LiveRailMarker> {
+        let mut markers = self.live_straight_rail_markers();
+        if markers.len() < MAX_MARKERS {
+            markers.extend(self.joined_street_tram_markers(MAX_MARKERS - markers.len()));
+        }
+        markers
+    }
+
+    fn joined_street_tram_markers(&self, limit: usize) -> Vec<LiveRailMarker> {
+        let Some(op) = self.operation().filter(|o| !o.invalidated) else {
+            return Vec::new();
+        };
+        // The existing simple marker path remains unaltered. The extra
+        // geometry work runs only in bounded worlds with an authored street
+        // range and a matching three-section candidate.
+        if self.data.road_path_provenance.is_empty()
+            || self.data.alignments.len() > MAX_ROWS_PER_TABLE
+            || self.data.station_placements.len() > MAX_ROWS_PER_TABLE
+            || self.data.alignment_connections.len() > MAX_ROWS_PER_TABLE
+        {
+            return Vec::new();
+        }
+        op.runtime
+            .trains()
+            .take(MAX_TRAINS)
+            .filter_map(|train| {
+                let TrainState::Moving {
+                    entered_ms,
+                    arrival_ms,
+                    ..
+                } = train.state
+                else {
+                    return None;
+                };
+                let spec = op.runtime.service_spec(&train.key.service_id)?;
+                let leg = spec.legs.get(train.leg)?;
+                let (lanes, profile) = joined_tram_profile(leg, &spec.vehicle)?;
+                if !self.data.road_path_provenance.iter().any(|proof| {
+                    proof.alignment_id == lanes[1] && proof.path.carries_street_tram_proof()
+                }) {
+                    return None;
+                }
+                Some((train, spec, leg, lanes, profile, entered_ms, arrival_ms))
+            })
+            .take(8)
+            .filter_map(|(train, spec, leg, lanes, profile, entered_ms, arrival_ms)| {
+                let (duration, _) = op
+                    .runtime
+                    .unblocked_leg_timing(&train.key.service_id, train.leg)?;
+                if entered_ms.checked_add(duration)? != arrival_ms {
+                    return None;
+                }
+                let fraction = uniform_position(
+                    &profile,
+                    &spec.vehicle,
+                    op.runtime.now_ms().checked_sub(entered_ms)?,
+                    duration,
+                )?;
+                let (alignment_start, alignment_end, position) =
+                    joined_tram_chord(&self.data, leg, lanes, profile.length_m * fraction)?;
+                Some(LiveRailMarker {
+                    key: train.key.clone(),
+                    alignment_start,
+                    alignment_end,
+                    position,
+                })
+            })
+            .take(limit)
             .collect()
     }
 
@@ -276,6 +349,172 @@ impl World {
     }
 }
 
+fn joined_tram_profile(leg: &RunLeg, vehicle: &Vehicle) -> Option<([AlignmentId; 3], Section)> {
+    let [a, b, c] = leg.sections.as_slice() else {
+        return None;
+    };
+    let mut lanes = [AlignmentId(0); 3];
+    let mut length_m = 0.;
+    let cap = a.speed_limit_kmh.min(vehicle.max_speed_kmh);
+    for (piece, lane) in [a, b, c].into_iter().zip(&mut lanes) {
+        if !(piece.length_m.is_finite() && piece.length_m > 0.)
+            || piece.speed_limit_kmh.min(vehicle.max_speed_kmh) != cap
+        {
+            return None;
+        }
+        let mut ids = piece.resources.iter().filter_map(|key| inline_lane_key(key));
+        let (id, 0, 0) = ids.next()? else {
+            return None;
+        };
+        if ids.next().is_some() {
+            return None;
+        }
+        *lane = AlignmentId(id);
+        length_m += piece.length_m;
+    }
+    if lanes[0] == lanes[1] || lanes[1] == lanes[2] || lanes[0] == lanes[2] {
+        return None;
+    }
+    Some((
+        lanes,
+        Section {
+            length_m,
+            speed_limit_kmh: cap,
+            resources: vec![],
+        },
+    ))
+}
+
+fn joined_tram_chord(
+    draft: &WorldDraft,
+    leg: &RunLeg,
+    lanes: [AlignmentId; 3],
+    mut remaining: f64,
+) -> Option<(GeoPoint, GeoPoint, f64)> {
+    let station = |key: &str| {
+        let id = StationId(key.parse().ok()?);
+        draft.station_placements.iter().find(|p| p.station_id == id)
+    };
+    let start = station(&leg.from)?;
+    let end = station(&leg.to)?;
+    if start.alignment_id != lanes[0] || end.alignment_id != lanes[2] {
+        return None;
+    }
+    let line = |id| draft.alignments.iter().find(|a| a.id == id);
+    let lines = [line(lanes[0])?, line(lanes[1])?, line(lanes[2])?];
+    if !draft.road_path_provenance.iter().any(|proof| {
+        proof.alignment_id == lanes[1]
+            && proof.start_point_index == 0
+            && proof.end_point_index.checked_add(1) == Some(lines[1].points.len())
+            && proof.from_position == 0.
+            && proof.to_position == 1.
+            && proof.path.carries_street_tram_proof()
+    }) {
+        return None;
+    }
+    for a in lines {
+        if a.track_type != TrackType::Tram
+            || !(2..=64).contains(&a.points.len())
+            || a.section_count() != 1
+            || a.section_infrastructure(0)? != SectionInfrastructure::default()
+            || a.vertical_profile
+                .iter()
+                .chain(&a.section_profiles)
+                .any(|p| {
+                    p.start_height_m != 0.
+                        || p.end_height_m != 0.
+                        || p.start_tangent_m != 0.
+                        || p.end_tangent_m != 0.
+                })
+        {
+            return None;
+        }
+    }
+
+    let mut joins = [None, None];
+    for link in &draft.alignment_connections {
+        let a = lanes.iter().position(|id| *id == link.a.alignment_id);
+        let b = lanes.iter().position(|id| *id == link.b.alignment_id);
+        let pair = match (a, b) {
+            (None, None) => continue,
+            (Some(i), Some(j)) if i + 1 == j => (i, [link.a.endpoint, link.b.endpoint]),
+            (Some(i), Some(j)) if j + 1 == i => (j, [link.b.endpoint, link.a.endpoint]),
+            _ => return None, // other joins can change the rendered lane
+        };
+        if joins[pair.0].replace(pair.1).is_some() {
+            return None;
+        }
+    }
+    let [Some([a_exit, b_entry]), Some([b_exit, c_entry])] = joins else {
+        return None;
+    };
+    if b_entry == b_exit
+        || !straight_tram_join(lines[0], a_exit, lines[1], b_entry)
+        || !straight_tram_join(lines[1], b_exit, lines[2], c_entry)
+    {
+        return None;
+    }
+    let position = |side| match side {
+        AlignmentEndpoint::Start => 0.,
+        AlignmentEndpoint::End => 1.,
+    };
+    let spans = [
+        [start.position, position(a_exit)],
+        [position(b_entry), position(b_exit)],
+        [position(c_entry), end.position],
+    ];
+    for (i, (a, [from, to])) in lines.into_iter().zip(spans).enumerate() {
+        let length = a.length_m();
+        let piece = leg.sections[i].length_m;
+        if (length * (to - from).abs() - piece).abs() > 1e-7 {
+            return None;
+        }
+    }
+    for (i, (a, [from, to])) in lines.into_iter().zip(spans).enumerate() {
+        let piece = leg.sections[i].length_m;
+        if remaining > piece && i < 2 {
+            remaining -= piece;
+            continue;
+        }
+        let mut offset = a.length_m() * (from + (to - from) * (remaining / piece).clamp(0., 1.));
+        for e in a.points.windows(2) {
+            let length = alignment::distance(e[0], e[1]);
+            if length > 0. && offset <= length + 1e-7 {
+                return Some((e[0], e[1], (offset / length).clamp(0., 1.)));
+            }
+            offset -= length;
+        }
+        return None;
+    }
+    None
+}
+
+fn straight_tram_join(
+    a: &Alignment,
+    exit: AlignmentEndpoint,
+    b: &Alignment,
+    entry: AlignmentEndpoint,
+) -> bool {
+    let pair = |p: &[GeoPoint], side| match side {
+        AlignmentEndpoint::Start => [p[0], p[1]],
+        AlignmentEndpoint::End => [p[p.len() - 1], p[p.len() - 2]],
+    };
+    let [a, a_outer] = pair(&a.points, exit);
+    let [b, b_outer] = pair(&b.points, entry);
+    if a != b {
+        return false;
+    }
+    let direction = |p: GeoPoint| {
+        let x = (p.longitude - a.longitude) * a.latitude.to_radians().cos();
+        let y = p.latitude - a.latitude;
+        let norm = x.hypot(y);
+        [x / norm, y / norm]
+    };
+    let [ax, ay] = direction(a_outer);
+    let [bx, by] = direction(b_outer);
+    ax * bx + ay * by <= -0.999_999
+}
+
 /// The compiler can split one physical track lane at passed (non-stop)
 /// platforms. Only a same-cap run on exactly that lane admits one envelope.
 fn same_lane_uniform_section(sections: &[Section]) -> Option<(u64, Section)> {
@@ -358,6 +597,34 @@ fn uniform_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joined_tram_marker_never_uses_one_speed_when_caps_differ_or_repeats_a_lane() {
+        let mut leg = RunLeg {
+            from: "1".into(),
+            to: "2".into(),
+            sections: (11..14)
+                .map(|line| Section {
+                    length_m: 30.,
+                    speed_limit_kmh: 50.,
+                    resources: vec![format!("rail:{line}:section:0:lane:0")],
+                })
+                .collect(),
+            dwell_ms: 0,
+        };
+        let vehicle = Vehicle {
+            max_speed_kmh: 40.,
+            acceleration_mps2: 1.,
+            braking_mps2: 1.,
+            length_m: 10.,
+        };
+        assert!(joined_tram_profile(&leg, &vehicle).is_some());
+        leg.sections[1].speed_limit_kmh = 20.;
+        assert!(joined_tram_profile(&leg, &vehicle).is_none());
+        leg.sections[1].speed_limit_kmh = 50.;
+        leg.sections[2].resources = vec!["rail:11:section:0:lane:0".into()];
+        assert!(joined_tram_profile(&leg, &vehicle).is_none());
+    }
 
     fn fixture(curved: bool, second: bool, pass_through: bool) -> World {
         let mut world = World::default();

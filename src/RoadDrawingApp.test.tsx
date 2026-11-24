@@ -9,6 +9,7 @@ import {sampledGeometry} from './editedGeometry';
 import {provisionalCurveSpeed} from './circularAlignment';
 import {createOpenFreeMapRoadRepository,decodeOpenFreeMapRoadTile,OFM_ATTRIBUTION,OFM_EVIDENCE_RULE,OFM_METADATA} from './openFreeMapRoadData';
 import tramFixture from '../crates/rosenfu-core/tests/fixtures/ofm_authored_tram_synthetic.json';
+import adjacentTramFixture from "../crates/rosenfu-core/tests/fixtures/ofm_authored_adjacent_tram_synthetic.json";
 const mock=vi.hoisted(()=>({snapshot:null as any,read:vi.fn(),observe:vi.fn()}));
 vi.mock('./useAutomaticRoad',()=>({useAutomaticRoad:()=>({status:'ready',snapshot:mock.snapshot,message:'fixture',retry:vi.fn(),ensureCurrent:vi.fn(async()=>({status:'unavailable',reason:'fixture'})),readTileEvidenceBatch:mock.read,observeRouteTiles:mock.observe})}));
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
@@ -649,5 +650,60 @@ test('street tram confirms exact live tile geometry and does not bank a preview 
  fail=false;fireEvent.click(screen.getByRole('button',{name:'併用軌道を建設'}));
  await screen.findByText(/道路に沿う併用軌道を建設しました/);
  expect(screen.queryByRole('button',{name:'併用軌道を建設'})).toBeNull();
+ expect(vi.mocked(invoke).mock.calls.some(([cmd])=>['build_alignment','build_plan','build_plan_with_roads'].includes(cmd))).toBe(false);
+});
+
+test('adjacent tram confirmation carries both exact tiles and never falls back on a denied seam',async()=>{
+ vi.stubGlobal('Worker',RoadWorker);vi.stubGlobal('PointerEvent',MouseEvent);RoadWorker.delay=false;
+ const [first,second]=adjacentTramFixture;
+ const tileData=await Promise.all(adjacentTramFixture.map(f=>decodeOpenFreeMapRoadTile(Uint8Array.from(f.raw),f.x,f.y,f.revision,1)));
+ const [left,right]=tileData;
+ const midpoint=(t:typeof left)=>{const [a,b]=t.tileLines[0].coordinates;return {longitude:(a[0]+b[0])/2,latitude:(a[1]+b[1])/2};};
+ const a=midpoint(left), b=midpoint(right);
+ const seam={longitude:second.x/16384*360-180,latitude:a.latitude};
+ const fetcher=vi.fn(async(url:unknown)=>url===OFM_METADATA?
+   Response.json({maxzoom:14,tiles:[`${OFM_METADATA}/${first.revision}/{z}/{x}/{y}.pbf`]}):
+   url===first.tileKey||url===second.tileKey?new Response(Uint8Array.from((url===first.tileKey?first:second).raw)):
+   new Response(null,{status:404}));
+ const repo=createOpenFreeMapRoadRepository(fetcher);
+ mock.snapshot=await repo.load({west:a.longitude-.00005,east:b.longitude+.00005,south:a.latitude-.00005,north:a.latitude+.00005});
+ mock.read.mockImplementation(async(...args:Parameters<typeof repo.readTileEvidenceBatch>)=>({status:'ready',evidence:await repo.readTileEvidenceBatch(...args)}));
+ const camera={...seam,zoom:16},loaded={...world,view_state:camera};
+ let reject=true;
+ vi.mocked(invoke).mockImplementation(async(command)=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'adjacent-street',authored_tram_road_guide_enabled:true,authored_street_tram_enabled:true,authored_adjacent_street_tram_enabled:true};
+  if(command==='list_save_slots')return {active_slot_id:'slot',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='ofm_world_token')return 'adjacent-preview-world';
+  if(command==='preview_authored_tram_road_guide'){
+   if(reject)throw Error('境界の接続を確認できません');
+   return [a,seam,b];
+  }
+  if(command==='preview_construction_plan')return {validationError:null,newCrossingCount:0};
+  return loaded;
+ });
+ render(<App/>);await screen.findByText(/adjacent-street/);
+ fireEvent.click(screen.getByRole('button',{name:'トラム'}));
+ const map=document.querySelector('svg[role=img]')!;
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ async function click(p:typeof a){
+   const xy=project(p.latitude,p.longitude,camera);
+   const args={clientX:xy.x,clientY:xy.y,detail:1,button:0,pointerId:1};
+   await act(async()=>{fireEvent.pointerDown(map,args);fireEvent.pointerUp(map,args);fireEvent.click(map,args);await new Promise(r=>setTimeout(r,0));});
+ }
+ await click(a);await click(b);await screen.findByText(/境界の接続を確認できません/);
+ expect(document.querySelector('.confirmed-draft')).toBeNull();
+ expect(screen.queryByRole('button',{name:'併用軌道を建設'})).toBeNull();
+ reject=false;await click(b);
+ const confirm=await screen.findByRole('button',{name:'併用軌道を建設'});
+ const payload=vi.mocked(invoke).mock.calls.filter(([cmd])=>cmd==='preview_authored_tram_road_guide').at(-1)?.[1];
+ expect(payload).toMatchObject({
+  expectedWorldToken:'adjacent-preview-world',guide:{tileKey:first.tileKey,tileRawSha256:first.tileRawSha256,
+   adjacentEnd:{tileKey:second.tileKey,tileRawSha256:second.tileRawSha256},startFractionQ:500000,endFractionQ:500000},
+  contextTiles:[{tileBinding:{key:first.tileKey}},{tileBinding:{key:second.tileKey}}]
+ });
+ expect(mock.observe).not.toHaveBeenCalled();
+ fireEvent.click(confirm);await screen.findByText(/道路に沿う併用軌道を建設しました/);
+ expect(invoke).toHaveBeenCalledWith('build_authored_street_tram',expect.objectContaining({...payload,alignment:expect.objectContaining({points:[a,seam,b],trackType:'tram'})}));
  expect(vi.mocked(invoke).mock.calls.some(([cmd])=>['build_alignment','build_plan','build_plan_with_roads'].includes(cmd))).toBe(false);
 });
