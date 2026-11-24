@@ -513,7 +513,7 @@ mod tests {
             )
             .unwrap();
         let service = service_world.services.last().unwrap().id;
-        let token = editor.operation_snapshot().timetable_edit_token;
+        let token = editor.operation_snapshot().timetable_edit_token.clone();
         editor
             .configure_operation_service(
                 service,
@@ -592,7 +592,7 @@ mod tests {
             runtime.set_paused(true);
             (key, arrival_ms)
         };
-        let markers = editor.operation_snapshot().rail_markers;
+        let markers = editor.operation_snapshot().rail_markers.clone();
         let [marker] = markers.as_slice() else {
             panic!("ordinary connected tram requires an actual native moving marker");
         };
