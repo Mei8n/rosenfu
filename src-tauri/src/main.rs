@@ -91,6 +91,22 @@ fn preview_track_render_geometry(
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
+async fn retained_road_view(
+    editor: State<'_, Mutex<WorldEditor>>,
+    rect: [u32; 4],
+) -> Result<rosenfu_core::ofm_evidence::RetainedRoadView, String> {
+    let archive = editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .retained_road_archive();
+    tauri::async_runtime::spawn_blocking(move || {
+        rosenfu_core::ofm_evidence::retained_road_view(&archive, rect).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "保存済み道路参考データを表示できません。".to_owned())?
+}
+
+#[tauri::command]
 fn ofm_world_token(editor: State<'_, Mutex<WorldEditor>>) -> Result<String, String> {
     editor
         .lock()
@@ -964,6 +980,7 @@ fn main() {
             preview_route_membership,
             world_snapshot,
             ofm_world_token,
+            retained_road_view,
             stage_ofm_construction_plan,
             water_mask_requests,
             acquire_water_zone,

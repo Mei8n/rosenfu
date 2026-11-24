@@ -36,8 +36,10 @@ buffers instead of guessing or clipping them.
 Known road attributes (`class`, `subclass`, `access`, `brunnel`, `layer`, `oneway`)
 retain typed protobuf values. Strings are nonempty, <= 100 UTF-8 bytes, and reject
 Unicode Cc/Cf. Numeric layer/oneway accept finite values; integer values must be
-JS-safe. Other known attributes require strings. Unknown brunnel values reject,
-never become ground. Raw unknown oneway strings are retained without interpreting
+JS-safe. Other known attributes require strings. Known `brunnel=ford` is retained
+as observation only: it grants no routing or ground crossing, and unrelated
+roads in the same tile stay usable. Unknown brunnel values reject, never
+become ground. Raw unknown oneway strings are retained without interpreting
 permissions. `layer` numeric strings currently use Rust finite decimal parsing;
 unusual JS Number spellings such as hexadecimal are intentionally rejected rather
 than normalized. Geometry uses MoveTo(count=1) and LineTo only, at least two points

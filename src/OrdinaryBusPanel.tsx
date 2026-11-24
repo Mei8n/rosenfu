@@ -105,7 +105,7 @@ export function useOrdinaryBusDraft(input:Input){
   mutating:()=>mutation.current||waypoints.committing,rectangle:!!input.observe,waypoints:!!input.waypoints,
   extending:waypoints.extending&&!waypoints.closed,closed:waypoints.closed,closedCapable:!!input.closedCapable&&newRoute,exitExtension:waypoints.exitExtension,offerHover:waypoints.offerHover,clearHover:waypoints.clearHover,hoverPreview:waypoints.hoverPreview,allowFinish:waypoints.ready,controls:waypoints.controls,activeControl:waypoints.active==='start'?waypoints.controls[0]?.id:waypoints.controls.at(-1)?.id,
   failedLeg:waypoints.failedLeg,refusedControls:waypoints.frame?.refusal?.attempt.controls,
-  history:waypoints.history,canUndo:!!(waypoints.frame?.past.length||waypoints.frame?.check||waypoints.frame?.refusal),canRedo:!!waypoints.frame?.future.length,
+  history:waypoints.history,shorten:waypoints.shorten,canShorten:waypoints.canShorten,canUndo:!!(waypoints.frame?.past.length||waypoints.frame?.check||waypoints.frame?.refusal),canRedo:!!waypoints.frame?.future.length,
   canPlace:!waypoints.committing};
 }
 
@@ -162,6 +162,11 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
     {state.waypoints&&<><p>{state.closed?'環状系統（片方向）。線や点をドラッグして編集できます。':state.extending?
       (state.closedCapable?'道路を順にクリック。起点をクリックすると環状に、現在の端点かEnterで確定。':'道路を順にクリック。現在の端点をもう一度クリックするか、Enterで確定。'):
       '線や点をドラッグして編集。端点をクリックすると延長できます。'}</p>
+     {state.canShorten&&<>
+      <p>端の区間を外し、隣の経由点を新しい端点にします。</p>
+      <button type="button" disabled={disabled} onClick={()=>state.shorten('start')}>起点を1点短縮</button>
+      <button type="button" disabled={disabled} onClick={()=>state.shorten('end')}>終点を1点短縮</button>
+     </>}
      <button type="button" onClick={()=>state.history('undo')} disabled={!state.canUndo||state.mutating()}>点の変更を取り消す</button>
      <button type="button" onClick={()=>state.history('redo')} disabled={!state.canRedo||state.mutating()}>点の変更をやり直す</button></>}
     {draft.preview&&<button type="button" onClick={()=>void state.commit()} disabled={disabled||state.waypoints&&!state.allowFinish||!state.name.trim()||draft.pattern==="openRoundTrip"&&!draft.preview.returnPath}>バス系統を確定</button>}

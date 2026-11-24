@@ -115,7 +115,7 @@ fn same_raw_different_tile_is_separately_bound() {
 #[test]
 fn invalid_known_attributes_are_not_ground_defaults() {
     for (k, value) in [
-        ("brunnel", field(1, b"ford")),
+        ("brunnel", field(1, b"unknown")),
         ("access", scalar(7, 1)),
         ("subclass", scalar(4, 1)),
         ("layer", field(1, b"unknown")),
@@ -1490,6 +1490,52 @@ fn ordinary_bus_does_not_snap_connect_grade_or_infer_an_interior_crossing() {
             "{vertical:?} {tag:?}"
         );
     }
+}
+
+#[test]
+fn supplier_ford_does_not_poison_same_tile_but_is_not_routable() {
+    let (binding, store) = bus_fixture(&[
+        (&[[100, 100], [200, 100], [300, 100]], None),
+        (&[[200, 100], [200, 200]], Some(("brunnel", "ford"))),
+    ]);
+    let raw = store.raw(&binding.raw_sha256).unwrap();
+    let decoded = decode_tile(&binding, raw).unwrap();
+    assert_eq!(
+        decoded.lines[1].attributes["brunnel"],
+        RawValue::String("ford".into())
+    );
+    let start = bus_vertex(0, 0);
+    let ordinary = bus_vertex(0, 2);
+    let ford = bus_vertex(1, 1);
+    let bus =
+        |end| find_gameplay_bus_path(&store, &binding.canonical_url, start, end, true).unwrap();
+    let accepted = bus(ordinary).unwrap();
+    assert_eq!(accepted.points.len(), 3);
+    assert!(bus(ford).is_none());
+    let mut structured = accepted.binding.clone();
+    structured.end = ford;
+    structured.grade_policy = Some(BusGradePolicy::ObservedConnectors);
+    assert!(reconstruct_gameplay_bus_path(&store, &structured)
+        .unwrap()
+        .is_none());
+
+    let tram = |end| {
+        reconstruct_authored_tram_guide(
+            &store,
+            &AuthoredTramGuide {
+                tile_key: binding.canonical_url.clone(),
+                tile_raw_sha256: binding.raw_sha256.clone(),
+                start,
+                end,
+                start_fraction_q: None,
+                end_fraction_q: None,
+                adjacent_end: None,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(tram(ordinary).unwrap(), accepted.points);
+    assert!(tram(ford).is_none());
 }
 
 #[test]

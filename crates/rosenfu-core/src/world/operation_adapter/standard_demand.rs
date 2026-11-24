@@ -1,4 +1,4 @@
-//! Explicit demand inspection for the activated Standard origin stream.
+//! Explicit demand inspection for one activated Standard outbound service.
 use super::*;
 use crate::demand::{
     assign_scheduled_corridor, scheduled_od_span, ChoiceWeights, FixedOd, PassengerLeg,
@@ -8,12 +8,11 @@ use std::ops::Range;
 
 impl World {
     /// Scheduled scenario from the currently configured Standard service. The
-    /// input time is when riders are ready at its origin platform, not current
-    /// world time; this uses no present or replayed vehicle state. For this
-    /// first slice only origin→one outbound stop is supported. A window not
-    /// fully inside this source's coverage remains unverified rather than
-    /// being extended past activation or expiry. No reverse or automatic
-    /// directional demand is inferred from the origin's served path.
+    /// input time is when riders are ready at the chosen outbound platform,
+    /// not current world time. This uses no present or replayed vehicle state.
+    /// The source's activation window shifts with the nominal elapsed time to
+    /// that platform. An incompletely covered window remains unverified. No
+    /// reverse, transfer, or automatic directional demand is inferred.
     ///
     /// The caller must pass the authenticated actor/company, not accept
     /// arbitrary owner IDs from an external view request.
@@ -59,32 +58,44 @@ impl World {
             ([origin], [destination]) => (&origin.station, &destination.station),
             _ => return Err("select one origin and destination station".into()),
         };
-        if spec.legs.first().is_none_or(|leg| &leg.from != origin) || origin == destination {
-            return Err("scheduled corridor must start at the selected service origin".into());
-        }
-        // Standard schedule admission already requires the exact mirrored
-        // return; use only the outbound half. A passed station never appears
-        // as a compiled stop, so it cannot be chosen as a destination.
+        // Standard admission requires an exact mirrored return and unique
+        // outbound stops. A passed station does not appear as a compiled stop.
         let outbound = &spec.legs[..spec.legs.len() / 2];
-        let destination_index = outbound
+        let boarding_index = outbound
+            .iter()
+            .position(|leg| &leg.from == origin)
+            .ok_or("origin is not a boardable outbound scheduled stop")?;
+        let corridor = &outbound[boarding_index..];
+        let destination_index = corridor
             .iter()
             .position(|leg| &leg.to == destination)
-            .ok_or("destination is not an outbound scheduled stop")?;
+            .ok_or("destination is not a later outbound scheduled stop")?;
+
+        // The scheduler's nominal departure from an intermediate platform is
+        // the originating birth plus previous rides and max(dwell, clearance).
+        // This is not an estimate of actual waiting for reserved track.
+        let offset = (0..boarding_index)
+            .try_fold(0u64, |sum, index| {
+                let (ride, stand) = runtime.unblocked_leg_timing(&source, index)?;
+                sum.checked_add(ride)?.checked_add(stand)
+            })
+            .ok_or("compiled scheduled boarding time unavailable")?;
         let mut legs = Vec::with_capacity(destination_index + 1);
-        for (sequence, leg) in outbound[..=destination_index].iter().enumerate() {
+        for (sequence, leg) in corridor[..=destination_index].iter().enumerate() {
+            let index = boarding_index + sequence;
             let (ride, _) = runtime
-                .unblocked_leg_timing(&source, sequence)
+                .unblocked_leg_timing(&source, index)
                 .ok_or("compiled scheduled corridor timing unavailable")?;
-            let through = sequence
-                .checked_sub(1)
-                .map_or(Some(0), |previous| {
-                    runtime
-                        .unblocked_leg_timing(&source, previous)
-                        .map(|(_, stand)| stand)
-                })
-                .ok_or("compiled scheduled dwell unavailable")?;
+            let through = if sequence == 0 {
+                0
+            } else {
+                runtime
+                    .unblocked_leg_timing(&source, index - 1)
+                    .ok_or("compiled scheduled dwell unavailable")?
+                    .1
+            };
             legs.push(PassengerLeg {
-                leg_id: format!("{source}:{sequence}"),
+                leg_id: format!("{source}:{index}"),
                 sequence,
                 board_allowed: sequence == 0,
                 alight_allowed: sequence == destination_index,
@@ -94,25 +105,25 @@ impl World {
                 ride_seconds: ride as f64 / 1_000.0,
                 through_seconds: through as f64 / 1_000.0,
                 // No scalar headway is manufactured from a multi-band source.
-                // The dedicated solver receives the actual scheduled wait.
                 headway_seconds: 0.0,
             });
         }
         let coverage = grid.active_window();
-        let schedule = if ready_ms < coverage.start || end_ms > coverage.end {
-            ScheduledBoarding::Unverified
-        } else {
-            let first_departure_ms = grid
-                .cursor_after(ready_ms.checked_sub(1))
-                .next_departure()
-                .filter(|at| *at < end_ms);
-            let scheduled_departures = grid.departure_count(window);
-            ScheduledBoarding::Verified {
-                ready_ms,
-                end_ms,
-                first_departure_ms,
-                scheduled_departures,
+        let schedule = match (ready_ms.checked_sub(offset), end_ms.checked_sub(offset)) {
+            (Some(start), Some(end)) if start >= coverage.start && end <= coverage.end => {
+                let first_departure_ms = grid
+                    .cursor_after(start.checked_sub(1))
+                    .next_departure()
+                    .filter(|at| *at < end)
+                    .and_then(|at| at.checked_add(offset));
+                ScheduledBoarding::Verified {
+                    ready_ms,
+                    end_ms,
+                    first_departure_ms,
+                    scheduled_departures: grid.departure_count(start..end),
+                }
             }
+            _ => ScheduledBoarding::Unverified,
         };
         assign_scheduled_corridor(od, &legs, schedule, weights)
     }

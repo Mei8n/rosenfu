@@ -17,6 +17,8 @@ pub use path::{
     SourceSpan,
 };
 mod store;
+mod viewport;
+pub use viewport::{retained_road_view, RetainedRoadView};
 pub use candidates::{boundary_candidates, validate_boundary_candidates, BoundaryCandidate};
 mod wire;
 use sha2::{Digest, Sha256};
@@ -404,8 +406,14 @@ fn validate_attributes(attrs: &BTreeMap<String, RawValue>) -> Result<()> {
             _ if matches!(key.as_str(), "layer" | "oneway") && number(v).is_some() => {}
             _ => return Err(Error::InvalidAttribute),
         }
-        if key == "brunnel" && !matches!(v,RawValue::String(s) if s=="bridge"||s=="tunnel") {
-            return Err(Error::InvalidAttribute);
+        if key == "brunnel" {
+            let valid_structure = match v {
+                RawValue::String(value) => matches!(value.as_str(), "bridge" | "tunnel" | "ford"),
+                _ => false,
+            };
+            if !valid_structure {
+                return Err(Error::InvalidAttribute);
+            }
         }
         if key == "layer" {
             let n = match v {

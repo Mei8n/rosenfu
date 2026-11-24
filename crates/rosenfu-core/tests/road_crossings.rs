@@ -129,6 +129,12 @@ fn separated_and_unknown_roads_do_not_create_crossings() {
     let r = assessment(a, s);
     assert!(r.crossings.is_empty());
     assert!(r.unknown_road_height);
+    let mut s = snapshot();
+    s.roads[0].bridge = Some("ford".into());
+    s.roads[0].tunnel = None;
+    let r = assessment(a, s);
+    assert!(r.crossings.is_empty());
+    assert!(r.unknown_road_height);
 }
 #[test]
 fn actual_physical_height_controls_ramps_and_section_profiles() {

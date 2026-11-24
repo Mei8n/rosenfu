@@ -118,6 +118,7 @@ import { invoke as nativeInvoke, isTauri } from "@tauri-apps/api/core";
 import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, requestedTileCoverage, viewBounds, mapViewport } from "./map";
 import { GsiBackground } from "./GsiBackground";
 import type { Camera } from "./map";
+import {RetainedRoadLayer,useRetainedRoadView} from "./RetainedRoadLayer";
 import type { TileStatus } from "./GsiBackground";
 import { provisionalCurveSpeed, snapStraight } from "./circularAlignment";
 import { nearestOnAlignment, stationPolygon, alignmentLength, distanceM, pointOnAlignment } from "./alignment";
@@ -237,6 +238,7 @@ export function App() {
   const bounds = useMemo(()=>viewBounds(camera,mapSize),[camera,mapSize]);
   const [manualGraphBundle,setGraphBundle]=useState<ReferenceGraphBundle|null>(null);
   const [graphVisible,setGraphVisible]=useState(true);
+  const [retainedRoadVisible,setRetainedRoadVisible]=useState(false);
   const [pendingGraphChange,setPendingGraphChange]=useState<{bundle:ReferenceGraphBundle|null}|null>(null);
   const [candidateDirty,setCandidateDirty]=useState(false);
   const [routeRenameDirty,setRouteRenameDirty]=useState(false);
@@ -355,6 +357,9 @@ export function App() {
   useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch]);
   useEffect(()=>{setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);},[worldEpoch]);
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
+  const retainedRoadBasis=useMemo(()=>retainedRoadVisible?JSON.stringify(world?.road_evidence_descriptors??[]):"",[retainedRoadVisible,world?.road_evidence_descriptors]);
+  const retainedRoadDisplay=retainedRoadVisible&&isTauri()&&status==="ready"&&!companySetupRequired;
+  const retainedRoad=useRetainedRoadView(retainedRoadDisplay,bounds,worldEpoch,retainedRoadBasis);
   const [activeTool, setActiveTool] = useState<"stations" | "tracks" | "routes" | "services" | "company" | "station-management" | "delete" | "select" | "road-transport" | "ordinary-bus" | "inactive">("tracks");
   const [roadMapFrom,setRoadMapFrom]=useState<string|null>(null);
   const [roadMapSelection,setRoadMapSelection]=useState<RoadMapSelection>();
@@ -2418,6 +2423,8 @@ export function App() {
             <p>閲覧・建設範囲: 北緯20〜46度 / 東経122〜154度。領土境界を示すものではありません。範囲端では表示を矩形内に制限します。</p>
           </div>
           {roadFollowing?<label><input type="checkbox" aria-label="道路参考線を表示" checked={graphVisible} onChange={event=>setGraphVisible(event.target.checked)}/>道路参考線を表示</label>:<ReferenceGraphControls bundle={graphBundle} visible={graphVisible} onBundle={bundle=>{if(referenceCopy.active)setPendingGraphChange({bundle});else setGraphBundle(bundle);}} onVisible={setGraphVisible} total={graphDisplay.total} shown={graphDisplay.edges.length} zoom={camera.zoom}/>}
+          {isTauri()&&<label><input type="checkbox" checked={retainedRoadVisible} onChange={event=>setRetainedRoadVisible(event.target.checked)}/>ワールド内の参考道路を表示</label>}
+          {retainedRoad.message&&<small role="status">{retainedRoad.message}</small>}
           <ReferenceStationControls pack={referencePack} visible={referenceVisible} onPack={setReferencePack} onVisible={setReferenceVisible} total={referenceResult.total} shown={referenceResult.stations.length}/>
           </details>
             <div className="map-surface">
@@ -2499,6 +2506,7 @@ export function App() {
                   <rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} fill="url(#sample-scene)" />
                   <rect width={MAP_VIEWBOX.width} height={MAP_VIEWBOX.height} fill="url(#sample-grid)" />
                 </g>}
+              <RetainedRoadLayer view={retainedRoad.value} camera={camera}/>
               <ReferenceGraphLayer edges={graphDisplay.edges} camera={camera} tramRoadGuideIds={tramRoadGuideIds}/>
               {automaticRailSelected&&automaticRail.view.chains.map(chain=><path key={chain.id} d={drawPath(chain.points)} className="automatic-rail-reference" stroke="#777" strokeWidth="1.5" strokeDasharray="4 4" fill="none" pointerEvents="none"/>)}
               {alignments.map((alignment, alignmentIndex) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>

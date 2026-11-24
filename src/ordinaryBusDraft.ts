@@ -109,8 +109,7 @@ function snapOrdinaryBusChoices(snapshot:RoadSnapshot|undefined,at:GeoPoint,came
 export function snapOrdinaryBusVertex(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number,previous?:BusAnchor,rectangle=false):BusAnchor{
  return snapOrdinaryBusChoices(snapshot,at,camera,scale,previous,rectangle)[0];
 }
-/** Up to two distinct alternatives from the same confirmed rectangle. A
- * placed start cannot change the primary tile key of the existing proof. */
+/** Up to two distinct alternatives from the same confirmed rectangle. */
 export function snapOrdinaryBusFreeEnd(snapshot:RoadSnapshot|undefined,at:GeoPoint,camera:Camera,scale:number,fixed:readonly BusAnchor[]=[]):BusAnchor[]{
  return snapOrdinaryBusChoices(snapshot,at,camera,scale,undefined,true,fixed);
 }
@@ -278,12 +277,14 @@ export function restoreOrdinaryBusControls(path:OrdinaryBusPath,result:OrdinaryB
 }
 
 
-/** A hover can use only the immutable evidence already prepared by a click.
- * It cannot widen the tile scope, touch the provider, or fabricate a leg. */
-export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly BusWaypoint[]):OrdinaryBusQuery|undefined{
+/** A hover or a refused free endpoint may reuse immutable click evidence.
+ * An alternate start can change the address roles, never the tile scope. */
+export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly BusWaypoint[],allowStartRebind=false):OrdinaryBusQuery|undefined{
  if(controls.length<2||controls.length>32)return;
  const [first,last]=[controls[0].anchor,controls.at(-1)!.anchor],previous=prior.path;
- if(territory(first.tile)!==previous.tileKey||first.tile.rawSha256!==previous.tileRawSha256||
+ const startKey=territory(first.tile);
+ const newStart=startKey!==previous.tileKey;
+ if((newStart&&(!allowStartRebind||previous.rule!=='ofm_ground_bus_rectangle_z14_v2'))||
    (previous.pattern==='closedOneWay'?!sameRawAnchor(first,last):samePlace(first.point,last.point))||controls.some((c,i)=>i>0&&samePlace(controls[i-1].anchor.point,c.anchor.point)))return;
  const proof=[previous,...(previous.rule==='ofm_ground_bus_rectangle_z14_v2'?previous.additionalTiles:[])];
  if(controls.some(c=>!proof.some(p=>p.tileKey===territory(c.anchor.tile)&&p.tileRawSha256===c.anchor.tile.rawSha256)))return;
@@ -294,7 +295,18 @@ export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly Bus
  const {via:_,...base}=previous;
  const via=controls.slice(1,-1).map(({id,anchor})=>({id,tileKey:territory(anchor.tile),vertex:anchor.raw}));
  const path:OrdinaryBusPath={...base,start:first.raw,end:last.raw,...(via.length?{via}:{})};
- if(path.rule==='ofm_ground_bus_rectangle_z14_v2')path.endTileKey=territory(last.tile);
+ if(path.rule==='ofm_ground_bus_rectangle_z14_v2'){
+  path.endTileKey=territory(last.tile);
+  if(newStart){
+   path.tileKey=startKey;path.tileRawSha256=first.tile.rawSha256;
+   path.additionalTiles=cells.flatMap(([x,y])=>{
+    const k=territory({...first.tile,x,y});
+    if(k===startKey)return [];
+    const tile=proof.find(p=>p.tileKey===k)!; // every cell was verified above
+    return [{tileKey:k,tileRawSha256:tile.tileRawSha256}];
+   });
+  }
+ }
  return {...prior,path};
 }
 

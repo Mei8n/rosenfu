@@ -584,6 +584,17 @@ impl EvidenceStore {
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_ref()))
     }
+    #[cfg(test)]
+    pub(super) fn cached_view_tiles_for_test(&self) -> Vec<(u32, u32)> {
+        self.cache
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|(key, _, _)| (key.x, key.y))
+            .collect()
+    }
+
     pub fn bindings(&self) -> impl Iterator<Item = &TileBinding> {
         self.state.bindings.values()
     }

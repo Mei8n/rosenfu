@@ -934,10 +934,10 @@ impl WorldEditor {
                 .add_road_snapshot(snapshot)
                 .map_err(|e| e.to_string())?;
         }
-        // Water compares against the snapshot after road staging, but before
-        // any candidate track/station changes. This copies just the draft, not
-        // a second editor or its active operation state.
-        let before = self.world.snapshot().clone();
+        // Water compares against the immutable snapshot after road staging,
+        // but before any candidate track/station changes. Subsequent edits
+        // replace the draft or go through copy-on-write.
+        let before = self.world.shared_snapshot();
         let validation_error = self
             .prepare_construction_candidate(&before, alignments, stations)
             .err();
@@ -1541,18 +1541,17 @@ impl WorldEditor {
             if let Some(indices) = anchor_indices {
                 candidate.set_anchor_indices(alignment_id, indices)?;
             }
-            {
+            // All new-alignment constructors above already encode default
+            // infrastructure as an empty vector. Avoid cloning and validating
+            // the entire world just to write the same value.
+            if alignment.infrastructure != Default::default() {
                 let mut draft = candidate.world.snapshot().clone();
                 let built = draft
                     .alignments
                     .iter_mut()
                     .find(|item| item.id == alignment_id)
                     .ok_or("線路がありません。")?;
-                built.infrastructure = if alignment.infrastructure == Default::default() {
-                    Vec::new()
-                } else {
-                    vec![alignment.infrastructure; built.section_count()]
-                };
+                built.infrastructure = vec![alignment.infrastructure; built.section_count()];
                 candidate.world.replace(draft).map_err(|e| e.to_string())?;
             }
             if let Some(speed) = alignment.design_speed_kmh {
@@ -5072,7 +5071,16 @@ mod tests {
             track_count: 4,
             level: InfrastructureLevel::Elevated3,
         };
-        let result = editor.build_plan(vec![path]).unwrap();
+        let mut default_path = planned_path(0.05);
+        default_path.anchor_indices = Some(vec![0, 1]);
+        let result = editor.build_plan(vec![path, default_path]).unwrap();
+        assert_eq!(result.alignments.len(), 2);
+        assert!(result.alignments[1].infrastructure.is_empty());
+        assert_eq!(result.alignments[1].anchor_indices, Some(vec![0, 1]));
+        assert_eq!(
+            result.alignments[1].section_infrastructure(0),
+            Some(SectionInfrastructure::default())
+        );
         assert_eq!(
             result.alignments[0]
                 .section_infrastructure(0)
@@ -6740,6 +6748,51 @@ mod road_snapshot_transaction_tests {
         let after = editor.world_edit_history();
         assert_eq!(after.revision, history.revision + 1);
         assert_eq!((after.undo_depth, after.redo_depth), (0, 0));
+    }
+
+    #[test]
+    fn compact_construction_keeps_captured_scope_after_live_alignment_deletion() {
+        let mut editor = WorldEditor::new();
+        let original = editor
+            .build_construction_plan(vec![plan()], vec![])
+            .unwrap()
+            .alignments
+            .remove(0);
+        let captured = editor.construction_validation_snapshot();
+
+        let make_batch = || {
+            let mut independent = plan();
+            independent.points = vec![point(-0.01, 0.01), point(0.01, 0.01)];
+            let mut extension = plan();
+            extension.points = vec![*original.points.last().unwrap(), point(0.02, 0.0)];
+            extension.extension = Some(PlannedAlignmentExtension {
+                alignment_id: original.id,
+                endpoint: rosenfu_core::world::AlignmentEndpoint::End,
+            });
+            vec![independent, extension]
+        };
+
+        let before = editor.delete_alignment(original.id).unwrap();
+        let history = editor.world_edit_history();
+        // The already dispatched validator sees the old alignment, without
+        // publishing any part of its batch to the now-changed live editor.
+        let old_verdict = captured
+            .validate_construction_placement(make_batch(), vec![], vec![roads()])
+            .unwrap();
+        assert_eq!(old_verdict.validation_error, None);
+        let fresh_verdict = editor
+            .construction_validation_snapshot()
+            .validate_construction_placement(make_batch(), vec![], vec![roads()])
+            .unwrap();
+        let commit_error = editor
+            .build_construction_plan_with_roads(make_batch(), vec![], vec![roads()])
+            .unwrap_err();
+        assert_eq!(fresh_verdict.validation_error, Some(commit_error));
+        assert_eq!(editor.snapshot(), before);
+        let after = editor.world_edit_history();
+        assert_eq!(after.revision, history.revision);
+        assert_eq!(after.undo_depth, history.undo_depth);
+        assert_eq!(after.redo_depth, history.redo_depth);
     }
 
     /// To isolate RSS, select one mode and one size and run the test binary in

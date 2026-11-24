@@ -1,7 +1,13 @@
 import {describe,it,expect,vi} from 'vitest';
 import {PbfWriter} from 'pbf';
+import {snapOrdinaryBusVertex} from './ordinaryBusDraft';
 import {decodeOpenFreeMapRoadTile,parseRoadTileTemplate,roadTileBounds,createOpenFreeMapRoadRepository,roadFragmentIntersects,OFM_EVIDENCE_RULE} from './openFreeMapRoadData';
 function fixture(cls='service',brunnel?:string,subclass?:string,extra:Record<string,string|number|boolean>={}){const attrs={class:cls,...(brunnel?{brunnel}:{}),...(subclass?{subclass}:{}),...extra};const p=new PbfWriter();p.writeMessage(3,(_,l)=>{l.writeStringField(1,'transportation');l.writeVarintField(15,2);l.writeVarintField(5,4096);for(const [k,v]of Object.entries(attrs)){l.writeStringField(3,k);l.writeMessage(4,(_,w)=>typeof v==='number'?w.writeDoubleField(3,v):typeof v==='boolean'?w.writeBooleanField(7,v):w.writeStringField(1,v),null);}l.writeMessage(2,(_,f)=>{f.writeVarintField(1,99);f.writePackedVarint(2,Object.keys(attrs).flatMap((_,i)=>[i,i]));f.writeVarintField(3,2);f.writePackedVarint(4,[9,200,200,10,200,0]);},null);},null);return p.finish();}
+function mixedFordTile(){const p=new PbfWriter();p.writeMessage(3,(_,l)=>{l.writeStringField(1,'transportation');l.writeVarintField(15,2);l.writeVarintField(5,4096);
+  for(const k of ['class','brunnel'])l.writeStringField(3,k);
+  for(const v of ['minor','ford'])l.writeMessage(4,(_,p)=>p.writeStringField(1,v),null);
+  for(const [attrs,x] of [[[0,0,1,1],200],[[0,0],1600]] as const)l.writeMessage(2,(_,f)=>{f.writePackedVarint(2,[...attrs]);f.writeVarintField(3,2);f.writePackedVarint(4,[9,x,200,10,200,0]);},null);
+ },null);return p.finish();}
 function denseFixture(east:boolean){const p=new PbfWriter();p.writeMessage(3,(_,l)=>{l.writeStringField(1,'transportation');l.writeVarintField(15,2);l.writeVarintField(5,4096);l.writeStringField(3,'class');l.writeMessage(4,(_,v)=>v.writeStringField(1,'service'),null);for(let i=0;i<6000;i++)l.writeMessage(2,(_,f)=>{f.writePackedVarint(2,[0,0]);f.writeVarintField(3,2);f.writePackedVarint(4,i===5999?[9,(east?0:4090)*2,4000,10,40,0]:[9,200,200,10,200,0]);},null);},null);return p.finish();}
 
 const decode=(b:Uint8Array)=>decodeOpenFreeMapRoadTile(b,14552,6451,'20261101_080013_pt',1);
@@ -15,7 +21,27 @@ describe('OpenFreeMap road adapter',()=>{
  it('rejects nonfinite structures before exposing raw tile lines',async()=>{for(const attrs of ([{layer:'abc'},{layer:Infinity},{oneway:NaN},{oneway:Infinity}] as Record<string,string|number>[]))await expect(decode(fixture('service',undefined,undefined,attrs))).rejects.toThrow();});
  it('preserves raw one-way direction without inventing missing tags',async()=>{const s=await decode(fixture('service',undefined,undefined,{oneway:-1}));expect(s.tileLines[0].oneway).toBe(-1);expect(s.roads[0]).toHaveProperty('classification.oneway','-1');const unknown=await decode(fixture('service',undefined,undefined,{oneway:'reversible'}));expect(unknown.tileLines[0].oneway).toBe('reversible');});
  it('selects crossing and boundary-touch fragments without changing shape',()=>{const b={west:0,east:1,south:0,north:1};const p=(x:number,y:number)=>({longitude:x,latitude:y});expect(roadFragmentIntersects([p(-1,.5),p(2,.5)],b)).toBe(true);expect(roadFragmentIntersects([p(-1,0),p(2,0)],b)).toBe(true);expect(roadFragmentIntersects([p(-1,-.1),p(2,-.1)],b)).toBe(false);expect(roadFragmentIntersects([p(2,2),p(3,3)],b)).toBe(false);});
- it('rejects unknown brunnel instead of persisting ground-like null flags',async()=>{for(const brunnel of ['ford','unknown','yes','no'])await expect(decode(fixture('service',brunnel))).rejects.toThrow('地上とは判定できません');});
+ it('keeps a ford observable without losing ordinary roads in its tile or offering the ford as a bus anchor',async()=>{
+  const raw=mixedFordTile(),revision='20261101_080013_pt';
+  const fetcher=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?
+   JSON.stringify({maxzoom:14,tiles:[`https://tiles.openfreemap.org/planet/${revision}/{z}/{x}/{y}.pbf`]}):new Uint8Array(raw)));
+  const repo=createOpenFreeMapRoadRepository(fetcher as typeof fetch),b=roadTileBounds(14552,6451);
+  const s=await repo.load({west:b.west+.00005,east:b.east-.00005,south:b.south+.00005,north:b.north-.00005});
+  const [ford,ordinary]=s.tileLines;
+  expect([ford.brunnel,ordinary.brunnel]).toEqual(['ford',undefined]);
+  const snapshot=s.tileSnapshots[0],fordObservation=snapshot.roads.find(road=>road.id===ford.id)!;
+  expect(fordObservation).toMatchObject({bridge:'ford',tunnel:null});
+  expect(snapshot.bundle.roadWays![ford.id].structureUnsupported).toBe(true);
+  expect(snapshot.bundle.graph.edges.find(edge=>edge.osmWayId===ford.id)).toMatchObject({bridge:null,tunnel:null});
+  const asPoint=([longitude,latitude]:[number,number])=>({longitude,latitude});
+  const camera={latitude:35.68,longitude:139.76,zoom:20,width:900,height:600};
+  expect(snapOrdinaryBusVertex(s,asPoint(ordinary.coordinates[0]),camera,1).raw.feature).toBe(1);
+  expect(()=>snapOrdinaryBusVertex(s,asPoint(ford.coordinates[0]),camera,1)).toThrow('道路上の点');
+  const evidence=await repo.readTileEvidenceBatch([{revision,z:14,x:14552,y:6451,rawSha256:snapshot.bundle.sourceSha256,decoderRule:OFM_EVIDENCE_RULE}]);
+  expect(evidence.rawTiles[0].bytes).toEqual(raw);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+ });
+ it('rejects unknown brunnel instead of persisting ground-like null flags',async()=>{for(const brunnel of ['unknown','yes','no'])await expect(decode(fixture('service',brunnel))).rejects.toThrow('地上とは判定できません');});
  it('rejects present invalid tag types rather than treating them as missing',async()=>{for(const key of ['brunnel','layer','access','oneway','subclass'])await expect(decode(fixture('service',undefined,undefined,{[key]:true}))).rejects.toThrow('型が不正');await expect(decode(fixture('service',undefined,undefined,{brunnel:0}))).rejects.toThrow('型が不正');});
  it('rejects arbitrary provider URLs',()=>{expect(()=>parseRoadTileTemplate({tiles:['https://evil.example/{z}/{x}/{y}.pbf'],maxzoom:14})).toThrow();});
  it('loads/coalesces a tile and retains per-tile source identity',async()=>{const fetcher=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?JSON.stringify({tiles:['https://tiles.openfreemap.org/planet/20261101_080013_pt/{z}/{x}/{y}.pbf'],maxzoom:14}):new Uint8Array(fixture()),{status:200}));const r=createOpenFreeMapRoadRepository(fetcher as typeof fetch);const b=roadTileBounds(14552,6451);const q={west:b.west+.001,east:b.east-.001,south:b.south+.001,north:b.north-.001};const [a,c]=await Promise.all([r.load(q),r.load(q)]);expect(a.tileSnapshots).toHaveLength(1);expect(c.bundle.sourceSha256).toBe(a.bundle.sourceSha256);expect(fetcher).toHaveBeenCalledTimes(2);});

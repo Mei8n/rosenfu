@@ -5,7 +5,7 @@ import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
 import {cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareOrdinaryBusQuery,restoreOrdinaryBusControls,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
-import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
+import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type BusControlEnd,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
 type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean};
 type DraftSpec={id:string;respectOneway:boolean;pattern?:OrdinaryBusPattern;gradePolicy?:OrdinaryBusGradePolicy;savedPath?:OrdinaryBusQuery['path']};
@@ -197,7 +197,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
       if(controls.some(c=>c.anchor.point.latitude===anchor.point.latitude&&c.anchor.point.longitude===anchor.point.longitude))continue;
       const moved={id:freeEnd.id,anchor};
       const candidate=controls.map(c=>c.id===moved.id?moved:c);
-      const nextQuery=cachedBusHoverQuery(query,candidate);
+      const nextQuery=cachedBusHoverQuery(query,candidate,freeIndex===0);
       if(!nextQuery)continue;
       const alt=await queryNative(nextQuery,current);
       if(!current()||!alt)break;
@@ -242,13 +242,23 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
   try{
    if(!handleAt&&!latest.current.input.snapshot)throw Error(latest.current.input.loading?'道路を読み込み中です。':'道路を確認できませんでした。地図を拡大して選び直してください。');
    const snapshot=latest.current.input.snapshot,free=extend.current&&controls.length>0&&!moveId&&!afterId&&!handleAt;
-   const [anchor,...alternatives]=handleAt?[handleAt.anchor]:free?snapOrdinaryBusFreeEnd(snapshot,at,camera,scale,body.active==='end'?controls.map(c=>c.anchor):[]):
+   const [anchor,...alternatives]=handleAt?[handleAt.anchor]:free?snapOrdinaryBusFreeEnd(snapshot,at,camera,scale,controls.map(c=>c.anchor)):
     [snapOrdinaryBusVertex(snapshot,at,camera,scale,undefined,true)];
    if(moveId){handle(moveBusControl(now,moveId,anchor));return;}
    if(afterId){handle(insertBusControl(now,afterId,{id:`b-${crypto.randomUUID()}`,anchor}));return;}
    const picked=handleAt??{id:`b-${crypto.randomUUID()}`,anchor};
    handle(clickBusControl(now,picked,detail),alternatives.length?{id:picked.id,alternatives}:undefined);
   }catch(e){setError(errorText(e));}
+ }
+ function canShorten(now=frameRef.current){
+  return !!spec.current?.savedPath&&!!now?.frame.verified&&!now.frame.body.closed&&
+   now.frame.body.controls.length>2&&!now.check&&!now.refusal&&!now.finish&&!extend.current;
+ }
+ function shorten(end:BusControlEnd){
+  const now=frameRef.current;
+  if(!canEdit()||!now||!canShorten(now))return;
+  const endpoint=end==='start'?now.frame.body.controls[0]:now.frame.body.controls.at(-1)!;
+  handle(removeBusControl(now,endpoint.id));
  }
  function history(direction:'undo'|'redo'){
   const now=frameRef.current;if(!canEdit()||!now)return;
@@ -266,7 +276,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
  // Do not expose previous valid preview as savable while a new pick is under review.
  const controls=(frame?.check?.body??frame?.frame.body)?.controls??[];
  const active=(frame?.check?.body??frame?.frame.body)?.active??'end';
- return {frame,controls,active,start,reset,point,confirm,history,closed:!!(frame?.check?.body??frame?.frame.body)?.closed,committing,offerHover,clearHover,hoverPreview,exitExtension,extending:extension,
+ return {frame,controls,active,start,reset,point,confirm,history,shorten,canShorten:canShorten(frame),closed:!!(frame?.check?.body??frame?.frame.body)?.closed,committing,offerHover,clearHover,hoverPreview,exitExtension,extending:extension,
   error:error||frame?.refusal?.reason||'',failedLeg:frame?.refusal?.leg,checking:rehydrating||!!frame?.check,
   ready:!!frame?.frame.verified&&!frame.check&&!frame.refusal&&!frame.finish,
   preview:frame?.check||frame?.refusal&&!spec.current?.savedPath?undefined:frame?.frame.verified?.preview};

@@ -89,6 +89,12 @@ pub(super) fn inputs(
 }
 
 impl WorldEditor {
+    /// Cheap immutable archive handle for a display-only worker. No world
+    /// snapshot or edit history is copied and no raw bytes cross IPC.
+    pub fn retained_road_archive(&self) -> rosenfu_core::ofm_evidence::EvidenceStore {
+        self.world.snapshot().runtime_road_evidence.clone()
+    }
+
     /// Park a complete draft and its raw evidence together. Failure leaves world,
     /// IDs, deletion Undo, save destination and previously parked drafts unchanged.
     pub fn stage_ofm_construction_plan(
@@ -382,6 +388,32 @@ mod tests {
         let reopened = rosenfu_storage::decode(&saved).unwrap();
         assert_eq!(reopened.snapshot(), &after);
         assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), saved);
+        // The real adjacent authoring save is readable by both inspection
+        // paths. Neither the manifest nor viewport grants new path authority.
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("adjacent-tram.rosenfu");
+        editor.save(&file).unwrap();
+        let on_disk = std::fs::read(&file).unwrap();
+        let x = tiles[0]["x"].as_u64().unwrap() as u32;
+        let y = tiles[0]["y"].as_u64().unwrap() as u32;
+        let coverage = rosenfu_storage::read_road_coverage(
+            &file,
+            rosenfu_storage::TileBounds::new(x, y, x, y).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(coverage.schema_version, 31);
+        assert_eq!(coverage.total_declared_tiles, 2);
+        assert_eq!(coverage.matching_tiles.len(), 1);
+        let mut loaded = WorldEditor::new();
+        loaded.load(&file).unwrap();
+        let view = rosenfu_core::ofm_evidence::retained_road_view(
+            &loaded.retained_road_archive(),
+            [x, y, x, y],
+        )
+        .unwrap();
+        assert_eq!((view.requested_tiles, view.retained_tiles), (1, 1));
+        assert!(!view.segments.is_empty());
+        assert_eq!(std::fs::read(&file).unwrap(), on_disk);
         for former in [26, 27, 29, 30] {
             archive["schema_version"] = former.into();
             assert!(matches!(
@@ -971,6 +1003,44 @@ mod tests {
         let history = editor.world_edit_history();
         let token = editor.ofm_world_token().unwrap();
         let (out, cached) = setup(no_return);
+        // Both clicked vertices are real, but the route cannot drive the
+        // one-way edge backwards. A normal two-click edit must expose the
+        // actual unreachable leg so the frontend can try an observed free-end
+        // alternative. This does not make absent vertices or bytes routable.
+        let mut reversed = out.clone();
+        std::mem::swap(&mut reversed.start, &mut reversed.end);
+        let refused = editor
+            .preview_gameplay_ofm_bus(
+                &token,
+                "B2".into(),
+                "往復".into(),
+                reversed.clone(),
+                vec![setup(no_return).1],
+            )
+            .unwrap();
+        assert_eq!(refused.failed_leg_index, Some(0));
+        assert!(refused.points.is_empty() && refused.length_m == 0.0);
+        assert!(refused.return_path.is_none() && refused.return_unavailable_reason.is_none());
+        assert!(editor
+            .put_gameplay_ofm_bus(
+                &token,
+                "B2".into(),
+                "往復".into(),
+                reversed.clone(),
+                vec![setup(no_return).1],
+            )
+            .is_err());
+        let mut absent = reversed.clone();
+        absent.start.vertex = 500;
+        for (candidate, evidence) in [(reversed, vec![]), (absent, vec![setup(no_return).1])] {
+            assert!(editor
+                .preview_gameplay_ofm_bus(&token, "B2".into(), "往復".into(), candidate, evidence)
+                .is_err());
+        }
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.world_edit_history().revision, history.revision);
+        assert_eq!(editor.ofm_world_token().unwrap(), token);
+
         let preview = editor
             .preview_gameplay_ofm_bus(
                 &token,

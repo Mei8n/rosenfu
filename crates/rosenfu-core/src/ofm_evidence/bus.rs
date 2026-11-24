@@ -537,7 +537,7 @@ pub fn find_gameplay_bus_path(
         interior_stops: vec![],
         via: vec![],
     };
-    solve_gameplay_bus_scope(store, &request)
+    untyped_unreachable(solve_gameplay_bus_scope(store, &request))
 }
 
 #[derive(Debug)]
@@ -1073,7 +1073,7 @@ pub(super) fn solve_gameplay_bus_graph(
     graph: &GameplayBusGraph,
     query: &BusPathBinding,
 ) -> Result<Option<BusPath>> {
-    let failed = |i| {
+    let missing_anchor = |i| {
         if query.via.is_empty() {
             Ok(None)
         } else {
@@ -1081,19 +1081,19 @@ pub(super) fn solve_gameplay_bus_graph(
         }
     };
     let Some(source) = graph.node_at(&query.tile_key, query.start) else {
-        return failed(0);
+        return missing_anchor(0);
     };
     let end_key = query.end_tile_key.as_deref().unwrap_or(&query.tile_key);
     let mut nodes = Vec::with_capacity(query.via.len() + 2);
     nodes.push(source);
     for (i, via) in query.via.iter().enumerate() {
         let Some(node) = graph.node_at(&via.tile_key, via.vertex) else {
-            return failed(i);
+            return missing_anchor(i);
         };
         nodes.push(node);
     }
     let Some(target) = graph.node_at(end_key, query.end) else {
-        return failed(query.via.len());
+        return missing_anchor(query.via.len());
     };
     if query.pattern == Some(BusPattern::ClosedOneWay) && (source != target || query.via.is_empty())
     {
@@ -1109,8 +1109,12 @@ pub(super) fn solve_gameplay_bus_graph(
         MAX_MULTI_RELAXATIONS
     };
     for (i, leg) in nodes.windows(2).enumerate() {
+        if leg[0] == leg[1] {
+            return missing_anchor(i);
+        }
         if !scratch.leg(graph, leg[0], leg[1], &mut budget, &mut edges)? {
-            return failed(i);
+            // Report a genuine disconnected graph even without waypoints.
+            return Err(Error::NoBusLeg(i));
         }
         if !query.via.is_empty() && edges.len() > MAX_MULTI_ATOMS {
             return Err(Error::Limit);
@@ -1285,7 +1289,7 @@ pub fn reconstruct_authored_tram_guide(
     };
     let graph = build_observed_road_graph(&scope, &query, true)?;
     if proposed.start_fraction_q.is_none() && proposed.end_fraction_q.is_none() {
-        return Ok(solve_gameplay_bus_graph(&graph, &query)?.map(|p| p.points));
+        return Ok(untyped_unreachable(solve_gameplay_bus_graph(&graph, &query))?.map(|p| p.points));
     }
     let anchor: fn(&GameplayBusGraph, &str, BusVertex, Option<u32>) -> Option<TramAnchor> =
         if proposed.adjacent_end.is_some() {
@@ -1469,8 +1473,12 @@ pub fn reconstruct_gameplay_bus_path(
     store: &EvidenceStore,
     proposed: &BusPathBinding,
 ) -> Result<Option<BusPath>> {
-    match store.gameplay_bus_path(proposed) {
+    untyped_unreachable(store.gameplay_bus_path(proposed)).map(|path| path.as_deref().cloned())
+}
+
+fn untyped_unreachable<T>(result: Result<Option<T>>) -> Result<Option<T>> {
+    match result {
         Err(Error::NoBusLeg(_)) => Ok(None),
-        result => result.map(|path| path.as_deref().cloned()),
+        other => other,
     }
 }

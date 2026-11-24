@@ -437,3 +437,38 @@ test('time-band defaults follow the selected service and AM/PM overrides remain 
   boundariesMinutes:[0,360,600,960,1200,1440],
  }));
 });
+
+test('time-band fixed OD can board an intermediate stop, only toward later stops',async()=>{
+ const conditions={configurationToken:'outbound',serviceId:'12',canApply:false,activeElsewhere:false,
+  authored:{baseMinutes:10,overrides:{earlyMorning:null,morningRush:6,midday:null,eveningRush:null,lateNight:null},
+   boundariesMinutes:[0,360,600,960,1200,1440],startMs:60_000,endMs:86_460_000},
+  departureCount:144,origin:{id:'101',name:'起点駅'},destinations:[{id:'102',name:'中間駅'},{id:'103',name:'終点駅'}]};
+ const result={status:'scheduled',first_departure_ms:185_250,scheduled_departures:1,
+  assignment:{rail:[{trips:75,time:{wait_seconds:65.25,ride_seconds:95.5}}],alternative_trips:25,unserved_trips:0,unresolved_trips:0}};
+ const ipc=vi.mocked(invoke);
+ ipc.mockImplementation(async command=>command==='standard_schedule_status'?conditions:
+  command==='preview_standard_schedule_od'?result:
+  {...snapshot,configuration_token:'outbound',standard_schedule_active:true,services:[config]});
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}>
+  <ServiceOperations serviceId="12" enabled standardEnabled/>
+ </OperationProvider>);
+ const boarding=(await screen.findByLabelText('乗車駅')) as HTMLSelectElement;
+ const arrival=screen.getByLabelText('到着駅') as HTMLSelectElement;
+ const submit=screen.getByRole('button',{name:'この時間の固定ODを試算'});
+ expect(Array.from(boarding.options,option=>option.value)).toEqual(['101','102']);
+ expect(arrival.value).toBe('102');
+ fireEvent.change(boarding,{target:{value:'102'}});
+ expect(Array.from(arrival.options,option=>option.value)).toEqual(['103']);
+ expect(arrival.value).toBe('103');
+ expect(ipc.mock.calls.some(([command])=>command==='preview_standard_schedule_od')).toBe(false);
+ fireEvent.change(screen.getByLabelText('起点のダイヤ適用開始から何分後に乗車駅で待つか'),{target:{value:'1'}});
+ fireEvent.click(submit);
+ expect(await screen.findByText('鉄道 75.0人、待ち 65秒、乗車 96秒')).toBeTruthy();
+ expect(ipc).toHaveBeenCalledWith('preview_standard_schedule_od',{service:'12',revision:'outbound',
+  query:{origin:'102',destination:'103',trips:100,alternativeSeconds:null,startMs:120_000,endMs:3_720_000}});
+ fireEvent.change(boarding,{target:{value:'101'}});
+ expect(screen.queryByText(/鉄道 75\.0人/u)).toBeNull();
+ expect(Array.from(arrival.options,option=>option.value)).toEqual(['102','103']);
+ expect(arrival.value).toBe('103');
+ expect(ipc.mock.calls.filter(([command])=>command==='preview_standard_schedule_od')).toHaveLength(1);
+});

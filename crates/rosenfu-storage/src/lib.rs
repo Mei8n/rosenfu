@@ -1,5 +1,7 @@
 //! Provisional alpha JSON storage. One authoritative writer per save path is required.
 mod evidence;
+mod road_coverage;
+pub use road_coverage::{read_road_coverage, RoadCoverage, TileBounds};
 #[cfg(feature = "periodic-world-qa")]
 pub mod periodic_qa;
 use evidence::{BorrowedEvidenceEnvelope, EvidenceEnvelope};

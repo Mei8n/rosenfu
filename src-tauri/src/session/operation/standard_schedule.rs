@@ -219,6 +219,8 @@ impl WorldEditor {
                 query.start_ms..query.end_ms,
                 &ChoiceWeights::default(),
             )
-            .map_err(|_| "起点・往路の停車駅と、最大24時間の試算範囲を確認してください。".into())
+            .map_err(|_| {
+                "往路の乗車駅・到着駅と、最大24時間の試算範囲を確認してください。".into()
+            })
     }
 }

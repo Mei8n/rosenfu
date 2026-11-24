@@ -121,3 +121,33 @@ digests, not raw tiles or coordinates. A mismatch emits no receipt. This
 command does not write either file, fetch tiles, change any game state, or
 verify real-world coverage, legal access, or source licensing. Verification
 of a real capture remains separate from the synthetic acceptance above.
+
+## Selective manifest inspection from disk
+
+For an existing save, the read-only CLI can report the retained OpenFreeMap
+tile declarations inside an inclusive slippy-map z14 rectangle. The example
+selects two x and two y coordinates in the Tokyo synthetic fixture:
+
+```sh
+cargo run --locked --offline -p rosenfu-cli -- world road-coverage \
+  WORLD.rosenfu 14552 6451 14553 6452
+```
+
+It scans the current bounded JSON file but does not deserialize the complete
+world, decode evidence blobs, construct a region grid proportional to the
+rectangle, or fetch data. Matching entries are ordered by x/y. The response
+is explicitly `manifest_only_not_validated`: a declared tile is not proof of
+valid bytes, a missing tile does not rule out roads or other geography, and
+the result never authorizes construction. Full world loading and raw proof
+validation remain unchanged; this is not an alternative loader or a new
+save format. It can inspect the shared manifest in known schemas 26–32
+without enabling the operation or street-tram capabilities of those saves.
+It does not page partial worlds for gameplay.
+
+Run the actual CLI integration checks with
+`cargo test --locked --offline -p rosenfu-cli --test road_coverage`. To compare
+resource use, run `world inspect` and `world road-coverage` from fresh Release
+processes on the same bounded multi-region fixture, under a peak-RSS tool.
+The operations are intentionally not semantically equivalent: the former
+validates the whole saved world. No nationwide memory or timing measurement
+is claimed here.
