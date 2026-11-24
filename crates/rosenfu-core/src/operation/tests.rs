@@ -76,6 +76,49 @@ fn frame_chunking_and_save_replay_are_deterministic() {
     assert_eq!(restored.trains, one.trains);
 }
 #[test]
+fn staggered_and_simultaneous_movements_preserve_arrival_order() {
+    let specs = (0..128)
+        .rev()
+        .map(|index| {
+            let id = format!("{index:03}");
+            let mut spec = service(&id, &id);
+            let departure = index / 4 * 100;
+            spec.timetable.first_departure_ms = departure;
+            spec.timetable.last_departure_ms = departure;
+            spec
+        })
+        .collect();
+    let mut whole = OperationRuntime::new(specs).unwrap();
+    whole.advance_to(3_100, 100).unwrap();
+    assert_eq!(whole.trains().count(), 128);
+    let mut budgeted = OperationRuntime::restore(whole.save()).unwrap();
+
+    let result = whole.advance_to(100_000, 1_000).unwrap();
+    assert!(result.reached_target);
+    let arrivals = result.arrivals;
+    assert_eq!(arrivals.len(), 128);
+    for (index, arrival) in arrivals.iter().enumerate() {
+        let departure = (index / 4 * 100) as u64;
+        assert_eq!(arrival.train.service_id, format!("{index:03}"));
+        assert_eq!(arrival.train.scheduled_ms, departure);
+        assert_eq!(arrival.at_ms, departure + 20_000);
+        assert_eq!(arrival.delay_ms, 0);
+    }
+
+    let mut actual = Vec::new();
+    for _ in 0..128 {
+        let step = budgeted.advance_to(100_000, 1).unwrap();
+        actual.extend(step.arrivals);
+        if step.reached_target {
+            break;
+        }
+    }
+    assert_eq!(actual, arrivals);
+    assert_eq!(budgeted.save(), whole.save());
+    assert!(whole.occupied.is_empty());
+}
+
+#[test]
 fn pause_speed_and_backward_time() {
     let mut r = OperationRuntime::new(vec![service("1", "a")]).unwrap();
     assert_eq!(r.wall_target(1000), Ok(0));
