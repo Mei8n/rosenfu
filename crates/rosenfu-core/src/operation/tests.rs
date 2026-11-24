@@ -119,6 +119,28 @@ fn staggered_and_simultaneous_movements_preserve_arrival_order() {
 }
 
 #[test]
+fn marker_candidate_budget_for_buses_excludes_unrelated_services() {
+    let ids: Vec<_> = (0..128)
+        .map(|index| format!("{index:03}"))
+        .chain(["bus:one".into(), "bus:two".into(), "rail:future".into()])
+        .collect();
+    let mut runtime =
+        OperationRuntime::new(ids.iter().map(|id| service(id, id)).collect()).unwrap();
+    runtime.advance_to(0, 1).unwrap();
+    assert_eq!(runtime.trains().count(), ids.len());
+    assert!(runtime
+        .trains()
+        .take(128)
+        .all(|train| !train.key.service_id.starts_with("bus:")));
+    let buses: Vec<_> = runtime
+        .trains_with_service_prefix("bus:")
+        .take(128)
+        .map(|train| train.key.service_id.as_str())
+        .collect();
+    assert_eq!(buses, ["bus:one", "bus:two"]);
+}
+
+#[test]
 fn pause_speed_and_backward_time() {
     let mut r = OperationRuntime::new(vec![service("1", "a")]).unwrap();
     assert_eq!(r.wall_target(1000), Ok(0));

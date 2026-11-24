@@ -929,12 +929,14 @@ fn save_world(
     app: tauri::AppHandle,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
     view_state: Option<rosenfu_core::world::ViewState>,
+    slot_id: Option<String>,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<session::ManualSaveResult, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .save_active_slot(&save_root(&app)?, construction_plans, view_state)
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    if let Some(slot_id) = slot_id {
+        editor.require_active_slot(&slot_id)?;
+    }
+    editor.save_active_slot(&save_root(&app)?, construction_plans, view_state)
 }
 fn main() {
     let mut editor = WorldEditor::new();

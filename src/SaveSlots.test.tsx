@@ -2,15 +2,15 @@
 import React from 'react';
 import {settledMapClick} from './testMapClick';
 import {afterEach,expect,test,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen,within,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,within,waitFor} from '@testing-library/react';
 import {invoke,isTauri} from '@tauri-apps/api/core';
 import {App} from './App';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:vi.fn()}));
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 const world={next_id:'3',players:[{id:'1',name:'Player'}],companies:[{id:'2',owner:'1',name:'現在会社'}],stations:[],routes:[],services:[],route_paths:[],service_paths:[]};
 const alignedWorld={...world,alignments:[{id:'50',owner:'2',name:'試験線',points:[{latitude:35.67504,longitude:139.72},{latitude:35.67504,longitude:139.78}]}],station_placements:[]};
-async function setup(withAlignment=false){
- const state={active:'one' as string|null,failLoad:false,failSave:false};
+async function setup(withAlignment=false,active:string|null='one'){
+ const state={active,failLoad:false,failSave:false};
  vi.mocked(isTauri).mockReturnValue(true);
  vi.mocked(invoke).mockImplementation(async(command,args)=>{
   if(command==='engine_info')return {name:'Rosenfu',version:'slots-test'};
@@ -22,7 +22,7 @@ async function setup(withAlignment=false){
   if(command==='save_world_as'){if(state.failSave)throw Error('保存失敗');state.active='copy';return {saved:true};}
   if(command==='save_world'){state.active='first-save';return {saved:true};}
   throw Error(command);
- });render(<App/>);await screen.findByText(/slots-test/);fireEvent.click(screen.getByRole('tab',{name:'セーブデータ'}));await screen.findByRole('button',{name:'第一ワールド（現在）'});return state;
+ });render(<App/>);await screen.findByText(/slots-test/);fireEvent.click(screen.getByRole('tab',{name:'セーブデータ'}));await screen.findByRole('button',{name:active?'第一ワールド（現在）':'第一ワールド'});return state;
 }
 test('slot load failure retains world and selection; incompatible slots cannot load',async()=>{
  const state=await setup();expect((screen.getByRole('button',{name:'旧保存'}) as HTMLButtonElement).disabled).toBe(true);
@@ -108,4 +108,64 @@ test('failed initial save detaches the old slot and leaves the new world editabl
  expect((document.getElementById('company-name') as HTMLInputElement).value).toBe('未保存の新世界');
  fireEvent.click(screen.getByRole('button',{name:'保存'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('save_world',expect.anything()));
+});
+
+
+test('Ctrl+S overwrites only the active slot once and announces success only after saving',async()=>{
+ await setup();
+ const original=vi.mocked(invoke).getMockImplementation()!;
+ let finish!:(result:{saved:boolean})=>void;
+ const saved=new Promise<{saved:boolean}>(resolve=>{finish=resolve;});
+ vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?saved:original(command,args));
+ fireEvent.click(screen.getByRole('tab',{name:'建設'}));
+ fireEvent.keyDown(window,{key:'s',ctrlKey:true,repeat:true});
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='save_world')).toHaveLength(0);
+ fireEvent.keyDown(window,{key:'s',ctrlKey:true});
+ fireEvent.keyDown(window,{key:'s',ctrlKey:true});
+ expect(vi.mocked(invoke).mock.calls.filter(([command])=>command==='save_world')).toEqual([
+  ['save_world',{slotId:'one',constructionPlans:expect.any(Object),viewState:expect.any(Object)}],
+ ]);
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(screen.queryByText(/ワールドと未着工計画を保存しました/)).toBeNull();
+ await act(async()=>finish({saved:true}));
+ expect(screen.getByText(/ワールドと未着工計画を保存しました/)).toBeTruthy();
+ expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('Ctrl+S has no fallback write or dialog when there is no current slot',async()=>{
+ await setup(false,null);
+ fireEvent.keyDown(window,{key:'s',ctrlKey:true});
+ expect(screen.getByText(/上書きするセーブがありません/)).toBeTruthy();
+ expect(screen.queryByRole('dialog')).toBeNull();
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>/^save_world/.test(command))).toBe(false);
+});
+
+test('Ctrl+S ignores input composition and save dialogs; a stale slot fails without success',async()=>{
+ await setup();
+ fireEvent.keyDown(window,{key:'s',ctrlKey:true,isComposing:true});
+ fireEvent.click(screen.getByRole('button',{name:'別のセーブとして保存'}));
+ fireEvent.keyDown(window,{key:'s',ctrlKey:true});
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>/^save_world/.test(command))).toBe(false);
+ const modal=within(screen.getByRole('dialog',{name:'別のセーブとして保存'}));
+ fireEvent.click(modal.getByRole('button',{name:'キャンセル'}));
+ const original=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation((command,args)=>command==='save_world'?Promise.reject(Error('ワールドが切り替わったため、以前の操作を中止しました。')):original(command,args));
+ fireEvent.keyDown(window,{key:'s',ctrlKey:true});
+ await screen.findByText(/ワールドが切り替わったため/);
+ expect(screen.queryByText(/ワールドと未着工計画を保存しました/)).toBeNull();
+ expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+test('Cmd+S shares the shortcut and does not bypass an unapplied draft',async()=>{
+ await setup();
+ const original=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation(async(command,args)=>command==='save_world'?{saved:true}:original(command,args));
+ const name=document.getElementById('company-name')!;
+ fireEvent.change(name,{target:{value:'未適用'}});
+ fireEvent.keyDown(window,{key:'s',metaKey:true});
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='save_world')).toBe(false);
+ fireEvent.change(name,{target:{value:'現在会社'}});
+ fireEvent.keyDown(window,{key:'s',metaKey:true});
+ await screen.findByText(/ワールドと未着工計画を保存しました/);
+ expect(invoke).toHaveBeenCalledWith('save_world',expect.objectContaining({slotId:'one'}));
 });

@@ -2023,6 +2023,19 @@ export function App() {
       if(event.key==="Escape"&&(roadMapFrom!==null||roadPlayerMapPick)&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();cancelRoadMapPick();return;}
       if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete||document.querySelector('[aria-label="系統削除の確認"]'))return;
+      if (status==="ready" && (event.ctrlKey||event.metaKey) && !event.altKey && !event.shiftKey &&
+          event.key.toLowerCase()==="s" && !event.defaultPrevented && !event.isComposing && event.keyCode!==229) {
+        event.preventDefault();
+        if (event.repeat||!enabled||busyRef.current||saveBlocked||pendingDelete||closeGuard.confirmClose||
+            gestureRef.current||anchorGesture.current||boxGesture.current||
+            document.querySelector('dialog[open], [role="dialog"]')) return;
+        if (!slotsReady||!activeSlotId) {
+          setNotice("上書きするセーブがありません。最初は「セーブデータ」から保存してください。");
+          return;
+        }
+        saveWorld(activeSlotId);
+        return;
+      }
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName))) return;
       if (mainTab==="construction" && enabled && !busyRef.current && !event.defaultPrevented &&
         !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.repeat &&
@@ -2251,10 +2264,11 @@ export function App() {
       setNotice("別のセーブとして保存しました。元の保存データは変更していません。");
     });
   }
-  function save() {
+  function save() { saveWorld(); }
+  function saveWorld(slotId?:string) {
     if (saveBlocked) return;
     void perform(async () => {
-      const result=await invoke<{saved:boolean;replacement_required?:{token:string;company_name:string}}>("save_world",{constructionPlans:persistedPlans,viewState:camera}).catch(error=>{if(detail(error).includes("save file changed since it was observed"))throw Error("保存先が読み込み時から変更されています。編集中の内容は保持しています。未保存のまま読込や終了をせず、保存先を確認してください。");throw error;});
+      const result=await invoke<{saved:boolean;replacement_required?:{token:string;company_name:string}}>("save_world",{constructionPlans:persistedPlans,viewState:camera,...(slotId===undefined?{}:{slotId})}).catch(error=>{if(detail(error).includes("save file changed since it was observed"))throw Error("保存先が読み込み時から変更されています。編集中の内容は保持しています。未保存のまま読込や終了をせず、保存先を確認してください。");throw error;});
       if(result.replacement_required)throw Error("既存セーブの置き換えは行いません。新しい保存先を確認してください。");
       if(!result.saved)throw Error("保存結果を確認できませんでした。編集中の内容は保持しています。");
       completeSave();setWorldEpoch(value=>value+1);await refreshSaveSlots();
@@ -2467,7 +2481,7 @@ export function App() {
       <div className="toolbar">
         <div><span className="eyebrow">CONSTRUCTION LAB</span><h2>線路を描き、街をつなぐ。</h2></div>
         <OperationClock key={worldEpoch}/>
-        <div className="save-controls"><span className="save-state" aria-live="polite">{unapplied&&<span>未適用の下書きあり</span>}{unapplied&&(dirty||plansDirty)&&"・"}{(dirty||plansDirty)&&<span>未保存の変更あり</span>}{!unapplied&&!dirty&&!plansDirty&&"ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={()=>activeSlotId?requestSlotAction({kind:"load",id:activeSlotId}):openSlotPicker()}>読込</button><button disabled={!enabled || saveBlocked} onClick={save}>保存</button></div>
+        <div className="save-controls"><span className="save-state" aria-live="polite">{unapplied&&<span>未適用の下書きあり</span>}{unapplied&&(dirty||plansDirty)&&"・"}{(dirty||plansDirty)&&<span>未保存の変更あり</span>}{!unapplied&&!dirty&&!plansDirty&&"ローカルワールド"}</span><button className="secondary" disabled={!enabled} onClick={()=>activeSlotId?requestSlotAction({kind:"load",id:activeSlotId}):openSlotPicker()}>読込</button><button disabled={!enabled || saveBlocked} aria-keyshortcuts="Control+S Meta+S" onClick={save}>保存</button></div>
       </div>
       {closeGuard.confirmClose && <UnsavedCloseDialog error={closeGuard.closeError} closing={closeGuard.closing} onCancel={closeGuard.cancelClose} onDiscard={()=>void closeGuard.discardAndClose()} />}
       {pendingGraphChange && <div className="banner load-confirm" role="alert"><p>参考線データを変更すると、現在の実在形状に沿う敷設・道路追従の未着工計画を破棄します。変更しますか。</p><button className="secondary" onClick={()=>setPendingGraphChange(null)}>計画に戻る</button><button disabled={!enabled} onClick={()=>{referenceCopy.clear();setGraphBundle(pendingGraphChange.bundle);setPendingGraphChange(null);}}>参考計画を破棄して変更</button></div>}
@@ -2770,7 +2784,7 @@ export function App() {
           <section id="workspace-panel-saves" role="tabpanel" aria-labelledby="workspace-tab-saves" hidden={mainTab!=="saves"}><h3>セーブデータ</h3>
             <SaveSlots onRename={renameSavedWorld} deletedSlots={deletedSaveSlots} onDelete={id=>moveSavedWorld(id,false)} onRestore={id=>moveSavedWorld(id,true)} onSave={save} saveDisabled={!enabled||saveBlocked} slots={saveSlots} current={activeSlotId} loading={slotsLoading} error={slotsError} busy={busy||status!=="ready"} canSave={!saveBlocked&&!companySetupRequired} onRefresh={()=>void refreshSaveSlots()} onLoad={id=>requestSlotAction({kind:"load",id})} onSaveAs={()=>{setSlotName(companyName);setSlotDialog("save-as");}} onNew={()=>{setSlotName("");setSlotDialog("new");}}/>
             {!activeSlotId&&<p>初回保存後に自動保存を開始します。</p>}
-            <h4>オートセーブ</h4><p>2分ごとに自動保存します。手動保存とは別に、ワールドと建設計画を保存します。</p><p role="status">{!slotsReady?"保存先の確認が完了するまで自動保存は停止しています。":activeSlotId?autosave.message:"初回保存待ち"}</p>{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
+            <h4>オートセーブ</h4><p>手動保存とは別に、ワールドと建設計画を保存します。</p><p role="status">{!slotsReady?"保存先の確認が完了するまで自動保存は停止しています。":activeSlotId?autosave.message:"初回保存待ち"}</p>{autosave.permission==="failed"&&<button className="secondary" disabled={status!=="ready"||busy} onClick={autosave.retryStatus}>自動保存データを再確認</button>}<button className="secondary" disabled={!enabled||!autosave.available} onClick={()=>requestLoad("auto")}>自動保存から復元</button></section>
           <div id="workspace-panel-construction" className="construction-content" role="tabpanel" aria-labelledby="workspace-tab-construction" hidden={mainTab!=="construction"}>
           <section className="shared-plan" aria-label="建設計画">
             <div className="plan-heading"><label htmlFor="construction-plan-name">計画</label><input id="construction-plan-name" autoComplete="off" aria-label="計画名（任意）" maxLength={80} placeholder={`計画 ${activePlanId}`} disabled={!enabled||referenceCopy.active} value={planName} onChange={event=>setPlanName(event.target.value)}/><button type="button" className="secondary" aria-label="別の線路計画を追加" title="新しい計画" disabled={!enabled||referenceCopy.active||!(currentPaths.some(path=>path.points.length>0)||currentStations.length>0)} onClick={newIndependentPlan}>＋</button></div>
