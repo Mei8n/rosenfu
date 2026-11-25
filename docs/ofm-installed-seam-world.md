@@ -137,14 +137,15 @@ Stock releases have no installed receipts, so the new controls stay hidden.
 
 
 When an installed receipt names exact tiles not yet retained, the bus panel
-can offer a separate **確認済み区間の道路を取得** action. It uses the normal
-road provider observation and byte cache, checks the provider revision and
-each raw SHA, and then submits only the original bytes and the installed
-catalog reference. Native code derives all missing bindings from that
-reference, refuses re-binding an existing tile, and replays the complete
-route before retaining the archive. Older/changed provider snapshots are
-not substituted; acquisition fails if its exact edition is no longer served
-by the normal workflow. No request is made in an empty-catalog build.
+can offer a separate **確認済み区間の道路を取得** action. It requests the
+registered OpenFreeMap revision and coordinates directly, without depending
+on current map metadata. It rejects redirects and checks the exact SHA-256:
+newer bytes returned for an older alias are not substituted. This path does
+not register new tiles in the ordinary road observation cache. Native code
+derives all missing bindings from the installed catalog reference, refuses
+re-binding an existing tile, and replays the complete route before retaining
+both tiles. Missing, changed or retired bytes therefore leave the world
+unchanged. No request is made in an empty-catalog build.
 
 ## Preparing an additional release candidate offline
 
@@ -186,5 +187,3 @@ candidate only, never overwrites a file, and does not update the built-in
 catalog. Keep real results and raw inputs out of source control. Promoting a
 reviewed receipt to the compile-time product catalog, licensing/provenance
 review, and supported official archive access remain separate release steps.
-
-確認済みカタログが要求するタイルの取得では、現在の地図の版に置き換えず、登録済みの版・座標と SHA-256 を使う。古い版の URL から新しい版のデータが返っても採用しない。取得失敗や内容不一致のときはタイルをワールドに保持せず、通常の道路観測にも使わない。

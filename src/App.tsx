@@ -123,6 +123,7 @@ import { invoke as nativeInvoke, isTauri } from "@tauri-apps/api/core";
 import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, requestedTileCoverage, viewBounds, mapViewport, vehicleViewport } from "./map";
 import { GsiBackground } from "./GsiBackground";
 import type { Camera } from "./map";
+import {trackBounds,trackViewport,intersectsTrackView} from "./trackViewport";
 import {RetainedRoadLayer,useRetainedRoadView} from "./RetainedRoadLayer";
 import type { TileStatus } from "./GsiBackground";
 import { provisionalCurveSpeed, snapStraight } from "./circularAlignment";
@@ -724,11 +725,12 @@ export function App() {
     return focusMarker(endpoint??nearestOnAlignment(points,target).point,endpoint?"anchor":"line",className);
   };
   const drawPath = (points: GeoPoint[]) => mapPath(points, camera);
-  // Hover changes the focused point, not these immutable built centerlines.
-  const alignmentHitPaths = useMemo(
-    () => alignments.map(alignment => mapPath(alignment.points, camera)),
-    [alignments, camera],
-  );
+  // Camera changes filter before building SVG paths; editing still owns all geometry.
+  const alignmentBounds=useMemo(()=>alignments.map(alignment=>({alignment,bounds:trackBounds(alignment.points)})),[alignments]);
+  const visibleAlignmentPaths=useMemo(()=>{
+    const view=trackViewport(camera,mapSize);
+    return alignmentBounds.filter(row=>intersectsTrackView(row.bounds,view)).map(({alignment})=>({alignment,hit:mapPath(alignment.points,camera)}));
+  },[alignmentBounds,camera,mapSize]);
   const drawInfrastructurePath=(points:GeoPoint[],value:SectionInfrastructure=DEFAULT_INFRASTRUCTURE)=>schematicTrackPaths(points.map(point=>project(point.latitude,point.longitude,camera)),value.track_count).join(" ");
   function changeHeight(level:SectionInfrastructure["level"]){
     if(!heightAnchor){setInfrastructure(value=>({...value,level}));return;}
@@ -2684,17 +2686,17 @@ export function App() {
               <RetainedRoadLayer view={retainedRoad.value} camera={camera}/>
               <ReferenceGraphLayer edges={graphDisplay.edges} camera={camera} tramRoadGuideIds={tramRoadGuideIds}/>
               {automaticRailSelected&&automaticRail.view.chains.map(chain=><path key={chain.id} d={drawPath(chain.points)} className="automatic-rail-reference" stroke="#777" strokeWidth="1.5" strokeDasharray="4 4" fill="none" pointerEvents="none"/>)}
-              {alignments.map((alignment, alignmentIndex) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>
+              {visibleAlignmentPaths.map(({alignment,hit}) => <g key={alignment.id} className="alignment route-base" data-alignment-id={alignment.id}>
                 {!(mainTab==="construction"&&activeTool==="inactive")&&<title>{alignment.name}</title>}
 
                 {displayInfrastructureSections(alignment).map((section,index)=><g key={index} data-track-count={section.infrastructure.track_count} data-structure-level={section.infrastructure.level} pointerEvents="none">
                   {section.infrastructure.level.startsWith('elevated')&&<path d={drawPath(section.points)} fill="none" stroke="#8095a7" strokeWidth={section.infrastructure.track_count*3+6} opacity=".4"/>}
                   {!trackRender.value&&schematicTrackPaths(section.points.map(point=>project(point.latitude,point.longitude,camera)),section.infrastructure.track_count).map((path,rail)=><TrackStroke key={rail} d={path} className={(referenceCopy.active?(manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id):alignmentId)===alignment.id?"alignment-path alignment-selected":"alignment-path"} style={{strokeDasharray:section.infrastructure.level.startsWith('underground')?'5 4':undefined,opacity:1}}/>)}
                 </g>)}
-                <path d={alignmentHitPaths[alignmentIndex]} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && activeTool!=="select" && !suppressSelectionClick.current && !roadMapPicking) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
+                <path d={hit} className="alignment-hit" onPointerEnter={event=>hoverBuilt(event,alignment.id)} onPointerMove={event=>hoverBuilt(event,alignment.id)} onPointerLeave={()=>setBuiltHover(null)} onClick={(event) => { if (mapMode === "move" && activeTool!=="select" && !suppressSelectionClick.current && !roadMapPicking) { event.stopPropagation(); setAlignmentId(alignment.id); setSelectedPlanPath(null);setTrackDeleteConfirm(false); } }} />
               </g>)}
               {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} mapSize={mapSize} lines={alignments} selectedId={referenceCopy.active?((manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id)??""):alignmentId}/>}
-              <g className="route-assignment-overlays" pointerEvents="none">{alignments.flatMap(alignment=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
+              <g className="route-assignment-overlays" pointerEvents="none">{visibleAlignmentPaths.flatMap(({alignment})=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
               {(mainTab==="routes"||mainTab==="services")&&serviceMapSections.map((section,index)=><g key={section.alignmentIds.join(":")+":"+index} className="service-map-section" data-alignment-id={section.alignmentIds[0]} data-service-count={section.bands.length} pointerEvents="none">
                 <title>{section.bands.map(b=>b.name).join(" / ")}</title>
                 <path d={drawPath(section.points)} fill="none" stroke="white" strokeWidth={mapMetrics.serviceCasing} strokeLinecap="butt" strokeLinejoin="round"/>
