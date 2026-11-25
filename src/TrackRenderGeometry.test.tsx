@@ -4,6 +4,7 @@ import {act,cleanup,render,screen,waitFor} from '@testing-library/react';
 import {invoke} from '@tauri-apps/api/core';
 import {TrackGeometryLayer,useTrackRenderGeometry,type TrackRenderGeometry} from './TrackRenderGeometry';
 import {DEFAULT_CAMERA} from './map';
+import {createTrackViewportIndex,intersectsTrackView,trackBounds,trackViewport} from './trackViewport';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn()}));
 afterEach(()=>{cleanup();vi.resetAllMocks();});
 const a={latitude:35.67504,longitude:139.75},b={...a,longitude:139.7501},c={...a,longitude:139.7502};
@@ -103,4 +104,27 @@ test('large dispersed map indexes infrastructure once and mounts only visible na
  rerender(<svg><TrackGeometryLayer geometry={large} camera={{...DEFAULT_CAMERA,longitude:139.755}} lines={lines} selectedId=""/></svg>);
  expect(container.querySelectorAll('[data-physical-alignment]')).toHaveLength(12);
  expect(reads).toBe(6000);
+});
+
+
+test('indexed viewport matches exhaustive search at cell boundaries and broad zooms',()=>{
+ const point=(longitude:number,latitude:number)=>({longitude,latitude});
+ const rows=Array.from({length:600},(_,id)=>{
+  const longitude=127+(id%42)*.3,latitude=30+(id%25)*.48;
+  return {id,points:[point(longitude,latitude),point(longitude+.13,latitude+.11)]};
+ });
+ rows.splice(30,0,
+  {id:901,points:[point(137,35.75),point(143,35.75)]},
+  {id:902,points:[point(139.749,35.749),point(139.75,35.75)]},
+  {id:903,points:[point(139.75,35.75),point(139.751,35.751)]},
+  {id:904,points:[]},
+ );
+ const indexed=createTrackViewportIndex(rows);
+ const bounds=[
+  {west:139.75,east:139.7501,south:35.75,north:35.7501},
+  trackViewport({...DEFAULT_CAMERA,zoom:4},{width:1000,height:600}),
+  ...Array.from({length:24},(_,i)=>trackViewport({latitude:30+i*.48,longitude:139-i*.31,zoom:12},{width:750,height:400})),
+ ];
+ for(const view of bounds)expect(indexed.visible(view)).toEqual(rows.filter(row=>intersectsTrackView(trackBounds(row.points),view)));
+ expect(indexed.visible(bounds[0]).map(row=>row.id)).toEqual([901,902,903]);
 });
