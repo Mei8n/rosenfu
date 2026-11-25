@@ -91,16 +91,23 @@ fn preview_track_movement_geometry(
         .map_err(|e| e.to_string())
 }
 #[tauri::command]
-fn preview_track_render_geometry(
+async fn preview_track_render_geometry(
     editor: State<'_, Mutex<WorldEditor>>,
     world: WorldDraft,
 ) -> Result<rosenfu_core::world::TrackRenderGeometry, String> {
-    editor
+    let base = editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .world_for_ui_preview(world)?
-        .track_render_geometry()
-        .map_err(|e| e.to_string())
+        .track_render_preview_base();
+    // Geometry and evidence checks can traverse the supplied draft. Neither
+    // the UI event loop nor the live editor lock should wait for that work.
+    tauri::async_runtime::spawn_blocking(move || {
+        base.replace_retaining_road_evidence(world)
+            .and_then(|preview| preview.track_render_geometry())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn retained_road_view(

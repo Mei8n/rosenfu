@@ -133,6 +133,10 @@ impl WorldEditor {
         Ok(rosenfu_core::ofm_evidence::raw_sha256(&bytes))
     }
 
+    pub fn track_render_preview_base(&self) -> World {
+        self.world.geometry_preview_base()
+    }
+
     /// UI previews receive descriptors but not raw evidence. Reattach only the
     /// current immutable table, rejecting changed or stale manifests.
     pub fn world_for_ui_preview(&self, draft: WorldDraft) -> Result<World, String> {
@@ -4189,8 +4193,23 @@ mod tests {
                 .snapshot(),
             &original
         );
+        let render_base = editor.track_render_preview_base();
+        assert!(std::sync::Arc::ptr_eq(
+            &render_base.shared_snapshot(),
+            &editor.world.shared_snapshot()
+        ));
+        assert_eq!(
+            render_base
+                .replace_retaining_road_evidence(from_ui.clone())
+                .unwrap()
+                .snapshot(),
+            &original
+        );
         from_ui.road_evidence_descriptors.clear();
-        assert!(editor.world_for_ui_preview(from_ui).is_err());
+        assert!(editor.world_for_ui_preview(from_ui.clone()).is_err());
+        assert!(render_base
+            .replace_retaining_road_evidence(from_ui)
+            .is_err());
         assert_eq!(editor.snapshot(), original);
     }
 
