@@ -2830,6 +2830,14 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
     // vehicle on that same source fragment still conservatively conflicts.
     assert!(traversal.overlaps_legacy_fragments(&route(0)));
     assert!(!traversal.overlaps_legacy_fragments(&route(1)));
+    let keys = traversal.fragment_resources();
+    assert_eq!(
+        traversal.legacy_fragment_resources(&route(0)),
+        vec![keys[0].clone()]
+    );
+    assert!(traversal.legacy_fragment_resources(&route(1)).is_empty());
+    assert_witnessed_dispatch_roundtrip(keys, traversal.legacy_fragment_resources(&route(0)));
+
     let mut wrong = receipt.clone();
     wrong.vertices_west_east = [0, 2];
     assert_eq!(verify(&store, &wrong), Err(Error::Binding));
@@ -2838,4 +2846,92 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
     assert_eq!(verify(&store, &wrong), Err(Error::Binding));
     let (contested, receipt) = setup(true);
     assert_eq!(verify(&contested, &receipt), Err(Error::Binding));
+}
+
+fn assert_witnessed_dispatch_roundtrip(seam_keys: [String; 2], legacy_keys: Vec<String>) {
+    use rosenfu_core::operation::{
+        OperationRuntime, OperationSave, RunLeg, Section, ServiceRunSpec, Timetable, TrainState,
+        Vehicle,
+    };
+    let make = |id: &str, resources| ServiceRunSpec {
+        service_id: id.to_owned(),
+        vehicle: Vehicle {
+            max_speed_kmh: 35.,
+            acceleration_mps2: 1.,
+            braking_mps2: 1.,
+            length_m: 12.,
+        },
+        timetable: Timetable {
+            first_departure_ms: 0,
+            last_departure_ms: 0,
+            headway_ms: 60000,
+        },
+        // Equal test lengths isolate reservation behavior, not map distance.
+        legs: vec![RunLeg {
+            from: format!("{id}:start"),
+            to: format!("{id}:end"),
+            sections: vec![Section {
+                length_m: 100.,
+                speed_limit_kmh: 35.,
+                resources,
+            }],
+            dwell_ms: 0,
+        }],
+    };
+    let specs = vec![
+        make("a:legacy", legacy_keys.clone()),
+        make("b:seam", seam_keys.to_vec()),
+    ];
+    let mut runtime = OperationRuntime::new(specs.clone()).unwrap();
+    assert!(runtime.advance_to(1, 20).unwrap().arrivals.is_empty());
+    let train = |r: &OperationRuntime, id| {
+        r.trains()
+            .find(|t| t.key.service_id == id)
+            .unwrap()
+            .state
+            .clone()
+    };
+    assert!(matches!(
+        train(&runtime, "a:legacy"),
+        TrainState::Moving { .. }
+    ));
+    assert!(matches!(
+        train(&runtime, "b:seam"),
+        TrainState::Waiting { .. }
+    ));
+
+    let bytes = serde_json::to_vec(&runtime.save()).unwrap();
+    let saved: OperationSave = serde_json::from_slice(&bytes).unwrap();
+    // The proof-aware operator must rederive these specs from accepted archive
+    // evidence, not trust resource keys copied from a serialized checkpoint.
+    assert_eq!(saved.services, specs);
+    let mut reopened = OperationRuntime::restore(saved).unwrap();
+    assert_eq!(serde_json::to_vec(&reopened.save()).unwrap(), bytes);
+    let continued = runtime.advance_to(60000, 40).unwrap();
+    assert_eq!(reopened.advance_to(60000, 40).unwrap(), continued);
+    assert_eq!(
+        continued
+            .arrivals
+            .iter()
+            .map(|a| a.train.service_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a:legacy", "b:seam"]
+    );
+    assert!(continued.arrivals[1].delay_ms > 0);
+
+    // Fabricate the concurrent state an unprotected seam would have allowed.
+    // Authentic resources must reject restoring that overlap.
+    let mut unguarded = OperationRuntime::new(vec![
+        make("a:legacy", legacy_keys),
+        make("b:seam", vec!["scratch:unguarded".into()]),
+    ])
+    .unwrap();
+    unguarded.advance_to(1, 20).unwrap();
+    assert!(matches!(
+        train(&unguarded, "b:seam"),
+        TrainState::Moving { .. }
+    ));
+    let mut overlapping = unguarded.save();
+    overlapping.services = specs;
+    assert!(OperationRuntime::restore(overlapping).is_err());
 }

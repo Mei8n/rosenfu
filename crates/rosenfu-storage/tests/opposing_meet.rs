@@ -318,6 +318,7 @@ fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_
                     TrainState::Moving { entered_ms: 0, .. }
                 ));
                 assert_spaced_opposing_repeats(&world, &configs, &ids);
+                assert_refuge_priority_with_staggered_windows(&world, &configs, &ids);
             }
 
             let replay = rt.preview_passenger_replay(1_000_000, 64).unwrap();
@@ -496,4 +497,66 @@ fn assert_spaced_opposing_repeats(
     assert!(matches!(
         state(rt, 0, START), TrainState::Moving { entered_ms, .. } if entered_ms == START
     ));
+}
+
+fn assert_refuge_priority_with_staggered_windows(
+    base: &World,
+    configs: &[OperationServiceConfig; 2],
+    ids: &[String; 2],
+) {
+    use rosenfu_core::operation::OperationRuntime;
+    const START: u64 = 10_000;
+    const GAP: u64 = 900_000;
+    let mut staggered = (*configs).clone();
+    for (i, config) in staggered.iter_mut().enumerate() {
+        config.timetable = Timetable {
+            first_departure_ms: START + i as u64 * GAP,
+            last_departure_ms: START + (2 + i as u64) * GAP,
+            headway_ms: GAP,
+        };
+    }
+    let mut world = World::new(base.snapshot().clone()).unwrap();
+    world.configure_operation(staggered.to_vec()).unwrap();
+    let state = |rt: &OperationRuntime, i: usize, birth: u64| {
+        rt.trains()
+            .find(|t| t.key.service_id == ids[i] && t.key.scheduled_ms == birth)
+            .unwrap()
+            .state
+            .clone()
+    };
+    let step = |w: &mut World, at| {
+        w.operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(at, 128)
+            .unwrap();
+    };
+    step(&mut world, START);
+    assert!(matches!(
+        state(&world.operation().unwrap().runtime, 0, START),
+        TrainState::Moving {
+            entered_ms: START,
+            ..
+        }
+    ));
+    for n in 1..=2 {
+        let tie = START + n * GAP;
+        step(&mut world, tie - 1);
+        assert_eq!(world.operation().unwrap().runtime.trains().count(), 0);
+        let before = rosenfu_storage::encode(&world).unwrap();
+        let mut reopened = rosenfu_storage::decode(&before).unwrap();
+        step(&mut world, tie);
+        step(&mut reopened, tie);
+        let rt = &world.operation().unwrap().runtime;
+        assert_eq!(state(rt, 0, tie), TrainState::Waiting { ready_ms: tie });
+        assert!(matches!(state(rt, 1, tie),
+            TrainState::Moving{entered_ms,..} if entered_ms == tie));
+        assert_eq!(world.operation_save(), reopened.operation_save());
+    }
+    let tail = START + 3 * GAP;
+    step(&mut world, tail);
+    let rt = &world.operation().unwrap().runtime;
+    assert_eq!(rt.trains().count(), 1);
+    assert!(matches!(state(rt, 1, tail),
+        TrainState::Moving{entered_ms,..} if entered_ms == tail));
 }

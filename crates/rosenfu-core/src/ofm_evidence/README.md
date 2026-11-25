@@ -556,3 +556,14 @@ different interval or an old clipped occurrence; this is intentionally
 stricter than comparing hashed split-edge IDs. It does not settle mixed
 revision or parallel/deduplicated resource policy and is not called by the
 dispatcher.
+
+The opt-in traversal and an overlapping ordinary bus path can derive the same
+`ofm-bus:fragment-lock` key without rewriting old edge IDs. A proof-aware
+operator must add the corresponding keys to both conflicting legs for the
+entire leg; adding the keys only to the new route does not protect it. Before
+restoring a checkpoint, rebuild its authoritative service specs from admitted
+evidence and compare them to the saved specs. The resource helpers do not
+perform that admission or change existing World operation saves. The headless
+regression exercises exclusivity and restart using the existing dispatcher
+with these explicitly derived resource keys; it does not certify stock
+world projectors, UI, routes in other editions, or shared tram conflicts.
