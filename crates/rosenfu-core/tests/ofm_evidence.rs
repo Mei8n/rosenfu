@@ -2724,7 +2724,7 @@ fn raw_feature_ids_are_opaque_and_only_unique_nonzero_singletons_resolve() {
 #[test]
 fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
     let west = [[4176, 1800], [4156, 1790], [3856, 1640]];
-    let east = [[180, 1850], [80, 1800], [60, 1790], [-1385, 1067]];
+    let east_points = [[180, 1850], [80, 1800], [60, 1790], [-1385, 1067]];
     let make = |feature_id, points: &[[i32; 2]]| {
         [
             scalar(1, feature_id),
@@ -2742,11 +2742,11 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
             ),
         )
     };
-    let setup = |contested| {
+    let setup = |east: &[[i32; 2]], contested| {
         let a = raw(&[make(21, &west)]);
-        let mut b_features = vec![make(21, &east), make(99, &[[500, 500], [450, 500]])];
+        let mut b_features = vec![make(21, east), make(99, &[[500, 500], [450, 500]])];
         if contested {
-            b_features.push(make(22, &east));
+            b_features.push(make(22, east));
         }
         let b = raw(&b_features);
         let mut west = binding(&a);
@@ -2767,11 +2767,41 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
         let bytes = serde_json::to_vec(receipt).unwrap();
         verify_westbound_seam_receipt(store, &bytes, &raw_sha256(&bytes))
     };
-    let (store, receipt) = setup(false);
+    let (store, receipt) = setup(&east_points, false);
     assert_eq!(
         verify(&store, &receipt).unwrap().shared_atom,
         [[80, 1800], [60, 1790]]
     );
+    // An authenticated witness uses the identical preceding atom, not
+    // identical crossing endpoints. The two crossing cuts are 1760 and
+    // 508634/289 (a difference of 6/289 grid units). Ordinary v2 must
+    // preserve its exact-cut contract when reconstructing existing saves.
+    let ordinary = |tiles: &[TileBinding; 2]| {
+        let ordered = [tiles[1].clone(), tiles[0].clone()];
+        let mut request = bus_rectangle_query(&ordered, bus_vertex(0, 2), true);
+        request.start = bus_vertex(0, 1);
+        request
+    };
+    let nearby_request = ordinary(&receipt.tiles_west_east);
+    let nearby = reconstruct_gameplay_bus_path(&store, &nearby_request).unwrap();
+    assert!(nearby.is_none());
+
+    // Changing just the buffered endpoint to the shared crossing segment
+    // yields the exact-cut positive control, with the same owned terminals.
+    let mut exact_east = east_points;
+    exact_east[3] = [-240, 1640];
+    let (exact_store, exact_receipt) = setup(&exact_east, false);
+    let exact_request = ordinary(&exact_receipt.tiles_west_east);
+    let exact_path = reconstruct_gameplay_bus_path(&exact_store, &exact_request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(exact_path.binding, exact_request);
+    assert_eq!(exact_path.spans.len(), 2);
+    let (ambiguous_store, ambiguous_receipt) = setup(&exact_east, true);
+    let ambiguous_request = ordinary(&ambiguous_receipt.tiles_west_east);
+    let ambiguous = reconstruct_gameplay_bus_path(&ambiguous_store, &ambiguous_request).unwrap();
+    assert!(ambiguous.is_none());
+
     let retained = EvidenceStore::from_archive_parts(
         store
             .blobs()
@@ -2844,7 +2874,7 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
     wrong = receipt;
     wrong.tiles_west_east[1].raw_sha256 = raw_sha256(b"other");
     assert_eq!(verify(&store, &wrong), Err(Error::Binding));
-    let (contested, receipt) = setup(true);
+    let (contested, receipt) = setup(&east_points, true);
     assert_eq!(verify(&contested, &receipt), Err(Error::Binding));
 }
 
