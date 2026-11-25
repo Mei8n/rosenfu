@@ -224,3 +224,34 @@ test.each([
  await screen.findByRole('region',{name:'ダイヤを使った需要試算結果'});
  expect(screen.queryByRole('region',{name:'この需要条件の運賃と費用の概算'})).toBeNull();
 });
+
+test('selects a bus fare and a signed service adjustment and totals native boarding quotes',async()=>{
+ vi.mocked(invoke).mockResolvedValue({...result,rail:[
+  {...result.rail[0],services:['3','bus:b1'],boarding_fares_yen:[150,100],trips:40},
+  {...result.rail[0],services:['4'],boarding_fares_yen:[200],trips:25},
+ ]});
+ render(<FixedOdPanel stations={stations} services={[...services,{id:'4',name:'普通'}]} busRoutes={[{id:'b1',name:'市バス'}]} enabled worldVersion={1}/>);
+ fireEvent.change(screen.getByLabelText('出発駅'),{target:{value:'1'}});
+ fireEvent.change(screen.getByLabelText('到着駅'),{target:{value:'2'}});
+ fireEvent.click(screen.getByLabelText('運賃と費用を比較する'));
+ fireEvent.change(screen.getByLabelText('公共交通の運賃（円／乗車）'),{target:{value:'200'}});
+ fireEvent.change(screen.getByLabelText('バスの別運賃（円／乗車・任意）'),{target:{value:'100'}});
+ fireEvent.change(screen.getByLabelText('加算・割引する系統（任意）'),{target:{value:'3'}});
+ fireEvent.change(screen.getByLabelText('系統別の加算・割引（円／乗車）'),{target:{value:'-50'}});
+ fireEvent.change(screen.getByLabelText('時間価値（円／時）'),{target:{value:'3600'}});
+ fireEvent.change(screen.getByLabelText('乗車ごとにかかる費用（円／乗車）'),{target:{value:'25'}});
+ fireEvent.click(screen.getByRole('button',{name:'需要を試算'}));
+ expect(invoke).toHaveBeenCalledExactlyOnceWith('preview_fixed_od',{
+  originStationId:'1',destinationStationId:'2',trips:100,alternativeSeconds:null,
+  prices:{publicFareYen:200,alternativeCostYen:0,valueOfTimeYenPerHour:3600,busFareYen:100,serviceAdjustment:{serviceId:'3',deltaYen:-50}},
+ });
+ const budget=await screen.findByRole('region',{name:'この需要条件の運賃と費用の概算'});
+ expect(screen.getByText('仮の運賃: 250円')).toBeTruthy();
+ expect(within(budget).getByText('15,000円',{selector:'dd'})).toBeTruthy();
+ expect(within(budget).getByText('12,375円',{selector:'dd'})).toBeTruthy();
+ expect(within(budget).getByText('市バス: 40回 / 3,000円')).toBeTruthy();
+ vi.mocked(invoke).mockResolvedValue(result);
+ fireEvent.click(screen.getByRole('button',{name:'需要を試算'}));
+ expect((await screen.findByRole('alert')).textContent).toContain('系統別運賃の応答');
+ expect(screen.queryByRole('region',{name:'この需要条件の運賃と費用の概算'})).toBeNull();
+});

@@ -43,6 +43,15 @@ impl WorldDraft {
         self.station_groups.sort_by_key(|group| group.station_id);
     }
     pub(super) fn validate_station_groups(&self) -> Result<(), WorldError> {
+        if self.station_groups.is_empty() {
+            return Ok(());
+        }
+        let stations: BTreeMap<_, _> = self.stations.iter().map(|s| (s.id, s)).collect();
+        let placed: BTreeSet<_> = self
+            .station_placements
+            .iter()
+            .map(|p| p.station_id)
+            .collect();
         let mut seen = BTreeSet::new();
         for group in &self.station_groups {
             if group.members.len() < 2
@@ -51,21 +60,15 @@ impl WorldDraft {
             {
                 return Err(WorldError::InvalidStationGroup);
             }
-            let representative = self
-                .stations
-                .iter()
-                .find(|s| s.id == group.station_id)
+            let representative = stations
+                .get(&group.station_id)
                 .ok_or(WorldError::InvalidStationGroup)?;
             for id in &group.members {
-                let station = self
-                    .stations
-                    .iter()
-                    .find(|s| s.id == *id)
-                    .ok_or(WorldError::InvalidStationGroup)?;
+                let station = stations.get(id).ok_or(WorldError::InvalidStationGroup)?;
                 if !seen.insert(*id)
                     || station.owner != representative.owner
                     || station.name != representative.name
-                    || !self.station_placements.iter().any(|p| p.station_id == *id)
+                    || !placed.contains(id)
                 {
                     return Err(WorldError::InvalidStationGroup);
                 }

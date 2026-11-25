@@ -90,21 +90,35 @@ impl Default for ChoiceWeights {
 }
 
 /// Optional player-supplied costs. These affect a preview only, never the ledger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChoicePrices {
     pub public_fare_yen: u32,
     pub alternative_cost_yen: u32,
     pub value_of_time_yen_per_hour: u32,
+    /// None preserves the shared public fare.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bus_fare_yen: Option<u32>,
+    /// At most one selected boarding service; never inferred from shared track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_adjustment: Option<ServiceFareAdjustment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceFareAdjustment {
+    pub service_id: String,
+    pub delta_yen: i32,
 }
 
 impl ChoicePrices {
-    fn seconds(self, yen: u32) -> f64 {
+    fn seconds(&self, yen: u32) -> f64 {
         f64::from(yen) * 3600.0 / f64::from(self.value_of_time_yen_per_hour)
     }
 
-    fn validate(self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         if self.public_fare_yen > 1_000_000
+            || self.bus_fare_yen.is_some_and(|fare| fare > 1_000_000)
             || self.alternative_cost_yen > 1_000_000
             || !(1..=1_000_000).contains(&self.value_of_time_yen_per_hour)
         {
@@ -113,7 +127,39 @@ impl ChoicePrices {
                     .into(),
             );
         }
+        if let Some(adjustment) = &self.service_adjustment {
+            let fare =
+                i64::from(self.base_fare(&adjustment.service_id)) + i64::from(adjustment.delta_yen);
+            if !identifier(&adjustment.service_id)
+                || !(-1_000_000..=1_000_000).contains(&adjustment.delta_yen)
+                || !(0..=1_000_000).contains(&fare)
+            {
+                return Err("系統別の加算・割引後の運賃を0〜100万円にしてください。".into());
+            }
+        }
         Ok(())
+    }
+
+    fn base_fare(&self, service: &str) -> u32 {
+        if service.starts_with("bus:") {
+            self.bus_fare_yen.unwrap_or(self.public_fare_yen)
+        } else {
+            self.public_fare_yen
+        }
+    }
+
+    fn fare(&self, service: &str) -> u32 {
+        let delta = self
+            .service_adjustment
+            .as_ref()
+            .filter(|a| a.service_id == service)
+            .map_or(0, |a| a.delta_yen);
+        // validate() has already bounded the effective fare.
+        self.base_fare(service).saturating_add_signed(delta)
+    }
+
+    fn uses_custom_fares(&self) -> bool {
+        self.bus_fare_yen.is_some() || self.service_adjustment.is_some()
     }
 }
 
@@ -140,6 +186,9 @@ pub struct PathAllocation {
     pub steps: Vec<PassengerStep>,
     /// Boarding sequence, not one entry per edge. Transfers increase boardings, not OD trips.
     pub services: Vec<String>,
+    /// Mode-specific or adjusted fares in boarding order; absent for legacy shared pricing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boarding_fares_yen: Option<Vec<u32>>,
     pub generalized_seconds: f64,
     pub time: PathTimeBreakdown,
     pub trips: f64,
@@ -277,7 +326,7 @@ fn assign_fixed_od_budgeted(
     (mut batch_work, mut batch_output): (usize, usize),
     (corridor_wait, prices): (Option<f64>, Option<ChoicePrices>),
 ) -> Result<Vec<OdAssignment>, String> {
-    if let Some(prices) = prices {
+    if let Some(prices) = &prices {
         prices.validate()?;
     }
     if ods.len() > MAX_OD_ROWS
@@ -473,26 +522,37 @@ fn assign_fixed_od_budgeted(
             states += 1;
             if let Some(seconds) = egress.get(state.station) {
                 if !state.services.is_empty() && state.can_alight {
-                    let cost = state.cost + seconds * weights.walk;
-                    let cost = if let Some(prices) = prices {
-                        cost + state.services.len() as f64 * prices.seconds(prices.public_fare_yen)
-                    } else {
-                        cost
-                    };
-                    let mut time = state.time;
-                    time.walk_seconds += seconds;
-                    if !cost.is_finite() || !time.walk_seconds.is_finite() {
-                        return Err("demand cost overflow".into());
-                    }
+                    let custom_prices = prices.as_ref().filter(|p| p.uses_custom_fares());
                     // Include vectors, typed step IDs (up to two each), and record.
                     let units = 1
                         + state.visited.len()
                         + state.leg_ids.len()
                         + 3 * state.steps.len()
-                        + state.services.len();
+                        + state.services.len()
+                        + custom_prices.map_or(0, |_| state.services.len());
                     if !spend(&mut batch_work, units) || !spend(&mut batch_output, units) {
                         result.search_complete = false;
                         break 'search;
+                    }
+                    let boarding_fares_yen: Option<Vec<_>> = custom_prices.map(|p| {
+                        state
+                            .services
+                            .iter()
+                            .map(|service| p.fare(service))
+                            .collect()
+                    });
+                    let mut cost = state.cost + seconds * weights.walk;
+                    if let Some(prices) = &prices {
+                        cost += if let Some(fares) = &boarding_fares_yen {
+                            fares.iter().map(|&yen| prices.seconds(yen)).sum::<f64>()
+                        } else {
+                            state.services.len() as f64 * prices.seconds(prices.public_fare_yen)
+                        };
+                    }
+                    let mut time = state.time;
+                    time.walk_seconds += seconds;
+                    if !cost.is_finite() || !time.walk_seconds.is_finite() {
+                        return Err("demand cost overflow".into());
                     }
                     result.rail.push(PathAllocation {
                         stations: state.visited.iter().map(|&id| id.to_owned()).collect(),
@@ -503,6 +563,7 @@ fn assign_fixed_od_budgeted(
                             .map(|step| step.into_passenger_step())
                             .collect(),
                         services: state.services.iter().map(|&id| id.to_owned()).collect(),
+                        boarding_fares_yen,
                         generalized_seconds: cost,
                         time,
                         trips: 0.0,
@@ -603,7 +664,7 @@ fn assign_fixed_od_budgeted(
             continue;
         }
         let alternative_cost = od.alternative_seconds.map(|seconds| {
-            if let Some(prices) = prices {
+            if let Some(prices) = &prices {
                 seconds + prices.seconds(prices.alternative_cost_yen)
             } else {
                 seconds
@@ -755,14 +816,18 @@ mod tests {
             public_fare_yen: 0,
             alternative_cost_yen: 0,
             value_of_time_yen_per_hour: 3600,
+            bus_fare_yen: None,
+            service_adjustment: None,
         }));
         assert_eq!(reference, explicit_free);
         let fares = ChoicePrices {
             public_fare_yen: 200,
             alternative_cost_yen: 0,
             value_of_time_yen_per_hour: 3600,
+            bus_fare_yen: None,
+            service_adjustment: None,
         };
-        let priced = run(Some(fares));
+        let priced = run(Some(fares.clone()));
         assert!(priced.alternative_trips > reference.alternative_trips);
         for priced_path in &priced.rail {
             let previous = reference
@@ -778,7 +843,7 @@ mod tests {
         }
         let costlier_other = run(Some(ChoicePrices {
             alternative_cost_yen: 600,
-            ..fares
+            ..fares.clone()
         }));
         assert!(costlier_other.alternative_trips < priced.alternative_trips);
         let total =
@@ -795,6 +860,60 @@ mod tests {
                 ..fares
             }),
         )
+        .is_err());
+    }
+
+    #[test]
+    fn custom_fares_follow_boarding_service_not_physical_segments() {
+        let demand = od();
+        let mut through = leg(2, 3, 10, 300.0);
+        through.sequence = 1;
+        let mut bus = leg(2, 3, 30, 300.0);
+        bus.service_id = "bus:30".into();
+        let legs = [leg(1, 2, 10, 300.0), through, leg(1, 2, 20, 300.0), bus];
+        let run = |prices| {
+            assign_fixed_od_with_prices(
+                std::slice::from_ref(&demand),
+                &legs,
+                &[],
+                &ChoiceWeights::default(),
+                1000,
+                prices,
+            )
+        };
+        let base = run(None).unwrap();
+        let prices = ChoicePrices {
+            public_fare_yen: 200,
+            alternative_cost_yen: 0,
+            value_of_time_yen_per_hour: 3600,
+            bus_fare_yen: Some(100),
+            service_adjustment: Some(ServiceFareAdjustment {
+                service_id: "10".into(),
+                delta_yen: -50,
+            }),
+        };
+        let priced = run(Some(prices.clone())).unwrap();
+        for (ids, expected) in [
+            (vec!["10"], vec![150]),
+            (vec!["10", "bus:30"], vec![150, 100]),
+            (vec!["20", "bus:30"], vec![200, 100]),
+        ] {
+            let path = priced[0].rail.iter().find(|p| p.services == ids).unwrap();
+            let unpriced = base[0].rail.iter().find(|p| p.services == ids).unwrap();
+            assert_eq!(path.boarding_fares_yen.as_ref(), Some(&expected));
+            assert_eq!(
+                path.generalized_seconds - unpriced.generalized_seconds,
+                f64::from(expected.iter().sum::<u32>())
+            );
+            assert_eq!(path.time, unpriced.time);
+        }
+        assert!(run(Some(ChoicePrices {
+            service_adjustment: Some(ServiceFareAdjustment {
+                service_id: "bus:30".into(),
+                delta_yen: -101
+            }),
+            ..prices
+        }))
         .is_err());
     }
 

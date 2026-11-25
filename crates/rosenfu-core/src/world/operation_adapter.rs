@@ -1944,24 +1944,9 @@ impl World {
                         track_count: count,
                         level: InfrastructureLevel::Ground,
                     })
-                || a.points
-                    .windows(2)
-                    .any(|p| p[0].longitude >= p[1].longitude)
-                || a.points
-                    .iter()
-                    .any(|p| (p.latitude - latitude).abs() > 0.002)
-                || a.points.last().unwrap().longitude - a.points[0].longitude > 0.05
             {
                 return false;
             }
-        }
-        if west
-            .points
-            .iter()
-            .chain(&east.points)
-            .any(|p| p.latitude != latitude)
-        {
-            return false;
         }
         // Only the same two proven specs can be active. Even an inactive
         // alignment near the component is outside this proof: decline on
@@ -2008,23 +1993,6 @@ impl World {
         }) {
             return false;
         }
-        let straight = |a: &Alignment| a.points.iter().all(|p| p.latitude == latitude);
-        let curved = match (straight(middle), straight(other)) {
-            (true, false) => other,
-            (false, true) => middle,
-            _ => return false,
-        };
-        let interior = &curved.points[1..curved.points.len() - 1];
-        let side = interior
-            .first()
-            .map_or(0., |p| (p.latitude - latitude).signum());
-        if interior
-            .iter()
-            .any(|p| (p.latitude - latitude) * side <= 0.)
-            || side == 0.
-        {
-            return false;
-        }
         let placement = |id: &str, a: &Alignment| {
             let id = StationId(id.parse().ok()?);
             d.station_placements
@@ -2057,14 +2025,71 @@ impl World {
         {
             return false;
         }
+        let margin = (local.vehicle.length_m.max(b.length_m / 2.) + 4.) / middle.length_m();
+        let limits = [b.position - margin, b.position + margin];
+        let minimum_m = b.width_m / 2. + 4.;
+
+        // Preserve the original format-7 geometry proof for existing saves.
+        // Outside that east-west case, use the bounded tangent-chart proof
+        // shared with opposing meets. It checks both turnout approaches and
+        // the entire occupied part of the platform branch in any orientation.
+        let legacy = [west, east, middle, other].into_iter().all(|a| {
+            a.points.windows(2).all(|p| p[0].longitude < p[1].longitude)
+                && a.points
+                    .iter()
+                    .all(|p| (p.latitude - latitude).abs() <= 0.002)
+                && a.points.last().unwrap().longitude - a.points[0].longitude <= 0.05
+        }) && west
+            .points
+            .iter()
+            .chain(&east.points)
+            .all(|p| p.latitude == latitude);
+        if !legacy {
+            // The platform can be on either branch. The straight main is
+            // tested against the curved sibling, but the envelope always
+            // comes from the branch the local actually occupies.
+            return opposing_birth_priority::prove_separated_hold_between(
+                middle,
+                other,
+                [west, east],
+                middle,
+                limits,
+                minimum_m,
+            )
+            .is_some()
+                || opposing_birth_priority::prove_separated_hold_between(
+                    other,
+                    middle,
+                    [west, east],
+                    middle,
+                    limits,
+                    minimum_m,
+                )
+                .is_some();
+        }
+        let straight = |a: &Alignment| a.points.iter().all(|p| p.latitude == latitude);
+        let curved = match (straight(middle), straight(other)) {
+            (true, false) => other,
+            (false, true) => middle,
+            _ => return false,
+        };
+        let interior = &curved.points[1..curved.points.len() - 1];
+        let side = interior
+            .first()
+            .map_or(0., |p| (p.latitude - latitude).signum());
+        if interior
+            .iter()
+            .any(|p| (p.latitude - latitude) * side <= 0.)
+            || side == 0.
+        {
+            return false;
+        }
         // Prove the sibling track is laterally separate across the *whole*
         // parked envelope, not merely from the other track's centre at B.
         // The sibling curve is monotone in longitude, so the minimum on a
         // clipped interval occurs at a true polyline vertex or an endpoint.
-        let margin = (local.vehicle.length_m.max(b.length_m / 2.) + 4.) / middle.length_m();
         let left = middle.point_at(b.position - margin).longitude;
         let right = middle.point_at(b.position + margin).longitude;
-        let minimum_m = b.width_m / 2. + 4.;
         let mut covered = left;
         for p in curved.points.windows(2) {
             let a = p[0].longitude.max(left);

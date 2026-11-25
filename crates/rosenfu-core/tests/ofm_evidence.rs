@@ -2683,3 +2683,159 @@ fn fractional_bus_traversal_preserves_regular_atom_ids_and_exact_terminal_positi
         Err(Error::Binding)
     ));
 }
+
+#[test]
+fn raw_feature_ids_are_opaque_and_only_unique_nonzero_singletons_resolve() {
+    fn with_id(id: u64, geometry: &[u64]) -> Vec<u8> {
+        [scalar(1, id), feature(&[0, 0], geometry)].concat()
+    }
+    let raw = field(
+        3,
+        &layer(
+            &[
+                with_id(u64::MAX, LINE),
+                feature(&[0, 0], LINE),
+                with_id(0, LINE),
+                with_id(19, LINE),
+                with_id(19, LINE),
+                with_id(32, LINE),
+                [scalar(1, 32), scalar(3, 1)].concat(),
+                with_id(71, &[9, 0, 0, 10, 20, 0, 9, 1, 1, 10, 2, 2]),
+            ],
+            &["class"],
+            &[field(1, b"minor")],
+        ),
+    );
+    let decoded = decode_tile(&binding(&raw), &raw).unwrap();
+    assert_eq!(
+        decoded
+            .unique_raw_road_line(u64::MAX)
+            .unwrap()
+            .feature_index,
+        0
+    );
+    assert_eq!(decoded.lines[1].raw_feature_id, None);
+    assert_eq!(decoded.lines[2].raw_feature_id, Some(0));
+    for id in [0, 19, 32, 71, 999] {
+        assert!(decoded.unique_raw_road_line(id).is_none());
+    }
+}
+
+#[test]
+fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
+    let west = [[4176, 1800], [4156, 1790], [3856, 1640]];
+    let east = [[180, 1850], [80, 1800], [60, 1790], [-1385, 1067]];
+    let make = |feature_id, points: &[[i32; 2]]| {
+        [
+            scalar(1, feature_id),
+            feature(&[0, 0, 1, 1], &xy_geometry(points)),
+        ]
+        .concat()
+    };
+    let raw = |features: &[Vec<u8>]| {
+        field(
+            3,
+            &layer(
+                features,
+                &["class", "oneway"],
+                &[field(1, b"secondary"), scalar(5, 1)],
+            ),
+        )
+    };
+    let setup = |contested| {
+        let a = raw(&[make(21, &west)]);
+        let mut b_features = vec![make(21, &east), make(99, &[[500, 500], [450, 500]])];
+        if contested {
+            b_features.push(make(22, &east));
+        }
+        let b = raw(&b_features);
+        let mut west = binding(&a);
+        west.x -= 1;
+        west.canonical_url = west.canonical_url.replace("14553", "14552");
+        let tiles = [west, binding(&b)];
+        let store =
+            EvidenceStore::from_parts(vec![raw_entry(&a), raw_entry(&b)], tiles.to_vec()).unwrap();
+        let receipt = WestboundSeamReceipt {
+            rule: WESTBOUND_SEAM_WITNESS_RULE.to_owned(),
+            tiles_west_east: tiles,
+            raw_feature_id: 21,
+            vertices_west_east: [1, 2],
+        };
+        (store, receipt)
+    };
+    let verify = |store, receipt: &WestboundSeamReceipt| {
+        let bytes = serde_json::to_vec(receipt).unwrap();
+        verify_westbound_seam_receipt(store, &bytes, &raw_sha256(&bytes))
+    };
+    let (store, receipt) = setup(false);
+    assert_eq!(
+        verify(&store, &receipt).unwrap().shared_atom,
+        [[80, 1800], [60, 1790]]
+    );
+    let retained = EvidenceStore::from_archive_parts(
+        store
+            .blobs()
+            .map(|(sha, bytes)| RawEvidence {
+                sha256: sha.to_owned(),
+                bytes: bytes.to_vec(),
+            })
+            .collect(),
+        receipt.tiles_west_east.to_vec(),
+    )
+    .unwrap();
+    let rebuilt = retained
+        .scope(&receipt.tiles_west_east.clone().map(|t| t.canonical_url))
+        .unwrap();
+    assert_eq!(verify(&rebuilt, &receipt), verify(&store, &receipt));
+    let bytes = serde_json::to_vec(&receipt).unwrap();
+    assert_eq!(
+        verify_westbound_seam_receipt(&store, &bytes, &raw_sha256(b"other")),
+        Err(Error::Hash)
+    );
+    let digest = raw_sha256(&bytes);
+    let traversal = replay_westbound_seam_traversal(&rebuilt, &bytes, &digest).unwrap();
+    assert_eq!(
+        traversal.grid_points(),
+        &[[80, 1800], [60, 1790], [-240, 1640]]
+    );
+    assert_eq!(
+        traversal
+            .atoms_in_order()
+            .each_ref()
+            .map(|atom| atom.raw_ordinal),
+        [1, 1]
+    );
+    assert_eq!(
+        traversal.atoms_in_order()[0].tile,
+        receipt.tiles_west_east[1]
+    );
+    assert_eq!(
+        traversal.atoms_in_order()[1].tile,
+        receipt.tiles_west_east[0]
+    );
+    let east = &receipt.tiles_west_east[1].canonical_url;
+    let east_scope = rebuilt.scope(std::slice::from_ref(east)).unwrap();
+    let route = |feature| {
+        find_gameplay_bus_path(
+            &east_scope,
+            east,
+            bus_vertex(feature, 0),
+            bus_vertex(feature, 1),
+            true,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    // The east side's preceding atom isn't in the traversal, but a legacy
+    // vehicle on that same source fragment still conservatively conflicts.
+    assert!(traversal.overlaps_legacy_fragments(&route(0)));
+    assert!(!traversal.overlaps_legacy_fragments(&route(1)));
+    let mut wrong = receipt.clone();
+    wrong.vertices_west_east = [0, 2];
+    assert_eq!(verify(&store, &wrong), Err(Error::Binding));
+    wrong = receipt;
+    wrong.tiles_west_east[1].raw_sha256 = raw_sha256(b"other");
+    assert_eq!(verify(&store, &wrong), Err(Error::Binding));
+    let (contested, receipt) = setup(true);
+    assert_eq!(verify(&contested, &receipt), Err(Error::Binding));
+}

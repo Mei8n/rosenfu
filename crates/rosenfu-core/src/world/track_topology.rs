@@ -38,6 +38,9 @@ impl World {
     /// interior branching, lane-selective service routing and point geometry are
     /// separate features, not implied by this topology view.
     pub fn alignment_lane_movements(&self) -> Vec<TrackMovement> {
+        if self.data.alignment_connections.is_empty() {
+            return Vec::new();
+        }
         let mut links: Vec<_> = self
             .data
             .alignment_connections
@@ -51,15 +54,16 @@ impl World {
             })
             .collect();
         links.sort_by_key(|(a, b)| (endpoint_key(*a), endpoint_key(*b)));
+        let alignments: BTreeMap<_, _> = self.data.alignments.iter().map(|a| (a.id, a)).collect();
+        let mut neighbors = BTreeMap::<_, Vec<_>>::new();
+        for &(a, b) in &links {
+            neighbors.entry(endpoint_key(a)).or_default().push(b);
+            neighbors.entry(endpoint_key(b)).or_default().push(a);
+        }
         let mut result = Vec::new();
-        for (a, b) in links.iter().copied() {
+        for (a, b) in links {
             let count = |end: AlignmentEndpointRef| {
-                let alignment = self
-                    .data
-                    .alignments
-                    .iter()
-                    .find(|v| v.id == end.alignment_id)
-                    .expect("validated connection alignment");
+                let alignment = alignments[&end.alignment_id];
                 alignment
                     .section_infrastructure(match end.endpoint {
                         AlignmentEndpoint::Start => 0,
@@ -70,21 +74,22 @@ impl World {
             };
             let (na, nb) = (count(a), count(b));
             let width = na.max(nb);
-            let mut ports = vec![a, b];
-            for (x, y) in &links {
-                if ports.contains(x) || ports.contains(y) {
-                    if !ports.contains(x) {
-                        ports.push(*x);
-                    }
-                    if !ports.contains(y) {
-                        ports.push(*y);
-                    }
-                }
-            }
-            ports.sort_by_key(|port| endpoint_key(*port));
-            let point = (na != nb || ports.len() > 2).then_some(TrackPointResource {
-                a: ports[0],
-                b: ports[1],
+            // Validation limits an endpoint component to three ports. If
+            // there is a third, it is directly adjacent to one of these
+            // two. Keep the resource keyed by the same two smallest ports.
+            let third = neighbors[&endpoint_key(a)]
+                .iter()
+                .chain(&neighbors[&endpoint_key(b)])
+                .copied()
+                .find(|port| *port != a && *port != b);
+            let (first, second) = match third {
+                Some(port) if endpoint_key(port) < endpoint_key(a) => (port, a),
+                Some(port) if endpoint_key(port) < endpoint_key(b) => (a, port),
+                _ => (a, b),
+            };
+            let point = (na != nb || third.is_some()).then_some(TrackPointResource {
+                a: first,
+                b: second,
             });
             for lane in 0..width {
                 let ai = lane * na / width;
