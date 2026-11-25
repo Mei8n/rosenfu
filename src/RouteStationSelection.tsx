@@ -4,11 +4,10 @@ import './RouteStationSelection.css';
 type Station={id:string;name:string;latitude:number;longitude:number};
 /** Draft constraints only: inferred intermediate stations are not explicit picks.
  * Overlay never takes pointer events away from the existing station hit areas. */
-export function RouteStationSelection({stations,ordered,camera,scale,entityLabel="路線",endpoint}:{stations:Station[];ordered:string[];camera:Camera;scale:number;entityLabel?:string;endpoint?:"start"|"end"|null}){
- const byId=new Map(stations.map(station=>[station.id,station]));
+export function RouteStationSelection({stationsById,ordered,camera,scale,entityLabel="路線",endpoint}:{stationsById:ReadonlyMap<string,Station>;ordered:string[];camera:Camera;scale:number;entityLabel?:string;endpoint?:"start"|"end"|null}){
  return <g className="route-station-selection" pointerEvents="none" aria-label={`${entityLabel}の選択駅`}>
   {ordered.map((id,index)=>{
-   const station=byId.get(id);if(!station)return null;
+   const station=stationsById.get(id);if(!station)return null;
    const point=project(station.latitude,station.longitude,camera);
    const role=index===0?'始点':index===ordered.length-1?'終点':'経由';
    const label=`${index+1} ${role}`;

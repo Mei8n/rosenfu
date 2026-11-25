@@ -807,7 +807,7 @@ export function App() {
   const [pendingServiceChoice, setPendingServiceChoice] = useState<{ id: string | null } | null>(null);
   const enabled = status === "ready" && !busy && !companySetupRequired;
 
-  const stationsById = useMemo(()=>new Map(world?.stations.map((station) => [station.id, station])),[world]);
+  const stationsById = useMemo(()=>new Map(world?.stations.map((station) => [station.id, station])),[world?.stations]);
 
   useEffect(() => {
     const svg = svgRef.current;
@@ -2783,7 +2783,7 @@ export function App() {
                   <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations&&<circle className="station-hit-target" aria-hidden="true" visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r={Math.max(5,8/viewport.scale)} fill="transparent" stroke="none"/>}{!detailedStations ? <circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r={mapMetrics.stationRadius} className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" style={mergedStationIds.has(station.id)?{fill:"transparent",stroke:"none"}:undefined} /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}{stationNamesVisible&&(!stationDisplayGroup(station.id)||stationDisplayGroup(station.id)?.id===station.id)&&<text x={x + mapMetrics.stationLabelOffset} y={y + mapMetrics.stationLabelBaseline}>{station.name}</text>}
                 </g>;
               })}
-              {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<RouteStationSelection stations={world?.stations??[]} ordered={routeSelectedStations} camera={camera} scale={viewport.scale} entityLabel={mainTab==="services"?"系統":"路線"} endpoint={routeMapPick==="start"||routeMapPick==="end"?routeMapPick:null}/>}
+              {((mainTab==="routes"&&(routeCreating||routeMapEdit))||(mainTab==="services"&&(serviceCreating||extensionServiceDirty)))&&<RouteStationSelection stationsById={stationsById} ordered={routeSelectedStations} camera={camera} scale={viewport.scale} entityLabel={mainTab==="services"?"系統":"路線"} endpoint={routeMapPick==="start"||routeMapPick==="end"?routeMapPick:null}/>}
                {ordinaryBuiltPath&&<path d={ordinaryBuiltPath} aria-label="作成済みのバス経路" fill="none" stroke="#007383" strokeOpacity={ordinaryBus.draft?.preview?0.4:1} strokeWidth="4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
                {!ordinaryBusStops.active&&!ordinaryBus.draft&&ordinaryBuiltStops.map(stop=>{
                  const p=project(stop.point.latitude,stop.point.longitude,camera);
