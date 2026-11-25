@@ -92,3 +92,23 @@ test('a through service can be found via either committed route without duplicat
  expect((filter as HTMLSelectElement).value).toBe('all');
  expect(screen.getByRole('button',{name:'系統編集: 各駅停車'}).getAttribute('aria-pressed')).toBe('true');
 });
+
+test('optional route groups keep through and independent services as single selectable rows',()=>{
+ const rows=[...services,{id:'solo',name:'臨時'}],onChoose=vi.fn();
+ const routes=[{id:'r1',name:'東本線'},{id:'r2',name:'西本線'}];
+ const bindings=[
+  {service_id:'internal-a',binding:{kind:'route' as const,route_id:'r1'}},
+  {service_id:'internal-b',binding:{kind:'routes' as const,route_ids:['r1','r2']}},
+ ];
+ render(<ServiceDirectory services={rows} routes={routes} bindings={bindings} selected="internal-b" enabled onChoose={onChoose} onCreate={()=>{}}/>);
+ const toggle=screen.getByRole('checkbox',{name:'所属路線ごとに表示'});fireEvent.click(toggle);
+ expect(screen.getAllByRole('rowgroup')).toHaveLength(4);
+ const table=screen.getByRole('table',{name:'系統一覧'}) as HTMLTableElement;
+ expect([...table.tBodies].map(body=>body.rows[0].textContent)).toEqual(['東本線 1系統','複数の路線にまたがる系統 1系統','独立した系統 1系統']);
+ expect(screen.getByRole('button',{name:'系統編集: Express'}).getAttribute('aria-pressed')).toBe('true');
+ fireEvent.change(screen.getByLabelText('路線で絞り込む'),{target:{value:'route:r2'}});
+ expect(table.tBodies).toHaveLength(1);expect(table.tBodies[0].rows[0].textContent).toContain('複数の路線');
+ expect(screen.getAllByRole('button',{name:'系統編集: Express'})).toHaveLength(1);
+ expect(onChoose).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'系統編集: Express'}));expect(onChoose).toHaveBeenCalledWith(null);
+});

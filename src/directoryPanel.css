@@ -35,3 +35,6 @@
 .route-station-search small { margin-inline-start:5px; }
 .route-station-search li:has(.route-station-locate) { display:flex; gap:4px; align-items:stretch; }
 .route-station-search li .route-station-locate { width:auto; flex-shrink:0; }
+.service-directory-group-toggle { display:flex; gap:.45em; align-items:center; margin-block:.4em; }
+.service-directory-group th { font-size:.95em; border-top:1px solid currentColor; }
+.service-directory-group th small { font-weight:normal; margin-inline-start:.35em; }
