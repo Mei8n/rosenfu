@@ -24,3 +24,6 @@
 .route-directory-name{display:flex;align-items:center;gap:4px}
 .route-directory-name>.route-choice{flex:1;min-width:0}
 .route-directory-name>.secondary{flex:none;padding:4px 6px;background:transparent}
+
+.directory-search select { min-width:0; width:100%; box-sizing:border-box; }
+.service-directory-routes { display:block; color:var(--muted); margin-top:2px; }

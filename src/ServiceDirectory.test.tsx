@@ -63,3 +63,32 @@ test('directory shows committed rail activity by service, including zero, withou
  expect(screen.queryByLabelText('稼働中: 2編成')).toBeNull();
  expect(row('系統編集: 各駅停車').getByLabelText('稼働中: 情報なし').textContent).toBe('—');
 });
+
+test('a through service can be found via either committed route without duplicate rows or changed selection',()=>{
+ const routes=[{id:'r1',name:'東本線'},{id:'r2',name:'西本線'},{id:'unused',name:'未使用線'}];
+ const rows=[...services,{id:'independent',name:'臨時'}], onChoose=vi.fn();
+ const bindings=[
+  {service_id:'internal-a',binding:{kind:'route' as const,route_id:'r1'}},
+  {service_id:'internal-b',binding:{kind:'routes' as const,route_ids:['r1','r2']}},
+ ];
+ const props={services:rows,selected:'internal-a',enabled:true,onChoose,onCreate:()=>{}};
+ const {rerender}=render(<ServiceDirectory {...props} routes={routes} bindings={bindings}/>);
+ const filter=screen.getByLabelText('路線で絞り込む');
+ expect(screen.queryByRole('option',{name:'未使用線'})).toBeNull();
+ fireEvent.change(filter,{target:{value:'route:r2'}});
+ expect(screen.getAllByRole('button',{name:'系統編集: Express'})).toHaveLength(1);
+ expect(screen.queryByRole('button',{name:'系統編集: 各駅停車'})).toBeNull();
+ expect(screen.getByText('東本線 / 西本線')).toBeTruthy();
+ expect(onChoose).not.toHaveBeenCalled();
+ fireEvent.change(filter,{target:{value:'independent'}});
+ expect(screen.getByRole('button',{name:'系統編集: 臨時'})).toBeTruthy();
+ fireEvent.change(filter,{target:{value:'all'}});
+ fireEvent.change(screen.getByLabelText('系統を探す'),{target:{value:'西本'}});
+ expect(screen.getAllByRole('button',{name:'系統編集: Express'})).toHaveLength(1);
+ expect(screen.queryByRole('button',{name:'系統編集: 各駅停車'})).toBeNull();
+ fireEvent.change(screen.getByLabelText('系統を探す'),{target:{value:''}});
+ fireEvent.change(filter,{target:{value:'route:r2'}});
+ rerender(<ServiceDirectory {...props} routes={[routes[0]]} bindings={bindings}/>);
+ expect((filter as HTMLSelectElement).value).toBe('all');
+ expect(screen.getByRole('button',{name:'系統編集: 各駅停車'}).getAttribute('aria-pressed')).toBe('true');
+});
