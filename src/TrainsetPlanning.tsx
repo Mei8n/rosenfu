@@ -9,8 +9,9 @@ function duration(ms:number){
  return `${minutes}分${seconds}秒`;
 }
 
-export function TrainsetPlanning({serviceId,configurationToken,currentHeadwayMs,enabled}:{
+export function TrainsetPlanning({serviceId,configurationToken,currentHeadwayMs,enabled,applyHeadway}:{
  serviceId:string;configurationToken:string;currentHeadwayMs:number;enabled:boolean;
+ applyHeadway?:(headwayMs:number)=>void;
 }){
  const [mode,setMode]=useState<Mode>('timedHeadway'),[minutes,setMinutes]=useState(String(currentHeadwayMs/60_000)),[trainsets,setTrainsets]=useState('2');
  const [pending,setPending]=useState(false),[plan,setPlan]=useState<Plan>(),[error,setError]=useState('');
@@ -40,7 +41,7 @@ export function TrainsetPlanning({serviceId,configurationToken,currentHeadwayMs,
  }
  return <details className="trainset-planning">
   <summary>編成数と運転間隔の試算</summary>
-  <p>設定済みの経路・車両・停車時間で、他の列車との競合がない場合の目安です。ダイヤや運行は変更しません。</p>
+  <p>設定済みの経路・車両・停車時間で、他の列車との競合がない場合の目安です。試算だけではダイヤや運行は変更しません。</p>
   <fieldset disabled={!enabled||pending}><legend>試算条件</legend>
    <label>試算の基準<select value={mode} onChange={event=>{setMode(event.target.value as Mode);clear();}}>
     <option value="timedHeadway">運転間隔から必要編成数</option><option value="trainsetCount">編成数から運転間隔</option>
@@ -60,5 +61,9 @@ export function TrainsetPlanning({serviceId,configurationToken,currentHeadwayMs,
    {mode==='timedHeadway'?<><dt>必要な編成数の目安</dt><dd>{plan.trainsets}編成</dd></>:
     <><dt>最短運転間隔の目安</dt><dd>{duration(plan.headwayMs)}</dd></>}
   </dl>}
+  {plan&&mode==='trainsetCount'&&applyHeadway&&<>
+   <p>編成数から求めた間隔だけを現在の簡易ダイヤへ反映します。競合による遅れは含まず、同時に走る編成数の上限にはなりません。</p>
+   <button type="button" disabled={!enabled||pending||plan.headwayMs===currentHeadwayMs} onClick={()=>applyHeadway(plan.headwayMs)}>試算した間隔を現在のダイヤに反映</button>
+  </>}
  </details>;
 }

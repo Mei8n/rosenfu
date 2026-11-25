@@ -4,7 +4,7 @@ import './operationsPanel.css';
 import {TrainsetPlanning} from './TrainsetPlanning';
 import {CrossingPlanningInspector} from './CrossingPlanningInspector';
 import {OperationMapMarkers} from './OperationMapMarkers';
-import type {Camera} from './map';
+import type {Camera,VehicleViewport,mapViewport} from './map';
 
 import {StandardSchedulePanel,type ApplyStandardSchedule} from './StandardSchedulePanel';
 
@@ -23,11 +23,11 @@ const speeds=[1,2,4,8,16] as const;
 const minute=60_000,day=24*60*minute;
 const defaultOpenBusTurnaroundMs=120_000;
 
-export function OperationProvider({available,blocked,epoch,worldVersion,onChange,onRunningChange,acquireMutation,children}:{available:boolean;blocked:boolean;epoch:number;worldVersion?:unknown;onChange:()=>void;onRunningChange?:(running:boolean)=>void;acquireMutation?:()=>null|(()=>void);children:ReactNode}){
- const [snapshot,setSnapshot]=useState<{epoch:number;view:OperationView;worldVersion:unknown}|null>(null);
+export function OperationProvider({available,blocked,epoch,worldVersion,vehicleViewport,onChange,onRunningChange,acquireMutation,children}:{available:boolean;blocked:boolean;epoch:number;worldVersion?:unknown;vehicleViewport?:VehicleViewport;onChange:()=>void;onRunningChange?:(running:boolean)=>void;acquireMutation?:()=>null|(()=>void);children:ReactNode}){
+ const [snapshot,setSnapshot]=useState<{epoch:number;view:OperationView;worldVersion:unknown;vehicleViewport?:VehicleViewport}|null>(null);
  const [busy,setBusy]=useState(false),[error,setError]=useState('');
  const generation=useRef(0),flight=useRef<{done:Promise<void>}|null>(null),intent=useRef<object|null>(null);
- const gate=useRef({available,blocked,epoch,worldVersion,onChange,acquireMutation});gate.current={available,blocked,epoch,worldVersion,onChange,acquireMutation};
+ const gate=useRef({available,blocked,epoch,worldVersion,vehicleViewport,onChange,acquireMutation});gate.current={available,blocked,epoch,worldVersion,vehicleViewport,onChange,acquireMutation};
  const view=snapshot?.epoch===epoch?snapshot.view:null;
  async function request(command:string,args?:Commands[keyof Commands],tick=false){
   const before=gate.current,token=generation.current;
@@ -45,7 +45,8 @@ export function OperationProvider({available,blocked,epoch,worldVersion,onChange
    lock={done:new Promise<void>(resolve=>{release=resolve;})};flight.current=lock;
    const cached=tick&&snapshot?.epoch===before.epoch&&snapshot.worldVersion===before.worldVersion?snapshot.view:null;
    const known=cached?.configuration_token;
-   const next=await invoke<OperationWire>(command,known?{knownConfigurationToken:known}:args);
+   const scoped=(tick||command==='operation_snapshot')?before.vehicleViewport:undefined;
+   const next=await invoke<OperationWire>(command,scoped?{...(known?{knownConfigurationToken:known}:args),vehicleViewport:scoped}:known?{knownConfigurationToken:known}:args);
    if(!current()||((tick||command==='operation_snapshot')&&before.worldVersion!==gate.current.worldVersion))return;
    const invalid=()=>Error('運行エンジンの応答を確認できませんでした。');
    if(!Number.isSafeInteger(next?.now_ms)||next.now_ms<0||typeof next.paused!=='boolean'||typeof next.timetable_edit_token!=='string'||!next.timetable_edit_token||!speeds.some(speed=>speed===next.speed)||!Array.isArray(next.trains)||(next.configuration_token!==undefined&&(typeof next.configuration_token!=='string'||!next.configuration_token)))throw invalid();
@@ -55,7 +56,7 @@ export function OperationProvider({available,blocked,epoch,worldVersion,onChange
    }else if(cached&&known===next.configuration_token&&known&&next.services===undefined&&next.bus_services===undefined){
     view={...next,services:cached.services,bus_services:cached.bus_services};
    }else throw invalid();
-   setSnapshot({epoch:before.epoch,worldVersion:before.worldVersion,view});
+   setSnapshot({epoch:before.epoch,worldVersion:before.worldVersion,vehicleViewport:scoped,view});
    if(!tick&&command!=='operation_snapshot')gate.current.onChange();
   }catch(cause){
    if(current())setError(String(cause));
@@ -70,6 +71,13 @@ export function OperationProvider({available,blocked,epoch,worldVersion,onChange
   return()=>{generation.current++;flight.current=null;intent.current=null;};
  },[available,epoch]);
  useEffect(()=>{if(available&&!blocked&&!busy&&(!view||snapshot?.worldVersion!==worldVersion)&&!error)void request('operation_snapshot');},[available,blocked,busy,epoch,view,error,worldVersion]);
+ // A paused clock has no periodic advance. Pan and resize still need a
+ // read-only snapshot, coalesced so a drag doesn't queue native calls.
+ useEffect(()=>{
+  if(!available||blocked||busy||error||!view?.paused||view.invalidated||!vehicleViewport||!snapshot||snapshot.worldVersion!==worldVersion||snapshot.vehicleViewport===vehicleViewport)return;
+  const id=window.setTimeout(()=>void request('operation_snapshot'),120);
+  return()=>window.clearTimeout(id);
+ },[available,blocked,busy,error,epoch,view,worldVersion,vehicleViewport,snapshot]);
  const running=available&&!!view&&!view.paused&&!view.invalidated;
  useEffect(()=>{onRunningChange?.(running);},[running,onRunningChange]);
  const timerEnabled=running&&!blocked&&!error;
@@ -117,13 +125,13 @@ export function OperationClock(){
  </div>;
 }
 
-export function OperationVehicleLayer({camera,scale}:{camera:Camera;scale:number}){
+export function OperationVehicleLayer({camera,scale,crop}:{camera:Camera;scale:number;crop?:ReturnType<typeof mapViewport>}){
  const state=useContext(Context);
  const view=state?.view;
  if(!state?.crossingPlanningToken||state.blocked||!view||view.invalidated)return null;
  return <>
-  <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale}/>
-  <OperationMapMarkers markers={view.bus_markers} camera={camera} scale={scale} mode="bus"/>
+  <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale} crop={crop}/>
+  <OperationMapMarkers markers={view.bus_markers} camera={camera} scale={scale} crop={crop} mode="bus"/>
  </>;
 }
 
@@ -222,11 +230,16 @@ export function ServiceOperations({serviceId,enabled,standardEnabled=false}:{ser
    :null);
  const trains=view.trains.filter(train=>train.key.service_id===serviceId);
  const scheduleOnly=!!config&&view.paused&&!view.invalidated&&!view.catching_up&&view.rail_timetable_handoff_available===true;
+ const timetableBlocked=!enabled||busy||blocked||!!blocker&&!scheduleOnly;
  const advanced=<>
-  <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={!enabled||busy||blocked||(!!blocker&&!scheduleOnly)} scheduleOnly={scheduleOnly} send={send} expectedOperationToken={view.timetable_edit_token}/>
+  <TimetableForm key={serviceId+':'+JSON.stringify(config??null)} serviceId={serviceId} config={config} now={view.now_ms} disabled={timetableBlocked} scheduleOnly={scheduleOnly} send={send} expectedOperationToken={view.timetable_edit_token}/>
   {scheduleOnly?<p>すでに発車した車両の運行はそのままです。現在より後の発車時刻だけ変更できます。</p>:blocker?<p>{blocker}</p>:view.now_ms>0&&<p>現在の時刻と他のダイヤはそのままです。変更後の過去の便は走りません。</p>}
   {config&&view.configuration_token&&<TrainsetPlanning serviceId={serviceId} configurationToken={view.configuration_token}
-   currentHeadwayMs={config.timetable.headway_ms} enabled={enabled&&!blocked&&!view.invalidated}/>}
+   currentHeadwayMs={config.timetable.headway_ms} enabled={enabled&&!busy&&!blocked&&!view.invalidated}
+   applyHeadway={timetableBlocked?undefined:headwayMs=>void send('configure_operation_service',{
+    serviceId,expectedOperationToken:view.timetable_edit_token,
+    timetable:{...config.timetable,headway_ms:headwayMs},vehicle:config.vehicle,dwellMs:config.dwell_ms,
+   })}/>}
  </>;
  return <section className="service-operations" aria-label="系統の運行">
   <h4>運行</h4>

@@ -8,7 +8,7 @@ use crate::operation::{
 use std::collections::{BTreeMap, BTreeSet};
 mod opposing_birth_priority;
 mod vehicle_map;
-pub use vehicle_map::{LiveBusMarker, LiveRailMarker};
+pub use vehicle_map::{LiveBusMarker, LiveRailMarker, VehicleViewport};
 #[cfg(feature = "periodic-world-qa")]
 pub mod periodic_qa;
 #[cfg(feature = "standard-periodic-rail")]

@@ -10,6 +10,8 @@ use rosenfu_core::world::PlayerId;
 
 const MINUTE: u64 = 60_000;
 const DAY: u64 = 24 * 60 * MINUTE;
+// 30 days fits the existing 43,200-departure guard even at one departure/minute.
+const MAX_ACTIVE_DAYS: u16 = 30;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +134,7 @@ impl WorldEditor {
         })
     }
 
+    #[cfg(test)]
     pub fn apply_standard_schedule(
         &mut self,
         service: ServiceId,
@@ -140,8 +143,30 @@ impl WorldEditor {
         overrides: NamedBandOverrides,
         boundaries_minutes: [u16; 6],
     ) -> Result<OperationView, String> {
+        self.apply_standard_schedule_for_days(
+            service,
+            expected,
+            base_minutes,
+            overrides,
+            boundaries_minutes,
+            1,
+        )
+    }
+
+    pub fn apply_standard_schedule_for_days(
+        &mut self,
+        service: ServiceId,
+        expected: &str,
+        base_minutes: u16,
+        overrides: NamedBandOverrides,
+        boundaries_minutes: [u16; 6],
+        active_days: u16,
+    ) -> Result<OperationView, String> {
         let actor = self.standard_actor(service)?;
         self.require_current_timetable_token(expected)?;
+        if !(1..=MAX_ACTIVE_DAYS).contains(&active_days) {
+            return Err("有効期間は1〜30ゲーム日で指定してください。".into());
+        }
         let saved = self
             .world
             .operation_save()
@@ -152,7 +177,9 @@ impl WorldEditor {
             .checked_add(MINUTE)
             .and_then(|first| first.div_ceil(MINUTE).checked_mul(MINUTE))
             .ok_or("時刻が上限を超えます。")?;
-        let end_ms = start_ms.checked_add(DAY).ok_or("時刻が上限を超えます。")?;
+        let end_ms = start_ms
+            .checked_add(u64::from(active_days) * DAY)
+            .ok_or("時刻が上限を超えます。")?;
         let authored = StandardIntervals {
             base_minutes,
             overrides,

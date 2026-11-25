@@ -89,6 +89,34 @@ impl Default for ChoiceWeights {
     }
 }
 
+/// Optional player-supplied costs. These affect a preview only, never the ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChoicePrices {
+    pub public_fare_yen: u32,
+    pub alternative_cost_yen: u32,
+    pub value_of_time_yen_per_hour: u32,
+}
+
+impl ChoicePrices {
+    fn seconds(self, yen: u32) -> f64 {
+        f64::from(yen) * 3600.0 / f64::from(self.value_of_time_yen_per_hour)
+    }
+
+    fn validate(self) -> Result<(), String> {
+        if self.public_fare_yen > 1_000_000
+            || self.alternative_cost_yen > 1_000_000
+            || !(1..=1_000_000).contains(&self.value_of_time_yen_per_hour)
+        {
+            return Err(
+                "運賃・代替費用は0〜100万円、時間価値は1〜100万円/時の整数を入力してください。"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PassengerStep {
@@ -218,6 +246,17 @@ pub fn assign_fixed_od(
     weights: &ChoiceWeights,
     max_states_per_od: usize,
 ) -> Result<Vec<OdAssignment>, String> {
+    assign_fixed_od_with_prices(ods, legs, walks, weights, max_states_per_od, None)
+}
+
+pub fn assign_fixed_od_with_prices(
+    ods: &[FixedOd],
+    legs: &[PassengerLeg],
+    walks: &[WalkLink],
+    weights: &ChoiceWeights,
+    max_states_per_od: usize,
+    prices: Option<ChoicePrices>,
+) -> Result<Vec<OdAssignment>, String> {
     assign_fixed_od_budgeted(
         ods,
         legs,
@@ -225,7 +264,7 @@ pub fn assign_fixed_od(
         weights,
         max_states_per_od,
         (MAX_BATCH_WORK, MAX_BATCH_OUTPUT_ENTRIES),
-        None,
+        (None, prices),
     )
 }
 
@@ -236,8 +275,11 @@ fn assign_fixed_od_budgeted(
     weights: &ChoiceWeights,
     max_states_per_od: usize,
     (mut batch_work, mut batch_output): (usize, usize),
-    corridor_wait: Option<f64>,
+    (corridor_wait, prices): (Option<f64>, Option<ChoicePrices>),
 ) -> Result<Vec<OdAssignment>, String> {
+    if let Some(prices) = prices {
+        prices.validate()?;
+    }
     if ods.len() > MAX_OD_ROWS
         || legs.len().saturating_add(walks.len()) > MAX_GRAPH_EDGES
         || ods.iter().fold(0usize, |total, od| {
@@ -432,6 +474,11 @@ fn assign_fixed_od_budgeted(
             if let Some(seconds) = egress.get(state.station) {
                 if !state.services.is_empty() && state.can_alight {
                     let cost = state.cost + seconds * weights.walk;
+                    let cost = if let Some(prices) = prices {
+                        cost + state.services.len() as f64 * prices.seconds(prices.public_fare_yen)
+                    } else {
+                        cost
+                    };
                     let mut time = state.time;
                     time.walk_seconds += seconds;
                     if !cost.is_finite() || !time.walk_seconds.is_finite() {
@@ -555,9 +602,19 @@ fn assign_fixed_od_budgeted(
             results.push(result);
             continue;
         }
+        let alternative_cost = od.alternative_seconds.map(|seconds| {
+            if let Some(prices) = prices {
+                seconds + prices.seconds(prices.alternative_cost_yen)
+            } else {
+                seconds
+            }
+        });
+        if alternative_cost.is_some_and(|seconds| !seconds.is_finite()) {
+            return Err("demand cost overflow".into());
+        }
         if let Some(scores) = ChoiceScores::new(
             result.rail.iter().map(|p| p.generalized_seconds),
-            od.alternative_seconds,
+            alternative_cost,
             weights.choice_scale_seconds,
         ) {
             for path in &mut result.rail {
@@ -670,6 +727,77 @@ mod tests {
             headway_seconds: 600.0,
         }
     }
+    #[test]
+    fn fare_preview_counts_boardings_and_changes_choice_without_changing_travel_time() {
+        let demand = od();
+        let mut second = leg(2, 3, 10, 300.0);
+        second.sequence = 1;
+        let legs = [
+            leg(1, 2, 10, 300.0),
+            second,
+            leg(1, 2, 20, 300.0),
+            leg(2, 3, 30, 300.0),
+        ];
+        let run = |prices| {
+            assign_fixed_od_with_prices(
+                std::slice::from_ref(&demand),
+                &legs,
+                &[],
+                &ChoiceWeights::default(),
+                1000,
+                prices,
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let reference = run(None);
+        let explicit_free = run(Some(ChoicePrices {
+            public_fare_yen: 0,
+            alternative_cost_yen: 0,
+            value_of_time_yen_per_hour: 3600,
+        }));
+        assert_eq!(reference, explicit_free);
+        let fares = ChoicePrices {
+            public_fare_yen: 200,
+            alternative_cost_yen: 0,
+            value_of_time_yen_per_hour: 3600,
+        };
+        let priced = run(Some(fares));
+        assert!(priced.alternative_trips > reference.alternative_trips);
+        for priced_path in &priced.rail {
+            let previous = reference
+                .rail
+                .iter()
+                .find(|path| path.leg_ids == priced_path.leg_ids)
+                .unwrap();
+            assert_eq!(
+                priced_path.generalized_seconds - previous.generalized_seconds,
+                200.0 * priced_path.services.len() as f64
+            );
+            assert_eq!(priced_path.time, previous.time);
+        }
+        let costlier_other = run(Some(ChoicePrices {
+            alternative_cost_yen: 600,
+            ..fares
+        }));
+        assert!(costlier_other.alternative_trips < priced.alternative_trips);
+        let total =
+            priced.alternative_trips + priced.rail.iter().map(|path| path.trips).sum::<f64>();
+        assert!((total - 100.0).abs() < 1e-9);
+        assert!(assign_fixed_od_with_prices(
+            &[demand],
+            &legs,
+            &[],
+            &ChoiceWeights::default(),
+            1000,
+            Some(ChoicePrices {
+                value_of_time_yen_per_hour: 0,
+                ..fares
+            }),
+        )
+        .is_err());
+    }
+
     fn evaluate(ods: &[FixedOd], legs: &[PassengerLeg]) -> Vec<OdAssignment> {
         let mut legs = legs.to_vec();
         let mut sequence = BTreeMap::new();
@@ -1096,9 +1224,16 @@ mod tests {
         let legs = [leg(1, 3, 1, 1.0)];
         let weights = ChoiceWeights::default();
         for (work, output) in [(1_000, 8), (32, 1_000)] {
-            let results =
-                assign_fixed_od_budgeted(&ods, &legs, &[], &weights, 1_000, (work, output), None)
-                    .unwrap();
+            let results = assign_fixed_od_budgeted(
+                &ods,
+                &legs,
+                &[],
+                &weights,
+                1_000,
+                (work, output),
+                (None, None),
+            )
+            .unwrap();
             assert!(results[0].search_complete);
             assert!(!results[1].search_complete);
             assert_eq!(results[1].unresolved_trips, 100.0);

@@ -342,6 +342,59 @@ mod tests {
     };
     use crate::operation::TrainState;
 
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn repeating_standard_bands_dispatch_at_later_days_and_stop_at_the_bound() {
+        use standard::{NamedBandOverrides, StandardIntervals};
+
+        let mut runtime = OperationRuntime::new(vec![run(5_000)]).unwrap();
+        let start = 60_000;
+        let end = start + 2 * WORLD_DAY_MS;
+        runtime
+            .set_standard_timetable(
+                "1".into(),
+                StandardIntervals {
+                    base_minutes: 240,
+                    overrides: NamedBandOverrides {
+                        early_morning: None,
+                        morning_rush: Some(6),
+                        midday: None,
+                        evening_rush: None,
+                        late_night: None,
+                    },
+                    boundaries_minutes: [0, 360, 600, 960, 1200, 1440],
+                    start_ms: start,
+                    end_ms: end,
+                },
+            )
+            .unwrap();
+        let grid = runtime.standard_departure_grid("1").unwrap();
+        let morning = 360 * 60_000;
+        let window = |offset| offset + morning..offset + morning + 3_600_000;
+        assert_eq!(grid.active_window(), start..end);
+        assert_eq!(grid.departure_count(window(0)), 10);
+        assert_eq!(grid.departure_count(window(WORLD_DAY_MS)), 10);
+        assert_eq!(grid.departure_count(window(2 * WORLD_DAY_MS)), 0);
+        let before = runtime.advance_to(WORLD_DAY_MS + morning, 10_000).unwrap();
+        assert!(
+            before.reached_target
+                && before
+                    .arrivals
+                    .iter()
+                    .all(|a| a.at_ms < WORLD_DAY_MS + morning)
+        );
+        let later = runtime
+            .advance_to(WORLD_DAY_MS + morning + 45_000, 100)
+            .unwrap();
+        assert!(later.reached_target);
+        assert_eq!(later.arrivals.len(), 2);
+        assert_eq!(later.arrivals[0].train.scheduled_ms, WORLD_DAY_MS + morning);
+        let after = runtime.advance_to(end + 3_600_000, 10_000).unwrap();
+        assert!(after.reached_target);
+        assert!(after.arrivals.iter().all(|a| a.train.scheduled_ms < end));
+        assert!(runtime.trains.is_empty());
+    }
+
     fn timetable_request() -> Vec<DailyServiceBand> {
         vec![
             DailyServiceBand {

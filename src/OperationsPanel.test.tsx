@@ -505,3 +505,40 @@ test('an active time-band timetable can be edited without resetting the clock',a
  }));
  expect(ipc.mock.calls.some(([name])=>name==='reset_operation')).toBe(false);
 });
+
+test('a fleet estimate applies the exact headway through the current native edit token without resetting time',async()=>{
+ const current={...snapshot,now_ms:900_000,timetable_edit_token:'current-edit',configuration_token:'fleet-config',services:[
+  {...config,timetable:{...config.timetable,first_departure_ms:301_234}},
+ ]};
+ const adjusted={...current.services[0],timetable:{...current.services[0].timetable,headway_ms:126_667}};
+ const estimate={cycleMs:380_000,runningMs:300_000,dwellAndClearanceMs:80_000,headwayMs:126_667,trainsets:3};
+ vi.mocked(invoke).mockImplementation(async command=>command==='operation_snapshot'?current:
+  command==='preview_nominal_trainsets'?estimate:{...current,configuration_token:'fleet-config-next',services:[adjusted]});
+ render(operation());
+ fireEvent.click(await screen.findByText('編成数と運転間隔の試算'));
+ fireEvent.change(screen.getByLabelText('試算の基準'),{target:{value:'trainsetCount'}});
+ fireEvent.change(screen.getByLabelText('試算する編成数'),{target:{value:'3'}});
+ fireEvent.click(screen.getByRole('button',{name:'編成数・間隔を試算'}));
+ const apply=await screen.findByRole('button',{name:'試算した間隔を現在のダイヤに反映'});
+ expect(invoke).toHaveBeenCalledWith('preview_nominal_trainsets',{serviceId:'12',configurationToken:'fleet-config',request:{mode:'trainsetCount',trainsets:3}});
+ expect(invoke).not.toHaveBeenCalledWith('configure_operation_service',expect.anything());
+ fireEvent.click(apply);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('configure_operation_service',{
+  serviceId:'12',expectedOperationToken:'current-edit',timetable:adjusted.timetable,vehicle:adjusted.vehicle,dwellMs:adjusted.dwell_ms,
+ }));
+ expect(invoke).not.toHaveBeenCalledWith('reset_operation',undefined);
+ expect(screen.getByText('1日目 00:15')).toBeTruthy();
+});
+
+test('read-only fleet estimates are available but cannot mutate a blocked timetable',async()=>{
+ const current={...snapshot,configuration_token:'fleet-config',timetable_edit_blocker:'運行中の車両がいます。',services:[config]};
+ vi.mocked(invoke).mockImplementation(async command=>command==='operation_snapshot'?current:
+  {cycleMs:240_000,runningMs:180_000,dwellAndClearanceMs:60_000,headwayMs:120_000,trainsets:2});
+ render(operation());
+ fireEvent.click(await screen.findByText('編成数と運転間隔の試算'));
+ fireEvent.change(screen.getByLabelText('試算の基準'),{target:{value:'trainsetCount'}});
+ fireEvent.click(screen.getByRole('button',{name:'編成数・間隔を試算'}));
+ expect(await screen.findByText('最短運転間隔の目安')).toBeTruthy();
+ expect(screen.queryByRole('button',{name:'試算した間隔を現在のダイヤに反映'})).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('configure_operation_service',expect.anything());
+});

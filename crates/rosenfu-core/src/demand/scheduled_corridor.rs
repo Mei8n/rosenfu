@@ -126,7 +126,7 @@ pub fn assign_scheduled_corridor(
         weights,
         MAX_PATH_STATIONS + 1,
         (MAX_BATCH_WORK, MAX_BATCH_OUTPUT_ENTRIES),
-        Some(wait_seconds),
+        (Some(wait_seconds), None),
     )?
     .pop()
     .expect("one fixed OD in scope");

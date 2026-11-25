@@ -3,16 +3,26 @@ use crate::session::{
 };
 use rosenfu_core::{
     operation::{Timetable, Vehicle},
-    world::ServiceId,
+    world::{ServiceId, VehicleViewport},
 };
 use std::sync::Mutex;
 use tauri::State;
 #[tauri::command]
-pub fn operation_snapshot(editor: State<'_, Mutex<WorldEditor>>) -> Result<OperationView, String> {
+pub fn operation_snapshot(
+    editor: State<'_, Mutex<WorldEditor>>,
+    vehicle_viewport: Option<VehicleViewport>,
+) -> Result<OperationView, String> {
+    let viewport = checked_viewport(vehicle_viewport)?;
     Ok(editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .operation_snapshot())
+        .operation_snapshot_in(viewport))
+}
+fn checked_viewport(viewport: Option<VehicleViewport>) -> Result<Option<VehicleViewport>, String> {
+    if viewport.is_some_and(|bounds| !bounds.is_valid()) {
+        return Err("invalid vehicle viewport".into());
+    }
+    Ok(viewport)
 }
 #[tauri::command]
 pub fn preview_crossing_planning(
@@ -54,6 +64,7 @@ pub fn apply_standard_schedule(
     base_minutes: u16,
     overrides: serde_json::Value,
     boundaries_minutes: [u16; 6],
+    active_days: Option<u16>,
 ) -> Result<OperationView, String> {
     #[cfg(feature = "standard-periodic-rail")]
     {
@@ -62,12 +73,13 @@ pub fn apply_standard_schedule(
         editor
             .lock()
             .map_err(|_| "world state unavailable")?
-            .apply_standard_schedule(
+            .apply_standard_schedule_for_days(
                 service,
                 &expected,
                 base_minutes,
                 overrides,
                 boundaries_minutes,
+                active_days.unwrap_or(1),
             )
     }
     #[cfg(not(feature = "standard-periodic-rail"))]
@@ -79,6 +91,7 @@ pub fn apply_standard_schedule(
             base_minutes,
             overrides,
             boundaries_minutes,
+            active_days,
         );
         Err("このビルドでは時間帯ダイヤを利用できません。".into())
     }
@@ -155,11 +168,13 @@ pub fn set_operation_clock(
 pub fn advance_operation(
     editor: State<'_, Mutex<WorldEditor>>,
     known_configuration_token: Option<String>,
+    vehicle_viewport: Option<VehicleViewport>,
 ) -> Result<OperationTickView, String> {
+    let viewport = checked_viewport(vehicle_viewport)?;
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .advance_operation_with_configuration(known_configuration_token.as_deref())
+        .advance_operation_in(known_configuration_token.as_deref(), viewport)
 }
 #[tauri::command]
 pub fn reset_operation(editor: State<'_, Mutex<WorldEditor>>) -> Result<OperationView, String> {
@@ -227,16 +242,18 @@ pub fn preview_fixed_od(
     trips: Option<f64>,
     alternative_seconds: Option<f64>,
     transfer: Option<FixedOdRoadTransfer>,
+    prices: Option<rosenfu_core::demand::ChoicePrices>,
 ) -> Result<rosenfu_core::demand::OdAssignment, String> {
     editor
         .lock()
         .map_err(|_| "world state unavailable")?
-        .preview_fixed_od_with_transfer(
+        .preview_fixed_od_with_prices(
             origin_station_id,
             destination_station_id,
             trips,
             alternative_seconds,
             transfer,
+            prices,
         )
 }
 

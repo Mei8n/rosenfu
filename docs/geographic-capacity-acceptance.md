@@ -141,6 +141,40 @@ size, and one transient Base64 string per tile is also no longer allocated.
 Filesystem cache and parser peaks can differ; these counts do not establish a
 particular RSS or latency improvement without the paired measurement.
 
+## Wire-capacity preflight during editing and reopening
+
+Capacity preflight counts compact JSON once. Pretty JSON adds only
+whitespace, so compact is the smallest supported representation and its
+exact bounded conversion is equivalent to asking whether either supported
+layout fits. This is only the in-memory count: the actual file writer still
+uses pretty JSON whenever it fits and preserves existing bytes, final
+newline, exact version checks, and backup semantics. The 16 MiB limit and
+document validation are unchanged.
+
+```sh
+cargo test --locked --release -p rosenfu-storage --lib \
+  measure_compact_storage_preflight -- --ignored --nocapture
+```
+
+An offline Linux x86-64 Release run tested the actual footprint function
+against the old pretty-then-compact count in one binary, alternating the
+order of the two arms. Fixture construction and draft validation are outside
+the measurement. Four independent processes gave these ranges of medians
+(25 samples per arm per process):
+
+| Synthetic alignments | Former preflight | Compact preflight |
+| ---: | ---: | ---: |
+| 100 | 65.7–94.9 µs | 38.0–57.5 µs |
+| 1,000 | 0.66–1.10 ms | 0.39–0.65 ms |
+| 10,000, padded to exactly 16 MiB compact | 25.8–38.6 ms | 11.2–17.2 ms |
+
+The oversized pretty representation only occurs in the padded case. These
+are CPU timings for the save-size check used by native construction preview,
+edit confirmation and reopen; they are not full edit, load, GUI, or disk
+write benchmarks and do not demonstrate nationwide capacity. The regression
+tests separately check refusals immediately below the compact limit, exact
+fit, supported escaped text and the unchanged pretty-file preference.
+
 ## Verify an independently approved captured alignment
 
 For an isolated existing save with an already authorized source capture,

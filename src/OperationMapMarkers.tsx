@@ -1,4 +1,4 @@
-import {MAP_VIEWBOX,project,type Camera} from './map';
+import {MAP_VIEWBOX,project,type Camera,type mapViewport} from './map';
 
 type GeoPoint={latitude:number;longitude:number};
 type MarkerKey={service_id:string;scheduled_ms:number};
@@ -24,7 +24,7 @@ function markerPosition(value:unknown,mode:'rail'|'bus'){
 
 // Passive, committed positions only. No interpolation, map hit targets,
 // timers, polling, or raw engine identities in DOM.
-export function OperationMapMarkers({markers,camera,scale,mode='rail'}:{markers:unknown;camera:Camera;scale:number;mode?:'rail'|'bus'}){
+export function OperationMapMarkers({markers,camera,scale,crop={x:0,y:0,...MAP_VIEWBOX,scale},mode='rail'}:{markers:unknown;camera:Camera;scale:number;crop?:ReturnType<typeof mapViewport>;mode?:'rail'|'bus'}){
  if(!Array.isArray(markers)||markers.length===0||markers.length>MAX_MARKERS||!(Number.isFinite(scale)&&scale>0))return null;
  const keys=new Set<string>();
  const radius=4/scale;
@@ -35,7 +35,7 @@ export function OperationMapMarkers({markers,camera,scale,mode='rail'}:{markers:
   // Paint uses a straight segment between projected alignment endpoints.
   // Interpolate along that same chord using native time/distance, not lat/lon.
   const x=a.x+(b.x-a.x)*marker.position,y=a.y+(b.y-a.y)*marker.position;
-  if(x < -radius||y < -radius||x>MAP_VIEWBOX.width+radius||y>MAP_VIEWBOX.height+radius)return [];
+  if(x<crop.x-radius||y<crop.y-radius||x>crop.x+crop.width+radius||y>crop.y+crop.height+radius)return [];
   const key=marker.key.service_id+':'+marker.key.scheduled_ms;
   if(keys.has(key))return [];
   keys.add(key);

@@ -2,7 +2,7 @@
 //! Unsupported geometry is omitted, not guessed.
 use super::*;
 use crate::operation::{TrainKey, TrainState};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A position for matching the operation snapshot, not a public numeric label
 /// or a determination of where the whole consist lies.
@@ -25,6 +25,56 @@ pub struct LiveBusMarker {
     pub position: f64,
 }
 
+/// Camera rectangle in normalized Web Mercator world coordinates. The renderer
+/// projects the chord endpoints first, so filtering in latitude space would
+/// incorrectly drop markers on diagonal paths.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct VehicleViewport {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+}
+
+impl VehicleViewport {
+    pub fn is_valid(self) -> bool {
+        [self.left, self.right, self.top, self.bottom]
+            .into_iter()
+            .all(|v| v.is_finite() && (-1.0..=2.0).contains(&v))
+            && self.left < self.right
+            && self.top < self.bottom
+    }
+
+    fn contains_chord(self, start: GeoPoint, end: GeoPoint, fraction: f64) -> bool {
+        fn project(point: GeoPoint) -> (f64, f64) {
+            (
+                (point.longitude + 180.0) / 360.0,
+                (1.0 - point.latitude.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0,
+            )
+        }
+        let (ax, ay) = project(start);
+        let (bx, by) = project(end);
+        let x = ax + (bx - ax) * fraction;
+        let y = ay + (by - ay) * fraction;
+        (self.left..=self.right).contains(&x) && (self.top..=self.bottom).contains(&y)
+    }
+}
+
+fn in_view(view: Option<VehicleViewport>, start: GeoPoint, end: GeoPoint, fraction: f64) -> bool {
+    view.is_none_or(|view| view.contains_chord(start, end, fraction))
+}
+
+// View-scoped sampling may inspect more candidates, but not unbounded native
+// work. Keep server response SVG/IPC budgets unchanged.
+const MAX_VIEW_CANDIDATES: usize = 2048;
+fn candidate_limit(view: Option<VehicleViewport>) -> usize {
+    if view.is_some() {
+        MAX_VIEW_CANDIDATES
+    } else {
+        MAX_TRAINS
+    }
+}
+
 const MAX_TRAINS: usize = 128;
 const MAX_MARKERS: usize = 32;
 const MAX_UNIFORM_PIECES: usize = 16;
@@ -45,6 +95,10 @@ impl World {
     /// the exact committed stop occurrences and directed edge, not the
     /// nearest visible road. Rendering never loads data or reroutes a bus.
     pub fn live_straight_bus_markers(&self) -> Vec<LiveBusMarker> {
+        self.live_bus_markers_in(None)
+    }
+
+    pub fn live_bus_markers_in(&self, view: Option<VehicleViewport>) -> Vec<LiveBusMarker> {
         let Some(op) = self
             .operation()
             .filter(|o| !o.invalidated && !o.bus_configs.is_empty())
@@ -57,7 +111,7 @@ impl World {
         // bounded bus candidate search before the first bus is considered.
         op.runtime
             .trains_with_service_prefix("bus:")
-            .take(MAX_TRAINS)
+            .take(candidate_limit(view))
             .filter_map(|train| {
                 let route_id = train.key.service_id.strip_prefix("bus:")?;
                 if !self.data.ofm_gameplay_bus_routes.contains_key(route_id) {
@@ -123,6 +177,9 @@ impl World {
                         route_id, train.leg, spec, section, fraction,
                     )
                 })?;
+                if !in_view(view, edge_start, edge_end, position) {
+                    return None;
+                }
                 Some(LiveBusMarker {
                     key: train.key.clone(),
                     edge_start,
@@ -137,14 +194,22 @@ impl World {
     /// Ordinary native marker response. Preserve the old straight Normal
     /// subset, then add only positively proven street-tram movements.
     pub fn live_ground_rail_markers(&self) -> Vec<LiveRailMarker> {
-        let mut markers = self.live_straight_rail_markers();
+        self.live_rail_markers_in(None)
+    }
+
+    pub fn live_rail_markers_in(&self, view: Option<VehicleViewport>) -> Vec<LiveRailMarker> {
+        let mut markers = self.isolated_rail_markers_in(view, true);
         if markers.len() < MAX_MARKERS {
-            markers.extend(self.joined_street_tram_markers(MAX_MARKERS - markers.len()));
+            markers.extend(self.joined_street_tram_markers(MAX_MARKERS - markers.len(), view));
         }
         markers
     }
 
-    fn joined_street_tram_markers(&self, limit: usize) -> Vec<LiveRailMarker> {
+    fn joined_street_tram_markers(
+        &self,
+        limit: usize,
+        view: Option<VehicleViewport>,
+    ) -> Vec<LiveRailMarker> {
         let Some(op) = self.operation().filter(|o| !o.invalidated) else {
             return Vec::new();
         };
@@ -160,7 +225,7 @@ impl World {
         }
         op.runtime
             .trains()
-            .take(MAX_TRAINS)
+            .take(candidate_limit(view))
             .filter_map(|train| {
                 let TrainState::Moving {
                     entered_ms,
@@ -197,6 +262,9 @@ impl World {
                     )?;
                     let (alignment_start, alignment_end, position) =
                         joined_tram_chord(&self.data, leg, lanes, profile.length_m * fraction)?;
+                    if !in_view(view, alignment_start, alignment_end, position) {
+                        return None;
+                    }
                     Some(LiveRailMarker {
                         key: train.key.clone(),
                         alignment_start,
@@ -213,6 +281,14 @@ impl World {
     /// isolated single-track Normal rail section. Waiting, released and unsupported
     /// movements are omitted. No clock or save state is changed.
     pub fn live_straight_rail_markers(&self) -> Vec<LiveRailMarker> {
+        self.isolated_rail_markers_in(None, false)
+    }
+
+    fn isolated_rail_markers_in(
+        &self,
+        view: Option<VehicleViewport>,
+        allow_polyline: bool,
+    ) -> Vec<LiveRailMarker> {
         let Some(op) = self.operation().filter(|o| !o.invalidated) else {
             return Vec::new();
         };
@@ -220,7 +296,7 @@ impl World {
         let candidates: Vec<_> = op
             .runtime
             .trains()
-            .take(MAX_TRAINS)
+            .take(candidate_limit(view))
             .filter_map(|train| {
                 let TrainState::Moving {
                     entered_ms,
@@ -306,7 +382,11 @@ impl World {
                 if joined.contains(&a.id)
                     || from.alignment_id != a.id
                     || to.alignment_id != a.id
-                    || a.points.len() != 2
+                    // An isolated single-track section is painted on its
+                    // centerline. Joined or lane-changing paths can be
+                    // trimmed or offset and require their own proof.
+                    || !(2..=64).contains(&a.points.len())
+                    || (!allow_polyline && a.points.len() != 2)
                     || a.section_count() != 1
                     || a.track_type != TrackType::Normal
                     || infrastructure.track_count != 1
@@ -328,7 +408,8 @@ impl World {
                 }
                 // The exact distance and rail lane from append_sections are the
                 // proof; no nearest-geometry or screen coordinate inference.
-                let expected = (from.position - to.position).abs() * a.length_m();
+                let length = a.length_m();
+                let expected = (from.position - to.position).abs() * length;
                 // Passing-platform boundaries split an otherwise identical
                 // lane. Recombining their lengths can differ by a few floating
                 // point ulps; any meaningful extra distance implies a detour.
@@ -341,10 +422,18 @@ impl World {
                     return None;
                 }
                 let position = from.position + (to.position - from.position) * c.fraction;
+                let (alignment_start, alignment_end, position) = if a.points.len() == 2 {
+                    (a.points[0], a.points[1], position)
+                } else {
+                    polyline_chord(&a.points, length * position)?
+                };
+                if !in_view(view, alignment_start, alignment_end, position) {
+                    return None;
+                }
                 Some(LiveRailMarker {
                     key: c.key.clone(),
-                    alignment_start: a.points[0],
-                    alignment_end: a.points[1],
+                    alignment_start,
+                    alignment_end,
                     position,
                 })
             })
@@ -483,15 +572,20 @@ fn joined_tram_chord(
             remaining -= piece;
             continue;
         }
-        let mut offset = a.length_m() * (from + (to - from) * (remaining / piece).clamp(0., 1.));
-        for e in a.points.windows(2) {
-            let length = alignment::distance(e[0], e[1]);
-            if length > 0. && offset <= length + 1e-7 {
-                return Some((e[0], e[1], (offset / length).clamp(0., 1.)));
-            }
-            offset -= length;
+        let offset = a.length_m() * (from + (to - from) * (remaining / piece).clamp(0., 1.));
+        return polyline_chord(&a.points, offset);
+    }
+    None
+}
+
+/// Resolve distance by the same physical chord lengths used by Alignment.
+fn polyline_chord(points: &[GeoPoint], mut offset: f64) -> Option<(GeoPoint, GeoPoint, f64)> {
+    for pair in points.windows(2) {
+        let length = alignment::distance(pair[0], pair[1]);
+        if length > 0. && offset <= length + 1e-7 {
+            return Some((pair[0], pair[1], (offset / length).clamp(0., 1.)));
         }
-        return None;
+        offset -= length;
     }
     None
 }
@@ -725,7 +819,104 @@ mod tests {
     }
 
     #[test]
-    fn reverse_run_uses_same_lane_in_reverse_and_unproved_curve_is_absent() {
+    fn offscreen_trains_do_not_spend_the_visible_marker_budget() {
+        let mut world = World::default();
+        let player = world.add_player("player".into()).unwrap();
+        let company = world.add_company(player, "rail".into()).unwrap();
+        let mut configs = Vec::new();
+        let mut latitudes = BTreeMap::new();
+        for i in 0..=MAX_MARKERS {
+            let longitude = 139.;
+            let latitude = 35. + i as f64 * 0.001;
+            let alignment = world
+                .build_alignment(
+                    company,
+                    format!("Rail {i}"),
+                    vec![
+                        GeoPoint {
+                            latitude,
+                            longitude,
+                        },
+                        GeoPoint {
+                            latitude,
+                            longitude: longitude + 0.006,
+                        },
+                    ],
+                )
+                .unwrap();
+            let from = world
+                .place_station_on_alignment(company, format!("A {i}"), alignment, 0.1, 80., 10.)
+                .unwrap();
+            let to = world
+                .place_station_on_alignment(company, format!("B {i}"), alignment, 0.9, 80., 10.)
+                .unwrap();
+            let segments = vec![RouteSegment::Alignment {
+                alignment_id: alignment,
+                from,
+                to,
+            }];
+            let stops = world
+                .preview_service_path(from, segments.clone())
+                .unwrap()
+                .occurrences
+                .into_iter()
+                .map(|visit| visit.reference)
+                .collect();
+            let service_id = world
+                .add_service_path(company, format!("Service {i}"), from, segments, stops)
+                .unwrap();
+            latitudes.insert(service_id.0.to_string(), latitude);
+            configs.push(OperationServiceConfig {
+                service_id,
+                vehicle: Vehicle {
+                    max_speed_kmh: 36.,
+                    acceleration_mps2: 2.,
+                    braking_mps2: 1.,
+                    length_m: 20.,
+                },
+                timetable: Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 0,
+                    headway_ms: 1000,
+                },
+                dwell_ms: 5000,
+            });
+        }
+        world.configure_operation(configs).unwrap();
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(5000, 4096)
+            .unwrap();
+        let global = world.live_ground_rail_markers();
+        assert_eq!(global.len(), MAX_MARKERS);
+        let (wanted, latitude) = latitudes
+            .iter()
+            .find(|(key, _)| !global.iter().any(|marker| &marker.key.service_id == *key))
+            .unwrap();
+        let mercator =
+            |lat: f64| (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0;
+        let scope = VehicleViewport {
+            left: (138.99 + 180.) / 360.,
+            right: (139.01 + 180.) / 360.,
+            top: mercator(latitude + 0.0004),
+            bottom: mercator(latitude - 0.0004),
+        };
+        assert!(!global.iter().any(|m| scope.contains_chord(
+            m.alignment_start,
+            m.alignment_end,
+            m.position
+        )));
+        let before = world.operation_save();
+        let scoped = world.live_rail_markers_in(Some(scope));
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(&scoped[0].key.service_id, wanted);
+        assert_eq!(before, world.operation_save());
+    }
+
+    #[test]
+    fn reverse_run_uses_same_lane_in_reverse_and_legacy_view_is_straight_only() {
         let mut world = fixture(false, false, false);
         let op = world.operation_mut().unwrap();
         let spec = op.runtime.save().services.remove(0);
@@ -749,6 +940,38 @@ mod tests {
         op.runtime.advance_to(5_000, 16).unwrap();
         assert_eq!(op.runtime.trains().count(), 1);
         assert!(curved.live_straight_rail_markers().is_empty());
+    }
+
+    #[test]
+    fn verified_isolated_curve_marker_follows_each_chord_in_both_directions() {
+        let mut world = fixture(true, false, false);
+        let alignment = &world.snapshot().alignments[0];
+        let points = alignment.points.clone();
+        let length = alignment.length_m();
+        let first = alignment::distance(points[0], points[1]);
+        let op = world.operation_mut().unwrap();
+        let spec = op.runtime.save().services.remove(0);
+        let (forward, stand) = op
+            .runtime
+            .unblocked_leg_timing(&spec.service_id, 0)
+            .unwrap();
+        op.runtime.advance_to(5000, 16).unwrap();
+
+        let marker = world.live_ground_rail_markers().pop().unwrap();
+        assert_eq!(
+            [marker.alignment_start, marker.alignment_end],
+            [points[0], points[1]]
+        );
+        assert!((marker.position - (length * 0.1 + 25.) / first).abs() < 1e-10);
+
+        let op = world.operation_mut().unwrap();
+        op.runtime.advance_to(forward + stand + 5000, 32).unwrap();
+        let marker = world.live_ground_rail_markers().pop().unwrap();
+        assert_eq!(
+            [marker.alignment_start, marker.alignment_end],
+            [points[1], points[2]]
+        );
+        assert!((marker.position - (length * 0.9 - 25. - first) / (length - first)).abs() < 1e-10);
     }
 
     #[test]

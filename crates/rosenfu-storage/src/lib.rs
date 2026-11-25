@@ -1080,7 +1080,12 @@ fn write_bounded_save<W: Write>(
 }
 
 fn validate_save_footprint(document: &BorrowedSaveDocument<'_>) -> Result<(), StorageError> {
-    prefer_pretty_save(|layout| write_bounded_save(document, io::sink(), MAX_SAVE_BYTES, layout))?;
+    // Admission only needs to know whether *some* supported wire layout fits.
+    // Pretty JSON adds whitespace to the same tokens, so anything that fits
+    // pretty necessarily fits compact. Count compact once: there is no reason
+    // to measure a pretty prefix on every large edit or reopen, and no output
+    // is written here. The actual encoder still prefers the old pretty bytes.
+    write_bounded_save(document, io::sink(), MAX_SAVE_BYTES, SaveLayout::Compact)?;
     Ok(())
 }
 
@@ -2084,6 +2089,110 @@ mod tests {
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), sibling_count);
         assert_eq!(file_version(&path).unwrap(), updated);
         assert_eq!(fs::read(&backup).unwrap(), canonical);
+    }
+
+    #[test]
+    fn compact_only_preflight_accepts_exactly_the_same_worlds_as_the_writer() {
+        let mut world = World::default();
+        world
+            .add_player("引用符 \"・改行\n・絵文字 🚃".into())
+            .unwrap();
+        let document = checked_save_document(&world).unwrap();
+        let pretty =
+            write_bounded_save(&document, Vec::new(), MAX_SAVE_BYTES, SaveLayout::Pretty).unwrap();
+        let compact =
+            write_bounded_save(&document, Vec::new(), MAX_SAVE_BYTES, SaveLayout::Compact).unwrap();
+        assert!(compact.len() < pretty.len());
+        for limit in [
+            compact.len() - 1,
+            compact.len(),
+            pretty.len() - 1,
+            pretty.len(),
+        ] {
+            let actual = write_bounded_save(&document, io::sink(), limit, SaveLayout::Compact);
+            let former = prefer_pretty_save(|layout| {
+                write_bounded_save(&document, io::sink(), limit, layout)
+            });
+            assert_eq!(actual.is_ok(), former.is_ok(), "limit {limit}");
+        }
+        assert_eq!(encode(&world).unwrap(), pretty);
+    }
+
+    #[test]
+    #[ignore = "manual synthetic storage-preflight comparison"]
+    fn measure_compact_storage_preflight() {
+        use rosenfu_core::world::{AlignmentId, GeoPoint};
+        use std::{hint::black_box, time::Instant};
+        let point = |longitude| GeoPoint {
+            latitude: 35.,
+            longitude,
+        };
+        let mut sample = World::default();
+        let player = sample.add_player("Benchmark".into()).unwrap();
+        let company = sample.add_company(player, "Benchmark".into()).unwrap();
+        sample
+            .build_alignment(company, "Track".into(), vec![point(139.), point(139.01)])
+            .unwrap();
+        let mut base = sample.snapshot().clone();
+        let prototype = base.alignments.pop().unwrap();
+        for count in [100, 1_000, 10_000] {
+            let mut draft = base.clone();
+            for _ in 0..count {
+                let mut row = prototype.clone();
+                row.id = AlignmentId(draft.next_id);
+                draft.next_id += 1;
+                draft.alignments.push(row);
+            }
+            let mut world = World::new(draft).unwrap();
+            // Keep a separate near-cap path at the largest fixture, proving
+            // that only the old probe attempted both layouts.
+            if count == 10_000 {
+                let compact = write_bounded_save(
+                    &save_document(&world),
+                    Vec::new(),
+                    MAX_SAVE_BYTES,
+                    SaveLayout::Compact,
+                )
+                .unwrap();
+                let mut draft = world.snapshot().clone();
+                draft.players[0]
+                    .name
+                    .push_str(&"x".repeat(MAX_SAVE_BYTES - compact.len()));
+                world.replace(draft).unwrap();
+            }
+            let document = checked_save_document(&world).unwrap();
+            let pretty_fits =
+                write_bounded_save(&document, io::sink(), MAX_SAVE_BYTES, SaveLayout::Pretty)
+                    .is_ok();
+            assert_eq!(pretty_fits, count < 10_000);
+            let former = || {
+                prefer_pretty_save(|layout| {
+                    write_bounded_save(black_box(&document), io::sink(), MAX_SAVE_BYTES, layout)
+                })
+            };
+            let current = || validate_save_footprint(black_box(&document));
+            assert_eq!(former().is_ok(), current().is_ok());
+            assert!(current().is_ok());
+            let mut samples = [Vec::new(), Vec::new()];
+            for run in 0..25 {
+                for arm in [run % 2, (run + 1) % 2] {
+                    let begin = Instant::now();
+                    if arm == 0 {
+                        former().unwrap();
+                    } else {
+                        current().unwrap();
+                    }
+                    samples[arm].push(begin.elapsed());
+                }
+            }
+            for sample in &mut samples {
+                sample.sort_unstable();
+            }
+            eprintln!(
+                "alignments={count} pretty_fits={pretty_fits}: former={:?}, compact={:?}",
+                samples[0][12], samples[1][12]
+            );
+        }
     }
 
     #[test]

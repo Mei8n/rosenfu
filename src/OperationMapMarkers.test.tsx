@@ -94,3 +94,49 @@ test('ordinary bus uses the same native snapshot and distinct passive road marke
  expect(container.querySelector('[aria-label="表示できる走行中の列車"]')).not.toBeNull();
  expect(invoke).toHaveBeenCalledTimes(3);
 });
+
+test('paused panning requests one read-only scoped snapshot after settling',async()=>{
+ vi.useFakeTimers();
+ const a={left:.1,right:.2,top:.3,bottom:.4},b={...a,left:.12},c={...a,left:.15};
+ const snap=(bounds:typeof a)=><OperationProvider available blocked={false} epoch={1}
+   worldVersion="one" vehicleViewport={bounds} onChange={()=>{}}>
+   <svg><OperationVehicleLayer camera={camera} scale={2}/></svg>
+ </OperationProvider>;
+ vi.mocked(invoke).mockResolvedValue({...snapshot,paused:true});
+ const {rerender}=render(snap(a));
+ await act(async()=>{});
+ expect(invoke).toHaveBeenCalledWith('operation_snapshot',{vehicleViewport:a});
+ rerender(snap(b));
+ await act(async()=>vi.advanceTimersByTime(80));
+ rerender(snap(c));
+ await act(async()=>vi.advanceTimersByTime(119));
+ expect(invoke).toHaveBeenCalledTimes(1);
+ await act(async()=>vi.advanceTimersByTime(1));
+ expect(invoke).toHaveBeenCalledTimes(2);
+ expect(invoke).toHaveBeenLastCalledWith('operation_snapshot',{vehicleViewport:c});
+ await act(async()=>vi.advanceTimersByTime(1000));
+ expect(invoke).toHaveBeenCalledTimes(2);
+});
+
+test('running panning supplies its latest scope to the existing clock tick',async()=>{
+ vi.useFakeTimers();
+ const a={left:.1,right:.2,top:.3,bottom:.4},b={...a,left:.12};
+ const snap=(bounds:typeof a)=><OperationProvider available blocked={false} epoch={1}
+    worldVersion="one" vehicleViewport={bounds} onChange={()=>{}}><div/></OperationProvider>;
+ vi.mocked(invoke).mockResolvedValue(snapshot);
+ const {rerender}=render(snap(a));
+ await act(async()=>{});
+ rerender(snap(b));
+ expect(invoke).toHaveBeenCalledTimes(1);
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(invoke).toHaveBeenCalledTimes(2);
+ expect(invoke).toHaveBeenLastCalledWith('advance_operation',{knownConfigurationToken:'configuration-1',vehicleViewport:b});
+});
+
+test('marker paint respects narrow-window SVG crop',()=>{
+ const crop={x:400,y:0,width:200,height:600,scale:1};
+ const pointOutside={...marker(),alignment_start:{latitude:35,longitude:138.9},alignment_end:{latitude:35,longitude:138.99}};
+ const {container}=render(<svg><OperationMapMarkers markers={[pointOutside,marker()]} camera={camera} scale={1} crop={crop}/></svg>);
+ expect(container.querySelectorAll('circle')).toHaveLength(1);
+ expect(Number(container.querySelector('circle')?.getAttribute('cx'))).toBeCloseTo(500,6);
+});
