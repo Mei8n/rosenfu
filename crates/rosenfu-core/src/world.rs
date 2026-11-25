@@ -429,6 +429,15 @@ impl World {
     pub fn shared_snapshot(&self) -> std::sync::Arc<WorldDraft> {
         self.data.clone()
     }
+    /// Base for validating a read-only geometry preview. Share the committed
+    /// map and retained road evidence without capturing running simulations.
+    pub fn geometry_preview_base(&self) -> Self {
+        Self {
+            data: self.shared_snapshot(),
+            operation: None,
+            fixed_od_scenario: None,
+        }
+    }
     fn data_mut(&mut self) -> &mut WorldDraft {
         std::sync::Arc::make_mut(&mut self.data)
     }
