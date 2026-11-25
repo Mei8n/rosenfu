@@ -142,11 +142,13 @@ fn installed_release_admission_full_file_roundtrip_and_overwrite_refusal() {
     let checkpoint = encode(&seam).unwrap();
     // The runner reuses only this synthetic checkpoint in a separately
     // built, unmodified release catalog. Never bake the QA tiles there.
-    std::fs::write(
-        std::env::var_os("ROSENFU_QA_SEAM_CHECKPOINT").unwrap(),
-        &checkpoint,
-    )
-    .unwrap();
+    let process_checkpoint =
+        std::path::PathBuf::from(std::env::var_os("ROSENFU_QA_SEAM_CHECKPOINT").unwrap());
+    assert_eq!(
+        save_world(&process_checkpoint, &seam).unwrap(),
+        SaveOutcome::Created
+    );
+    assert_eq!(std::fs::read(process_checkpoint).unwrap(), checkpoint);
     let mut wire: serde_json::Value = serde_json::from_slice(&checkpoint).unwrap();
     assert_eq!(wire["schema_version"], 36);
     assert_eq!(encode(&decode(&checkpoint).unwrap()).unwrap(), checkpoint);

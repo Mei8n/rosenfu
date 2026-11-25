@@ -11,7 +11,7 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const MANIFEST_LIMIT: usize = 256 * 1024;
 
-fn read_local(path: &Path, max: usize) -> Result<Vec<u8>> {
+pub(super) fn read_local(path: &Path, max: usize) -> Result<Vec<u8>> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_file() || meta.len() > max as u64 {
         return Err("input must be a bounded regular file".into());

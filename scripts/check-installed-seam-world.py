@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in QA: test installed seam saves without exposing test trust in product builds."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -90,7 +91,55 @@ def synthetic_release():
     return compact({"version": 1, "receipts": [receipt]}), compact(fixture)
 
 
+def cold_restart(command, scratch, env, test_name, isolated_network):
+    # Find the compiled test executable from Cargo, then launch it directly:
+    # no Cargo/package process, fixture blobs, or previous user profile at reopen.
+    compilation = subprocess.run(
+        command + ["--no-run", "--message-format=json"],
+        cwd=scratch,
+        env=env,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    artifacts = [json.loads(line) for line in compilation.stdout.splitlines()]
+    [executable] = [
+        item["executable"]
+        for item in artifacts
+        if item["reason"] == "compiler-artifact"
+        and item["target"]["name"] == test_name
+        and item.get("executable")
+    ]
+    cold_env = {
+        key: env[key]
+        for key in ("SystemRoot", "WINDIR", "PATH", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
+        if key in env
+    }
+    profile = scratch / "cold-profile"
+    for key in ("HOME", "USERPROFILE", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+                "XDG_CONFIG_HOME", "XDG_STATE_HOME", "LOCALAPPDATA", "APPDATA"):
+        path = profile / key
+        path.mkdir(parents=True)
+        cold_env[key] = str(path)
+    cold_env["ROSENFU_QA_SEAM_CHECKPOINT"] = env["ROSENFU_QA_SEAM_CHECKPOINT"]
+    if isolated_network:
+        cold_env["ROSENFU_QA_SEAM_REQUIRE_NO_ROUTE"] = "1"
+    subprocess.run(
+        (["unshare", "-Urn", "--"] if isolated_network else [])
+        + [executable, "--exact", "cold_process_reopens_and_finishes_checkpoint", "--nocapture"],
+        cwd=cold_env["HOME"],
+        env=cold_env,
+        check=True,
+    )
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--isolate-network", action="store_true",
+        help="require a Linux user/network namespace for the cold reader (never silently falls back)",
+    )
+    args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     # git archive admits only committed tracked files, never untracked user
     # data, hooks or credential settings. No clones/fetches across a network.
@@ -113,6 +162,8 @@ def main():
         test_folder.mkdir(exist_ok=True)
         test_name = "generated_installed_seam_world"
         shutil.copyfile(scratch / "scripts/qa/installed_seam_world.rs", test_folder / f"{test_name}.rs")
+        cold_test = "generated_installed_seam_cold_reader"
+        shutil.copyfile(scratch / "scripts/qa/installed_seam_cold_reader.rs", test_folder / f"{cold_test}.rs")
         synthetic_manifest, fixture = synthetic_release()
         (test_folder / f"{test_name}.json").write_bytes(fixture)
 
@@ -134,6 +185,8 @@ def main():
             env=env,
             check=True,
         )
+        # The reader binary itself contains no embedded raw test fixture.
+        cold_restart(command[:-1] + [cold_test], scratch, env, cold_test, args.isolate_network)
         manifest.write_bytes(production_bytes)
         subprocess.run(
             command + ["unmodified_release_rejects_the_checkpoint_without_overwrite"],
