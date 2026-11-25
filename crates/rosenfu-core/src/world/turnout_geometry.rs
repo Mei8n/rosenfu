@@ -186,10 +186,58 @@ pub struct TrackRenderGeometry {
     pub lanes: Vec<TrackLaneGeometry>,
     pub movements: Vec<TrackMovementGeometry>,
 }
+type EndpointLane = (AlignmentId, u8);
+type SectionLane = (AlignmentId, usize, u8);
+
+struct LaneJoinIndex<'a> {
+    endpoints: BTreeMap<EndpointLane, Vec<&'a TrackMovementGeometry>>,
+    internal: BTreeMap<SectionLane, Vec<&'a InternalTrackMovementGeometry>>,
+}
+
+impl<'a> LaneJoinIndex<'a> {
+    fn new(
+        endpoints: &'a [TrackMovementGeometry],
+        internal: &'a [InternalTrackMovementGeometry],
+    ) -> Self {
+        let mut result = Self {
+            endpoints: BTreeMap::new(),
+            internal: BTreeMap::new(),
+        };
+        // Keep the movement order within each lane. Equal positions still
+        // select the last matching join, exactly as the full scan did.
+        for movement in endpoints {
+            let from = movement.movement.from;
+            result
+                .endpoints
+                .entry((from.endpoint.alignment_id, from.lane_index))
+                .or_default()
+                .push(movement);
+        }
+        for movement in internal {
+            let from = movement.movement.from;
+            result
+                .internal
+                .entry((from.alignment_id, from.section_index, from.lane_index))
+                .or_default()
+                .push(movement);
+        }
+        result
+    }
+
+    fn endpoint(&self, key: EndpointLane) -> &[&'a TrackMovementGeometry] {
+        self.endpoints.get(&key).map_or(&[], Vec::as_slice)
+    }
+
+    fn internal(&self, key: SectionLane) -> &[&'a InternalTrackMovementGeometry] {
+        self.internal.get(&key).map_or(&[], Vec::as_slice)
+    }
+}
+
 impl World {
     pub fn track_render_geometry(&self) -> Result<TrackRenderGeometry, WorldError> {
         let movements = self.track_movement_geometries()?;
         let internal_movements = self.internal_track_movement_geometries()?;
+        let joins = LaneJoinIndex::new(&movements, &internal_movements);
         let mut lanes = Vec::new();
         for a in &self.data.alignments {
             let length = a.length_m();
@@ -213,11 +261,8 @@ impl World {
                     let mut high = positions[anchors[1]];
                     let mut low_join = None;
                     let mut high_join = None;
-                    for movement in &movements {
+                    for movement in joins.endpoint((a.id, lane_index)) {
                         let port = movement.movement.from;
-                        if port.endpoint.alignment_id != a.id || port.lane_index != lane_index {
-                            continue;
-                        }
                         let t = movement.from_position;
                         let join = movement.points[0];
                         match port.endpoint.endpoint {
@@ -234,14 +279,8 @@ impl World {
                             _ => {}
                         }
                     }
-                    for movement in &internal_movements {
+                    for movement in joins.internal((a.id, section_index, lane_index)) {
                         let port = movement.movement.from;
-                        if port.alignment_id != a.id
-                            || port.section_index != section_index
-                            || port.lane_index != lane_index
-                        {
-                            continue;
-                        }
                         match port.side {
                             AlignmentEndpoint::Start if movement.from_position >= low => {
                                 low = movement.from_position;
@@ -643,6 +682,98 @@ mod speed_tests {
         let r = 0.000_321_234;
         let roots = poly_roots_unit(&[r * r, -2.0 * r, 1.0]);
         assert!(roots.iter().any(|x| (*x - r).abs() < 1e-10));
+    }
+
+    #[test]
+    fn lane_join_index_matches_scan_order_without_unrelated_candidates() {
+        let position = |id| GeoPoint {
+            latitude: f64::from(id),
+            longitude: 139.0,
+        };
+        let endpoint = |id, lane_index, side, point| {
+            let from = TrackLanePort {
+                endpoint: AlignmentEndpointRef {
+                    alignment_id: AlignmentId(id),
+                    endpoint: side,
+                },
+                lane_index,
+            };
+            TrackMovementGeometry {
+                properties: TurnoutMovementProperties::validation_only(),
+                movement: TrackMovement {
+                    from,
+                    to: from,
+                    point: None,
+                },
+                from_position: 0.25,
+                to_position: 0.25,
+                points: vec![position(point)],
+            }
+        };
+        let internal = |id, section_index, lane_index, side, point| {
+            let from = TrackSectionPort {
+                alignment_id: AlignmentId(id),
+                section_index,
+                lane_index,
+                side,
+            };
+            InternalTrackMovementGeometry {
+                properties: TurnoutMovementProperties::validation_only(),
+                movement: InternalTrackMovement {
+                    from,
+                    to: from,
+                    point: None,
+                },
+                from_position: 0.5,
+                to_position: 0.5,
+                points: vec![position(point)],
+            }
+        };
+        let start = AlignmentEndpoint::Start;
+        let end = AlignmentEndpoint::End;
+        let mut endpoints = vec![endpoint(1, 0, start, 31)];
+        let mut internals = vec![internal(1, 0, 0, end, 35)];
+        // Finite candidate vectors include many geographically unrelated lanes.
+        for id in 2..=1001 {
+            endpoints.push(endpoint(id, 0, start, 33));
+            internals.push(internal(id, 0, 0, end, 36));
+        }
+        // Insert a later match at the same position, different lanes and sections.
+        endpoints.push(endpoint(1, 0, start, 32));
+        endpoints.push(endpoint(1, 1, end, 34));
+        internals.push(internal(1, 1, 0, start, 37));
+        internals.push(internal(1, 0, 0, end, 38));
+        internals.push(internal(1, 0, 1, end, 39));
+        let index = LaneJoinIndex::new(&endpoints, &internals);
+        for lane in 0..=2 {
+            let expected: Vec<_> = endpoints
+                .iter()
+                .filter(|m| {
+                    m.movement.from.endpoint.alignment_id == AlignmentId(1)
+                        && m.movement.from.lane_index == lane
+                })
+                .collect();
+            assert_eq!(index.endpoint((AlignmentId(1), lane)), expected.as_slice());
+            for section in 0..=2 {
+                let expected: Vec<_> = internals
+                    .iter()
+                    .filter(|m| {
+                        let from = m.movement.from;
+                        from.alignment_id == AlignmentId(1)
+                            && from.lane_index == lane
+                            && from.section_index == section
+                    })
+                    .collect();
+                assert_eq!(
+                    index.internal((AlignmentId(1), section, lane)),
+                    expected.as_slice()
+                );
+            }
+        }
+        assert_eq!(index.endpoint((AlignmentId(1), 0)).len(), 2);
+        assert_eq!(index.internal((AlignmentId(1), 0, 0)).len(), 2);
+        assert!(index.endpoint((AlignmentId(1002), 0)).is_empty());
+        assert!(index.internal((AlignmentId(1002), 0, 0)).is_empty());
     }
 
     #[test]
