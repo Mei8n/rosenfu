@@ -83,6 +83,31 @@ impl World {
         Ok(())
     }
 
+    pub fn clear_standard_timetable(
+        &mut self,
+        expected: &WorldOperationSave,
+        player: PlayerId,
+        company: CompanyId,
+        service: ServiceId,
+    ) -> Result<(), OperationError> {
+        self.check_standard_owner(player, company, service)?;
+        if self.operation_save().as_ref() != Some(expected) {
+            return Err(OperationError::ReservationScopeChanged);
+        }
+        self.validate_standard_physics(expected, service)?;
+        let op = self.operation_mut().ok_or(OperationError::InvalidClock)?;
+        if op.invalidated || op.pending_target.is_some() {
+            return Err(OperationError::InvalidClock);
+        }
+        if op.standard_owner != Some((player, company)) {
+            return Err(OperationError::InvalidTimetable);
+        }
+        op.runtime
+            .clear_standard_timetable(&service.0.to_string())?;
+        op.standard_owner = None;
+        Ok(())
+    }
+
     /// Check the same exact physical compatibility and archived runtime that
     /// the ordinary loader would require after a proposed world edit.
     pub fn validate_retained_standard_timetable(&self) -> Result<(), OperationError> {

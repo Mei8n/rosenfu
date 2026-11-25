@@ -299,6 +299,27 @@ test.each([false,true])('an unavailable native return cannot be committed as out
  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
 });
 
+test.each([false,true])('a normal mapped one-way route must be chosen explicitly and validated by native (waypoints = %s)',async waypoints=>{
+ const map=(await setup({roundTrip:true,waypoints,autoStart:false,preview:async args=>{
+  const path=(args as {path:{pattern?:string}}).path;
+  return path.pattern==='openRoundTrip'?{points:[a,b],lengthM:380,returnUnavailableReason:'復路なし'}:{points:[a,b],lengthM:380};
+ }}))!;
+ const direction=screen.getByRole<HTMLSelectElement>('combobox',{name:'新しいバス系統の運行方向'});
+ expect(direction.value).toBe('roundTrip');
+ fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
+ fireEvent.change(direction,{target:{value:'oneWay'}});
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
+ expect(screen.getByText('運行方向: 片道')).toBeTruthy();
+ map.from();map.to();await screen.findByText('道路経路 380 m・停留所2か所');
+ const request=vi.mocked(invoke).mock.calls.find(c=>c[0]==='preview_gameplay_ofm_bus')?.[1];
+ expect(request).not.toHaveProperty('path.pattern');
+ expect(request).toMatchObject({path:{respectOneway:true,tileKey:key,tileRawSha256:raw}});
+ expect(screen.queryByLabelText('バス系統の復路プレビュー')).toBeNull();
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',request));
+});
+
 test('legacy open line edit preserves the absent return marker after engine upgrade',async()=>{
  const map=(await setup({multiple:true,roundTrip:true,autoStart:false,preview:async()=>({points:[a,b],lengthM:380})}))!;
  const select=screen.getByRole<HTMLSelectElement>('combobox',{name:'表示するバス系統'});
@@ -533,6 +554,35 @@ test('ordinary buses place and rename an on-route stop; no world writes before e
  })));
  const put=vi.mocked(invoke).mock.calls.find(c=>c[0]==='put_gameplay_ofm_bus')?.[1];
  expect(put).not.toHaveProperty('requestStopTargets');
+});
+
+test('lists manual stops in outbound travel order rather than click order, without altering saved identity or order',async()=>{
+ const occurrenceKey='a'.repeat(64);
+ const {map}=(await setup({waypoints:true,interiorStops:true,multiple:true,savedProof:true,autoStart:false,preview:async args=>{
+  const req=args as {path:{interiorStops?:{id:string;name:string;fractionQ:number}[]}};
+  return {points:[a,b],lengthM:370,stopOccurrenceKeys:[occurrenceKey],interiorStops:req.path.interiorStops?.map(stop=>({
+   id:stop.id,stopId:'native:'+stop.id,name:stop.name,servesReturn:false,
+   point:{latitude:a.latitude,longitude:a.longitude+(b.longitude-a.longitude)*stop.fractionQ/1_000_000},
+  }))};
+ }}))!;
+ fireEvent.click(screen.getByRole('button',{name:'停留所を編集'}));
+ const route=await screen.findByLabelText('停留所を置くバス経路');
+ const [x0,y0,x1,y1]=route.querySelector('path')!.getAttribute('d')!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+ const onRoute=(fraction:number)=>fireEvent.click(map,{clientX:x0+(x1-x0)*fraction,clientY:y0+(y1-y0)*fraction});
+ onRoute(.75);
+ await screen.findByRole('textbox',{name:'停留所名 1'});
+ onRoute(.25);
+ await screen.findByRole('textbox',{name:'停留所名 2'});
+ const ordered=screen.getByRole('list',{name:'往路の停車順'});
+ expect([...ordered.querySelectorAll('input')].map(input=>input.value)).toEqual(['停留所 2','停留所 1']);
+ expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'停留所の編集を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({
+  routeId:'owned-a',path:expect.objectContaining({interiorStops:[
+   expect.objectContaining({name:'停留所 1',fractionQ:750000}),
+   expect.objectContaining({name:'停留所 2',fractionQ:250000}),
+  ]}),
+ })));
 });
 
 test('an intermediate stop moves on its confirmed route without changing its identity',async()=>{

@@ -16,7 +16,7 @@ function clockMinutes(m:number){return `${String(Math.floor(m/60)).padStart(2,'0
 function number(raw:string,min:number,max:number){const n=Number(raw);return /^[0-9]+$/.test(raw)&&Number.isSafeInteger(n)&&n>=min&&n<=max?n:null;}
 const bandNames=[...frequencyBands.map(row=>row[1]),'深夜の終了'];
 
-export function StandardSchedulePanel({service,revision,operationToken,currentHeadwayMs,enabled,canApply,applyBlocker,apply}:{service:string;revision:string;operationToken:string;currentHeadwayMs?:number;enabled:boolean;canApply:boolean;applyBlocker?:string|null;apply:(args:ApplyStandardSchedule)=>Promise<void>}){
+export function StandardSchedulePanel({service,revision,operationToken,currentHeadwayMs,originalLastDepartureMs,nowMs,enabled,canApply,applyBlocker,apply,restore}:{service:string;revision:string;operationToken:string;currentHeadwayMs?:number;originalLastDepartureMs?:number;nowMs?:number;enabled:boolean;canApply:boolean;applyBlocker?:string|null;apply:(args:ApplyStandardSchedule)=>Promise<void>;restore?:(args:{service:string;expected:string})=>Promise<void>}){
  const [status,setStatus]=useState<Status|null>(null),[error,setError]=useState('');
  const currentMinutes=(currentHeadwayMs??0)/minute;
  const inheritedBase=Number.isInteger(currentMinutes)&&currentMinutes>=1&&currentMinutes<=240?String(currentMinutes):'';
@@ -82,7 +82,12 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
    <button type="submit" disabled={!enabled||!canApply}>{authored?'変更を適用':'時間帯ダイヤを適用'}</button>
    {authored&&<button type="button" onClick={()=>{setEditing(false);setError('');}}>変更を取り消す</button>}
   </form>:status&&!authored?<p>この系統ではまだ利用できません。対応する往復系統を従来方式で設定してください。</p>:!status&&!error&&<p>利用条件を確認中…</p>}
-  {authored&&<p>時間帯ダイヤをやめて従来の方式に戻すには「運行をリセット」を使います。時刻、運行中の車両、鉄道・バスの全ダイヤが消去されます。線路・駅・停留所・路線・系統と固定OD設定は残ります。</p>}
+  {authored&&restore&&<div>
+   <p>元の簡易ダイヤに戻すと、この系統の今後の発車だけが変わります。時刻や他の系統のダイヤはそのままです。</p>
+   {nowMs!==undefined&&originalLastDepartureMs!==undefined&&originalLastDepartureMs<=nowMs&&<p>元の終発は過ぎています。戻した後に、簡易ダイヤの発車時刻を設定し直してください。</p>}
+   {!canApply&&!editing&&<p role="status">{applyBlocker??'車両がいない状態で運行を一時停止してください。'}</p>}
+   <button type="button" disabled={!enabled||!canApply||editing} onClick={()=>void restore({service,expected:operationToken})}>元の簡易ダイヤに戻す</button>
+  </div>}
  </section>;
 }
 

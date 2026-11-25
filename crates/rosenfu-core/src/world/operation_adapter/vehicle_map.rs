@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LiveRailMarker {
     pub key: TrainKey,
+    /// A commit-time movement identity lets the map blend samples only within
+    /// the same run leg, never across a stop or direction change.
+    pub entered_ms: u64,
     /// Exact painted chord containing the native position, not station coordinates.
     pub alignment_start: GeoPoint,
     pub alignment_end: GeoPoint,
@@ -20,6 +23,7 @@ pub struct LiveRailMarker {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LiveBusMarker {
     pub key: TrainKey,
+    pub entered_ms: u64,
     pub edge_start: GeoPoint,
     pub edge_end: GeoPoint,
     pub position: f64,
@@ -82,6 +86,7 @@ const MAX_ROWS_PER_TABLE: usize = 8_192;
 
 struct Candidate<'a> {
     key: &'a TrainKey,
+    entered_ms: u64,
     line: AlignmentId,
     from: StationId,
     to: StationId,
@@ -182,6 +187,7 @@ impl World {
                 }
                 Some(LiveBusMarker {
                     key: train.key.clone(),
+                    entered_ms,
                     edge_start,
                     edge_end,
                     position,
@@ -267,6 +273,7 @@ impl World {
                     }
                     Some(LiveRailMarker {
                         key: train.key.clone(),
+                        entered_ms,
                         alignment_start,
                         alignment_end,
                         position,
@@ -320,6 +327,7 @@ impl World {
                 }
                 Some(Candidate {
                     key: &train.key,
+                    entered_ms,
                     line: AlignmentId(line),
                     from: StationId(leg.from.parse().ok()?),
                     to: StationId(leg.to.parse().ok()?),
@@ -432,6 +440,7 @@ impl World {
                 }
                 Some(LiveRailMarker {
                     key: c.key.clone(),
+                    entered_ms: c.entered_ms,
                     alignment_start,
                     alignment_end,
                     position,

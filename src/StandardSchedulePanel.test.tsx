@@ -34,7 +34,6 @@ test('applied native timetable displays the finite window and explicit OD, not a
  assignment:{rail:[{trips:70,time:{wait_seconds:360,ride_seconds:150}}],alternative_trips:30,unserved_trips:0,unresolved_trips:0}});
  render(panel(false));
  expect(await screen.findByText(/終了後に自動で延長しません/)).toBeTruthy();
- expect(screen.getByText(/鉄道・バスの全ダイヤが消去されます/)).toBeTruthy();
  expect(screen.getByText(/朝ラッシュ 06:00～10:00：6分おき/)).toBeTruthy();
  expect(screen.queryByRole('button',{name:'時間帯ダイヤを適用'})).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'この時間の固定ODを試算'}));

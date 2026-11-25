@@ -98,6 +98,26 @@ pub fn apply_standard_schedule(
 }
 
 #[tauri::command]
+pub fn restore_simple_rail_schedule(
+    editor: State<'_, Mutex<WorldEditor>>,
+    service: ServiceId,
+    expected: String,
+) -> Result<OperationView, String> {
+    #[cfg(feature = "standard-periodic-rail")]
+    {
+        editor
+            .lock()
+            .map_err(|_| "world state unavailable")?
+            .restore_simple_rail_schedule(service, &expected)
+    }
+    #[cfg(not(feature = "standard-periodic-rail"))]
+    {
+        let _ = (editor, service, expected);
+        Err("このビルドでは時間帯ダイヤを利用できません。".into())
+    }
+}
+
+#[tauri::command]
 pub fn preview_standard_schedule_od(
     editor: State<'_, Mutex<WorldEditor>>,
     service: ServiceId,

@@ -16,7 +16,7 @@ type BusConfig=Config&{route_id:string;assumed_speed_kmh:number;turnaround_ms?:n
 type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'platform'|'track';wait_scope?:'held_across_connections'|'needs_across_connections';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
 export type OperationView={standard_schedule_active?:boolean;now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown;bus_markers?:unknown};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
-type Commands={apply_standard_schedule:ApplyStandardSchedule;reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
+type Commands={apply_standard_schedule:ApplyStandardSchedule;restore_simple_rail_schedule:{service:string;expected:string};reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
 type OperationContext={view:OperationView|null;crossingPlanningToken?:string;busy:boolean;blocked:boolean;error:string;refresh:()=>Promise<void>;send:<K extends keyof Commands>(command:K,args:Commands[K])=>Promise<void>};
 const Context=createContext<OperationContext|null>(null);
 const speeds=[1,2,4,8,16] as const;
@@ -130,8 +130,10 @@ export function OperationVehicleLayer({camera,scale,crop}:{camera:Camera;scale:n
  const view=state?.view;
  if(!state?.crossingPlanningToken||state.blocked||!view||view.invalidated)return null;
  return <>
-  <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale} crop={crop}/>
-  <OperationMapMarkers markers={view.bus_markers} camera={camera} scale={scale} crop={crop} mode="bus"/>
+  <OperationMapMarkers markers={view.rail_markers} camera={camera} scale={scale} crop={crop}
+   clockMs={view.now_ms} animate={!view.paused&&!view.catching_up}/>
+  <OperationMapMarkers markers={view.bus_markers} camera={camera} scale={scale} crop={crop} mode="bus"
+   clockMs={view.now_ms} animate={!view.paused&&!view.catching_up}/>
  </>;
 }
 
@@ -245,10 +247,10 @@ export function ServiceOperations({serviceId,enabled,standardEnabled=false}:{ser
   <h4>運行</h4>
   {standardEnabled&&state.crossingPlanningToken&&<StandardSchedulePanel key={serviceId+':'+state.crossingPlanningToken}
    service={serviceId} revision={state.crossingPlanningToken} operationToken={view.timetable_edit_token}
-   currentHeadwayMs={config?.timetable.headway_ms}
+   currentHeadwayMs={config?.timetable.headway_ms} originalLastDepartureMs={config?.timetable.last_departure_ms} nowMs={view.now_ms}
    enabled={enabled&&!busy&&!blocked&&!view.invalidated}
    canApply={!!config&&!standardBlocker} applyBlocker={standardBlocker}
-   apply={args=>send('apply_standard_schedule',args)}/>}
+   apply={args=>send('apply_standard_schedule',args)} restore={args=>send('restore_simple_rail_schedule',args)}/>}
   {view.standard_schedule_active?<p>時間帯ダイヤを使用中のため、従来のダイヤ編集と編成試算は利用できません。</p>:
    standardEnabled?<details><summary>時刻・車両の設定（従来方式）</summary>{advanced}</details>:advanced}
   <ActiveVehicles trains={trains} configured={!!config} now={view.now_ms} invalidated={view.invalidated}/>

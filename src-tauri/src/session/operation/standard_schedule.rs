@@ -201,6 +201,34 @@ impl WorldEditor {
         Ok(self.operation_snapshot())
     }
 
+    pub fn restore_simple_rail_schedule(
+        &mut self,
+        service: ServiceId,
+        expected: &str,
+    ) -> Result<OperationView, String> {
+        let actor = self.standard_actor(service)?;
+        self.require_current_timetable_token(expected)?;
+        let saved = self
+            .world
+            .operation_save()
+            .ok_or("運行が設定されていません。")?;
+        let mut candidate = self.world.clone();
+        candidate
+            .clear_standard_timetable(&saved, actor, self.company, service)
+            .map_err(|err| match err {
+                rosenfu_core::operation::OperationError::InvalidClock => {
+                    "運行を一時停止し、全車両が運行を終えてから変更してください。".to_owned()
+                }
+                _ => "この系統の元の簡易ダイヤに戻せません。設定は変更していません。".to_owned(),
+            })?;
+        rosenfu_storage::ensure_world_saveable(&candidate)
+            .map_err(|_| "ダイヤを保存できません。変更していません。".to_owned())?;
+        self.world = candidate;
+        self.operation_tick = None;
+        self.update_operation_revision();
+        Ok(self.operation_snapshot())
+    }
+
     pub fn preview_standard_schedule_od(
         &self,
         service: ServiceId,

@@ -1281,6 +1281,21 @@ mod tests {
             }
             assert_eq!(grid.departure_count(7 * DAY + 60_000..8 * DAY), 0);
         }
+
+        let active = e.operation_snapshot();
+        assert!(e.restore_simple_rail_schedule(service, "stale").is_err());
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), encoded);
+        let restored = e
+            .restore_simple_rail_schedule(service, &active.timetable_edit_token)
+            .unwrap();
+        assert!(!restored.standard_schedule_active);
+        assert_eq!(restored.now_ms, active.now_ms);
+        assert_eq!(restored.services[0].timetable, before.services[0].timetable);
+        let simple = rosenfu_storage::encode(&e.world).unwrap();
+        assert_eq!(
+            rosenfu_storage::encode(&rosenfu_storage::decode(&simple).unwrap()).unwrap(),
+            simple
+        );
     }
 
     #[cfg(feature = "standard-periodic-rail")]

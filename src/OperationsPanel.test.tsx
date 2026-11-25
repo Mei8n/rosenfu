@@ -542,3 +542,23 @@ test('read-only fleet estimates are available but cannot mutate a blocked timeta
  expect(screen.queryByRole('button',{name:'試算した間隔を現在のダイヤに反映'})).toBeNull();
  expect(invoke).not.toHaveBeenCalledWith('configure_operation_service',expect.anything());
 });
+
+test('returns only the selected rail service to its existing simple schedule with no clock reset',async()=>{
+ const running={...snapshot,now_ms:70_000_000,timetable_edit_token:'standard-stop',configuration_token:'std',
+  standard_schedule_active:true,services:[config]};
+ const status={configurationToken:'std',serviceId:'12',canApply:true,activeElsewhere:false,departureCount:200,origin:null,destinations:[],
+  authored:{baseMinutes:6,overrides:{earlyMorning:null,morningRush:null,midday:null,eveningRush:null,lateNight:null},
+  boundariesMinutes:[0,360,600,960,1200,1440],startMs:60_000,endMs:86_460_000}};
+ vi.mocked(invoke).mockImplementation(async command=>command==='standard_schedule_status'?status:
+  command==='restore_simple_rail_schedule'?{...running,configuration_token:'simple',standard_schedule_active:false}:running);
+ render(<OperationProvider available blocked={false} epoch={1} onChange={vi.fn()}>
+  <OperationClock/><ServiceOperations serviceId="12" enabled standardEnabled/>
+ </OperationProvider>);
+ const restore=await screen.findByRole('button',{name:'元の簡易ダイヤに戻す'});
+ expect(screen.getByText(/元の終発は過ぎています/)).toBeTruthy();
+ expect(invoke).not.toHaveBeenCalledWith('restore_simple_rail_schedule',expect.anything());
+ fireEvent.click(restore);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('restore_simple_rail_schedule',{service:'12',expected:'standard-stop'}));
+ expect(invoke).not.toHaveBeenCalledWith('reset_operation',undefined);
+ expect(screen.getByText('1日目 19:26')).toBeTruthy();
+});

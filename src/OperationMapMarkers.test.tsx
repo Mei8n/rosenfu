@@ -140,3 +140,42 @@ test('marker paint respects narrow-window SVG crop',()=>{
  expect(container.querySelectorAll('circle')).toHaveLength(1);
  expect(Number(container.querySelector('circle')?.getAttribute('cx'))).toBeCloseTo(500,6);
 });
+
+test('map motion only blends two committed samples on the same run and chord',()=>{
+ const cancel=vi.fn();
+ const animate=vi.fn(()=>({cancel}));
+ const previous=Object.getOwnPropertyDescriptor(SVGElement.prototype,'animate');
+ Object.defineProperty(SVGElement.prototype,'animate',{configurable:true,value:animate});
+ const matchMedia=vi.fn(()=>({matches:false}));
+ vi.stubGlobal('matchMedia',matchMedia);
+ const scene=(position:number,clockMs:number,enteredMs=0,keepMoving=true,activeCamera=camera,end=139.001)=><svg>
+   <OperationMapMarkers markers={[{...marker(position),entered_ms:enteredMs,alignment_end:{latitude:35,longitude:end}}]}
+     camera={activeCamera} scale={1} clockMs={clockMs} animate={keepMoving}/>
+ </svg>;
+ try{
+  const {container,rerender}=render(scene(.2,1000));
+  expect(animate).not.toHaveBeenCalled();
+  const before=Number(container.querySelector('circle')?.getAttribute('cx'));
+  rerender(scene(.4,1500));
+  const after=Number(container.querySelector('circle')?.getAttribute('cx'));
+  expect(after).toBeGreaterThan(before);
+  expect(animate).toHaveBeenCalledExactlyOnceWith(
+    [{transform:`translate(${before-after}px,0px)`},{transform:'translate(0px,0px)'}],
+    {duration:180,easing:'linear'},
+  );
+  rerender(scene(.6,2000,1600)); // a different leg on the same chord
+  expect(cancel).toHaveBeenCalledOnce();
+  rerender(scene(.7,2500,1600,true,camera,139.002)); // another chord
+  rerender(scene(.8,3000,1600,true,{...camera,longitude:139.0005},139.002)); // pan
+  rerender(scene(.9,3500,1600,false,{...camera,longitude:139.0005},139.002)); // pause
+  expect(animate).toHaveBeenCalledOnce();
+  rerender(scene(.9,3500,1600,true,{...camera,longitude:139.0005},139.002));
+  matchMedia.mockReturnValue({matches:true});
+  rerender(scene(1,4000,1600,true,{...camera,longitude:139.0005},139.002));
+  expect(animate).toHaveBeenCalledOnce(); // OS requests reduced motion
+ }finally{
+  if(previous)Object.defineProperty(SVGElement.prototype,'animate',previous);
+  else Reflect.deleteProperty(SVGElement.prototype,'animate');
+  vi.unstubAllGlobals();
+ }
+});
