@@ -1127,7 +1127,7 @@ impl World {
         };
         operation
             .runtime
-            .set_preferred_opposing_birth(self.opposing_birth_priority(&operation));
+            .set_preferred_opposing_births(self.opposing_birth_priorities(&operation));
         Ok(operation)
     }
     pub fn operation_save(&self) -> Option<WorldOperationSave> {
@@ -1390,7 +1390,7 @@ impl World {
         };
         operation
             .runtime
-            .set_preferred_opposing_birth(self.opposing_birth_priority(&operation));
+            .set_preferred_opposing_births(self.opposing_birth_priorities(&operation));
         self.operation = Some(operation);
         Ok(())
     }
@@ -2555,19 +2555,16 @@ impl World {
                             != o.runtime.service_spec(&format!("bus:{}", config.route_id))
                     })
             });
-        let priority = (!invalid)
-            .then(|| {
-                self.operation
-                    .as_ref()
-                    .and_then(|o| self.opposing_birth_priority(o))
-            })
-            .flatten();
+        let priorities = if invalid {
+            Vec::new()
+        } else {
+            self.operation
+                .as_ref()
+                .map_or_else(Vec::new, |o| self.opposing_birth_priorities(o))
+        };
         if let Some(o) = &mut self.operation {
-            let lost_active_siding_proof = o
-                .runtime
-                .active_preferred_opposing_birth()
-                .is_some_and(|started| Some(started) != priority.as_deref());
-            o.runtime.set_preferred_opposing_birth(priority);
+            let lost_active_siding_proof = o.runtime.loses_active_opposing_birth_proof(&priorities);
+            o.runtime.set_preferred_opposing_births(priorities);
             if invalid || lost_active_siding_proof {
                 o.invalidated = true;
                 o.runtime.set_paused(true);

@@ -363,6 +363,212 @@ fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_
     }
 }
 
+#[test]
+fn disconnected_running_service_does_not_defeat_a_meet_but_shared_authority_does() {
+    let (mut base, mut configs, _, [start, main, siding, end]) = meeting_loop(true);
+    let owner = base.snapshot().companies[0].id;
+    let through = configs[0].service_id;
+    let path = base
+        .snapshot()
+        .service_paths
+        .iter()
+        .find(|path| path.service_id == through)
+        .unwrap()
+        .clone();
+    let route = base
+        .route_candidates_via(start, end, &[main])
+        .unwrap()
+        .candidates
+        .into_iter()
+        .find(|c| c.stations == [start, main, end])
+        .unwrap()
+        .segments;
+    let stops = base
+        .preview_service_path_replacement(owner, through, start, route.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .filter(|p| p.station_id != main)
+        .map(|p| p.reference)
+        .collect::<Vec<_>>();
+    base.replace_service_path(
+        owner,
+        through,
+        path,
+        "Through".into(),
+        start,
+        route.clone(),
+        stops,
+    )
+    .unwrap();
+
+    let local = configs[1].service_id;
+    let local_path = base
+        .snapshot()
+        .service_paths
+        .iter()
+        .find(|path| path.service_id == local)
+        .unwrap()
+        .clone();
+    let local_route = base
+        .route_candidates_via(end, start, &[siding])
+        .unwrap()
+        .candidates
+        .into_iter()
+        .find(|c| c.stations == [end, siding, start])
+        .unwrap()
+        .segments;
+    let local_stops = base
+        .preview_service_path_replacement(owner, local, end, local_route.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .map(|p| p.reference)
+        .collect();
+    base.replace_service_path(
+        owner,
+        local,
+        local_path,
+        "Siding".into(),
+        end,
+        local_route,
+        local_stops,
+    )
+    .unwrap();
+
+    let tie_at = 20_000;
+    for c in &mut configs {
+        c.timetable.first_departure_ms = tie_at;
+        c.timetable.last_departure_ms = tie_at;
+    }
+    let ids = configs.each_ref().map(|c| c.service_id.0.to_string());
+    let far = base
+        .build_alignment(
+            owner,
+            "Isolated".into(),
+            vec![
+                GeoPoint {
+                    latitude: 35.05,
+                    longitude: 139.5,
+                },
+                GeoPoint {
+                    latitude: 35.05,
+                    longitude: 139.54,
+                },
+            ],
+        )
+        .unwrap();
+    let x = base
+        .place_station_on_alignment(owner, "X".into(), far, 0.1, 80., 10.)
+        .unwrap();
+    let y = base
+        .place_station_on_alignment(owner, "Y".into(), far, 0.9, 80., 10.)
+        .unwrap();
+    let isolated_route = vec![RouteSegment::Alignment {
+        alignment_id: far,
+        from: x,
+        to: y,
+    }];
+    let isolated_stops = base
+        .preview_service_path(x, isolated_route.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .map(|p| p.reference)
+        .collect();
+    let isolated = base
+        .add_service_path(owner, "Isolated".into(), x, isolated_route, isolated_stops)
+        .unwrap();
+    let stops = base
+        .preview_service_path(start, route.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .filter(|p| p.station_id != main)
+        .map(|p| p.reference)
+        .collect();
+    let shares_throat = base
+        .add_service_path(owner, "Other through".into(), start, route, stops)
+        .unwrap();
+    let mut reference = None;
+    for extra in [None, Some(isolated), Some(shares_throat)] {
+        let mut world = World::new(base.snapshot().clone()).unwrap();
+        let mut selected = configs.to_vec();
+        if let Some(id) = extra {
+            let mut config = configs[0].clone();
+            config.service_id = id;
+            let at = if id == isolated { 0 } else { 450_000 };
+            config.timetable.first_departure_ms = at;
+            config.timetable.last_departure_ms = at;
+            selected.push(config);
+        }
+        world.configure_operation(selected).unwrap();
+        let rt = &mut world.operation_mut().unwrap().runtime;
+        let arrivals = rt.advance_to(tie_at, 128).unwrap().arrivals;
+        assert!(
+            arrivals.is_empty(),
+            "unrelated train must still be in flight"
+        );
+        let state = |id: &str| &rt.trains().find(|t| t.key.service_id == id).unwrap().state;
+        if extra == Some(shares_throat) {
+            // Even a not-yet-born competitor sharing a throat keeps the
+            // conservative default tie order for this whole component.
+            assert!(
+                matches!(state(&ids[0]), TrainState::Moving { entered_ms, .. } if *entered_ms == tie_at)
+            );
+            assert_eq!(state(&ids[1]), &TrainState::Waiting { ready_ms: tie_at });
+            continue;
+        }
+        if extra == Some(isolated) {
+            assert!(matches!(
+                state(&isolated.0.to_string()),
+                TrainState::Moving { entered_ms: 0, .. }
+            ));
+        }
+        assert_eq!(
+            state(&ids[0]),
+            &TrainState::Waiting { ready_ms: tie_at },
+            "extra={extra:?} ids={ids:?}"
+        );
+        let siding_arrival = match state(&ids[1]) {
+            TrainState::Moving {
+                entered_ms,
+                arrival_ms,
+                ..
+            } if *entered_ms == tie_at => *arrival_ms,
+            state => panic!("siding tie was lost: {state:?}"),
+        };
+        let target = 1_000_000;
+        let rail_events = rt
+            .preview_passenger_replay(target, 256)
+            .unwrap()
+            .completed_legs
+            .into_iter()
+            .filter(|event| ids.contains(&event.train.service_id))
+            .collect::<Vec<_>>();
+        assert_eq!(rail_events.len(), 3);
+        if extra.is_none() {
+            reference = Some(rail_events);
+        } else {
+            assert_eq!(Some(rail_events), reference);
+        }
+        rt.advance_to(siding_arrival + 1, 128).unwrap();
+        let save = rosenfu_storage::encode(&world).unwrap();
+        let mut reopened = rosenfu_storage::decode(&save).unwrap();
+        assert_eq!(reopened.operation_save(), world.operation_save());
+        let complete = |w: &mut World| {
+            w.operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(target, 256)
+                .unwrap()
+                .arrivals
+        };
+        assert_eq!(complete(&mut world), complete(&mut reopened));
+        assert_eq!(reopened.operation_save(), world.operation_save());
+    }
+}
+
 fn assert_spaced_opposing_repeats(
     base: &World,
     configs: &[OperationServiceConfig; 2],

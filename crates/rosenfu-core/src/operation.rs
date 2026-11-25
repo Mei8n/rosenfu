@@ -231,7 +231,7 @@ pub struct OperationRuntime {
     rail_admission: RailAdmissionModel,
     // Re-derived from checked World geometry on configuration/restore. The
     // public runtime alone has no authority to choose this exact-meet tie.
-    preferred_opposing_birth: Option<String>,
+    preferred_opposing_births: Vec<(String, String)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -942,7 +942,7 @@ impl OperationRuntime {
             #[cfg(feature = "standard-periodic-rail")]
             standard_timetable: None,
             rail_admission,
-            preferred_opposing_birth: None,
+            preferred_opposing_births: Vec::new(),
         })
     }
     pub(crate) fn progressive_rail(&self) -> bool {
@@ -1191,10 +1191,7 @@ impl OperationRuntime {
         // Expired handoff records are pruned after a whole advance, not
         // each event. Compare the current grids: the caller requires two
         // fresh births and no older train or occupied resource.
-        if self.rail_admission != RailAdmissionModel::Fixed
-            || self.services.len() != 2
-            || siding == through
-        {
+        if self.rail_admission != RailAdmissionModel::Fixed || siding == through {
             return false;
         }
         let Some(a) = self.services.get(siding) else {
@@ -1236,24 +1233,102 @@ impl OperationRuntime {
             && tb.last_departure_ms - tb.first_departure_ms >= gap
     }
 
-    pub(crate) fn set_preferred_opposing_birth(&mut self, service: Option<String>) {
-        self.preferred_opposing_birth = service;
+    /// Partition by all compiled authorities, including station and throat
+    /// locks, not just the first sections or the edit-time track graph.
+    pub(crate) fn isolated_authority_pairs(&self) -> Vec<(&str, &str)> {
+        let mut users = BTreeMap::<&str, BTreeSet<&str>>::new();
+        for (id, service) in &self.services {
+            for key in service.legs.iter().flat_map(|leg| &leg.resources) {
+                users.entry(key).or_default().insert(id);
+            }
+        }
+        let mut peers = BTreeMap::<&str, BTreeSet<&str>>::new();
+        let mut crowded = BTreeSet::new();
+        for ids in users.into_values() {
+            if ids.len() > 2 {
+                crowded.extend(ids);
+            } else if ids.len() == 2 {
+                let a = *ids.first().unwrap();
+                let b = *ids.last().unwrap();
+                peers.entry(a).or_default().insert(b);
+                peers.entry(b).or_default().insert(a);
+            }
+        }
+        peers
+            .iter()
+            .filter_map(|(&a, neighbors)| {
+                let &b = neighbors.first()?;
+                (a < b
+                    && neighbors.len() == 1
+                    && peers.get(b).is_some_and(|other| other.len() == 1)
+                    && !crowded.contains(a)
+                    && !crowded.contains(b))
+                .then_some((a, b))
+            })
+            .collect()
     }
 
-    /// A siding train already moving or dwelling after an approved tie
-    /// must not lose its physical clearance proof during a world edit.
-    pub(crate) fn active_preferred_opposing_birth(&self) -> Option<&str> {
-        let service = self.preferred_opposing_birth.as_deref()?;
-        // The active train can outlive its opposing train and a future-grid
-        // handoff. The proof is not serialized, so guard the certified siding
-        // while any of its trains has entered, not just on today's grid.
-        self.trains
-            .values()
-            .any(|train| {
-                train.key.service_id == service
-                    && (train.leg > 0 || matches!(train.state, TrainState::Moving { .. }))
+    pub(crate) fn set_preferred_opposing_births(&mut self, pairs: Vec<(String, String)>) {
+        self.preferred_opposing_births = pairs;
+    }
+
+    /// Guard the exact proof during edits while its siding train can still
+    /// depend on it, including after the partner has completed.
+    pub(crate) fn loses_active_opposing_birth_proof(&self, pairs: &[(String, String)]) -> bool {
+        self.preferred_opposing_births.iter().any(|pair| {
+            !pairs.contains(pair)
+                && self.trains.values().any(|train| {
+                    train.key.service_id == pair.0
+                        && (train.leg > 0 || matches!(train.state, TrainState::Moving { .. }))
+                })
+        })
+    }
+
+    fn prefer_proved_birth_ties(&self, at: u64, waiting: &mut [(u64, TrainKey)]) {
+        if waiting.len() < 2 || self.preferred_opposing_births.is_empty() {
+            return;
+        }
+        let mut fresh = BTreeMap::new();
+        let mut busy = BTreeSet::new();
+        for (index, (ready, key)) in waiting.iter().enumerate() {
+            if *ready == at
+                && key.scheduled_ms == at
+                && self
+                    .trains
+                    .get(key)
+                    .is_some_and(|t| t.leg == 0 && t.delay_ms == 0)
+            {
+                fresh.insert(key.service_id.as_str(), index);
+            }
+        }
+        for (key, train) in &self.trains {
+            if !fresh.contains_key(key.service_id.as_str())
+                || key.scheduled_ms != at
+                || !matches!(train.state, TrainState::Waiting { .. })
+            {
+                busy.insert(key.service_id.as_str());
+            }
+        }
+        busy.extend(self.occupied.values().map(|key| key.service_id.as_str()));
+        // Pairs are disjoint even across all future legs. Swapping two
+        // fresh births cannot change admission for anything between them.
+        let swaps: Vec<_> = self
+            .preferred_opposing_births
+            .iter()
+            .filter_map(|(siding, through)| {
+                let a = *fresh.get(siding.as_str())?;
+                let b = *fresh.get(through.as_str())?;
+                (a > b
+                    && !busy.contains(siding.as_str())
+                    && !busy.contains(through.as_str())
+                    && self.opposing_birth_schedule_qualifies(siding, through))
+                .then_some((a, b))
             })
-            .then_some(service)
+            .collect();
+        drop(fresh);
+        for (a, b) in swaps {
+            waiting.swap(a, b);
+        }
     }
 
     /// Verify neither the admission model nor another service's run changes.
@@ -1580,7 +1655,7 @@ impl OperationRuntime {
                 started: self.started,
                 time_margin_ms: self.time_margin_ms,
                 rail_admission: self.rail_admission,
-                preferred_opposing_birth: self.preferred_opposing_birth.clone(),
+                preferred_opposing_births: self.preferred_opposing_births.clone(),
                 // Replay does not serialize or validate historical births.
                 timetable_handoffs: BTreeMap::new(),
                 #[cfg(feature = "standard-periodic-rail")]
@@ -1778,7 +1853,8 @@ impl OperationRuntime {
             // Train events do not change timetable cursors; preserving the
             // minimum in this advance avoids rescanning every service twice
             // at arrival, rear-clear, or dwell-only events.
-            if departure == Some(at) {
+            let has_new_departure = departure == Some(at);
+            if has_new_departure {
                 departure = None;
                 for (id, s) in &mut self.services {
                     if s.next_departure == Some(at) {
@@ -1813,25 +1889,8 @@ impl OperationRuntime {
                 })
                 .collect();
             waiting.sort();
-            if let [(first_ready, first), (second_ready, second)] = waiting.as_slice() {
-                // Only a proved two-train birth tie. Never jump the queue,
-                // preempt locks, or swap already-waiting/returning trains.
-                if self.preferred_opposing_birth.as_deref() == Some(second.service_id.as_str())
-                    && self.trains.len() == 2
-                    && self.occupied.is_empty()
-                    && *first_ready == at
-                    && *second_ready == at
-                    && [first, second].into_iter().all(|k| {
-                        k.scheduled_ms == at
-                            && self
-                                .trains
-                                .get(k)
-                                .is_some_and(|t| t.leg == 0 && t.delay_ms == 0)
-                    })
-                    && self.opposing_birth_schedule_qualifies(&second.service_id, &first.service_id)
-                {
-                    waiting.swap(0, 1);
-                }
+            if has_new_departure {
+                self.prefer_proved_birth_ties(at, &mut waiting);
             }
             for (ready, key) in waiting {
                 let t = &self.trains[&key];

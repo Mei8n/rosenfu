@@ -579,7 +579,10 @@ export function App() {
     return path.segments.reduce((total,segment)=>{const sections=routeSegmentSections(world,[segment]);return total+(sections.size?[...sections.values()].flat().reduce((sum,points)=>sum+alignmentLength(points),0):Infinity);},0);
   }
   const routeVisual = useMemo(() => routeAppearance(world), [world]);
-  const serviceMapSections=useMemo(()=>serviceRenderChains(sharedServiceSections(world),world?.alignment_connections??[]),[world]);
+  const serviceMapIndex=useMemo(()=>createTrackViewportIndex(
+    serviceRenderChains(sharedServiceSections(world),world?.alignment_connections??[]).map((chain,index)=>({
+      ...chain,key:chain.alignmentIds.join(":")+":"+index,
+    })),"display"),[world]);
   const selectedAlignment = alignments.find((a) => a.id === alignmentId);
   const extensionPrevious=useCallback((extension:Extension|null)=>{
     const alignment=alignments.find(a=>a.id===extension?.alignmentId);
@@ -729,6 +732,11 @@ export function App() {
   // Camera changes filter before building SVG paths; editing still owns all geometry.
   const alignmentViewport=useMemo(()=>createTrackViewportIndex(alignments,"display"),[alignments]);
   const trackView=useMemo(()=>trackViewport(camera,mapSize),[camera,mapSize]);
+  // Cull complete chains, not individual segments: stripe joins, orientation
+  // and circuit seams must not change when their neighbors leave the view.
+  const showServiceMap=mainTab==="routes"||mainTab==="services";
+  const visibleServiceMapSections=useMemo(()=>showServiceMap?serviceMapIndex.visible(trackView):[],
+    [showServiceMap,serviceMapIndex,trackView]);
   const visibleAlignmentPaths=useMemo(
     ()=>alignmentViewport.visible(trackView).map(alignment=>({alignment,hit:mapPath(alignment.points,camera)})),
     [alignmentViewport,camera,trackView],
@@ -2706,7 +2714,7 @@ export function App() {
               </g>)}
               {trackRender.value&&<TrackGeometryLayer geometry={trackRender.value} camera={camera} mapSize={mapSize} lines={alignments} selectedId={referenceCopy.active?((manualReferenceCopyState.seamPlan?seamFocusedEndpoint?.alignment.id:referenceExtension?.alignment.id)??""):alignmentId}/>}
               <g className="route-assignment-overlays" pointerEvents="none">{visibleAlignmentPaths.flatMap(({alignment})=>routeVisual.alignmentSections.get(alignment.id)?.map((points,index)=><path key={`${alignment.id}-${index}`} d={drawPath(points)} className="alignment-path route-assigned-section" />)??[])}</g>
-              {(mainTab==="routes"||mainTab==="services")&&serviceMapSections.map((section,index)=><g key={section.alignmentIds.join(":")+":"+index} className="service-map-section" data-alignment-id={section.alignmentIds[0]} data-service-count={section.bands.length} pointerEvents="none">
+              {visibleServiceMapSections.map(section=><g key={section.key} className="service-map-section" data-alignment-id={section.alignmentIds[0]} data-service-count={section.bands.length} pointerEvents="none">
                 <title>{section.bands.map(b=>b.name).join(" / ")}</title>
                 <path d={drawPath(section.points)} fill="none" stroke="white" strokeWidth={mapMetrics.serviceCasing} strokeLinecap="butt" strokeLinejoin="round"/>
                 {serviceBandPaths(section.points.map(p=>project(p.latitude,p.longitude,camera)),section.bands,mapMetrics.service).map(band=><path key={band.serviceId} data-service-id={band.serviceId} d={band.d} fill="none" stroke={band.color} strokeWidth={band.width} strokeLinecap="round" strokeLinejoin="round"/>)}
