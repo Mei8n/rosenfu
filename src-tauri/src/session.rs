@@ -19,6 +19,8 @@ mod ofm;
 pub use ofm::{OfmBindingInput, OfmRawInput};
 #[path = "session/save_slots.rs"]
 mod save_slots;
+#[path = "session/service_copy_name.rs"]
+mod service_copy_name;
 use rosenfu_core::world::{
     AlignmentId, CompanyId, GeoPoint, RouteId, ServiceId, StationId, TrackType, World, WorldDraft,
 };
@@ -362,9 +364,9 @@ impl WorldEditor {
                 "系統が変更されています。最新の内容を確認してから複製してください。".into(),
             );
         }
-        let name = format!(
-            "{} のコピー",
-            source.name.chars().take(74).collect::<String>()
+        let name = service_copy_name::service_copy_name(
+            &source.name,
+            snapshot.services.iter().map(|service| service.name.as_str()),
         );
         let mut candidate = self.clone();
         candidate
@@ -3073,6 +3075,59 @@ mod tests {
         e.save(&path).unwrap();
         assert_eq!(WorldEditor::new().load(&path).unwrap(), edited);
     }
+    #[test]
+    fn repeated_copies_can_become_an_express_and_a_short_turn() {
+        let (mut editor, alignment, stations) = alignment_fixture();
+        let created = create_test_service(
+            &mut editor,
+            stations[0],
+            vec![span(alignment, stations[0], stations[2])],
+        );
+        let source = created.services[0].id;
+        let original = created.service_paths[0].clone();
+        editor
+            .duplicate_service(source, original.clone(), "系統".into())
+            .unwrap();
+        let copies = editor
+            .duplicate_service(source, original.clone(), "系統".into())
+            .unwrap();
+        assert_eq!(copies.services[1].name, "系統 のコピー");
+        assert_eq!(copies.services[2].name, "系統 のコピー 2");
+        let (express, short_turn) = (copies.services[1].id, copies.services[2].id);
+        assert_ne!(express, short_turn);
+        let express_stops = vec![
+            original.stops.first().unwrap().clone(),
+            original.stops.last().unwrap().clone(),
+        ];
+        editor
+            .update_service_path(express, "急行".into(), express_stops.clone())
+            .unwrap();
+        let short_segments = vec![span(alignment, stations[0], stations[1])];
+        let short_stops = editor
+            .preview_service_path_replacement(short_turn, stations[0], short_segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|occurrence| occurrence.reference)
+            .collect();
+        let edited = editor
+            .replace_service_path(
+                short_turn,
+                copies.service_paths[2].clone(),
+                "途中駅止まり".into(),
+                stations[0],
+                short_segments.clone(),
+                short_stops,
+            )
+            .unwrap();
+        assert_eq!(edited.services[0], created.services[0]);
+        assert_eq!(edited.service_paths[0], original);
+        assert_eq!(edited.service_paths[1].stops, express_stops);
+        assert_eq!(edited.services[1].name, "急行");
+        assert_eq!(edited.services[2].name, "途中駅止まり");
+        assert_eq!(edited.service_paths[2].legs[0].segment, short_segments[0]);
+    }
+
     #[test]
     fn service_metadata_duplicate_does_not_guess_unknown_binding_or_color() {
         let (mut e, a, s) = alignment_fixture();
