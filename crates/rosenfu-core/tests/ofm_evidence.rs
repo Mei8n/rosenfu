@@ -1738,11 +1738,10 @@ fn ordinary_bus_same_tile_endpoints_can_need_a_neighboring_tile() {
         ),
     ]);
     let (start, end) = (bus_vertex(0, 0), bus_vertex(1, 1));
-    assert!(
-        find_gameplay_bus_path(&store, &tiles[0].canonical_url, start, end, true)
-            .unwrap()
-            .is_none()
-    );
+    let west_key = &tiles[0].canonical_url;
+    let west = store.scope(std::slice::from_ref(west_key)).unwrap();
+    let one_cell = find_gameplay_bus_path(&west, west_key, start, end, true).unwrap();
+    assert!(one_cell.is_none());
 
     let mut query = bus_rectangle_query(&tiles, end, true);
     query.end_tile_key = Some(tiles[0].canonical_url.clone());
