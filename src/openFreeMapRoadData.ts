@@ -57,8 +57,12 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
  let queue:Promise<unknown>=Promise.resolve();
  let rawCacheBytes=0,evidencePending=0;const rawCache=new Map<string,Uint8Array>(),knownRaw=new Map<string,string>();
  const cache=new Map<string,OpenFreeMapTileSnapshot>(),pending=new Map<string,Task>(),failures=new Map<string,number>();
+ function rememberObserved(key:string,sha:string){
+  knownRaw.delete(key);knownRaw.set(key,sha);
+  while(knownRaw.size>OFM_LIMITS.cacheEntries)knownRaw.delete(knownRaw.keys().next().value!);
+ }
  function rememberRaw(key:string,sha:string,bytes:Uint8Array){
-  knownRaw.delete(key);knownRaw.set(key,sha);while(knownRaw.size>OFM_LIMITS.cacheEntries)knownRaw.delete(knownRaw.keys().next().value!);
+  rememberObserved(key,sha);
   const old=rawCache.get(key);if(old)rawCacheBytes-=old.length;rawCache.delete(key);rawCache.set(key,bytes);rawCacheBytes+=bytes.length;
   while(rawCacheBytes>OFM_EVIDENCE_LIMITS.cacheBytes||rawCache.size>OFM_EVIDENCE_LIMITS.cacheEntries){const first=rawCache.keys().next().value!;rawCacheBytes-=rawCache.get(first)!.length;rawCache.delete(first);}
  }
@@ -95,7 +99,19 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
   }return template;
  }
  function acquire(x:number,y:number,meta:{template:string;revision:string},user:symbol,owned:Set<Task>):Promise<OpenFreeMapTileSnapshot>{
-  const key=`${meta.revision}/${x}/${y}`,hit=cache.get(key);if(hit)return Promise.resolve(hit);
+  const key=`${meta.revision}/${x}/${y}`,hit=cache.get(key);
+  if(hit){
+   cache.delete(key);cache.set(key,hit);
+   // Promote only an existing observation with the exact same SHA. A
+   // decoded hit never creates or changes an evidence preflight binding.
+   const sha=hit.bundle.sourceSha256;
+   if(knownRaw.get(key)===sha){
+    rememberObserved(key,sha);
+    const raw=rawCache.get(key);
+    if(raw){rawCache.delete(key);rawCache.set(key,raw);}
+   }
+   return Promise.resolve(hit);
+  }
   let task=pending.get(key);
   if(task?.controller.signal.aborted){if(pending.get(key)===task)pending.delete(key);task=undefined;}
   if(!task){
