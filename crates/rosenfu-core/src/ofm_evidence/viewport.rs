@@ -1,6 +1,6 @@
 //! Read-only geometry projection for the opt-in retained reference overlay.
 //! This never supplies authority, connectivity, or completeness to gameplay.
-use super::{road_grid_lon_lat, Error, EvidenceStore, Result, MAX_TILES};
+use super::{road_grid_lon_lat, Error, EvidenceStore, Result, MAX_REQUEST_BYTES, MAX_TILES};
 
 const Z14_EDGE: u32 = 1 << 14;
 const MAX_SEGMENTS: usize = 4_000;
@@ -26,23 +26,33 @@ pub fn retained_road_view(store: &EvidenceStore, rect: [u32; 4]) -> Result<Retai
         return Err(Error::Limit);
     }
     // Discovery scans the existing bounded manifest, not the world's geometry.
-    let keys: Vec<_> = store
+    let bindings: Vec<_> = store
         .bindings()
         .filter(|tile| (west..=east).contains(&tile.x) && (north..=south).contains(&tile.y))
-        .map(|tile| tile.canonical_url.clone())
         .collect();
     let mut result = RetainedRoadView {
         requested_tiles,
-        retained_tiles: keys.len(),
+        retained_tiles: bindings.len(),
         segments: Vec::new(),
         truncated: false,
     };
-    if keys.is_empty() {
+    if bindings.is_empty() {
         return Ok(result);
     }
-    let scope = store.scope(&keys)?;
-    for key in keys {
-        let tile = scope.decoded(&key)?;
+    // The retained archive can be larger than one gameplay proof request.
+    // Project validated cells one at a time in canonical order. Keep the
+    // existing total raw-byte work budget (including repeated blobs), but
+    // do not hide the already projected cells if later ones exceed it.
+    let mut raw_budget = MAX_REQUEST_BYTES;
+    for binding in bindings {
+        let len = store.raw(&binding.raw_sha256)?.len();
+        let Some(remaining) = raw_budget.checked_sub(len) else {
+            result.truncated = true;
+            break;
+        };
+        raw_budget = remaining;
+        let scope = store.scope(std::slice::from_ref(&binding.canonical_url))?;
+        let tile = scope.decoded(&binding.canonical_url)?;
         for line in &tile.lines {
             for part in line.coordinates.windows(2) {
                 let local = |p: [i32; 2]| p.map(|n| f64::from(n) / f64::from(line.extent));
@@ -145,6 +155,54 @@ mod tests {
         );
         assert_eq!(store.descriptors(), manifest);
         assert_eq!(store.raw(&sha).unwrap(), bytes.as_slice());
+    }
+
+    #[test]
+    fn oversized_retained_window_projects_a_bounded_prefix_without_a_gameplay_scope() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ofm_session_synthetic.json"
+        ))
+        .unwrap();
+        let mut raw: Vec<u8> =
+            serde_json::from_value(fixture["rawEvidence"][0]["bytes"].clone()).unwrap();
+        // Unknown length-delimited top-level field 4, with legal varint
+        // length 4.5 MiB. It does not change the transport geometry.
+        raw.extend([0x22, 0x80, 0x80, 0xa0, 0x02]);
+        raw.resize(raw.len() + 4_718_592, 0);
+        let sha = raw_sha256(&raw);
+        let bindings = [14552, 14553].map(|x| TileBinding {
+            canonical_url: format!("https://tiles.openfreemap.org/planet/test/14/{x}/6451.pbf"),
+            revision: "test".into(),
+            decoder_rule: DECODER_RULE.into(),
+            raw_sha256: sha.clone(),
+            z: 14,
+            x,
+            y: 6451,
+        });
+        let store = EvidenceStore::from_archive_parts(
+            vec![RawEvidence {
+                sha256: sha,
+                bytes: raw,
+            }],
+            bindings.to_vec(),
+        )
+        .unwrap();
+        let manifest = store.descriptors();
+        let keys = bindings.map(|b| b.canonical_url);
+        assert!(matches!(store.scope(&keys), Err(Error::Limit)));
+        assert!(store.cached_view_tiles_for_test().is_empty());
+
+        let wide = retained_road_view(&store, [14552, 6451, 14553, 6451]).unwrap();
+        assert_eq!((wide.requested_tiles, wide.retained_tiles), (2, 2));
+        assert!(wide.truncated);
+        assert!(!wide.segments.is_empty());
+        assert_eq!(store.cached_view_tiles_for_test(), [(14552, 6451)]);
+        let zoomed = retained_road_view(&store, [14553, 6451, 14553, 6451]).unwrap();
+        assert!(!zoomed.truncated);
+        assert!(!zoomed.segments.is_empty());
+        assert_ne!(wide.segments, zoomed.segments);
+        assert!(matches!(store.scope(&keys), Err(Error::Limit)));
+        assert_eq!(store.descriptors(), manifest);
     }
 
     #[test]

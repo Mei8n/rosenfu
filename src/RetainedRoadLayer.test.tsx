@@ -93,3 +93,12 @@ test('camera frames pan and zoom the same projected geometry without rebuilding 
  expect(dx+scale*x).toBeCloseTo(expected.x,3);
  expect(dy+scale*y).toBeCloseTo(expected.y,3);
 });
+
+test('partial retained-road output is drawn and asks for a narrower view rather than reporting an error',async()=>{
+ vi.useFakeTimers();
+ vi.mocked(invoke).mockResolvedValue({...response(139.75,35.67),requested_tiles:2,retained_tiles:2,truncated:true});
+ const app=render(<Harness bounds={{...near,east:139.77}}/>);
+ await act(()=>vi.advanceTimersByTimeAsync(180));
+ expect(app.container.querySelector('[data-retained-road-reference]')).not.toBeNull();
+ expect(screen.getByText('見えている道路の一部を表示中。拡大すると絞れます')).toBeTruthy();
+});
