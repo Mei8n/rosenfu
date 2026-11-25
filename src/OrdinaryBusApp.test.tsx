@@ -5,6 +5,7 @@ import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/reac
 import {invoke} from '@tauri-apps/api/core';
 import {App} from './App';
 import {project} from './map';
+import {OpenFreeMapTimeoutCooldown} from './openFreeMapRoadData';
 
 const {read,observe}=vi.hoisted(()=>({read:vi.fn(),observe:vi.fn()}));
 vi.mock('@tauri-apps/api/core',()=>({isTauri:()=>true,invoke:vi.fn()}));
@@ -1236,6 +1237,8 @@ test.each([false,true])('confirm re-observes a panned-away shared seam cell only
  fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
  if(changed){
   await screen.findByText('道路の元データが変わりました。位置を選び直してください。');
+  expect(screen.queryByLabelText('バス系統のプレビュー')).toBeNull();
+  expect(screen.queryByRole('button',{name:'バス系統を確定'})).toBeNull();
   expect(read).not.toHaveBeenCalled();
   expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
  }else{
@@ -1243,5 +1246,63 @@ test.each([false,true])('confirm re-observes a panned-away shared seam cell only
   expect(read).toHaveBeenCalledTimes(1);
  }
  expect(observe).toHaveBeenCalledExactlyOnceWith([[14551,6452]],'r1',expect.any(AbortSignal));
+ expect(preview).toHaveBeenCalledTimes(2);
+});
+
+test.each(['read timeout','read cooldown','native timeout','changed token','retired tool'] as const)('a %s cannot bypass exact seam confirmation',async kind=>{
+ const preview=vi.fn(async (args?:unknown)=>{
+  const {path}=(args as {path:{rule:string}});
+  return path.rule==='ofm_ground_bus_rectangle_z14_v2'?
+   {points:[],lengthM:0,failedLegIndex:0}:{points:[left,a,b],lengthM:801};
+ });
+ const map=(await setup({preview,rectangle:true,sharedSeam:true,waypoints:true}))!;
+ map.pressPoint(left);map.pressPoint(b);
+ await screen.findByText('道路経路 801 m・停留所2か所');
+ const approved=preview.mock.calls[1][0] as object;
+ const [west]=await observe.getMockImplementation()!();
+ observe.mockClear();
+ read.mockClear();
+ snapshots=[tile];
+ fireEvent.change(screen.getByRole('textbox',{name:'バス系統名'}),{target:{value:'東西バス'}});
+ const deadline=new DOMException('deadline','TimeoutError');
+ const confirm=()=>fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ const writes=()=>vi.mocked(invoke).mock.calls.filter(([command])=>command==='put_gameplay_ofm_bus');
+ const normal=vi.mocked(invoke).getMockImplementation()!;
+ vi.mocked(invoke).mockImplementation((command,args)=>{
+  if(command==='put_gameplay_ofm_bus'&&kind==='native timeout')return Promise.reject(deadline);
+  if(command==='ofm_world_token'&&kind==='changed token')return Promise.resolve('world-changed');
+  return normal(command,args);
+ });
+ if(kind==='read timeout'||kind==='read cooldown')observe.mockRejectedValueOnce(kind==='read timeout'?deadline:new OpenFreeMapTimeoutCooldown('backoff'));
+ else if(kind==='retired tool'){
+  let reject!:(e:unknown)=>void;
+  observe.mockImplementationOnce(()=>new Promise((_,fail)=>{reject=fail;}));
+  confirm();
+  await waitFor(()=>expect(observe).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole('tab',{name:'選択'}));
+  await act(async()=>reject(deadline));
+  expect(screen.queryByText(/選んだ経路はそのまま/)).toBeNull();
+  expect(writes()).toHaveLength(0);
+  return;
+ }else observe.mockResolvedValueOnce([west]);
+ confirm();
+ if(kind==='read timeout'||kind==='read cooldown'){
+  await screen.findByText(/選んだ経路はそのまま.*再試行/);
+  expect(screen.getByLabelText('バス系統のプレビュー')).toBeTruthy();
+  expect(writes()).toHaveLength(0);
+  expect(read).not.toHaveBeenCalled();
+  observe.mockResolvedValueOnce([west]);
+  confirm();
+  await waitFor(()=>expect(writes()).toEqual([['put_gameplay_ofm_bus',{...approved,name:'東西バス'}]]));
+  expect(observe).toHaveBeenCalledTimes(2);
+  expect(read).toHaveBeenCalledTimes(1);
+ }else{
+  await screen.findByText(kind==='native timeout'?'バス系統の確定結果を確認できませんでした。作成済みの系統を確認してください。':'ワールドや道路が更新されました。位置を選び直してください。');
+  expect(writes()).toHaveLength(kind==='native timeout'?1:0);
+  expect(screen.queryByLabelText('バス系統のプレビュー')).toBeNull();
+  expect(screen.queryByRole('button',{name:'バス系統を確定'})).toBeNull();
+  expect(screen.queryByText(/選んだ経路はそのまま/)).toBeNull();
+  if(kind==='changed token')expect(observe).not.toHaveBeenCalled();
+ }
  expect(preview).toHaveBeenCalledTimes(2);
 });

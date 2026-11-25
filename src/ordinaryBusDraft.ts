@@ -1,6 +1,6 @@
 import type {GeoPoint} from './alignment';
 import {project,type Camera} from './map';
-import {OFM_ATTRIBUTION,OFM_EVIDENCE_LIMITS,OFM_EVIDENCE_RULE,roadTileBounds,type OpenFreeMapEvidenceRequest,type OpenFreeMapRoadLine} from './openFreeMapRoadData';
+import {OFM_ATTRIBUTION,OFM_EVIDENCE_LIMITS,OFM_EVIDENCE_RULE,OpenFreeMapTimeoutCooldown,roadTileBounds,type OpenFreeMapEvidenceRequest,type OpenFreeMapRoadLine} from './openFreeMapRoadData';
 import type {RoadSnapshot} from './automaticRoadData';
 import type {CurrentRoadEvidenceResult} from './useAutomaticRoad';
 import type {RawTileEvidence,TileEvidenceBinding} from './ofmSharedEvidenceDraft';
@@ -301,6 +301,10 @@ export function retryOrdinaryBusSharedSeam(query:OrdinaryBusQuery):OrdinaryBusQu
  return {...query,path:{...query.path,rule:'ofm_ground_bus_shared_seam_z14_v3'}};
 }
 
+export class BusSeamReadTimeout extends Error{
+ constructor(){super('道路の再取得が時間内に終わりませんでした。選んだ経路はそのままです。1分ほどおいて「バス系統を確定」を押すと再試行できます。');}
+}
+
 /** Confirm reacquires only the exact proofs checked by the preview, not a
  * rectangle derived from the camera. It may re-observe a panned-away cell,
  * but only through the same observed revision and with the same byte hash. */
@@ -330,7 +334,13 @@ export async function reacquireNearbyOrdinaryBusQuery(
   if(!observe)throw changed();
   let observed:OpenFreeMapEvidenceRequest[];
   try{observed=await observe(missing.map(({x,y})=>[x,y]),revision,signal);}
-  catch{throw changed();}
+  catch(e){
+   // Only an actual transport/queue deadline during this read can be
+   // retried with the existing preview. Not cancellation, a changed
+   // provider revision, nor a similarly worded native commit error.
+   if(!signal?.aborted&&(e instanceof OpenFreeMapTimeoutCooldown||e instanceof DOMException&&e.name==='TimeoutError'))throw new BusSeamReadTimeout();
+   throw changed();
+  }
   if(signal?.aborted||observed.length!==missing.length||missing.some(ref=>observed.filter(t=>t.z===14&&t.decoderRule===OFM_EVIDENCE_RULE&&sameTile(t,ref)).length!==1))throw changed();
  }
  return attachOrdinaryBusEvidence(query,refs,read,descriptors,signal);

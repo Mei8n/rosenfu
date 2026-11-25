@@ -183,3 +183,33 @@ it('keeps revisited raw bytes hot for exact evidence without changing decoded or
  await repo.readTileEvidenceBatch([{...ref,x:cold}]);
  expect(f).toHaveBeenCalledTimes(19);
 });
+
+it('retains provider backoff for a timed out read without converting HTTP refusals into timeouts',async()=>{
+ const {OpenFreeMapTimeoutCooldown}=await import('./openFreeMapRoadData');
+ vi.useFakeTimers();
+ try{
+  let attempt=0;
+  const f=vi.fn(async(url:unknown,init?:RequestInit)=>{
+   if(String(url).endsWith('/planet'))return new Response(JSON.stringify({maxzoom:14,tiles:['https://tiles.openfreemap.org/planet/rev/{z}/{x}/{y}.pbf']}));
+   if(++attempt===1)return new Promise<Response>((_,reject)=>init?.signal?.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError')),{once:true}));
+   if(attempt===2)return new Response(null,{status:404});
+   return new Response(new Uint8Array(fixture()));
+  });
+  const r=createOpenFreeMapRoadRepository(f as typeof fetch);
+  const read=()=>r.observeTiles([[14552,6451]],'rev');
+  const first=expect(read()).rejects.toMatchObject({name:'TimeoutError'});
+  await vi.advanceTimersByTimeAsync(20001);await first;
+  await expect(read()).rejects.toBeInstanceOf(OpenFreeMapTimeoutCooldown);
+  expect(f).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(60000);
+  await expect(read()).rejects.toThrow('404');
+  const backoff=await read().catch(e=>e);
+  expect(backoff).toBeInstanceOf(Error);
+  expect(backoff).not.toBeInstanceOf(OpenFreeMapTimeoutCooldown);
+  expect(backoff.message).toContain('再試行');
+  expect(f).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(60000);
+  await expect(read()).resolves.toMatchObject([{revision:'rev',x:14552,y:6451}]);
+  expect(f).toHaveBeenCalledTimes(4);
+ }finally{vi.useRealTimers();}
+});
