@@ -4,7 +4,7 @@ test('candidate path is painted above service bands but below station markers',(
  const source=readFileSync(new URL('./App.tsx',import.meta.url),'utf8');
  const services=source.indexOf('className="service-map-section"');
  const candidate=source.indexOf('className="route-candidate-selection"');
- const stations=source.indexOf('{world?.stations.map((station)');
+ const stations=source.indexOf('className={"station-marker"');
  expect(services).toBeGreaterThan(0);
  expect(candidate).toBeGreaterThan(services);
  expect(stations).toBeGreaterThan(candidate);

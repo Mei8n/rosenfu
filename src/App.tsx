@@ -732,6 +732,26 @@ export function App() {
   // Camera changes filter before building SVG paths; editing still owns all geometry.
   const alignmentViewport=useMemo(()=>createTrackViewportIndex(alignments,"display"),[alignments]);
   const trackView=useMemo(()=>trackViewport(camera,mapSize),[camera,mapSize]);
+  // Bound a station by its center and its whole platform. A large platform
+  // can enter the viewport before its station center, especially when zoomed in.
+  const {stationViewport,longestStationName}=useMemo(()=>{
+    let longestStationName=0;
+    const rows=(world?.stations??[]).map(station=>{
+      longestStationName=Math.max(longestStationName,station.name.length);
+      return {station,points:[station,...(stationPolygons.get(station.id)??[])]};
+    });
+    return {stationViewport:createTrackViewportIndex(rows,"display"),longestStationName};
+  },[world?.stations,stationPolygons]);
+  const stationView=useMemo(()=>{
+    if(!stationNamesVisible||!longestStationName)return trackView;
+    // SVG labels are 12 screen px tall; use a wide four-em allowance per
+    // code unit plus the label offset, in both directions for bidi text.
+    const expanded=viewBounds(camera,mapSize,64+(16+48*longestStationName)/viewport.scale);
+    return {...trackView,west:expanded.west,east:expanded.east};
+  },[stationNamesVisible,longestStationName,trackView,camera,mapSize,viewport.scale]);
+  const visibleStations=useMemo(()=>stationViewport.visible(stationView),[stationViewport,stationView]);
+  const visibleDeleteStations=useMemo(()=>activeTool==="delete"?stationViewport.visible(trackView):[],
+    [activeTool,stationViewport,trackView]);
   // Cull complete chains, not individual segments: stripe joins, orientation
   // and circuit seams must not change when their neighbors leave the view.
   const showServiceMap=mainTab==="routes"||mainTab==="services";
@@ -2755,11 +2775,11 @@ export function App() {
               {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className={"planned-station"+(stationPlanId(station)===activePlanId?"":" inactive-plan")} pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform" visibility={mergedStationIds.has(station.id)?"hidden":undefined}/>:<circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={p.x} cy={p.y} r={mapMetrics.stationRadius} fill={valid?"#777":"#b34c4c"}/>}{stationNamesVisible&&stationDisplayGroup(station.id)?.id===station.id&&<text x={p.x+mapMetrics.stationLabelOffset} y={p.y-mapMetrics.stationLabelBaseline}>{stationDisplayGroup(station.id)?.name??station.name}（計画）</text>}</g>;})}
               {stationPreview.length >= 4 && <path d={drawPath(stationPreview) + "Z"} className="station-platform station-placement-preview" opacity=".65" pointerEvents="none" />}
               {referenceVisible && referenceResult.stations.map(station=>{const p=project(station.latitude,station.longitude,camera);return <g key={station.osmType+"/"+station.osmId} className="reference-station" pointerEvents="none"><title>参考駅: {station.name} ({station.kind})</title><path d={`M${p.x},${p.y-5} l5,5 -5,5 -5,-5 Z`}/><text x={p.x+9} y={p.y-7}>参考: {station.name}</text></g>;})}
-              {world?.stations.map((station) => {
+              {visibleStations.map(({station}) => {
                 const { x, y } = project(station.latitude, station.longitude, camera);
                 const placement = stationPlacementById.get(station.id);
                 const polygon = stationPolygons.get(station.id);
-                return <g key={station.id} pointerEvents={activeTool==="stations"&&mapMode==="place"?"none":undefined} className={"station-marker" + (selected === station.id ? " selected" : "") + (routeVisual.stations.has(station.id) ? "" : " route-unassigned")} onClick={(event) => { event.stopPropagation(); if (!suppressSelectionClick.current) selectStation(station.id); }}>
+                return <g key={station.id} data-station-id={station.id} pointerEvents={activeTool==="stations"&&mapMode==="place"?"none":undefined} className={"station-marker" + (selected === station.id ? " selected" : "") + (routeVisual.stations.has(station.id) ? "" : " route-unassigned")} onClick={(event) => { event.stopPropagation(); if (!suppressSelectionClick.current) selectStation(station.id); }}>
                   <title>{station.name}{placement ? ` / ホーム ${placement.length_m}m` : ""}</title>{!detailedStations&&<circle className="station-hit-target" aria-hidden="true" visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r={Math.max(5,8/viewport.scale)} fill="transparent" stroke="none"/>}{!detailedStations ? <circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={x} cy={y} r={mapMetrics.stationRadius} className="station-dot" /> : polygon ? <path d={drawPath(polygon) + "Z"} className="station-platform" style={mergedStationIds.has(station.id)?{fill:"transparent",stroke:"none"}:undefined} /> : <rect x={x - 13} y={y - 5} width="26" height="10" className="station-platform" />}{stationNamesVisible&&(!stationDisplayGroup(station.id)||stationDisplayGroup(station.id)?.id===station.id)&&<text x={x + mapMetrics.stationLabelOffset} y={y + mapMetrics.stationLabelBaseline}>{station.name}</text>}
                 </g>;
               })}
@@ -2825,7 +2845,7 @@ export function App() {
                   {path.points.map((point,index)=>{const p=project(point.latitude,point.longitude,camera);return <rect key={index} data-delete-anchor={index} data-delete-path={path.id} x={p.x-8/viewport.scale} y={p.y-8/viewport.scale} width={16/viewport.scale} height={16/viewport.scale} {...deleteHitProps({kind:"plan-anchor",pathId:path.id,index},true)}/>;})}
                 </g>)}
                 {plannedPlatforms.map(({station,polygon})=>{const p=project(station.point.latitude,station.point.longitude,camera),target:DeleteTarget={kind:"plan-station",stationId:station.id};return polygon.length?<path key={station.id} data-delete-planned-station={station.id} d={drawPath(polygon)+"Z"} {...deleteHitProps(target,true)}/>:<circle key={station.id} data-delete-planned-station={station.id} cx={p.x} cy={p.y} r={8/viewport.scale} {...deleteHitProps(target,true)}/>;})}
-                {world?.stations.map(station=>{const p=project(station.latitude,station.longitude,camera),polygon=stationPolygons.get(station.id),target:DeleteTarget={kind:"station",stationId:station.id};return detailedStations&&polygon?<path key={station.id} data-delete-station={station.id} d={drawPath(polygon)+"Z"} {...deleteHitProps(target,true)}/>:<circle key={station.id} data-delete-station={station.id} cx={p.x} cy={p.y} r={8/viewport.scale} {...deleteHitProps(target,true)}/>;})}
+                {visibleDeleteStations.map(({station})=>{const p=project(station.latitude,station.longitude,camera),polygon=stationPolygons.get(station.id),target:DeleteTarget={kind:"station",stationId:station.id};return detailedStations&&polygon?<path key={station.id} data-delete-station={station.id} d={drawPath(polygon)+"Z"} {...deleteHitProps(target,true)}/>:<circle key={station.id} data-delete-station={station.id} cx={p.x} cy={p.y} r={8/viewport.scale} {...deleteHitProps(target,true)}/>;})}
               </g>}
               </g>
             </svg>
