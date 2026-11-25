@@ -186,3 +186,5 @@ candidate only, never overwrites a file, and does not update the built-in
 catalog. Keep real results and raw inputs out of source control. Promoting a
 reviewed receipt to the compile-time product catalog, licensing/provenance
 review, and supported official archive access remain separate release steps.
+
+確認済みカタログが要求するタイルの取得では、現在の地図の版に置き換えず、登録済みの版・座標と SHA-256 を使う。古い版の URL から新しい版のデータが返っても採用しない。取得失敗や内容不一致のときはタイルをワールドに保持せず、通常の道路観測にも使わない。

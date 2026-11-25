@@ -72,12 +72,15 @@ test('one saved segment exposes all physical stations and explicitly choosing a 
  fireEvent.click(screen.getByRole('tab',{name:'路線'}));fireEvent.click(screen.getByRole('button',{name:'編集: 既存路線'}));fireEvent.click(screen.getByText('地図で路線を編集'));
  expect(screen.getByLabelText('2 経由 中間')).toBeTruthy();
  await act(async()=>{fireEvent.click(view.container.querySelectorAll('.station-marker')[0]);});
- expect(screen.getByText('地図で新しい始点を選択してください。')).toBeTruthy();
+ expect(screen.getByText('地図か駅名検索で新しい始点を選択してください。')).toBeTruthy();
  expect(invoke).not.toHaveBeenCalledWith('preview_route_candidates',{start:'5',end:'4'});
  await act(async()=>{fireEvent.click(view.container.querySelectorAll('.station-marker')[1]);}); // opposite endpoint is invalid
  expect(await screen.findByText(/始点と終点に同じ駅を指定できません/)).toBeTruthy();
- expect(screen.getByText('地図で新しい始点を選択してください。')).toBeTruthy();
- await act(async()=>{fireEvent.click(view.container.querySelectorAll('.station-marker')[2]);});
+ expect(screen.getByText('地図か駅名検索で新しい始点を選択してください。')).toBeTruthy();
+ const search=screen.getByRole('searchbox',{name:'駅名で検索'});
+ fireEvent.keyDown(search,{key:'Escape',isComposing:true,keyCode:229});
+ fireEvent.change(search,{target:{value:'中間'}});
+ fireEvent.click(screen.getByRole('button',{name:'中間 駅ID: 5'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'5',end:'4'}));
  expect(screen.queryByText(/2駅以上必要/)).toBeNull();expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_planned_route')).toBe(false);
 });

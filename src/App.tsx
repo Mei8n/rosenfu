@@ -2040,7 +2040,7 @@ export function App() {
       }
       if(event.key==="Escape"&&ordinaryBusActive&&(ordinaryBus.draft||ordinaryBus.deleting)&&!ordinaryBus.mutating()&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();if(!ordinaryBus.exitExtension())ordinaryBus.cancel();return;}
       if(event.key==="Escape"&&(roadMapFrom!==null||roadPlayerMapPick)&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();cancelRoadMapPick();return;}
-      if (event.key === "Escape" && routeMapSelect.current) {event.preventDefault();cancelRouteMapPick();return;}
+      if (event.key === "Escape" && routeMapSelect.current && !event.defaultPrevented && !event.isComposing && event.keyCode!==229) {event.preventDefault();cancelRouteMapPick();return;}
       if(deleteTarget||confirmRangeDelete||document.querySelector('[aria-label="系統削除の確認"]'))return;
       if (status==="ready" && (event.ctrlKey||event.metaKey) && !event.altKey && !event.shiftKey &&
           event.key.toLowerCase()==="s" && !event.defaultPrevented && !event.isComposing && event.keyCode!==229) {
@@ -2422,10 +2422,7 @@ export function App() {
     const refs:OpenFreeMapEvidenceRequest[]=missing.map(t=>({revision,z:14,x:t.x,y:t.y,rawSha256:t.raw_sha256,decoderRule:OFM_EVIDENCE_RULE}));
     busyRef.current=true;setBusy(true);
     try{
-      const observed=await automaticRoad.observeRouteTiles(refs.map(t=>[t.x,t.y] as const),revision);
-      if(observed.length!==refs.length||refs.some(want=>!observed.some(t=>t.x===want.x&&t.y===want.y&&t.revision===want.revision&&t.rawSha256===want.rawSha256)))
-        throw Error("提供元の道路データが確認済みの版と一致しません。");
-      const pairs=await readObservedRoadTilePairs(refs,automaticRoad.readTileEvidenceBatch,[]);
+      const pairs=await readObservedRoadTilePairs(refs,automaticRoad.readPinnedSeamTiles,[]);
       const raw=[...new Map(pairs.map(p=>[p.rawEvidence.sha256,p.rawEvidence])).values()];
       const snapshot=await invoke<World>("retain_installed_seam_tiles",{expectedWorldToken,catalogKey,raw});
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);

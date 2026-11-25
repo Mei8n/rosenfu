@@ -71,15 +71,15 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
   const stopped=new Promise<never>((_,reject)=>{abort=()=>reject(stopReason(signal));signal.addEventListener('abort',abort,{once:true});});
   try{return await Promise.race([promise,stopped]);}finally{signal.removeEventListener('abort',abort);}
  }
- async function request(url:string,shared?:AbortSignal){
+ async function request(url:string,shared?:AbortSignal,exactUrl=false){
   const controller=new AbortController(),abort=()=>controller.abort();
   shared?.addEventListener('abort',abort,{once:true});if(shared?.aborted)controller.abort();
   const timer=setTimeout(()=>controller.abort(new DOMException('道路データの通信が20秒で完了しませんでした。','TimeoutError')),OFM_LIMITS.timeout);
   try{
    check(controller.signal);
-   const r=await fetcher(url,{signal:controller.signal,credentials:'omit',referrerPolicy:'no-referrer'});
+   const r=await fetcher(url,{signal:controller.signal,credentials:'omit',referrerPolicy:'no-referrer',redirect:exactUrl?'error':'follow'});
    check(controller.signal);
-   if((r.url&&new URL(r.url).origin!=='https://tiles.openfreemap.org')||!r.ok||!r.body)throw Error(`道路タイルを取得できません（HTTP ${r.status}）。`);
+   if((r.url&&(exactUrl?r.url!==url:new URL(r.url).origin!=='https://tiles.openfreemap.org'))||!r.ok||!r.body)throw Error(`道路タイルを取得できません（HTTP ${r.status}）。`);
    const reader=r.body.getReader(),chunks:Uint8Array[]=[];let size=0;
    const cancelReader=()=>{void reader.cancel().catch(()=>undefined);};controller.signal.addEventListener('abort',cancelReader,{once:true});
    try{for(;;){check(controller.signal);const {done,value}=await reader.read();check(controller.signal);if(done)break;size+=value.length;usedBytes+=value.length;if(size>OFM_LIMITS.bytes||usedBytes>OFM_LIMITS.sessionBytes){await reader.cancel();throw Error('道路データ取得容量上限です。');}chunks.push(value);}}
@@ -114,20 +114,20 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
   }
   task.users.add(user);owned.add(task);return task.promise;
  }
- async function readTileEvidenceBatch(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal):Promise<OpenFreeMapEvidenceBatch>{
-  if(!Array.isArray(refs)||refs.length<1||refs.length>OFM_EVIDENCE_LIMITS.batchTiles||evidencePending>=OFM_EVIDENCE_LIMITS.pending)throw Error('道路証拠要求数が上限を超えています。');
+ async function readEvidence(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal,catalogPinned=false):Promise<OpenFreeMapEvidenceBatch>{
+  if(!Array.isArray(refs)||refs.length<1||refs.length>(catalogPinned?2:OFM_EVIDENCE_LIMITS.batchTiles)||evidencePending>=OFM_EVIDENCE_LIMITS.pending)throw Error('道路証拠要求数が上限を超えています。');
   // Validate the entire request before any download. Caller URLs and invented hashes are not accepted.
   const bindings:OpenFreeMapEvidenceBinding[]=[],keys=new Set<string>();
   for(const r of refs){if(!r||r.z!==14||r.decoderRule!==OFM_EVIDENCE_RULE||typeof r.revision!=='string'||typeof r.rawSha256!=='string'||! /^[A-Za-z0-9_]{1,64}$/.test(r.revision)||! /^[a-f0-9]{64}$/.test(r.rawSha256)||![r.x,r.y].every(v=>Number.isInteger(v)&&v>=0&&v<16384))throw Error('道路証拠bindingが不正です。');
    const key=`${r.revision}/${r.x}/${r.y}`,url=`${OFM_METADATA}/${r.revision}/14/${r.x}/${r.y}.pbf`;
-   if(keys.has(key)||knownRaw.get(key)!==r.rawSha256)throw Error('道路証拠が現在の取得済みタイルと一致しません。');keys.add(key);
+   if(keys.has(key)||(!catalogPinned&&knownRaw.get(key)!==r.rawSha256)||(catalogPinned&&r.revision!==refs[0].revision))throw Error('道路証拠が現在の取得済みタイルと一致しません。');keys.add(key);
    bindings.push({revision:r.revision,z:14,x:r.x,y:r.y,rawSha256:r.rawSha256,decoderRule:OFM_EVIDENCE_RULE,key:url,url,license:'ODbL-1.0',attribution:OFM_ATTRIBUTION});
   }
   evidencePending++;const controller=new AbortController(),abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();const timer=setTimeout(()=>controller.abort(new DOMException('道路証拠取得が25秒で完了しませんでした。','TimeoutError')),25000);
   try{const raws=new Map<string,Uint8Array>();let total=0;
-   for(const b of bindings){check(controller.signal);const key=`${b.revision}/${b.x}/${b.y}`;let bytes=rawCache.get(key);
+   for(const b of bindings){check(controller.signal);const key=`${b.revision}/${b.x}/${b.y}`;let bytes=(!catalogPinned||knownRaw.get(key)===b.rawSha256)?rawCache.get(key):undefined;
     if(bytes){rawCache.delete(key);rawCache.set(key,bytes);}else{
-     const work=queue.then(async()=>{check(controller.signal);const sharedHit=rawCache.get(key);if(sharedHit){if(await hash(sharedHit)!==b.rawSha256)throw Error('道路証拠cacheが一致しません。');return sharedHit;}if(usedTiles>=OFM_LIMITS.sessionTiles||usedBytes>=OFM_LIMITS.sessionBytes)throw Error('道路タイル取得予算上限です。');usedTiles++;const raw=await request(b.url,controller.signal);check(controller.signal);if(await hash(raw)!==b.rawSha256)throw Error('道路証拠の原データSHAが変わっています。');check(controller.signal);rememberRaw(key,b.rawSha256,raw);return raw;});queue=work.catch(()=>undefined);bytes=await wait(work,controller.signal);
+     const work=queue.then(async()=>{check(controller.signal);const sharedHit=(!catalogPinned||knownRaw.get(key)===b.rawSha256)?rawCache.get(key):undefined;if(sharedHit){if(await hash(sharedHit)!==b.rawSha256)throw Error('道路証拠cacheが一致しません。');return sharedHit;}if(usedTiles>=OFM_LIMITS.sessionTiles||usedBytes>=OFM_LIMITS.sessionBytes)throw Error('道路タイル取得予算上限です。');usedTiles++;const raw=await request(b.url,controller.signal,catalogPinned);check(controller.signal);if(await hash(raw)!==b.rawSha256)throw Error(catalogPinned?'配信元の道路データが確認済みの版と一致しません（SHA-256）。':'道路証拠の原データSHAが変わっています。');check(controller.signal);if(!catalogPinned)rememberRaw(key,b.rawSha256,raw);return raw;});queue=work.catch(()=>undefined);bytes=await wait(work,controller.signal);
     }
     if(await hash(bytes)!==b.rawSha256)throw Error('道路証拠cacheが一致しません。');check(controller.signal);
     total+=bytes.length;if(total>OFM_EVIDENCE_LIMITS.batchBytes)throw Error('道路証拠合計が8MiBを超えています。');if(!raws.has(b.rawSha256))raws.set(b.rawSha256,bytes.slice());
@@ -156,7 +156,11 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
    for(const task of owned){task.users.delete(user);if(task.users.size===0)task.controller.abort();}
   }
  }
- return {readTileEvidenceBatch,
+ return {
+  readTileEvidenceBatch:(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal)=>readEvidence(refs,signal),
+  // Only the already approved native catalog can supply these pins. Do not resolve
+  // the live metadata or make these fetches available to ordinary observation.
+  readPinnedSeamTiles:(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal)=>readEvidence(refs,signal,true),
   /** Read the complete coordinate scope using the shared observed-tile cache.
    * Geometry is not rebuilt or filtered by a viewport here. */
   observeTiles(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal):Promise<OpenFreeMapEvidenceRequest[]>{

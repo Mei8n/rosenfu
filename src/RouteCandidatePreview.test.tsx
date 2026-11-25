@@ -308,3 +308,27 @@ test('via order uses the native physical path and preserves the previous candida
  expect(onSave).not.toHaveBeenCalled();
  fireEvent.click(finish());await waitFor(()=>expect(onSave).toHaveBeenCalledWith('普通',expect.objectContaining({path:build(['1','4','2','3'])})));
 });
+
+test('station name search uses the same ordered preview and requires explicit apply',async()=>{
+ const h=setup();
+ const query=screen.getByRole('searchbox',{name:'駅名で検索'});
+ for(const name of ['始発','中間','終点']){
+  fireEvent.change(query,{target:{value:name}});
+  fireEvent.click(screen.getByRole('button',{name:new RegExp(name+' 駅ID')}));
+ }
+ await screen.findByText('所属駅: 始発 → 中間 → 終点');
+ expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'3',viaStationIds:['2']});
+ expect(h.onSave).not.toHaveBeenCalled();
+ fireEvent.click(finish());await waitFor(()=>expect(h.onSave).toHaveBeenCalledOnce());
+});
+
+test('search normalizes width and case, distinguishes equal names, and caps visible entries',()=>{
+ const rows=[{id:'prefix',name:'東ＡBC'},{id:'a',name:'ＡＢＣ'},{id:'b',name:'abc'},
+  ...Array.from({length:30},(_,i)=>({id:String(i),name:'abc駅 '+i}))];
+ render(<RouteCandidatePreview stations={rows} worldVersion={world} mapPickTarget="sequence" enabled canApply/>);
+ fireEvent.change(screen.getByRole('searchbox',{name:'駅名で検索'}),{target:{value:' AbC '}});
+ const list=screen.getByRole('list',{name:'駅名検索結果'});
+ const labels=Array.from(list.querySelectorAll('button'),x=>x.textContent);
+ expect(labels).toHaveLength(24);expect(labels.slice(0,3)).toEqual(['ＡＢＣ 駅ID: a','abc 駅ID: b','東ＡBC 駅ID: prefix']);
+ expect(screen.getByText('33件（先頭24件を表示）')).toBeTruthy();
+});
