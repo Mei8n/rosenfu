@@ -1766,11 +1766,9 @@ fn ordinary_bus_same_tile_endpoints_can_need_a_neighboring_tile() {
 
     query.start = end;
     query.end = start;
-    assert!(
-        reconstruct_gameplay_bus_path(&store, &query)
-            .unwrap()
-            .is_none()
-    );
+    assert!(reconstruct_gameplay_bus_path(&store, &query)
+        .unwrap()
+        .is_none());
     query.respect_oneway = false;
     let reversed = reconstruct_gameplay_bus_path(&store, &query)
         .unwrap()
