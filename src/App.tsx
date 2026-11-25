@@ -565,7 +565,7 @@ export function App() {
 
   const alignmentsById=useMemo(()=>firstByKey(alignments,line=>line.id),[alignments]);
   const stationPlacementById=useMemo(()=>firstByKey(world?.station_placements??[],placement=>placement.station_id),[world?.station_placements]);
-  const trackRender=useTrackRenderGeometry(world,status==="ready"&&(!!world?.alignment_connections?.length||alignments.some(line=>line.infrastructure?.some((section,index)=>index>0&&section.track_count!==line.infrastructure![index-1].track_count))));
+  const trackRender=useTrackRenderGeometry(world,status==="ready"&&(!!world?.alignment_connections?.length||alignments.some(line=>line.infrastructure?.some((section,index)=>index>0&&section.track_count!==line.infrastructure![index-1].track_count))),worldEpoch);
   const detailedStations = camera.zoom >= 13;
   const [stationResizePending,setStationResizePending]=useState(false);
   const [stationResizeFailure,setStationResizeFailure]=useState<string|null>(null);

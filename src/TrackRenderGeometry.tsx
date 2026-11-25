@@ -1,5 +1,5 @@
 import {TrackStroke} from './TrackStroke';
-import {useEffect,useMemo,useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {MAP_VIEWBOX,project,type Camera} from './map';
 import {firstByKey} from './mapLookupIndex';
@@ -8,17 +8,39 @@ import type {GeoPoint} from './alignment';
 import type {SectionInfrastructure} from './sectionInfrastructure';
 type Endpoint={alignment_id:string;endpoint:'start'|'end'};
 export type TrackRenderGeometry={internal_movements?:{points:GeoPoint[]}[];lanes:{alignment_id:string;section_index:number;lane_index:number;points:GeoPoint[]}[];movements:{movement:{from:{endpoint:Endpoint;lane_index:number};to:{endpoint:Endpoint;lane_index:number};point:unknown};from_position:number;to_position:number;points:GeoPoint[]}[]};
-export function useTrackRenderGeometry(world:unknown,enabled:boolean){
- const [state,setState]=useState<{world:unknown;value:TrackRenderGeometry|null;error:string|null}|null>(null);
+type PreviewQueue={epoch:number;active:boolean;waiting:(()=>void)|null};
+export function useTrackRenderGeometry(world:unknown,enabled:boolean,epoch=0){
+ const [state,setState]=useState<{world:unknown;epoch:number;value:TrackRenderGeometry|null;error:string|null}|null>(null);
+ const queueRef=useRef<PreviewQueue|null>(null);
  useEffect(()=>{
-  if(!enabled||!world)return;let alive=true;
-  void invoke<TrackRenderGeometry>('preview_track_render_geometry',{world}).then(value=>{
-   if(!Array.isArray(value?.lanes)||!Array.isArray(value?.movements))throw Error('描画データが不正です');
-   if(alive)setState({world,value,error:null});
-  }).catch(error=>{if(alive)setState({world,value:null,error:String(error)});});
-  return()=>{alive=false;};
- },[world,enabled]);
- return enabled&&state&&state.world===world?state:{world,value:null,error:null};
+  if(queueRef.current?.epoch!==epoch)queueRef.current={epoch,active:false,waiting:null};
+  if(!enabled||!world)return;
+  const queue=queueRef.current;
+  let alive=true;
+  function start(){
+   if(!alive)return;
+   queue.active=true;
+   void (async()=>{
+    try{
+     const value=await invoke<TrackRenderGeometry>('preview_track_render_geometry',{world});
+     if(!Array.isArray(value?.lanes)||!Array.isArray(value?.movements))throw Error('描画データが不正です');
+     if(alive)setState({world,epoch,value,error:null});
+    }catch(error){
+     if(alive)setState({world,epoch,value:null,error:String(error)});
+    }finally{
+     queue.active=false;
+     const next=queue.waiting;
+     queue.waiting=null;
+     if(queueRef.current===queue)next?.();
+    }
+   })();
+  }
+  // Only the latest waiting edit in this world reaches native code.
+  // Loading a different world starts fresh rather than waiting on old work.
+  if(queue.active)queue.waiting=start;else start();
+  return()=>{alive=false;if(queue.waiting===start)queue.waiting=null;};
+ },[world,enabled,epoch]);
+ return enabled&&state&&state.world===world&&state.epoch===epoch?state:{world,epoch,value:null,error:null};
 }
 export function TrackGeometryLayer({geometry,camera,lines,selectedId,mapSize=MAP_VIEWBOX}:{geometry:TrackRenderGeometry;camera:Camera;lines:{id:string;infrastructure?:SectionInfrastructure[]}[];selectedId:string;mapSize?:{width:number;height:number}}){
  const byId=useMemo(()=>firstByKey(lines,line=>line.id),[lines]);
