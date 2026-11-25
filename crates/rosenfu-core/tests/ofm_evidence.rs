@@ -2724,7 +2724,7 @@ fn raw_feature_ids_are_opaque_and_only_unique_nonzero_singletons_resolve() {
 #[test]
 fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
     let west = [[4176, 1800], [4156, 1790], [3856, 1640]];
-    let east = [[180, 1850], [80, 1800], [60, 1790], [-1385, 1067]];
+    let east_points = [[180, 1850], [80, 1800], [60, 1790], [-1385, 1067]];
     let make = |feature_id, points: &[[i32; 2]]| {
         [
             scalar(1, feature_id),
@@ -2767,7 +2767,7 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
         let bytes = serde_json::to_vec(receipt).unwrap();
         verify_westbound_seam_receipt(store, &bytes, &raw_sha256(&bytes))
     };
-    let (store, receipt) = setup(&east, false);
+    let (store, receipt) = setup(&east_points, false);
     assert_eq!(
         verify(&store, &receipt).unwrap().shared_atom,
         [[80, 1800], [60, 1790]]
@@ -2788,7 +2788,7 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
 
     // Changing just the buffered endpoint to the shared crossing segment
     // yields the exact-cut positive control, with the same owned terminals.
-    let mut exact_east = east;
+    let mut exact_east = east_points;
     exact_east[3] = [-240, 1640];
     let (exact_store, exact_receipt) = setup(&exact_east, false);
     let exact_request = ordinary(&exact_receipt.tiles_west_east);
@@ -2874,7 +2874,7 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
     wrong = receipt;
     wrong.tiles_west_east[1].raw_sha256 = raw_sha256(b"other");
     assert_eq!(verify(&store, &wrong), Err(Error::Binding));
-    let (contested, receipt) = setup(&east, true);
+    let (contested, receipt) = setup(&east_points, true);
     assert_eq!(verify(&contested, &receipt), Err(Error::Binding));
 }
 
