@@ -32,7 +32,7 @@ test('built and deletion hit paths follow view changes without renumbering secti
  const lines=[
   {id:'local',points:[p(139.76),p(139.77)]},
   {id:'crossing',points:[p(139.51),p(140.25)]},
-  {id:'new-area',points:[p(140.39),p(140.27),p(139.99)],anchor_indices:[0,1,2]},
+  {id:'new-area',points:[p(140.39),p(140.27),p(139.99)],anchor_indices:[0,1,2],infrastructure:[{level:'ground',track_count:1},{level:'ground',track_count:2}]},
   ...Array.from({length:600},(_,i)=>({id:'distant-'+i,points:[p(141.3,43.1),p(141.31,43.1)]})),
  ].map(x=>({...x,name:x.id,owner:'2',track_type:'rail'}));
  const world={next_id:'999',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],tracks:[],routes:[],services:[],alignments:lines,station_placements:[]};
@@ -42,12 +42,14 @@ test('built and deletion hit paths follow view changes without renumbering secti
   if(command==='list_save_slots')return {active_slot_id:'test',slots:[]};
   if(command==='autosave_status')return {available:false};
   if(command==='water_mask_requests')return [];
+  if(command==='preview_track_render_geometry')return {lanes:lines.map(line=>({alignment_id:line.id,section_index:0,lane_index:0,points:line.points})),movements:[]};
   return world;
  });
  render(<App/>);await screen.findByText(/track-viewport-test/);
  const map=screen.getByRole('img',{name:'駅配置用OpenStreetMap'});
  const deleteIds=()=>Array.from(map.querySelectorAll('[data-delete-alignment]'),el=>el.getAttribute('data-delete-alignment')+':'+el.getAttribute('data-delete-section'));
  const ids=()=>Array.from(map.querySelectorAll('.route-base')).map(el=>el.getAttribute('data-alignment-id'));
+ await waitFor(()=>expect([...map.querySelectorAll('[data-physical-alignment]')].map(el=>el.getAttribute('data-physical-alignment'))).toEqual(['local','crossing']));
  expect(ids()).toEqual(['local','crossing']);
  expect(map.querySelectorAll('.alignment-hit')).toHaveLength(2);
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
@@ -56,6 +58,7 @@ test('built and deletion hit paths follow view changes without renumbering secti
  await waitFor(()=>expect(ids()).toEqual(['crossing','new-area']));
  expect(map.querySelectorAll('.alignment-hit')).toHaveLength(2);
  expect(deleteIds()).toEqual(['crossing:0','new-area:1']);
+ expect([...map.querySelectorAll('[data-physical-alignment]')].map(el=>el.getAttribute('data-physical-alignment'))).toEqual(['crossing','new-area']);
  expect(world.alignments).toHaveLength(603);
  const target=map.querySelector('[data-delete-alignment="new-area"]')!;
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});

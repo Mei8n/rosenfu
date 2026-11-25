@@ -82,3 +82,5 @@ OSの視覚効果変更イベントで進行中の補間が全て止まり、追
 ```sh
 VITE_ROSENFU_TRACK_TIMING=1 npx vitest run src/TrackViewportTiming.test.tsx --maxWorkers=1 --reporter=verbose
 ```
+
+同じ表示範囲の索引を、通常描画の下地、クリック領域、路線の割り当て表示、撤去対象の候補にも適用する。ネイティブ描画と同時に有効な 603 線の App 試験で、画面をまたぐ線の表示とパン後のクリック領域、および撤去の元区間番号を維持する。ここでは App 全体の処理時間は計測していない。

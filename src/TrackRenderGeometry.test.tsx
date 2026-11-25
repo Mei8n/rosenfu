@@ -128,3 +128,13 @@ test('indexed viewport matches exhaustive search at cell boundaries and broad zo
  for(const view of bounds)expect(indexed.visible(view)).toEqual(rows.filter(row=>intersectsTrackView(trackBounds(row.points),view)));
  expect(indexed.visible(bounds[0]).map(row=>row.id)).toEqual([901,902,903]);
 });
+
+test('display hit lookup retains exact bounds for a line extending beyond the map domain',()=>{
+ const rows=Array.from({length:300},(_,id)=>({id,points:[{longitude:120,latitude:30},{longitude:120.01,latitude:30}]}));
+ const exterior={id:301,points:[{longitude:179.74,latitude:35},{longitude:180.01,latitude:35}]};
+ const nearby={id:302,points:[{longitude:179.75,latitude:35},{longitude:179.77,latitude:35}]};
+ rows.splice(10,0,exterior,nearby);
+ const view={west:179.74,east:179.8,south:34.99,north:35.01};
+ expect(createTrackViewportIndex(rows,'display').visible(view)).toEqual([exterior,nearby]);
+ expect(createTrackViewportIndex(rows).visible(view)).toEqual([nearby]);
+});
