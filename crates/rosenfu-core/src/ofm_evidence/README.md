@@ -584,8 +584,10 @@ A release that intends to reopen existing enabled saves must preserve their
 entries. Missing, changed, or unsupported records never fall back.
 
 The isolated world projection keeps recipes separate from legacy
-`ofm_gameplay_bus_routes`. Schema 36 permits normal storage for one isolated
-classic road route and rejects mixed route/dispatch capabilities. Installed
+`ofm_gameplay_bus_routes`. Schema 36 permits storage of one witnessed one-way route and, optionally,
+one classic v1 route from the same certified archive. Both paths acquire the
+same conservative fragment locks when relevant; the old profile is unchanged
+without a seam recipe. Other mixed route/dispatch capabilities are rejected. Installed
 catalog replay must still succeed against its retained archive. Existing
 worlds without recipes use their old validators and schema; older releases
 must reject schema 36 rather than reinterpret it under a legacy capability.

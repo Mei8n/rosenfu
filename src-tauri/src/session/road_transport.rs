@@ -38,6 +38,22 @@ fn road_path_help(error: rosenfu_core::road_transport::RoadTransportError) -> St
     .into()
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSeamBusOption {
+    pub catalog_key: String,
+    pub route_id: String,
+    pub length_m: f64,
+    pub points: Vec<GeoPoint>,
+}
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSeamBusOptions {
+    pub expected_world_token: String,
+    pub options: Vec<InstalledSeamBusOption>,
+    pub acquisitions: Vec<rosenfu_core::ofm_evidence::InstalledSeamAcquisition>,
+}
+
 #[derive(Debug, serde::Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GameplayBusPathPreview {
@@ -364,6 +380,153 @@ impl WorldEditor {
         }
         candidate.deleted_alignment = None;
         self.commit_edit(candidate, true)?;
+        Ok(self.snapshot())
+    }
+
+    fn may_author_installed_seam(&self) -> bool {
+        let draft = self.world.snapshot();
+        !self.company_setup_required
+            && self.world.operation().is_none()
+            && self.world.fixed_od_scenario().is_none()
+            && draft.ofm_installed_seam_bus_routes.is_empty()
+            && draft.ofm_gameplay_bus_routes.len() <= 1
+            && draft.road_transport.tram_sections.is_empty()
+            && (draft.ofm_gameplay_bus_routes.len() == draft.road_transport.bus_routes.len())
+            && draft
+                .road_transport
+                .bus_routes
+                .iter()
+                .all(|route| route.owner == self.company)
+    }
+
+    fn installed_bus_candidate(
+        &self,
+        catalog_key: String,
+        name: String,
+    ) -> Result<(World, String, f64), String> {
+        if !self.may_author_installed_seam() {
+            return Err("今のワールドでは、確認済みの境界横断バスを作成できません。".into());
+        }
+        if catalog_key.len() != "ofm-westbound-v1:".len() + 64 {
+            return Err("確認済みの道路候補ではありません。".into());
+        }
+        let id = format!("seam:{catalog_key}");
+        let world = self
+            .world
+            .candidate_with_installed_seam_bus(
+                self.company,
+                id.clone(),
+                name,
+                rosenfu_core::ofm_evidence::InstalledWestboundSeamRecipe {
+                    version: 1,
+                    catalog_key,
+                },
+            )
+            .map_err(road_path_help)?;
+        let draft = world.snapshot();
+        if draft
+            .road_transport
+            .edges
+            .iter()
+            .flat_map(|edge| &edge.geometry)
+            .any(|p| !in_edit_extent(p.latitude, p.longitude))
+        {
+            return Err("バス路線は編集範囲内に作成してください。".into());
+        }
+        let [leg] = &draft
+            .road_transport
+            .bus_legs(draft, &id)
+            .map_err(road_path_help)?[..]
+        else {
+            return Err("片道の確認済み区間が見つかりません。".into());
+        };
+        Ok((world, id, leg.length_m))
+    }
+
+    pub fn installed_seam_bus_options(&self) -> Result<InstalledSeamBusOptions, String> {
+        let mut options = vec![];
+        let mut acquisitions = vec![];
+        if self.may_author_installed_seam() {
+            acquisitions = rosenfu_core::ofm_evidence::missing_installed_seam_tiles(
+                &self.world.snapshot().runtime_road_evidence,
+            );
+            for item in rosenfu_core::ofm_evidence::retained_installed_seam_candidates(
+                &self.world.snapshot().runtime_road_evidence,
+            ) {
+                if let Ok((world, id, length_m)) =
+                    self.installed_bus_candidate(item.catalog_key.clone(), "境界横断バス".into())
+                {
+                    let roads = &world.snapshot().road_transport;
+                    let Some(route) = roads.bus_routes.iter().find(|route| route.id == id) else {
+                        continue;
+                    };
+                    let mut points: Vec<_> = route
+                        .edges
+                        .iter()
+                        .filter_map(|edge_id| roads.edges.iter().find(|edge| &edge.id == edge_id))
+                        .flat_map(|edge| edge.geometry.iter().copied())
+                        .collect();
+                    points.dedup();
+                    options.push(InstalledSeamBusOption {
+                        catalog_key: item.catalog_key,
+                        route_id: id,
+                        length_m,
+                        points,
+                    });
+                }
+            }
+        }
+        let expected_world_token = if options.is_empty() && acquisitions.is_empty() {
+            String::new()
+        } else {
+            self.ofm_world_token()?
+        };
+        Ok(InstalledSeamBusOptions {
+            expected_world_token,
+            options,
+            acquisitions,
+        })
+    }
+
+    pub fn retain_installed_seam_tiles(
+        &mut self,
+        expected_world_token: &str,
+        catalog_key: String,
+        raw: Vec<OfmRawInput>,
+    ) -> Result<WorldDraft, String> {
+        if !self.may_author_installed_seam() || expected_world_token != self.ofm_world_token()? {
+            return Err("ワールドが変更されました。確認済みの道路を開き直してください。".into());
+        }
+        if raw.len() > 2 || catalog_key.len() != "ofm-westbound-v1:".len() + 64 {
+            return Err("確認済みの道路候補ではありません。".into());
+        }
+        let (raw, _) = super::ofm::inputs(raw, vec![])?;
+        let mut candidate = self.clone();
+        candidate.world = self
+            .world
+            .candidate_with_installed_seam_evidence(&catalog_key, raw)
+            .map_err(|_| "道路の元データが確認済みの版と一致しません。".to_owned())?;
+        // Only attach bytes for a route that can be projected in this editor.
+        candidate.installed_bus_candidate(catalog_key, "境界横断バス".into())?;
+        self.commit_construction_edit(candidate)?;
+        Ok(self.snapshot())
+    }
+
+    pub fn put_installed_seam_bus(
+        &mut self,
+        expected_world_token: &str,
+        catalog_key: String,
+        name: String,
+    ) -> Result<WorldDraft, String> {
+        if expected_world_token != self.ofm_world_token()? {
+            return Err("ワールドが変更されました。確認済みの候補を開き直してください。".into());
+        }
+        let (world, _, _) = self.installed_bus_candidate(catalog_key, name.trim().to_owned())?;
+        let mut candidate = self.clone();
+        candidate.world = world;
+        // Construction commit validates the fully reconciled archive before
+        // publishing World, undo history, or any revision.
+        self.commit_construction_edit(candidate)?;
         Ok(self.snapshot())
     }
 
@@ -1074,5 +1237,29 @@ mod tests {
         editor.load(&file).unwrap();
         assert_eq!(editor.snapshot().road_transport, made.road_transport);
         assert_eq!(editor.world.operation_save().unwrap(), saved);
+    }
+}
+
+#[cfg(test)]
+mod installed_seam_editor_tests {
+    use super::*;
+    #[test]
+    fn unlisted_or_stale_installed_seam_requests_leave_editor_unchanged() {
+        let mut ed = WorldEditor::new();
+        ed.rename_company("会社".into()).unwrap();
+        let before = ed.snapshot();
+        let history = ed.world_edit_history().revision;
+        let token = ed.ofm_world_token().unwrap();
+        assert!(ed.installed_seam_bus_options().unwrap().options.is_empty());
+        let unknown = format!("ofm-westbound-v1:{}", "0".repeat(64));
+        assert!(ed
+            .put_installed_seam_bus("stale", unknown.clone(), "Bus".into())
+            .is_err());
+        assert!(ed
+            .put_installed_seam_bus(&token, unknown, "Bus".into())
+            .is_err());
+        assert_eq!(ed.snapshot(), before);
+        assert_eq!(ed.world_edit_history().revision, history);
+        assert_eq!(ed.ofm_world_token().unwrap(), token);
     }
 }

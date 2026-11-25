@@ -296,6 +296,29 @@ impl World {
         }
     }
 
+    /// Only installed evidence authority can bypass the generic draft replacer's
+    /// evidence-change guard. This stages one immutable attachment, never a
+    /// route, and leaves the live World unchanged on error.
+    pub fn candidate_with_installed_seam_evidence(
+        &self,
+        catalog_key: &str,
+        raw: Vec<RawEvidence>,
+    ) -> Result<Self, WorldError> {
+        if self.operation().is_some() || !self.snapshot().ofm_installed_seam_bus_routes.is_empty() {
+            return Err(WorldError::InvalidRoadEvidence);
+        }
+        let current = self.snapshot();
+        let store = crate::ofm_evidence::stage_installed_seam_tiles(
+            &current.runtime_road_evidence,
+            catalog_key,
+            raw,
+        )
+        .map_err(|_| WorldError::InvalidRoadEvidence)?;
+        let mut candidate = self.clone();
+        candidate.data = current.clone().with_road_evidence(store)?.into();
+        Ok(candidate)
+    }
+
     /// An ordinary OFM Bus edit owns only its addressed raw tiles and the
     /// route reconstructed from it. Never permits arbitrary draft replacement.
     pub fn candidate_with_gameplay_ofm_bus(

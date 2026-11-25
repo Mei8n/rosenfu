@@ -257,6 +257,42 @@ pub fn put_gameplay_ofm_bus(
 }
 
 #[tauri::command]
+pub fn installed_seam_bus_options(
+    editor: State<'_, Mutex<WorldEditor>>,
+) -> Result<crate::session::InstalledSeamBusOptions, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .installed_seam_bus_options()
+}
+
+#[tauri::command]
+pub fn retain_installed_seam_tiles(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    catalog_key: String,
+    raw: Vec<crate::session::OfmRawInput>,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .retain_installed_seam_tiles(&expected_world_token, catalog_key, raw)
+}
+
+#[tauri::command]
+pub fn put_installed_seam_bus(
+    editor: State<'_, Mutex<WorldEditor>>,
+    expected_world_token: String,
+    catalog_key: String,
+    name: String,
+) -> Result<WorldDraft, String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .put_installed_seam_bus(&expected_world_token, catalog_key, name)
+}
+
+#[tauri::command]
 pub fn remove_gameplay_ofm_bus(
     editor: State<'_, Mutex<WorldEditor>>,
     expected_world_token: String,

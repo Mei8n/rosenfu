@@ -1,7 +1,7 @@
 //! Save-replay trust boundary: serialized recipes are references, never evidence.
 use super::{
-    raw_sha256, replay_westbound_seam_traversal, Error, EvidenceStore, Result,
-    WestboundSeamReceipt, WestboundSeamTraversal, WESTBOUND_SEAM_WITNESS_RULE,
+    raw_sha256, replay_westbound_seam_traversal, Error, EvidenceStore, RawEvidence, Result,
+    TileBinding, WestboundSeamReceipt, WestboundSeamTraversal, WESTBOUND_SEAM_WITNESS_RULE,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::OnceLock};
@@ -28,6 +28,7 @@ struct ReceiptEntry {
     digest: String,
     bytes: Vec<u8>,
     keys: [String; 2],
+    bindings: [TileBinding; 2],
 }
 struct Catalog(BTreeMap<String, ReceiptEntry>);
 
@@ -63,7 +64,8 @@ impl Catalog {
             // different canonicalization must use a new recipe/catalog version.
             let bytes = serde_json::to_vec(&receipt).map_err(|_| Error::Malformed)?;
             let digest = raw_sha256(&bytes);
-            let keys = receipt.tiles_west_east.map(|tile| tile.canonical_url);
+            let bindings = receipt.tiles_west_east;
+            let keys = bindings.each_ref().map(|tile| tile.canonical_url.clone());
             if entries
                 .insert(
                     format!("ofm-westbound-v1:{digest}"),
@@ -71,6 +73,7 @@ impl Catalog {
                         digest,
                         bytes,
                         keys,
+                        bindings,
                     },
                 )
                 .is_some()
@@ -118,9 +121,146 @@ pub fn replay_installed_westbound_seam(
     }) {
         return result;
     }
-    static CATALOG: OnceLock<Result<Catalog>> = OnceLock::new();
-    match CATALOG.get_or_init(|| Catalog::load(INSTALLED)) {
+    match installed_catalog() {
         Ok(catalog) => catalog.replay(archive, recipe),
+        Err(error) => Err(*error),
+    }
+}
+
+fn installed_catalog() -> &'static Result<Catalog> {
+    static CATALOG: OnceLock<Result<Catalog>> = OnceLock::new();
+    CATALOG.get_or_init(|| Catalog::load(INSTALLED))
+}
+
+/// Bounded desktop discovery: select release-owned references whose exact raw
+/// bindings are already pinned locally. The editor still replays the complete
+/// route proof and verifies the resulting world before displaying or using it.
+pub fn retained_installed_seam_candidates(
+    archive: &EvidenceStore,
+) -> Vec<InstalledWestboundSeamRecipe> {
+    fn matching(catalog: &Catalog, archive: &EvidenceStore) -> Vec<InstalledWestboundSeamRecipe> {
+        let hashes: BTreeMap<_, _> = archive
+            .bindings()
+            .map(|tile| (tile.canonical_url.as_str(), tile.raw_sha256.as_str()))
+            .collect();
+        catalog
+            .0
+            .iter()
+            .filter(|(_, entry)| {
+                entry.bindings.iter().all(|binding| {
+                    hashes.get(binding.canonical_url.as_str()) == Some(&binding.raw_sha256.as_str())
+                })
+            })
+            .take(8) // discovery must remain bounded; no traversal here
+            .map(|(key, _)| InstalledWestboundSeamRecipe {
+                version: 1,
+                catalog_key: key.clone(),
+            })
+            .collect()
+    }
+    #[cfg(test)]
+    if let Some(list) = TEST_CATALOG.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|catalog| matching(catalog, archive))
+    }) {
+        return list;
+    }
+    installed_catalog()
+        .as_ref()
+        .map_or_else(|_| vec![], |catalog| matching(catalog, archive))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSeamAcquisition {
+    pub catalog_key: String,
+    pub missing: Vec<TileBinding>,
+}
+
+fn missing_bindings(entry: &ReceiptEntry, archive: &EvidenceStore) -> Option<Vec<TileBinding>> {
+    let mut missing = vec![];
+    for wanted in &entry.bindings {
+        match archive
+            .bindings()
+            .find(|bound| bound.canonical_url == wanted.canonical_url)
+        {
+            Some(bound) if bound == wanted => {}
+            Some(_) => return None, // an immutable URL is never rebound
+            None => missing.push(wanted.clone()),
+        }
+    }
+    (!missing.is_empty()).then_some(missing)
+}
+
+fn missing_seam_candidates(
+    catalog: &Catalog,
+    archive: &EvidenceStore,
+) -> Vec<InstalledSeamAcquisition> {
+    catalog
+        .0
+        .iter()
+        .filter_map(|(key, entry)| {
+            missing_bindings(entry, archive).map(|missing| InstalledSeamAcquisition {
+                catalog_key: key.clone(),
+                missing,
+            })
+        })
+        .take(8)
+        .collect()
+}
+
+/// Stock builds without release-approved entries do not expose acquisition UI.
+pub fn has_installed_seam_catalog() -> bool {
+    installed_catalog()
+        .as_ref()
+        .is_ok_and(|catalog| !catalog.0.is_empty())
+}
+
+pub fn missing_installed_seam_tiles(archive: &EvidenceStore) -> Vec<InstalledSeamAcquisition> {
+    installed_catalog().as_ref().map_or_else(
+        |_| vec![],
+        |catalog| missing_seam_candidates(catalog, archive),
+    )
+}
+
+fn stage_with_catalog(
+    catalog: &Catalog,
+    archive: &EvidenceStore,
+    catalog_key: &str,
+    raw: Vec<RawEvidence>,
+) -> Result<EvidenceStore> {
+    use std::collections::BTreeSet;
+    let entry = catalog.0.get(catalog_key).ok_or(Error::Binding)?;
+    let missing = missing_bindings(entry, archive).ok_or(Error::Binding)?;
+    let expected: BTreeSet<_> = missing
+        .iter()
+        .map(|tile| tile.raw_sha256.as_str())
+        .collect();
+    let got: BTreeSet<_> = raw.iter().map(|blob| blob.sha256.as_str()).collect();
+    if got != expected || got.len() != raw.len() {
+        return Err(Error::Binding);
+    }
+    let staged = archive.with_pinned_additions(raw, missing)?;
+    catalog.replay(
+        &staged,
+        &InstalledWestboundSeamRecipe {
+            version: 1,
+            catalog_key: catalog_key.to_owned(),
+        },
+    )?;
+    Ok(staged)
+}
+
+/// Attach only the still-missing bytes named by an installed receipt. URL,
+/// digest and decoder authority are derived from the release, never IPC.
+pub fn stage_installed_seam_tiles(
+    archive: &EvidenceStore,
+    catalog_key: &str,
+    raw: Vec<RawEvidence>,
+) -> Result<EvidenceStore> {
+    match installed_catalog() {
+        Ok(catalog) => stage_with_catalog(catalog, archive, catalog_key, raw),
         Err(error) => Err(*error),
     }
 }
@@ -341,10 +481,23 @@ mod tests {
             )
             .unwrap();
         let legacy_before = former.snapshot().clone();
-        assert!(former
+        let mixed = former
+            .candidate_with_installed_seam_bus(owner, "bus".into(), "Bus".into(), recipe.clone())
+            .unwrap();
+        assert_eq!(former.snapshot(), &legacy_before);
+        assert_eq!(
+            mixed.snapshot().ofm_gameplay_bus_routes,
+            legacy_before.ofm_gameplay_bus_routes
+        );
+        for old in &legacy_before.road_transport.edges {
+            assert!(mixed.snapshot().road_transport.edges.contains(old));
+        }
+        let mut ordinary = former.clone();
+        ordinary.configure_all_operation(vec![], vec![]).unwrap();
+        // No reservation model transition while an existing operation is attached.
+        assert!(ordinary
             .candidate_with_installed_seam_bus(owner, "bus".into(), "Bus".into(), recipe.clone())
             .is_err());
-        assert_eq!(former.snapshot(), &legacy_before);
         let mut candidate = with_archive
             .candidate_with_installed_seam_bus(owner, "bus".into(), "Bus".into(), recipe)
             .unwrap();
@@ -438,5 +591,45 @@ mod tests {
         assert_eq!(result, advance(&mut reopened));
         assert_eq!(result.arrivals.len(), 2);
         assert!(result.arrivals[1].delay_ms > 0);
+    }
+
+    #[test]
+    fn installed_acquisition_stages_only_missing_authorized_exact_bytes() {
+        let (receipt, archive) = fixture(false);
+        let baked =
+            serde_json::to_vec(&serde_json::json!({"version":1,"receipts":[&receipt]})).unwrap();
+        let catalog = Catalog::load(&baked).unwrap();
+        let [west, east] = &receipt.tiles_west_east;
+        let blob = |binding: &TileBinding| RawEvidence {
+            sha256: binding.raw_sha256.clone(),
+            bytes: archive.raw(&binding.raw_sha256).unwrap().to_vec(),
+        };
+        let partial =
+            EvidenceStore::from_archive_parts(vec![blob(east)], vec![east.clone()]).unwrap();
+        let [candidate] = &missing_seam_candidates(&catalog, &partial)[..] else {
+            panic!("one acquisition");
+        };
+        assert_eq!(candidate.missing, vec![west.clone()]);
+        assert!(missing_seam_candidates(&catalog, &archive).is_empty());
+        let mut corrupt = blob(west);
+        corrupt.bytes[0] ^= 1;
+        assert!(
+            stage_with_catalog(&catalog, &partial, &candidate.catalog_key, vec![corrupt]).is_err()
+        );
+        assert!(stage_with_catalog(
+            &catalog,
+            &partial,
+            &candidate.catalog_key,
+            vec![blob(west), blob(east)]
+        )
+        .is_err());
+        assert!(stage_with_catalog(&catalog, &partial, "unlisted", vec![blob(west)]).is_err());
+        assert_eq!(partial.bindings().count(), 1);
+        let retained =
+            stage_with_catalog(&catalog, &partial, &candidate.catalog_key, vec![blob(west)])
+                .unwrap();
+        assert_eq!(retained.descriptors(), archive.descriptors());
+        let (_, other) = fixture(true);
+        assert!(missing_seam_candidates(&catalog, &other).is_empty());
     }
 }

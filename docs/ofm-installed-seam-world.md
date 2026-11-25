@@ -1,12 +1,15 @@
 # Installed OFM seam routes: World admission and rollback
 
 **Status:** Schema 36 now has a typed-only normal storage reader/writer
-for the isolated, open, one-way route with both fragment locks. The reader
+for the open, one-way route with both fragment locks. One ordinary
+single-tile route may coexist if it uses the exact same certified archive.
+The old route keeps its existing edge IDs, length and wire bindings and gains
+only matching fragment reservations while this capability is active. The reader
 reattaches the bounded archive, rebuilds the projected graph through the
 release-baked catalog, and recompiles saved operation for comparison. The
 writer performs the same admission before touching the destination. Stock
-releases still have an empty catalog, and the game UI cannot author this
-route. Other capability mixes, missing trust, and mislabeled/damaged schema
+releases still have an empty catalog, so the gated UI is hidden. Other
+capability mixes, missing trust, and mislabeled/damaged schema
 36 remain unavailable, not repairable through ordinary overwrite.
 
 ## Smallest positive world format
@@ -58,17 +61,17 @@ there are passing combined profile/ownership tests.
    they are not aliases of formerly split legacy edges. Geometry and source
    metadata are derived, not trusted from stored road transport. No old
    stops, edge IDs or reservations are remapped.
-3. The implemented isolated validator checks the exact entire graph and
-   refuses preexisting roads/trams. To extend it, join the separately validated
-   route sets; reject duplicate IDs across both. Recompute and validate all
+3. The validator joins the separately rebuilt route graphs and compares the
+   exact complete graph. It permits one compatible classic legacy v1 route
+   on either certified tile; duplicate IDs, other road modes, raw hashes
+   and archive revisions are refused. Recompute and validate all
    stored nodes, edges, stops and route occurrences on one candidate. Verify
    topology and permissions; persist a new version only after successful
    compilation, never eagerly materialize edges in the live world on error.
-4. The implemented isolated run adds both fragments without altering any
-   legacy run. The later mixed projector must add matching fragment locks
-   for the same resolved archive
-   context in both the witnessed route sections and every relevant legacy
-   leg which uses either original fragment. The existing resource engine
+4. Mixed compilation adds matching fragment locks for the same resolved
+   archive context to the witnessed route and the affected legacy route.
+   For now the legacy route reserves its matching fragments on every leg,
+   which is conservative and avoids inferring a split-edge alias. The existing resource engine
    reserves these for the whole leg. Keep legacy physical edge keys and
    crossing protections. Until geometric compatibility can be proved across
    revisions and other road modes, reject the relevant mixed world rather
@@ -110,3 +113,29 @@ the same checkpoint is rejected without changing the file or creating a
 backup. No Git ref, production catalog, default build target or network is
 modified. Set `ROSENFU_SEAM_QA_TARGET_DIR` to a dedicated QA-only directory
 if you want to reuse compilation outputs.
+
+## Desktop authoring (installed receipts only)
+
+In the normal **バス** construction panel, **確認済みの地図境界横断バス**
+appears only when the installed release includes a matching receipt and both
+exact raw tile bindings are already retained by the current world. Native
+discovery replays the candidate against that world and shows its start
+coordinate and one-way distance. The player names and explicitly creates it;
+the editor rechecks the displayed world token, ownership, current routes,
+edit bounds, trusted proof and normal saveability before committing one
+construction edit. No coordinates, map bytes or digest authority come from
+the authoring request. The created route is selectable and can use the usual
+bus operation panel. Unverified geometry rewrites are disabled while this
+restricted world profile is active; an undo for this edit is available while it remains in the current edit history.
+Stock releases have no installed receipts, so the new controls stay hidden.
+
+
+When an installed receipt names exact tiles not yet retained, the bus panel
+can offer a separate **確認済み区間の道路を取得** action. It uses the normal
+road provider observation and byte cache, checks the provider revision and
+each raw SHA, and then submits only the original bytes and the installed
+catalog reference. Native code derives all missing bindings from that
+reference, refuses re-binding an existing tile, and replays the complete
+route before retaining the archive. Older/changed provider snapshots are
+not substituted; acquisition fails if its exact edition is no longer served
+by the normal workflow. No request is made in an empty-catalog build.

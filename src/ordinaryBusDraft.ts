@@ -255,7 +255,7 @@ export async function prepareOrdinaryBusQuery(
  const pairs=await readObservedRoadTilePairs(refs,read,descriptors,signal);
  return !pairs.length?out:path.rule==='ofm_ground_bus_z14_v1'?{...out,...pairs[0]}:{...out,contextTiles:pairs};
 }
-async function readObservedRoadTilePairs(refs:OpenFreeMapEvidenceRequest[],read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal):Promise<RawTilePair[]>{
+export async function readObservedRoadTilePairs(refs:OpenFreeMapEvidenceRequest[],read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal):Promise<RawTilePair[]>{
  // Retained descriptors are hints; Rust still validates the chosen scope and bytes.
  const toFetch=refs.filter(t=>!descriptors.some(item=>{
   if(!item||typeof item!=='object'||!('binding' in item)||!item.binding||typeof item.binding!=='object')return false;

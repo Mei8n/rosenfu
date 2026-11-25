@@ -4,6 +4,7 @@ type Group={station_id:string;members:string[]};
 type Station={id:string;owner:string;name:string;latitude:number;longitude:number};
 export type StationWalkLink={from:string;to:string;seconds:number};
 export type StationWalkEdit={from:string;to:string;seconds:number|null;bothDirections:boolean};
+export const stationWalkDuration=(seconds:number)=>`${Math.floor(seconds/60)}分${seconds%60?`${seconds%60}秒`:''}`;
 const radians=(n:number)=>n*Math.PI/180;
 const metres=(a:Station,b:Station)=>6371000*Math.hypot(radians(b.latitude-a.latitude),
  radians(b.longitude-a.longitude)*Math.cos(radians((a.latitude+b.latitude)/2)));
@@ -37,8 +38,9 @@ export function StationWalkLinks({station,stations,groups,links,enabled,onEdit}:
    {duplicate&&<p>指定した方向に徒歩連絡が登録済みです。</p>}
    <button type="submit" disabled={!valid}>徒歩連絡を登録</button>
   </fieldset></form>:<p>近くに連絡先の候補がありません。</p>}
+  {local.length>0&&<p>地図の紫の点線は登録した連絡の概略です。実際の徒歩経路ではありません。短い連絡の向きと時間は拡大するか、下の一覧で確認できます。</p>}
   {local.length>0&&<ul aria-label="登録した徒歩連絡">{local.map(link=><li key={`${link.from}:${link.to}`}>
-   {name(link.from)} → {name(link.to)}（{link.seconds/60}分）
+   {name(link.from)} → {name(link.to)}（{stationWalkDuration(link.seconds)}）
    <button type="button" className="secondary" disabled={!enabled}
     aria-label={`${name(link.from)} から ${name(link.to)} の徒歩連絡を外す`}
     onClick={()=>onEdit({from:link.from,to:link.to,seconds:null,bothDirections:false})}>この方向を外す</button>

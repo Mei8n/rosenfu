@@ -13,7 +13,11 @@ pub use bus::{
 mod candidates;
 mod path;
 mod seam_catalog;
-pub use seam_catalog::{replay_installed_westbound_seam, InstalledWestboundSeamRecipe};
+pub use seam_catalog::{
+    has_installed_seam_catalog, missing_installed_seam_tiles, replay_installed_westbound_seam,
+    retained_installed_seam_candidates, stage_installed_seam_tiles, InstalledSeamAcquisition,
+    InstalledWestboundSeamRecipe,
+};
 mod seam_witness;
 pub(crate) use path::reconstruct_street_tram_path;
 pub use path::{

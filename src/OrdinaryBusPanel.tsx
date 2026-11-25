@@ -134,9 +134,9 @@ export function useOrdinaryBusDraft(input:Input){
   canPlace:!waypoints.committing};
 }
 
-export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,enabled,roadSource}:{
+export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,enabled,roadSource,editingLocked=false}:{
  state:ReturnType<typeof useOrdinaryBusDraft>;route?:Route;routes:readonly Route[];
- onSelect:(id:string)=>void;multiple:boolean;blocked:boolean;enabled:boolean;
+ onSelect:(id:string)=>void;multiple:boolean;blocked:boolean;enabled:boolean;editingLocked?:boolean;
  roadSource:Pick<RoadDataState,'status'|'message'>&{retry:()=>void};
 }){
  const {draft,waiting,error}=state,disabled=!enabled||waiting;
@@ -163,7 +163,8 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
     <p>選択点を囲む道路の確認範囲は最大 {tileLimit} タイル。元データ1タイル最大{OFM_LIMITS.bytes/2**20} MiB、1回の転送合計最大{OFM_EVIDENCE_LIMITS.batchBytes/2**20} MiBです。</p>
     <p>タイル数は取得済みの件数ではありません。経路が成立するか、転送上限に収まるかは別に確認します。</p>
    </details>
-   {!draft&&!state.deleting&&(!route||multiple)&&<>
+   {editingLocked&&<p>確認済みの境界横断バスを含むため、経路の引き直しはできません。</p>}
+   {!editingLocked&&!draft&&!state.deleting&&(!route||multiple)&&<>
     {state.chooseNewPattern&&<label>新しいバス系統の運行方向<select value={state.newPattern} disabled={disabled}
      onChange={event=>state.setNewPattern(event.target.value==='oneWay'?'oneWay':'roundTrip')}>
      <option value="roundTrip">往復（往路と復路を確認）</option><option value="oneWay">片道（起点から終点のみ）</option>
@@ -176,7 +177,7 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
    </>}
    {route&&(routes.length>1?<label>表示するバス系統<select value={route.id} disabled={disabled||!!draft||state.deleting}
     onChange={e=>onSelect(e.target.value)}>{routes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label>:<p>{route.name}</p>)}
-   {route&&!draft&&!state.deleting&&<>
+   {route&&!editingLocked&&!draft&&!state.deleting&&<>
     {state.chooseNewPattern&&<p>運行方向: {route.pattern==='openRoundTrip'?'往復':route.pattern==='closedOneWay'?'環状':'片道'}</p>}
     <button type="button" disabled={disabled||!!(route.path?.sameAtomStops||route.path?.fractionalTerminals)&&(!state.fractionalAvailable||!!route.pattern)}
      onClick={()=>state.start('edit')}>バス系統を引き直す</button>
