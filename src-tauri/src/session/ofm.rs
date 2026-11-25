@@ -4207,7 +4207,9 @@ mod tests {
         );
         from_ui.road_evidence_descriptors.clear();
         assert!(editor.world_for_ui_preview(from_ui.clone()).is_err());
-        assert!(render_base.replace_retaining_road_evidence(from_ui).is_err());
+        assert!(render_base
+            .replace_retaining_road_evidence(from_ui)
+            .is_err());
         assert_eq!(editor.snapshot(), original);
     }
 
