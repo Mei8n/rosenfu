@@ -366,7 +366,10 @@ impl WorldEditor {
         }
         let name = service_copy_name::service_copy_name(
             &source.name,
-            snapshot.services.iter().map(|service| service.name.as_str()),
+            snapshot
+                .services
+                .iter()
+                .map(|service| service.name.as_str()),
         );
         let mut candidate = self.clone();
         candidate
