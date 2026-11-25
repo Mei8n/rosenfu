@@ -11,7 +11,10 @@ pub struct LiveRailMarker {
     pub key: TrainKey,
     /// A commit-time movement identity lets the map blend samples only within
     /// the same run leg, never across a stop or direction change.
-    pub entered_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entered_ms: Option<u64>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub stationary: bool,
     /// Exact painted chord containing the native position, not station coordinates.
     pub alignment_start: GeoPoint,
     pub alignment_end: GeoPoint,
@@ -27,6 +30,10 @@ pub struct LiveBusMarker {
     pub edge_start: GeoPoint,
     pub edge_end: GeoPoint,
     pub position: f64,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Camera rectangle in normalized Web Mercator world coordinates. The renderer
@@ -86,7 +93,7 @@ const MAX_ROWS_PER_TABLE: usize = 8_192;
 
 struct Candidate<'a> {
     key: &'a TrainKey,
-    entered_ms: u64,
+    entered_ms: Option<u64>,
     line: AlignmentId,
     from: StationId,
     to: StationId,
@@ -273,7 +280,8 @@ impl World {
                     }
                     Some(LiveRailMarker {
                         key: train.key.clone(),
-                        entered_ms,
+                        entered_ms: Some(entered_ms),
+                        stationary: false,
                         alignment_start,
                         alignment_end,
                         position,
@@ -294,7 +302,7 @@ impl World {
     fn isolated_rail_markers_in(
         &self,
         view: Option<VehicleViewport>,
-        allow_polyline: bool,
+        extended: bool,
     ) -> Vec<LiveRailMarker> {
         let Some(op) = self.operation().filter(|o| !o.invalidated) else {
             return Vec::new();
@@ -305,26 +313,42 @@ impl World {
             .trains()
             .take(candidate_limit(view))
             .filter_map(|train| {
-                let TrainState::Moving {
-                    entered_ms,
-                    arrival_ms,
-                    ..
-                } = train.state
-                else {
-                    return None;
-                };
-                if now > arrival_ms {
-                    return None;
-                }
                 let spec = op.runtime.service_spec(&train.key.service_id)?;
-                let leg = spec.legs.get(train.leg)?;
+                let (leg_index, running) = match train.state {
+                    TrainState::Moving {
+                        entered_ms,
+                        arrival_ms,
+                        ..
+                    } if extended || now <= arrival_ms => {
+                        (train.leg, Some((entered_ms, arrival_ms)))
+                    }
+                    TrainState::Waiting { .. } if extended => {
+                        // A newly scheduled train may still be waiting to
+                        // enter the map. Only a completed leg proves where a
+                        // waiting vehicle actually reached the platform.
+                        let previous = train.leg.checked_sub(1)?;
+                        if spec.legs.get(previous)?.to != spec.legs.get(train.leg)?.from {
+                            return None;
+                        }
+                        (previous, None)
+                    }
+                    _ => return None,
+                };
+                let leg = spec.legs.get(leg_index)?;
                 let (line, uniform) = same_lane_uniform_section(&leg.sections)?;
-                let (duration, _) = op
-                    .runtime
-                    .unblocked_leg_timing(&train.key.service_id, train.leg)?;
-                if entered_ms.checked_add(duration) != Some(arrival_ms) {
-                    return None;
-                }
+                let (entered_ms, fraction) = if let Some((entered, arrival)) = running {
+                    let (duration, _) = op
+                        .runtime
+                        .unblocked_leg_timing(&train.key.service_id, leg_index)?;
+                    if entered.checked_add(duration) != Some(arrival) {
+                        return None;
+                    }
+                    let elapsed = now.checked_sub(entered)?.min(duration);
+                    let position = uniform_position(&uniform, &spec.vehicle, elapsed, duration)?;
+                    ((!extended || now < arrival).then_some(entered), position)
+                } else {
+                    (None, 1.0)
+                };
                 Some(Candidate {
                     key: &train.key,
                     entered_ms,
@@ -333,12 +357,7 @@ impl World {
                     to: StationId(leg.to.parse().ok()?),
                     length_m: uniform.length_m,
                     piece_count: leg.sections.len(),
-                    fraction: uniform_position(
-                        &uniform,
-                        &spec.vehicle,
-                        now.checked_sub(entered_ms)?,
-                        duration,
-                    )?,
+                    fraction,
                 })
             })
             .collect();
@@ -394,7 +413,7 @@ impl World {
                     // centerline. Joined or lane-changing paths can be
                     // trimmed or offset and require their own proof.
                     || !(2..=64).contains(&a.points.len())
-                    || (!allow_polyline && a.points.len() != 2)
+                    || (!extended && a.points.len() != 2)
                     || a.section_count() != 1
                     || a.track_type != TrackType::Normal
                     || infrastructure.track_count != 1
@@ -441,6 +460,7 @@ impl World {
                 Some(LiveRailMarker {
                     key: c.key.clone(),
                     entered_ms: c.entered_ms,
+                    stationary: c.entered_ms.is_none(),
                     alignment_start,
                     alignment_end,
                     position,
@@ -981,6 +1001,39 @@ mod tests {
             [points[1], points[2]]
         );
         assert!((marker.position - (length * 0.9 - 25. - first) / (length - first)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn arrival_and_dwell_remain_visible_but_unentered_departures_do_not() {
+        let mut world = fixture(false, true, false);
+        let op = world.operation_mut().unwrap();
+        let spec = op.runtime.save().services.remove(0);
+        let (arrival, stand) = op
+            .runtime
+            .unblocked_leg_timing(&spec.service_id, 0)
+            .unwrap();
+        op.runtime.advance_to(arrival, 32).unwrap();
+        let marks = world.live_ground_rail_markers();
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].key.scheduled_ms, 0);
+        assert!(marks[0].stationary);
+        assert!(marks[0].entered_ms.is_none());
+        assert!((marks[0].position - 0.9).abs() < 1e-10);
+
+        let op = world.operation_mut().unwrap();
+        op.runtime.advance_to(arrival + stand + 1000, 64).unwrap();
+        // The return may be held by the other departure; neither stationary
+        // nor moving positions may be fabricated for a train with no proof.
+        let marks = world.live_ground_rail_markers();
+        let returned = marks
+            .iter()
+            .find(|marker| marker.key.scheduled_ms == 0)
+            .unwrap();
+        if returned.stationary {
+            assert!((returned.position - 0.9).abs() < 1e-10);
+        } else {
+            assert!(returned.position < 0.9);
+        }
     }
 
     #[test]

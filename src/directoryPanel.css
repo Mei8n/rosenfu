@@ -27,3 +27,4 @@
 
 .directory-search select { min-width:0; width:100%; box-sizing:border-box; }
 .service-directory-routes { display:block; color:var(--muted); margin-top:2px; }
+.route-via-actions { display:inline-flex; gap:4px; margin-inline-start:6px; }

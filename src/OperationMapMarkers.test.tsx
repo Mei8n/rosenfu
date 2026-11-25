@@ -179,3 +179,13 @@ test('map motion only blends two committed samples on the same run and chord',()
   vi.unstubAllGlobals();
  }
 });
+
+test('authoritatively stopped rail marker uses a distinct accessible paint group',()=>{
+ const active=marker(.25);
+ const dwelling={...marker(.75),key:{...active.key,scheduled_ms:13},stationary:true};
+ const {container}=render(<svg><OperationMapMarkers markers={[active,dwelling]} camera={camera} scale={1}/></svg>);
+ const group=container.querySelector('[aria-label="表示できる列車"]');
+ expect(group?.querySelectorAll('circle')).toHaveLength(2);
+ expect(group?.querySelectorAll('circle')[0].getAttribute('fill')).toBe('#1453a0');
+ expect(group?.querySelectorAll('circle')[1].getAttribute('fill')).toBe('#f1f5ff');
+});
