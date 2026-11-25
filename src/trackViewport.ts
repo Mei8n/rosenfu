@@ -25,13 +25,19 @@ const trackCell=(degrees:number)=>Math.floor(degrees*4);
 const trackCellKey=(x:number,y:number)=>x*1024+y;
 /** Screen-only broad phase. Small lines occupy at most four cells, and
  * long ones stay in one overflow list, so crossings are never lost. */
-export function createTrackViewportIndex<T extends {points:readonly GeoPoint[]}>(items:readonly T[]){
- const rows=items.map(item=>({item,bounds:trackBounds(item.points)})).filter(({bounds:b})=>
-  b.west>=-180&&b.east<=180&&b.south>=-85.05112878&&b.north<=85.05112878&&
-  b.west<=b.east&&b.south<=b.north);
+export function createTrackViewportIndex<T extends {points:readonly GeoPoint[]}>(items:readonly T[],mode:'physical'|'display'='physical'){
+ const indexable=(b:Bounds)=>b.west>=-180&&b.east<=180&&b.south>=-85.05112878&&b.north<=85.05112878&&
+  b.west<=b.east&&b.south<=b.north;
+ const rows=items.map(item=>{
+  const bounds=trackBounds(item.points);
+  return {item,bounds,binnable:indexable(bounds)};
+ }).filter(row=>row.binnable||mode==='display');
  const cells=new Map<number,number[]>(),wide:number[]=[];
  const extents=(b:Bounds):[number,number,number,number]=>[trackCell(b.west),trackCell(b.east),trackCell(b.south),trackCell(b.north)];
- if(rows.length>=256)rows.forEach(({bounds},i)=>{
+ if(rows.length>=256)rows.forEach(({bounds,binnable},i)=>{
+  // Display hit paths retain their original exact filter even for data
+  // outside the normal map domain. Such rows never enter a numbered cell.
+  if(!binnable){wide.push(i);return;}
   const [left,right,bottom,top]=extents(bounds);
   if(right-left>1||top-bottom>1){wide.push(i);return;}
   for(let x=left;x<=right;x++)for(let y=bottom;y<=top;y++){

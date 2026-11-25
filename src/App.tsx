@@ -123,7 +123,7 @@ import { invoke as nativeInvoke, isTauri } from "@tauri-apps/api/core";
 import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, requestedTileCoverage, viewBounds, mapViewport, vehicleViewport } from "./map";
 import { GsiBackground } from "./GsiBackground";
 import type { Camera } from "./map";
-import {trackBounds,trackViewport,intersectsTrackView} from "./trackViewport";
+import {createTrackViewportIndex,trackBounds,trackViewport,intersectsTrackView} from "./trackViewport";
 import {RetainedRoadLayer,useRetainedRoadView} from "./RetainedRoadLayer";
 import type { TileStatus } from "./GsiBackground";
 import { provisionalCurveSpeed, snapStraight } from "./circularAlignment";
@@ -727,11 +727,11 @@ export function App() {
   };
   const drawPath = (points: GeoPoint[]) => mapPath(points, camera);
   // Camera changes filter before building SVG paths; editing still owns all geometry.
-  const alignmentBounds=useMemo(()=>alignments.map(alignment=>({alignment,bounds:trackBounds(alignment.points)})),[alignments]);
+  const alignmentViewport=useMemo(()=>createTrackViewportIndex(alignments,"display"),[alignments]);
   const trackView=useMemo(()=>trackViewport(camera,mapSize),[camera,mapSize]);
   const visibleAlignmentPaths=useMemo(
-    ()=>alignmentBounds.filter(row=>intersectsTrackView(row.bounds,trackView)).map(({alignment})=>({alignment,hit:mapPath(alignment.points,camera)})),
-    [alignmentBounds,camera,trackView],
+    ()=>alignmentViewport.visible(trackView).map(alignment=>({alignment,hit:mapPath(alignment.points,camera)})),
+    [alignmentViewport,camera,trackView],
   );
   // Leave the original section index attached to a target after filtering.
   // No splitting or projection of offscreen lines when entering deletion mode.
