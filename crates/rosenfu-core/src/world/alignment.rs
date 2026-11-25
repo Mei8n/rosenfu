@@ -218,33 +218,37 @@ impl WorldDraft {
                 return Err(WorldError::InvalidAlignment);
             }
         }
+        if self.station_placements.is_empty() {
+            return Ok(());
+        }
+        // WorldDraft::validate has already rejected duplicate alignment and
+        // station IDs. Resolve placements once by ID, not by rescanning the
+        // whole map for every platform. Keep validation in stored order.
+        let alignments: BTreeMap<_, _> = self.alignments.iter().map(|a| (a.id, a)).collect();
+        let stations: BTreeMap<_, _> = self.stations.iter().map(|s| (s.id, s)).collect();
         let mut placed = BTreeSet::new();
         for p in &self.station_placements {
-            let a = self
-                .alignments
-                .iter()
-                .find(|a| a.id == p.alignment_id)
+            let a = alignments
+                .get(&p.alignment_id)
                 .ok_or(WorldError::MissingReference("placement.alignment"))?;
-            let s = self
-                .stations
-                .iter()
-                .find(|s| s.id == p.station_id)
+            let s = stations
+                .get(&p.station_id)
                 .ok_or(WorldError::MissingReference("placement.station"))?;
-            let footprint_start = p.position - p.length_m / (2.0 * a.length_m());
-            let footprint_end = p.position + p.length_m / (2.0 * a.length_m());
-            if footprint_start.is_finite()
+            let length = a.length_m();
+            let footprint_start = p.position - p.length_m / (2.0 * length);
+            let footprint_end = p.position + p.length_m / (2.0 * length);
+            let flat = a.is_flat_over_position(footprint_start, footprint_end);
+            if !flat
+                && footprint_start.is_finite()
                 && footprint_end.is_finite()
                 && footprint_start >= -1e-9
                 && footprint_end <= 1. + 1e-9
                 && footprint_start <= footprint_end
-                && !a.is_flat_over_position(footprint_start, footprint_end)
             {
                 return Err(WorldError::StationOnGradient);
             }
-            if !a.is_flat_over_position(
-                p.position - p.length_m / (2.0 * a.length_m()),
-                p.position + p.length_m / (2.0 * a.length_m()),
-            ) || !placed.insert(p.station_id)
+            if !flat
+                || !placed.insert(p.station_id)
                 || a.owner != s.owner
                 || !p.position.is_finite()
                 || !(0.0..=1.0).contains(&p.position)
@@ -252,11 +256,11 @@ impl WorldDraft {
                 || !(20.0..=1000.0).contains(&p.length_m)
                 || !p.width_m.is_finite()
                 || !(4.0..=100.0).contains(&p.width_m)
-                || p.length_m > a.length_m() + 0.001
+                || p.length_m > length + 0.001
             {
                 return Err(WorldError::InvalidStationPlacement);
             }
-            let half = p.length_m / a.length_m() / 2.0;
+            let half = p.length_m / length / 2.0;
             if p.position < half - 1e-9 || p.position > 1.0 - half + 1e-9 {
                 return Err(WorldError::InvalidStationPlacement);
             }

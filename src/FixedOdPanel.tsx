@@ -1,6 +1,7 @@
 import {useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import './fixedOdPanel.css';
+import {DistanceFareQuote} from './DistanceFareQuote';
 import {OperationObservationMinute} from './OperationsPanel';
 import {nearbyTransferStations,TRANSFER_CANDIDATE_RADIUS_M,type TransferRoad,type TransferStation} from './busTransferCandidates';
 import type {RoadTransportData} from './RoadTransportPanel';
@@ -9,9 +10,9 @@ type TransferStop=Named&Partial<Pick<RoadTransportData['bus_stops'][number],'edg
 const EMPTY_BUS_STOPS:TransferStop[]=[];
 export type FixedOdScenario={origin_station_id:string;destination_station_id:string;trips:number|null;alternative_seconds:number|null};
 export type FixedOdScenarioView={token:string;scenario:FixedOdScenario|null};
-type Allocation={stations:string[];services:string[];generalized_seconds:number;trips:number;time?:{walk_seconds:number;wait_seconds:number;ride_seconds:number;transfers:number}};
+type Allocation={stations:string[];services:string[];boarding_fares_yen?:number[];generalized_seconds:number;trips:number;time?:{walk_seconds:number;wait_seconds:number;ride_seconds:number;transfers:number}};
 type Result={potential_trips:number|null;rail:Allocation[];alternative_trips:number;unserved_trips:number;unresolved_trips:number;search_complete:boolean};
-type ChoicePrices={publicFareYen:number;alternativeCostYen:number;valueOfTimeYenPerHour:number};
+type ChoicePrices={publicFareYen:number;alternativeCostYen:number;valueOfTimeYenPerHour:number;busFareYen?:number;serviceAdjustment?:{serviceId:string;deltaYen:number}};
 type BudgetInput={prices:ChoicePrices;marginalYen:number};
 type ObservedResult={
  status:'reached'|'incomplete'|'no_arrival_within_window'|'outside_budget';
@@ -25,11 +26,16 @@ const yenInput=(value:string,minimum=0)=>{
  return Number.isSafeInteger(amount)&&amount>=minimum&&amount<=1_000_000?amount:null;
 };
 function BudgetResult({paths,budget,names}:{paths:Allocation[];budget:BudgetInput;names:Map<string,string>}){
- const counts=new Map<string,number>();
- for(const path of paths)for(const service of path.services)counts.set(service,(counts.get(service)??0)+path.trips);
- const rows=[...counts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]));
- const boardings=rows.reduce((sum,[,count])=>sum+count,0);
- const fares=boardings*budget.prices.publicFareYen,cost=boardings*budget.marginalYen;
+ const totals=new Map<string,{count:number;fares:number}>();
+ for(const path of paths)path.services.forEach((service,index)=>{
+  const row=totals.get(service)??{count:0,fares:0};
+  row.count+=path.trips;
+  row.fares+=path.trips*(path.boarding_fares_yen?.[index]??budget.prices.publicFareYen);
+  totals.set(service,row);
+ });
+ const rows=[...totals.entries()].sort((a,b)=>b[1].count-a[1].count||a[0].localeCompare(b[0]));
+ const boardings=rows.reduce((sum,[,{count}])=>sum+count,0);
+ const fares=rows.reduce((sum,[,row])=>sum+row.fares,0),cost=boardings*budget.marginalYen;
  return <section aria-label="この需要条件の運賃と費用の概算">
   <h5>この需要条件の運賃と費用の概算</h5>
   <p>試算した延べ乗車回数に入力単価を掛けた比較です。実際の売上・利益ではなく、建設費・固定費・ほかの区間の利用を含みません。</p>
@@ -39,8 +45,8 @@ function BudgetResult({paths,budget,names}:{paths:Allocation[];budget:BudgetInpu
    <dt>乗車ごとにかかる費用の概算</dt><dd>{yen(cost)}</dd>
    <dt>運賃と入力費用との差額</dt><dd>{yen(fares-cost)}</dd>
   </dl>
-  {rows.length>0&&<ul aria-label="系統別の延べ乗車と概算差額">{rows.map(([id,n])=><li key={id}>
-   {names.get(id)??'別系統'}: {quantity(n)}回 / {yen(n*(budget.prices.publicFareYen-budget.marginalYen))}
+  {rows.length>0&&<ul aria-label="系統別の延べ乗車と概算差額">{rows.map(([id,{count,fares}])=><li key={id}>
+   {names.get(id)??'別系統'}: {quantity(count)}回 / {yen(fares-count*budget.marginalYen)}
   </li>)}</ul>}
  </section>;
 }
@@ -52,6 +58,7 @@ export function FixedOdPanel({stations,services,busStops=EMPTY_BUS_STOPS,busRout
  const [trips,setTrips]=useState('100'),[alternative,setAlternative]=useState('');
  const [useBudget,setUseBudget]=useState(false);
  const [fareYen,setFareYen]=useState(''),[otherYen,setOtherYen]=useState('0');
+ const [busFare,setBusFare]=useState(''),[adjustedService,setAdjustedService]=useState(''),[deltaFare,setDeltaFare]=useState('0');
  const [hourYen,setHourYen]=useState(''),[marginalYen,setMarginalYen]=useState('0');
  const [settled,setSettled]=useState<{world:unknown;result:Result;budget:BudgetInput|null}|null>(null);
  const [settledObserved,setSettledObserved]=useState<{world:unknown;result:ObservedResult}|null>(null);
@@ -141,13 +148,26 @@ export function FixedOdPanel({stations,services,busStops=EMPTY_BUS_STOPS,busRout
     setFailure({world:worldVersion,message:'運賃・費用は0〜100万円、時間価値は1〜100万円/時の整数を入力してください。'});
     return;
    }
-   budget={prices:{publicFareYen,alternativeCostYen,valueOfTimeYenPerHour},marginalYen:marginal};
+   const busFareYen=busFare.trim()?yenInput(busFare):undefined;
+   const signedDelta=deltaFare.trim()?Number(deltaFare):NaN;
+   const adjustedBase=adjustedService.startsWith('bus:')?(busFareYen??publicFareYen):publicFareYen;
+   if(busFareYen===null||(adjustedService&&(!serviceNames.has(adjustedService)||!Number.isSafeInteger(signedDelta)||Math.abs(signedDelta)>1_000_000||adjustedBase+signedDelta<0||adjustedBase+signedDelta>1_000_000))){
+    setSettled(null);
+    setFailure({world:worldVersion,message:'バス運賃と、系統別加算・割引後の運賃は0〜100万円にしてください。'});
+    return;
+   }
+   budget={prices:{publicFareYen,alternativeCostYen,valueOfTimeYenPerHour,
+    ...(busFareYen===undefined?{}:{busFareYen}),
+    ...(adjustedService?{serviceAdjustment:{serviceId:adjustedService,deltaYen:signedDelta}}:{})},marginalYen:marginal};
   }
   const captured=worldVersion,lock={};flight.current=lock;setPending(true);setFailure(null);setSettled(null);
   try{
    const response=await invoke<Result>('preview_fixed_od',{originStationId:origin,destinationStationId:destination,trips:scenario.trips,alternativeSeconds:scenario.alternative_seconds,...(transfer?{transfer}:{}),...(budget?{prices:budget.prices}:{})});
    if(latest.current.worldVersion!==captured||!latest.current.enabled)return;
    if(typeof response?.search_complete!=='boolean'||!Array.isArray(response.rail))throw Error('需要計算の応答を確認できませんでした。');
+   if(budget&&(budget.prices.busFareYen!==undefined||budget.prices.serviceAdjustment)&&response.rail.some(path=>
+    !Array.isArray(path.boarding_fares_yen)||path.boarding_fares_yen.length!==path.services.length||
+    path.boarding_fares_yen.some(n=>!Number.isSafeInteger(n)||n<0||n>1_000_000)))throw Error('系統別運賃の応答を確認できませんでした。');
    setSettled({world:captured,result:response,budget});
   }catch(cause){
    if(latest.current.worldVersion===captured&&latest.current.enabled)setFailure({world:captured,message:String(cause)});
@@ -206,10 +226,15 @@ export function FixedOdPanel({stations,services,busStops=EMPTY_BUS_STOPS,busRout
      <label className="fixed-od-transfer-toggle"><input type="checkbox" checked={useBudget} onChange={event=>{setUseBudget(event.target.checked);dirty();}}/>運賃と費用を比較する</label>
      {useBudget&&<>
       <label>公共交通の運賃（円／乗車）<input type="number" required min="0" max="1000000" step="1" value={fareYen} onChange={event=>{setFareYen(event.target.value);dirty();}}/></label>
+      <label>バスの別運賃（円／乗車・任意）<input type="number" min="0" max="1000000" step="1" value={busFare} onChange={event=>{setBusFare(event.target.value);dirty();}}/></label>
+      {serviceNames.size>0&&<label>加算・割引する系統（任意）<select value={adjustedService} onChange={event=>{setAdjustedService(event.target.value);setDeltaFare('0');dirty();}}>
+       <option value="">なし</option>{[...serviceNames].map(([id,name])=><option key={id} value={id}>{id.startsWith('bus:')?'バス：':'鉄道：'}{name}</option>)}
+      </select></label>}
+      {adjustedService&&<label>系統別の加算・割引（円／乗車）<input type="number" required min="-1000000" max="1000000" step="1" value={deltaFare} onChange={event=>{setDeltaFare(event.target.value);dirty();}}/></label>}
       {alternative.trim()&&<label>代替手段の費用（円／移動）<input type="number" required min="0" max="1000000" step="1" value={otherYen} onChange={event=>{setOtherYen(event.target.value);dirty();}}/></label>}
       <label>時間価値（円／時）<input type="number" required min="1" max="1000000" step="1" value={hourYen} onChange={event=>{setHourYen(event.target.value);dirty();}}/></label>
       <label>乗車ごとにかかる費用（円／乗車）<input type="number" required min="0" max="1000000" step="1" value={marginalYen} onChange={event=>{setMarginalYen(event.target.value);dirty();}}/></label>
-      <p>運賃は同じ車両に乗り続ける間は1回分、乗り換えるともう1回分です。時間価値で費用を時間に換算して経路選択を比較します。費用条件は保存せず、遅れを含む試算では使えません。</p>
+      <p>バス運賃を空欄にすると共通運賃を使います。割引は負の金額で入力します。運賃は同じ車両に乗り続ける間は1回分、乗り換えるともう1回分です。時間価値で費用を時間に換算して経路選択を比較します。費用条件は保存せず、遅れを含む試算では使えません。</p>
      </>}
     </fieldset>
     <button type="submit" disabled={!endpointsSelected}>需要を試算</button>
@@ -218,6 +243,7 @@ export function FixedOdPanel({stations,services,busStops=EMPTY_BUS_STOPS,busRout
     {persistence&&<button type="button" disabled={!endpointsSelected||saved===undefined} onClick={()=>void storeScenario(false)}>この試算条件をワールドに記録</button>}
    </fieldset>
   </form>}
+  <DistanceFareQuote/>
   {persistence&&saved&&<><p>記録済みの条件は次のセーブに含まれます。</p><button type="button" disabled={!enabled||pending||savePending} onClick={()=>void storeScenario(true)}>記録した条件を外す</button></>}
   {saveError&&<p role="alert">{saveError}</p>}
   {pending&&<p role="status">需要を試算中…</p>}
@@ -232,7 +258,7 @@ export function FixedOdPanel({stations,services,busStops=EMPTY_BUS_STOPS,busRout
     <dt>未確定</dt><dd>{quantity(result.unresolved_trips)}人</dd>
    </dl>:<p role="status">探索上限に達しました。{quantity(result.unresolved_trips)}人は未確定で、利用人数には含めません。</p>}
    {result.search_complete&&result.rail.length>0&&<ol className="fixed-od-paths" aria-label="利用経路">
-    {result.rail.map((path,index)=><li key={index}><strong>{quantity(path.trips)}人</strong> {path.stations.map(id=>stationNames.get(id)??'移動地点').join(' → ')}{path.services.length>0&&<div>{path.services.map(id=>serviceNames.get(id)??'別系統').join(' → ')}</div>}{path.time&&<div>推計: 待ち {quantity(path.time.wait_seconds/60)}分 / 乗車 {quantity(path.time.ride_seconds/60)}分 / 徒歩 {quantity(path.time.walk_seconds/60)}分 / 乗換 {path.time.transfers}回</div>}</li>)}
+    {result.rail.map((path,index)=><li key={index}><strong>{quantity(path.trips)}人</strong> {path.stations.map(id=>stationNames.get(id)??'移動地点').join(' → ')}{path.services.length>0&&<div>{path.services.map(id=>serviceNames.get(id)??'別系統').join(' → ')}</div>}{currentResult?.budget&&<div>仮の運賃: {yen(path.boarding_fares_yen?.reduce((total,amount)=>total+amount,0)??path.services.length*currentResult.budget.prices.publicFareYen)}</div>}{path.time&&<div>推計: 待ち {quantity(path.time.wait_seconds/60)}分 / 乗車 {quantity(path.time.ride_seconds/60)}分 / 徒歩 {quantity(path.time.walk_seconds/60)}分 / 乗換 {path.time.transfers}回</div>}</li>)}
    </ol>}
    {currentResult?.budget&&result.search_complete&&result.potential_trips!==null&&<BudgetResult paths={result.rail} budget={currentResult.budget} names={serviceNames}/>}
   </section>}

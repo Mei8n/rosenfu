@@ -968,10 +968,19 @@ mod tests {
                     public_fare_yen: 500,
                     alternative_cost_yen: 0,
                     value_of_time_yen_per_hour: 1200,
+                    bus_fare_yen: Some(325),
+                    service_adjustment: Some(rosenfu_core::demand::ServiceFareAdjustment {
+                        service_id: preview.rail[0].services[0].clone(),
+                        delta_yen: 50,
+                    }),
                 }),
             )
             .unwrap();
         assert_eq!(preview.rail[0].time, priced.rail[0].time);
+        assert_eq!(
+            priced.rail[0].boarding_fares_yen.as_deref(),
+            Some(&[550][..])
+        );
         assert!(priced.alternative_trips > preview.alternative_trips);
         assert_eq!(editor.world, before_priced);
         assert_eq!(preview.rail[0].time.wait_seconds, 30.0);

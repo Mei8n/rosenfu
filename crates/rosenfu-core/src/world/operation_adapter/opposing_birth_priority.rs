@@ -224,6 +224,17 @@ fn prove_separated_hold(
     parked_fractions: [f64; 2],
     minimum_gap_m: f64,
 ) -> Option<()> {
+    prove_separated_hold_between(main, bay, stems, bay, parked_fractions, minimum_gap_m)
+}
+
+pub(super) fn prove_separated_hold_between(
+    main: &Alignment,
+    bay: &Alignment,
+    stems: [&Alignment; 2],
+    parked: &Alignment,
+    parked_fractions: [f64; 2],
+    minimum_gap_m: f64,
+) -> Option<()> {
     let anchor = *main.points.first()?;
     if anchor.latitude.abs() > 60.0 || anchor.longitude.abs() > 179.0 {
         return None;
@@ -299,8 +310,8 @@ fn prove_separated_hold(
     }
 
     let [a, b] = parked_fractions;
-    let a = project(bay.point_at(a))?.along;
-    let b = project(bay.point_at(b))?.along;
+    let a = project(parked.point_at(a))?.along;
+    let b = project(parked.point_at(b))?.along;
     let (left, right) = (a.min(b), a.max(b));
     if !(bounds[0] < left && left < right && right < bounds[1]) {
         return None;

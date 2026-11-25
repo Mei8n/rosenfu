@@ -13,14 +13,41 @@ fn fixture(
     width_scale: f64,
     platform_length: f64,
 ) -> (World, Vec<OperationServiceConfig>, [AlignmentId; 4]) {
+    fixture_at_angle(
+        different_branch,
+        local_uses_siding,
+        width_scale,
+        platform_length,
+        0.,
+    )
+}
+
+fn fixture_at_angle(
+    different_branch: bool,
+    local_uses_siding: bool,
+    width_scale: f64,
+    platform_length: f64,
+    degrees: f64,
+) -> (World, Vec<OperationServiceConfig>, [AlignmentId; 4]) {
     use AlignmentEndpoint::{End, Start};
 
     let mut world = World::default();
     let player = world.add_player("QA".into()).unwrap();
     let owner = world.add_company(player, "Rail".into()).unwrap();
-    let p = |longitude, rise| GeoPoint {
-        longitude,
-        latitude: 35. + rise,
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let longitude_scale = 35_f64.to_radians().cos();
+    let p = |longitude: f64, rise: f64| {
+        if degrees == 0. {
+            return GeoPoint {
+                longitude,
+                latitude: 35. + rise,
+            };
+        }
+        let along = (longitude - 139.50) * longitude_scale;
+        GeoPoint {
+            longitude: 139.50 + (along * cos - rise * sin) / longitude_scale,
+            latitude: 35. + (along * sin + rise * cos),
+        }
     };
     let west_points = vec![p(139.50, 0.), p(139.51, 0.)];
     let east_points = vec![p(139.522, 0.), p(139.532, 0.)];
@@ -267,6 +294,62 @@ fn waiting_guidance_distinguishes_same_branch_and_shared_exit_without_changing_d
             );
         }
     }
+}
+
+#[test]
+fn rotated_refuge_allows_the_through_train_to_pass_a_parked_local() {
+    for angle in [35., 90., 145.] {
+        for siding_holder in [false, true] {
+            let (mut world, configs, _) = fixture_at_angle(true, siding_holder, 1., 80., angle);
+            world.configure_operation(configs.clone()).unwrap();
+            assert_eq!(world.operation().unwrap().runtime.save().format, 7);
+            let local = configs[0].service_id.0.to_string();
+            let express = configs[1].service_id.0.to_string();
+            let events = |world: &World| {
+                world
+                    .operation()
+                    .unwrap()
+                    .runtime
+                    .preview_passenger_replay(1_000_000, 128)
+                    .unwrap()
+                    .completed_legs
+            };
+            let baseline = events(&world);
+            let arrival = baseline
+                .iter()
+                .find(|r| r.train.service_id == local && r.sequence == 0)
+                .unwrap();
+            let exit = baseline
+                .iter()
+                .find(|r| r.train.service_id == local && r.sequence == 1)
+                .unwrap();
+            let pass = baseline
+                .iter()
+                .find(|r| r.train.service_id == express)
+                .unwrap();
+            assert!(pass.entered_ms > arrival.arrived_ms);
+            assert!(pass.entered_ms < arrival.arrived_ms + configs[0].dwell_ms);
+            assert!(exit.entered_ms > pass.arrived_ms);
+
+            tick(&mut world, pass.entered_ms + 1);
+            let saved = rosenfu_storage::encode(&world).unwrap();
+            let mut reopened = rosenfu_storage::decode(&saved).unwrap();
+            assert_eq!(saved, rosenfu_storage::encode(&reopened).unwrap());
+            tick(&mut world, 1_000_000);
+            tick(&mut reopened, 1_000_000);
+            assert_eq!(
+                rosenfu_storage::encode(&world).unwrap(),
+                rosenfu_storage::encode(&reopened).unwrap()
+            );
+        }
+    }
+    let (mut narrow, configs, _) = fixture_at_angle(true, false, 0.10, 80., 90.);
+    narrow.configure_operation(configs).unwrap();
+    assert_ne!(
+        narrow.operation().unwrap().runtime.save().format,
+        7,
+        "orientation cannot bypass lateral platform clearance"
+    );
 }
 
 fn tick(world: &mut World, at: u64) -> rosenfu_core::operation::AdvanceResult {
@@ -632,4 +715,40 @@ fn repeated_refuge_calendar_compares_completed_trains_without_changing_nominal_o
             "headway={headway_ms}ms: arrivals before 600s same={same_early}/8 refuge={refuge_early}/8; max origin wait same={same_wait}ms refuge={refuge_wait}ms"
         );
     }
+}
+
+#[test]
+fn native_candidate_search_lists_the_station_free_other_branch() {
+    let (world, _, [west, east, local, bypass]) = fixture_at_angle(true, false, 1., 80., 90.);
+    let station = |id| {
+        world
+            .snapshot()
+            .station_placements
+            .iter()
+            .find(|p| p.alignment_id == id)
+            .unwrap()
+            .station_id
+    };
+    let (a, b, c) = (station(west), station(local), station(east));
+    let candidates = world.route_candidates(a, c).unwrap();
+    assert_eq!(
+        candidates.status,
+        rosenfu_core::world::RouteSearchStatus::Ambiguous
+    );
+    assert!(!candidates.truncated);
+    assert_eq!(candidates.candidates.len(), 2);
+    assert!(candidates
+        .candidates
+        .iter()
+        .any(|p| p.stations == [a, b, c]));
+    let path = candidates
+        .candidates
+        .iter()
+        .find(|p| p.stations == [a, c])
+        .unwrap();
+    assert!(matches!(path.segments.as_slice(),
+        [RouteSegment::ConnectedAlignments {from, to, connections}]
+        if *from == a && *to == c && connections.len() == 2
+            && connections[0].b.alignment_id == bypass
+            && connections[1].a.alignment_id == bypass));
 }

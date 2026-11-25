@@ -33,6 +33,14 @@ line retains its original line index. Coordinates use checked accumulation and
 must stay within +/- 16 extents and i32. This deliberately rejects unusually large
 buffers instead of guessing or clipping them.
 
+Decoded road lines also retain the optional original unsigned MVT feature ID.
+It is opaque and producer-specific; it is not part of the v1 canonical digest
+layout, fragment IDs, or route selection. The raw SHA binds the original
+encoded ID. A provenance verifier can look up a nonzero ID only when the ID
+occurs exactly once across the transportation layer (including non-road
+features) and that feature yields exactly one admissible road line. The lookup
+alone does not authorize joining tiles or establish producer identity.
+
 Known road attributes (`class`, `subclass`, `access`, `brunnel`, `layer`, `oneway`)
 retain typed protobuf values. Strings are nonempty, <= 100 UTF-8 bytes, and reject
 Unicode Cc/Cf. Numeric layer/oneway accept finite values; integer values must be
@@ -523,3 +531,28 @@ transfer rules.
 uses motorways as well as streets; [roadGraph.ts](https://github.com/circularsquare/trainsworld/blob/50f7b159f139c1abb6dfaea43a1aea22f55281af/trainworld/app/src/map/roadGraph.ts#L701-L705)
 also models bridge/tunnel approaches. Rosenfu intentionally does not copy its
 close-distance snaps or unrestricted junction inference.
+
+### Opt-in westbound shared-atom receipt
+
+`verify_westbound_seam_receipt` verifies a separately authenticated receipt
+against exactly two complete adjacent z14 tiles in an evidence scope. The
+attestor, not this function, is responsible for matching archived raw bytes
+and the typed feature to the original directed way. A digest computed from
+untrusted input alongside the receipt is not attestation. Both raw bindings,
+the same unambiguous supplier feature ID, road direction, complete-context
+appearance match and exact shared pre-boundary atom must agree. The boundary
+cuts may differ by no more than 0.1 native grid unit, and the appearance match
+must stay within 5 cm. No synthetic connector is produced. This API affects
+neither routing nor saves; until shared physical reservations are resolved
+across rules, the witness must not be used to admit dispatch.
+
+`replay_westbound_seam_traversal` extends that check with a minimal crossing:
+one east-owned atom (shared by both source fragments) and the complete next
+west source atom. The two original atoms have exactly the same handoff vertex;
+there is no fictitious seam edge. Endpoint ownership, atom ordinals, and full
+immutable tile identity are retained. A conservative collision query can
+flag any legacy route using either of the two original fragments, even a
+different interval or an old clipped occurrence; this is intentionally
+stricter than comparing hashed split-edge IDs. It does not settle mixed
+revision or parallel/deduplicated resource policy and is not called by the
+dispatcher.

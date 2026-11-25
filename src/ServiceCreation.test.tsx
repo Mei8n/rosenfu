@@ -69,3 +69,48 @@ test('world epoch remount discards route draft even when another world reuses ro
  expect(screen.queryByLabelText('系統名')).toBeNull();
  expect(screen.queryByLabelText('停車駅 2')).toBeNull();
 });
+
+test('exact two-branch topology suggests the other path at creation and saves only an explicitly confirmed path',async()=>{
+ const connection=(a:string,b:string)=>({a:{alignment_id:a,endpoint:'end' as const},b:{alignment_id:b,endpoint:'start' as const}});
+ const [inLocal,outLocal,inExpress,outExpress]=[connection('in','bay'),connection('bay','out'),connection('in','main'),connection('main','out')];
+ const connected=(from:string,to:string,connections:typeof inLocal[])=>({kind:'connected_alignments' as const,from,to,connections});
+ const localLegs=[{key:'4',segment:connected('a','b',[inLocal])},{key:'8',segment:connected('b','c',[outLocal])}];
+ const local={stations:['a','b','c'],segments:localLegs.map(l=>l.segment)};
+ const bypass={stations:['a','c'],segments:[connected('a','c',[inExpress,outExpress])]};
+ const diagram={alignment_connections:[inLocal,outLocal,inExpress,outExpress],station_placements:[
+  {station_id:'a',alignment_id:'in',position:0.5},{station_id:'b',alignment_id:'bay',position:0.5},{station_id:'c',alignment_id:'out',position:0.5},
+ ]};
+ const existing={service_id:'7',next_leg_key:'9',legs:localLegs,stops:resolveServicePath('a',localLegs,diagram).map(o=>o.reference)};
+ const facility={...diagram,service_paths:[existing]};
+ const result={status:'ambiguous' as const,truncated:false,candidates:[local,bypass],shortest_candidate_index:0};
+ const {suggestRefugeBypass}=await import('./refugeRouteSuggestion');
+ expect(suggestRefugeBypass(result,facility)).toEqual({index:1,stopId:'b'});
+ expect(suggestRefugeBypass({...result,truncated:true},facility)).toBeNull();
+ expect(suggestRefugeBypass(result,{...facility,service_paths:[existing,{...existing,service_id:'9'}]})).toBeNull();
+ expect(suggestRefugeBypass(result,{...facility,alignment_connections:[...diagram.alignment_connections,connection('bay','spur')]})).toBeNull();
+ const bypassLegs=bypass.segments.map((segment,i)=>({key:String(i+1),segment}));
+ const bypassStops=resolveServicePath('a',bypassLegs,diagram);
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='preview_route_candidates')return result;
+  if(command==='preview_route_membership'){
+   const path=(args as {segments:typeof bypass.segments}).segments===bypass.segments?bypass:local;
+   return {path,member_stations:path.stations,excluded_stations:[]};
+  }
+  return {legs:bypassLegs,occurrences:bypassStops,requires_stop_selection:false};
+ });
+ let select:(id:string)=>void=()=>{};const save=vi.fn().mockResolvedValue(undefined);
+ render(<ServiceMapCreator world={facility} stations={stations} enabled defaultName="快速" onDirty={vi.fn()} onSave={save} onCancel={vi.fn()} onMapPick={(_target,handler)=>{if(handler)select=handler;}} mapPickTarget="sequence" startSequenceKey={1}/>);
+ await act(async()=>{select('a');});await act(async()=>{select('c');});
+ const choice=await screen.findByRole('radio',{name:/停車駅の枝を避ける/});
+ expect(choice).toHaveProperty('checked',true);
+ const finish=()=>screen.getByRole<HTMLButtonElement>('button',{name:'編集終了'});
+ expect(finish().disabled).toBe(true);
+ fireEvent.click(screen.getByRole('button',{name:'地図で選び直す'}));
+ expect(finish().disabled).toBe(true);
+ expect(save).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'経路を選択'}));
+ fireEvent.click(screen.getByRole('button',{name:'決定'}));
+ fireEvent.click(finish());
+ await waitFor(()=>expect(save).toHaveBeenCalledWith({name:'快速',start:'a',segments:bypass.segments,stops:bypassStops.map(o=>o.reference)}));
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='save_planned_route')).toBe(false);
+});
