@@ -866,7 +866,6 @@ fn check_installed_seam_profile(
         || draft.ofm_installed_seam_bus_routes.len() != 1
         || declared_capabilities
         || has_demand
-        || !draft.ofm_gameplay_bus_routes.is_empty()
         || !draft.road_transport.tram_sections.is_empty()
         || draft.carries_street_tram_proof()
         || draft.carries_chain_street_tram_proof()

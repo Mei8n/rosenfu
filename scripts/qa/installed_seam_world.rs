@@ -1,5 +1,8 @@
 use rosenfu_core::{
-    ofm_evidence::{EvidenceStore, InstalledWestboundSeamRecipe, RawEvidence, TileBinding},
+    ofm_evidence::{
+        find_gameplay_bus_path, BusVertex, EvidenceStore, InstalledWestboundSeamRecipe,
+        RawEvidence, TileBinding,
+    },
     operation::{OperationRuntime, Timetable, TrainState, Vehicle},
     world::{BusOperationConfig, World},
 };
@@ -40,7 +43,37 @@ fn installed_release_admission_full_file_roundtrip_and_overwrite_refusal() {
             .unwrap(),
     )
     .unwrap();
-    let mut seam = staged
+    let archive = &staged.snapshot().runtime_road_evidence;
+    let east = archive
+        .bindings()
+        .find(|t| t.x == 14553)
+        .unwrap()
+        .canonical_url
+        .clone();
+    let east_only = archive.scope(std::slice::from_ref(&east)).unwrap();
+    let vertex = |vertex| BusVertex {
+        feature: 0,
+        line: 0,
+        vertex,
+    };
+    let ordinary_path = find_gameplay_bus_path(&east_only, &east, vertex(0), vertex(1), true)
+        .unwrap()
+        .unwrap();
+    let ordinary = staged
+        .candidate_with_gameplay_ofm_bus(
+            owner,
+            "A".into(),
+            "Ordinary".into(),
+            ordinary_path.binding,
+            vec![],
+        )
+        .unwrap();
+    let legacy_before = encode(&ordinary).unwrap();
+    assert_eq!(
+        encode(&decode(&legacy_before).unwrap()).unwrap(),
+        legacy_before
+    );
+    let mut seam = ordinary
         .candidate_with_installed_seam_bus(
             owner,
             "B".into(),
@@ -51,27 +84,40 @@ fn installed_release_admission_full_file_roundtrip_and_overwrite_refusal() {
             },
         )
         .unwrap();
-    seam.configure_all_operation(
-        vec![],
-        vec![BusOperationConfig {
-            route_id: "B".into(),
-            timetable: Timetable {
-                first_departure_ms: 0,
-                last_departure_ms: 1000,
-                headway_ms: 1000,
-            },
-            vehicle: Vehicle {
-                max_speed_kmh: 35.,
-                acceleration_mps2: 1.,
-                braking_mps2: 1.,
-                length_m: 10.,
-            },
-            dwell_ms: 0,
-            assumed_speed_kmh: 35.,
-            turnaround_ms: None,
-        }],
-    )
-    .unwrap();
+    let config = |id: &str| BusOperationConfig {
+        route_id: id.into(),
+        timetable: Timetable {
+            first_departure_ms: 0,
+            last_departure_ms: 0,
+            headway_ms: 1000,
+        },
+        vehicle: Vehicle {
+            max_speed_kmh: 35.,
+            acceleration_mps2: 1.,
+            braking_mps2: 1.,
+            length_m: 10.,
+        },
+        dwell_ms: 0,
+        assumed_speed_kmh: 35.,
+        turnaround_ms: None,
+    };
+    assert_eq!(encode(&ordinary).unwrap(), legacy_before);
+    let old_spec = ordinary.compile_bus_operation(&config("A")).unwrap();
+    let mixed_spec = seam.compile_bus_operation(&config("A")).unwrap();
+    let new_spec = seam.compile_bus_operation(&config("B")).unwrap();
+    let old_resources = &old_spec.legs[0].sections[0].resources;
+    let mixed_resources = &mixed_spec.legs[0].sections[0].resources;
+    let new_resources = &new_spec.legs[0].sections[0].resources;
+    assert!(mixed_resources.starts_with(old_resources));
+    let lock = mixed_resources.last().unwrap();
+    assert!(lock.starts_with("ofm-bus:fragment-lock:") && new_resources.contains(lock));
+    assert_eq!(mixed_resources.len(), old_resources.len() + 1);
+    assert_eq!(
+        mixed_spec.legs[0].sections[0].length_m,
+        old_spec.legs[0].sections[0].length_m
+    );
+    seam.configure_all_operation(vec![], vec![config("A"), config("B")])
+        .unwrap();
     seam.operation_mut()
         .unwrap()
         .runtime
@@ -86,6 +132,13 @@ fn installed_release_admission_full_file_roundtrip_and_overwrite_refusal() {
             .count(),
         1
     );
+    let trains: Vec<_> = seam.operation().unwrap().runtime.trains().collect();
+    assert!(trains
+        .iter()
+        .any(|t| t.key.service_id == "bus:A" && matches!(t.state, TrainState::Moving { .. })));
+    assert!(trains
+        .iter()
+        .any(|t| t.key.service_id == "bus:B" && matches!(t.state, TrainState::Waiting { .. })));
     let checkpoint = encode(&seam).unwrap();
     // The runner reuses only this synthetic checkpoint in a separately
     // built, unmodified release catalog. Never bake the QA tiles there.
@@ -112,7 +165,15 @@ fn installed_release_admission_full_file_roundtrip_and_overwrite_refusal() {
     };
     let arrivals = finish(&mut seam);
     assert_eq!(finish(&mut reopened), arrivals);
-    assert_eq!(arrivals.arrivals.len(), 2);
+    assert_eq!(
+        arrivals
+            .arrivals
+            .iter()
+            .map(|a| a.train.service_id.as_str())
+            .collect::<Vec<_>>(),
+        ["bus:A", "bus:B"]
+    );
+    assert!(arrivals.arrivals[1].delay_ms > 0);
     let finished = encode(&reopened).unwrap();
     assert_ne!(finished, checkpoint);
     assert!(matches!(

@@ -583,7 +583,7 @@ fn outward_evidence_error(error: crate::ofm_evidence::Error) -> RoadTransportErr
         _ => StaleSnapshot,
     }
 }
-fn project_world_routes(
+pub(super) fn project_world_routes(
     world: &WorldDraft,
     metadata: BTreeMap<&str, &BusRoute>,
 ) -> Result<RoadTransport, RoadTransportError> {
@@ -648,7 +648,7 @@ fn same_point(a: GeoPoint, b: GeoPoint) -> bool {
 /// Preserve previously validated geometry at unchanged atoms on a different
 /// libm/platform. New edges sharing a node use the same canonical persisted
 /// coordinates, so adding an unrelated route never changes a live Bus spec.
-fn retain_existing_points(
+pub(super) fn retain_existing_points(
     old: &RoadTransport,
     new: &mut RoadTransport,
 ) -> Result<(), RoadTransportError> {

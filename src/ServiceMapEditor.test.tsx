@@ -120,3 +120,68 @@ test('disabling a pending saved-series edit retires its preflight but keeps expl
  });
  await screen.findByText('地図で系統を編集');
 });
+
+function denseStopEditor(){
+ const stations=Array.from({length:240},(_,i)=>({id:String(i+1),name:`駅${i+1}`}));
+ let stopReads=0,placementReads=0,pick:((id:string)=>void)|undefined;
+ function trace<T>(rows:T[],read:()=>void){
+  return new Proxy(rows,{get(target,key,receiver){
+   if(typeof key==='string'&&/^\d+$/.test(key))read();
+   return Reflect.get(target,key,receiver);
+  }});
+ }
+ const world={station_placements:trace(stations.map(({id:station_id},i)=>({station_id,alignment_id:'dense',position:i/239})),()=>placementReads++)};
+ const path:ServicePath={service_id:'s',next_leg_key:'9',
+  legs:[{key:'7',segment:{kind:'alignment',alignment_id:'dense',from:'1',to:'240'}}],
+  stops:trace([{kind:'start'},...stations.slice(1).filter((_,i)=>i%2===1||i===238)
+   .map(({id:station_id})=>({kind:'on_leg',leg_key:'7',station_id} as const))],()=>stopReads++)};
+ const onSave=vi.fn().mockResolvedValue(undefined);
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command!=='preview_service_path_replacement')throw Error(command);
+  const {start,segments}=args as {start:string;segments:Segment[]};
+  const legs=segments.map((segment,i)=>({key:String(9+i),segment}));
+  return {legs,occurrences:resolveServicePath(start,legs,world),requires_stop_selection:true};
+ });
+ render(<ServiceMapEditor service={{id:'s',name:'長距離急行',start:'1'}} path={path} binding={{kind:'route',route_id:'r1'}}
+  world={world} stations={stations} enabled onDirty={vi.fn()} onSave={onSave}
+  candidateLength={()=>0} onCandidateChange={vi.fn()} onSelectionChange={vi.fn()}
+  onMapPick={(_target,select)=>{pick=select;}} mapPickTarget="sequence"/>);
+ fireEvent.click(screen.getByText('地図で系統を編集'));
+ return {
+  toggle:(...ids:string[])=>act(()=>ids.forEach(id=>pick?.(id))),onSave,
+  reads:()=>({stopReads,placementReads}),
+  displayed:(id:string)=>screen.getByLabelText<HTMLInputElement>(`地図選択の停車駅 ${id}`).checked,
+ };
+}
+
+test('a dense stop-only edit reuses the committed geometry and stop index',()=>{
+ const h=denseStopEditor();
+ const initial=h.reads();
+ expect(h.displayed('122')).toBe(false);
+ h.toggle('122');
+ expect(h.displayed('122')).toBe(true);
+ h.toggle('125');
+ expect(h.displayed('125')).toBe(false);
+ expect(h.reads()).toEqual(initial); // no rereads of either committed array
+ expect(initial).toEqual({stopReads:121,placementReads:240});
+ expect(invoke).not.toHaveBeenCalled();
+ expect(h.onSave).not.toHaveBeenCalled();
+});
+
+test('two fast map clicks restore the original stop toggle and explicit apply keeps it',async()=>{
+ const h=denseStopEditor();
+ expect(h.displayed('122')).toBe(false);
+ h.toggle('122','122');
+ expect(h.displayed('122')).toBe(false);
+ h.toggle('124');
+ expect(h.displayed('124')).toBe(true);
+ expect(invoke).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByText('編集終了'));
+ await waitFor(()=>expect(h.onSave).toHaveBeenCalledOnce());
+ const saved=h.onSave.mock.calls[0][0];
+ expect(saved.sourceRouteId).toBe('r1');
+ expect(saved.stops).not.toContainEqual({kind:'on_leg',leg_key:'9',station_id:'122'});
+ expect(saved.stops).toContainEqual({kind:'on_leg',leg_key:'9',station_id:'124'});
+ expect(saved.stops).toContainEqual({kind:'on_leg',leg_key:'9',station_id:'240'});
+ expect(vi.mocked(invoke).mock.calls.map(([command])=>command)).toEqual(['preview_service_path_replacement']);
+});
