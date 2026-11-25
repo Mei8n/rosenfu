@@ -2,7 +2,7 @@ import {readFileSync} from 'node:fs';
 import {expect,test} from 'vitest';
 test('candidate path is painted above service bands but below station markers',()=>{
  const source=readFileSync(new URL('./App.tsx',import.meta.url),'utf8');
- const services=source.indexOf('serviceMapSections.map(');
+ const services=source.indexOf('className="service-map-section"');
  const candidate=source.indexOf('className="route-candidate-selection"');
  const stations=source.indexOf('{world?.stations.map((station)');
  expect(services).toBeGreaterThan(0);
