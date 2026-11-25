@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod native;
 mod ofm;
+pub(crate) mod seam;
 pub use ofm::GameplayBusInteriorStopView;
 mod pilot;
 pub use native::{

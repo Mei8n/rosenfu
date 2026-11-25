@@ -1,10 +1,13 @@
 # Installed OFM seam routes: World admission and rollback
 
-**Status:** schema 36 and its route-map marker are reserved for fail-closed
-detection only. The current writer must never emit them, and the current
-reader refuses them before recovery/normal overwrite, including when the
-marker appears under an old label. The release-baked seam catalog is empty.
-No World route, stop, or operation model is enabled by this reservation.
+**Status:** Schema 36 now has a typed-only normal storage reader/writer
+for the isolated, open, one-way route with both fragment locks. The reader
+reattaches the bounded archive, rebuilds the projected graph through the
+release-baked catalog, and recompiles saved operation for comparison. The
+writer performs the same admission before touching the destination. Stock
+releases still have an empty catalog, and the game UI cannot author this
+route. Other capability mixes, missing trust, and mislabeled/damaged schema
+36 remain unavailable, not repairable through ordinary overwrite.
 
 ## Smallest positive world format
 
@@ -55,12 +58,15 @@ there are passing combined profile/ownership tests.
    they are not aliases of formerly split legacy edges. Geometry and source
    metadata are derived, not trusted from stored road transport. No old
    stops, edge IDs or reservations are remapped.
-3. Extend the world route projector to join the two separately validated
+3. The implemented isolated validator checks the exact entire graph and
+   refuses preexisting roads/trams. To extend it, join the separately validated
    route sets; reject duplicate IDs across both. Recompute and validate all
    stored nodes, edges, stops and route occurrences on one candidate. Verify
    topology and permissions; persist a new version only after successful
    compilation, never eagerly materialize edges in the live world on error.
-4. Compute optional fragment-lock additions for the same resolved archive
+4. The implemented isolated run adds both fragments without altering any
+   legacy run. The later mixed projector must add matching fragment locks
+   for the same resolved archive
    context in both the witnessed route sections and every relevant legacy
    leg which uses either original fragment. The existing resource engine
    reserves these for the whole leg. Keep legacy physical edge keys and
@@ -91,3 +97,16 @@ there are passing combined profile/ownership tests.
   save/reopen with identical dispatch continuation; downgraded/corrupted
   save refusal; byte-identical legacy roundtrip. Actual data is fetched
   and verified only in the test environment.
+
+## Reproducible storage QA
+
+From committed sources, run `python scripts/check-installed-seam-world.py`
+(Python 3.11+, Git, Cargo and already cached Rust dependencies). It archives
+the current commit to a temporary directory, generates a two-tile invented
+road and a catalog entry for a synthetic revision, and runs the real storage
+writer/reader including operation wait, resumption, backup and refusal of
+forged locks. A second build restores the unmodified catalog and verifies
+the same checkpoint is rejected without changing the file or creating a
+backup. No Git ref, production catalog, default build target or network is
+modified. Set `ROSENFU_SEAM_QA_TARGET_DIR` to a dedicated QA-only directory
+if you want to reuse compilation outputs.

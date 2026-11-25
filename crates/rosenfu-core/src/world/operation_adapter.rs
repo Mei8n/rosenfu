@@ -1052,6 +1052,9 @@ impl World {
         bus_configs: Vec<BusOperationConfig>,
         previous_admission: Option<RailAdmissionModel>,
     ) -> Result<WorldOperation, OperationError> {
+        if !self.data.ofm_installed_seam_bus_routes.is_empty() && !configs.is_empty() {
+            return Err(OperationError::InvalidPath);
+        }
         let crossings = self.active_flat_crossings(&configs, MAX_CROSSING_PAIR_CHECKS)?;
         let mut specs = Vec::with_capacity(configs.len() + bus_configs.len());
         let mut crossing_refs = 0usize;
@@ -1173,6 +1176,11 @@ impl World {
             self.operation = None;
             return Ok(());
         };
+        if !self.data.ofm_installed_seam_bus_routes.is_empty()
+            && (saved.invalidated || !saved.configs.is_empty() || saved.runtime.format != 2)
+        {
+            return Err(OperationError::InvalidPath);
+        }
         if saved.crossing_reservations != saved.runtime.services.iter().any(has_crossing_locks)
             || saved.parallel_join_lanes
                 != saved.runtime.services.iter().any(has_parallel_join_locks)
@@ -1829,7 +1837,7 @@ impl World {
     fn fixed_refuge_specs<'a>(
         configs: &[OperationServiceConfig],
         specs: &'a [ServiceRunSpec],
-    ) -> Option<(&'a ServiceRunSpec, &'a ServiceRunSpec, [u64; 3], u64)> {
+    ) -> Option<(&'a ServiceRunSpec, &'a ServiceRunSpec, [u64; 3], u64, bool)> {
         let [a, b] = configs else {
             return None;
         };
@@ -1858,9 +1866,15 @@ impl World {
         {
             return None;
         }
-        let local_ids @ [west, _, east] = fixed_refuge_resources(local)?;
-        let [w, express_branch, e] = fixed_refuge_resources(express)?;
-        (west == w && east == e).then_some((local, express, local_ids, express_branch))
+        let (local_ids @ [entry, _, exit], forward) = fixed_refuge_resources(local)?;
+        let ([from, express_branch, to], express_forward) = fixed_refuge_resources(express)?;
+        (entry == from && exit == to && forward == express_forward).then_some((
+            local,
+            express,
+            local_ids,
+            express_branch,
+            forward,
+        ))
     }
 
     fn fixed_refuge_eligible(
@@ -1870,7 +1884,7 @@ impl World {
     ) -> bool {
         use AlignmentEndpoint::{End, Start};
         let d = &self.data;
-        let Some((local, express, [w, mid, e], express_branch)) =
+        let Some((local, express, [w, mid, e], express_branch, forward)) =
             Self::fixed_refuge_specs(configs, specs)
         else {
             return false;
@@ -1914,14 +1928,15 @@ impl World {
             return false;
         };
         let links = [(west, middle), (west, other), (middle, east), (other, east)];
+        let (leave, enter) = if forward { (End, Start) } else { (Start, End) };
         if links.into_iter().any(|(a, b)| {
             let from = AlignmentEndpointRef {
                 alignment_id: a.id,
-                endpoint: End,
+                endpoint: leave,
             };
             let to = AlignmentEndpointRef {
                 alignment_id: b.id,
-                endpoint: Start,
+                endpoint: enter,
             };
             !d.alignment_connections
                 .iter()
@@ -2593,6 +2608,9 @@ impl World {
                 .map(|legs| (legs, None))
         }
         .map_err(|_| OperationError::InvalidPath)?;
+        let fragment_resources =
+            crate::road_transport::seam::operation_fragment_resources(&self.data, &config.route_id)
+                .map_err(|_| OperationError::InvalidPath)?;
         let runs = legs
             .into_iter()
             .enumerate()
@@ -2611,6 +2629,7 @@ impl World {
                         .traversed_edges
                         .iter()
                         .map(|id| format!("road:edge:{id}"))
+                        .chain(fragment_resources.iter().cloned())
                         .collect(),
                 }],
             })

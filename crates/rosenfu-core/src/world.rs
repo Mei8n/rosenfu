@@ -95,6 +95,17 @@ impl ViewState {
         }
     }
 }
+fn read_installed_seam_bus_routes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, crate::ofm_evidence::InstalledWestboundSeamRecipe>, D::Error> {
+    let routes = BTreeMap::deserialize(deserializer)?;
+    if routes.is_empty() {
+        return Err(serde::de::Error::custom(
+            "empty installed seam route capability",
+        ));
+    }
+    Ok(routes)
+}
 /// An editable candidate. Validate before applying or loading it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,6 +115,14 @@ pub struct WorldDraft {
     /// Exact immutable OFM path proof for each independently authored ordinary Bus route.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ofm_gameplay_bus_routes: BTreeMap<String, crate::ofm_evidence::BusPathBinding>,
+    /// Installed seam recipes use a separate, currently non-emittable save capability.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "read_installed_seam_bus_routes"
+    )]
+    pub ofm_installed_seam_bus_routes:
+        BTreeMap<String, crate::ofm_evidence::InstalledWestboundSeamRecipe>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
     /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
@@ -170,6 +189,7 @@ impl Default for WorldDraft {
         Self {
             road_transport: crate::road_transport::RoadTransport::default(),
             ofm_gameplay_bus_routes: BTreeMap::new(),
+            ofm_installed_seam_bus_routes: BTreeMap::new(),
             road_path_provenance: vec![],
             runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
             road_evidence_descriptors: vec![],
