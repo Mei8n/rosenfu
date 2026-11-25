@@ -145,17 +145,53 @@ impl WestboundSeamTraversal {
         &self.atoms
     }
 
-    /// Conservative same-context occupancy guard: contest every interval of
-    /// both original fragments, including the untraversed raw alias. Scope or
-    /// cross-revision compatibility is a separate dispatch policy; false does
-    /// not mean these routes can be safely admitted together.
+    /// Resource keys to reserve for the entire witnessed crossing. These are
+    /// additional to edge keys, not replacements for any existing identity.
+    pub fn fragment_resources(&self) -> [String; 2] {
+        self.atoms.each_ref().map(fragment_resource)
+    }
+
+    /// Shared keys a legacy path would also have to reserve in the same
+    /// trusted context. The checked model must use these on *both* sides of
+    /// any new admission. Existing v1/v2 schedules stay untouched by default.
+    /// Deliberately match the whole fragment, including old clipped aliases.
+    pub fn legacy_fragment_resources(&self, route: &BusPath) -> Vec<String> {
+        self.atoms
+            .iter()
+            .filter(|atom| self.legacy_uses_atom_fragment(route, atom))
+            .map(fragment_resource)
+            .collect()
+    }
+
+    /// A false result does not prove safe admission for mixed revisions or
+    /// other road modes. Those require separate dispatch compatibility checks.
     pub fn overlaps_legacy_fragments(&self, route: &BusPath) -> bool {
+        self.atoms
+            .iter()
+            .any(|atom| self.legacy_uses_atom_fragment(route, atom))
+    }
+
+    fn legacy_uses_atom_fragment(&self, route: &BusPath, atom: &WestboundSourceAtom) -> bool {
         route.spans.iter().any(|span| {
-            self.atoms.iter().any(|atom| {
-                span.binding_key == atom.tile.canonical_url && span.fragment_id == atom.fragment_id
-            })
+            span.binding_key == atom.tile.canonical_url && span.fragment_id == atom.fragment_id
         })
     }
+}
+
+fn fragment_resource(atom: &WestboundSourceAtom) -> String {
+    // No timestamp/hash supplied by an operation save can rename this class.
+    // Two clipped legs drawn from the same immutable source context must
+    // contend even when their individual occurrence IDs or fractions differ.
+    format!(
+        "ofm-bus:fragment-lock:{}",
+        raw_sha256(
+            format!(
+                "ofm-bus-fragment-lock-v1\0{}\0{}",
+                atom.tile.canonical_url, atom.fragment_id
+            )
+            .as_bytes()
+        )
+    )
 }
 
 /// Reconstruct the minimal directed crossing from the immutable archive.

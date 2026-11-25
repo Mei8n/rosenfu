@@ -1156,7 +1156,8 @@ impl OperationRuntime {
         self.rail_admission
     }
 
-    /// Two matching absolute schedules only. Serializing the complete pair
+    /// Identical absolute schedules, or two aligned repeating grids with different
+    /// starts. Serializing the complete pair
     /// cannot take longer than the sum of their compiled run, dwell and
     /// rear-clear times: the proved two-throat layout has no third holder,
     /// and the initial ready through train is older than the siding exit.
@@ -1178,15 +1179,36 @@ impl OperationRuntime {
             return false;
         };
         let (ta, tb) = (&a.spec.timetable, &b.spec.timetable);
-        !a.departure_source.is_periodic()
-            && !b.departure_source.is_periodic()
-            && ta.first_departure_ms == tb.first_departure_ms
+        if a.departure_source.is_periodic() || b.departure_source.is_periodic() {
+            return false;
+        }
+        if ta.first_departure_ms == tb.first_departure_ms
             && ta.last_departure_ms == tb.last_departure_ms
-            && (ta.last_departure_ms == ta.first_departure_ms
-                || (ta.headway_ms == tb.headway_ms
-                    && a.journey_ms
-                        .checked_add(b.journey_ms)
-                        .is_some_and(|bound| ta.headway_ms > bound)))
+            && ta.first_departure_ms == ta.last_departure_ms
+        {
+            return true;
+        }
+        let gap = ta.headway_ms;
+        if gap == 0
+            || gap != tb.headway_ms
+            || !a
+                .journey_ms
+                .checked_add(b.journey_ms)
+                .is_some_and(|bound| gap > bound)
+        {
+            return false;
+        }
+        if ta.first_departure_ms == tb.first_departure_ms {
+            return ta.last_departure_ms == tb.last_departure_ms;
+        }
+        // The event loop already proved both births occur now and no older
+        // authority remains. An earlier service can begin several intervals
+        // ahead, provided both have real repeat grids in the same phase. The
+        // equal safe gap also bounds an unmatched tail after one grid ends.
+        let starts_apart = ta.first_departure_ms.abs_diff(tb.first_departure_ms);
+        starts_apart % gap == 0
+            && ta.last_departure_ms - ta.first_departure_ms >= gap
+            && tb.last_departure_ms - tb.first_departure_ms >= gap
     }
 
     pub(crate) fn set_preferred_opposing_birth(&mut self, service: Option<String>) {

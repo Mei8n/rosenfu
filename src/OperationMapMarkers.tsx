@@ -1,10 +1,19 @@
-import {useLayoutEffect,useRef} from 'react';
+import {useLayoutEffect,useRef,useSyncExternalStore} from 'react';
 import {MAP_VIEWBOX,project,type Camera,type mapViewport} from './map';
 
 type GeoPoint={latitude:number;longitude:number};
 type MarkerKey={service_id:string;scheduled_ms:number};
 type Marker={key:MarkerKey;entered_ms:number;stationary:boolean;alignment_start:GeoPoint;alignment_end:GeoPoint;edge_start:GeoPoint;edge_end:GeoPoint;position:number};
 const MAX_MARKERS=32;
+const reducedMotionQuery='(prefers-reduced-motion: reduce)';
+function reducedMotion(){return typeof window!=='undefined'&&window.matchMedia?.(reducedMotionQuery).matches===true;}
+function subscribeReducedMotion(onChange:()=>void){
+ const media=typeof window==='undefined'?undefined:window.matchMedia?.(reducedMotionQuery);
+ media?.addEventListener?.('change',onChange);
+ return ()=>media?.removeEventListener?.('change',onChange);
+}
+const serverReducedMotion=()=>false;
+
 function isGeoPoint(value:unknown):value is GeoPoint{
  if(!value||typeof value!=='object')return false;
  const {latitude,longitude}=value as Partial<GeoPoint>;
@@ -38,7 +47,7 @@ function OperationDot({point,mode,radius,clockMs,animate,camera}:{
   if(!animate||!before?.animate||!motion||before.point.motion!==motion||!node?.animate||
    clockMs===undefined||before.clockMs===undefined||clockMs<=before.clockMs||
    before.camera.latitude!==latitude||before.camera.longitude!==longitude||before.camera.zoom!==zoom||
-   before.radius!==radius||window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)return;
+   before.radius!==radius)return;
   const dx=before.point.x-x,dy=before.point.y-y;
   if(dx===0&&dy===0)return;
   // Both endpoints are committed samples on the same painted chord. A brief
@@ -56,6 +65,7 @@ function OperationDot({point,mode,radius,clockMs,animate,camera}:{
 // Passive, committed samples only. No map hit targets, independent polling,
 // prediction or raw engine identities in DOM.
 export function OperationMapMarkers({markers,camera,scale,crop={x:0,y:0,...MAP_VIEWBOX,scale},mode='rail',clockMs,animate=false}:{markers:unknown;camera:Camera;scale:number;crop?:ReturnType<typeof mapViewport>;mode?:'rail'|'bus';clockMs?:number;animate?:boolean}){
+ const prefersReducedMotion=useSyncExternalStore(subscribeReducedMotion,reducedMotion,serverReducedMotion);
  if(!Array.isArray(markers)||markers.length===0||markers.length>MAX_MARKERS||!(Number.isFinite(scale)&&scale>0))return null;
  const keys=new Set<string>();
  const radius=4/scale;
@@ -75,6 +85,6 @@ export function OperationMapMarkers({markers,camera,scale,crop={x:0,y:0,...MAP_V
  });
  if(!relevant.length)return null;
  return <g pointerEvents="none" aria-label={mode==='bus'?'表示できる走行中のバス':relevant.some(point=>point.stationary)?'表示できる列車':'表示できる走行中の列車'}>
-  {relevant.map(point=><OperationDot key={point.key} point={point} mode={mode} radius={radius} clockMs={clockMs} animate={animate} camera={camera}/>)}
+  {relevant.map(point=><OperationDot key={point.key} point={point} mode={mode} radius={radius} clockMs={clockMs} animate={animate&&!prefersReducedMotion} camera={camera}/>)}
  </g>;
 }
