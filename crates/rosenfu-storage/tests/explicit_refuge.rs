@@ -29,6 +29,24 @@ fn fixture_at_angle(
     platform_length: f64,
     degrees: f64,
 ) -> (World, Vec<OperationServiceConfig>, [AlignmentId; 4]) {
+    fixture_with_direction(
+        different_branch,
+        local_uses_siding,
+        width_scale,
+        platform_length,
+        degrees,
+        [false; 2],
+    )
+}
+
+fn fixture_with_direction(
+    different_branch: bool,
+    local_uses_siding: bool,
+    width_scale: f64,
+    platform_length: f64,
+    degrees: f64,
+    reverse_directions: [bool; 2],
+) -> (World, Vec<OperationServiceConfig>, [AlignmentId; 4]) {
     use AlignmentEndpoint::{End, Start};
 
     let mut world = World::default();
@@ -125,7 +143,17 @@ fn fixture_at_angle(
     ];
     let configs = patterns
         .into_iter()
-        .map(|(name, connections, inter, dwell_ms)| {
+        .zip(reverse_directions)
+        .map(|((name, mut connections, inter, dwell_ms), reversed)| {
+            let (a, c) = if reversed {
+                connections.reverse();
+                for link in &mut connections {
+                    std::mem::swap(&mut link.a, &mut link.b);
+                }
+                (c, a)
+            } else {
+                (a, c)
+            };
             let legs = vec![RouteSegment::ConnectedAlignments {
                 from: a,
                 to: c,
@@ -751,4 +779,85 @@ fn native_candidate_search_lists_the_station_free_other_branch() {
         if *from == a && *to == c && connections.len() == 2
             && connections[0].b.alignment_id == bypass
             && connections[1].a.alignment_id == bypass));
+}
+
+#[test]
+fn reverse_same_direction_passing_holds_the_real_siding_lane() {
+    for angle in [0., 90.] {
+        for holder in [false, true] {
+            let (mut world, configs, [west, east, branch, _]) =
+                fixture_with_direction(true, holder, 1., 80., angle, [true; 2]);
+            world.configure_operation(configs.clone()).unwrap();
+            let runtime = &world.operation().unwrap().runtime;
+            assert_eq!(runtime.save().format, 7);
+            let local = configs[0].service_id.0.to_string();
+            let express = configs[1].service_id.0.to_string();
+            let spec = runtime.service_spec(&local).unwrap();
+            let resources = |i: usize| {
+                spec.legs[i]
+                    .sections
+                    .iter()
+                    .flat_map(|s| &s.resources)
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+            };
+            assert!(resources(0).contains(&format!("rail:{}:section:0:lane:1", east.0)));
+            assert!(resources(0).contains(&format!("rail:{}:section:0:lane:0", branch.0)));
+            assert!(resources(1).contains(&format!("rail:{}:section:0:lane:1", west.0)));
+
+            let completed = runtime
+                .preview_passenger_replay(1_000_000, 128)
+                .unwrap()
+                .completed_legs;
+            let incoming = completed
+                .iter()
+                .find(|leg| leg.train.service_id == local && leg.sequence == 0)
+                .unwrap();
+            let outgoing = completed
+                .iter()
+                .find(|leg| leg.train.service_id == local && leg.sequence == 1)
+                .unwrap();
+            let bypass = completed
+                .iter()
+                .find(|leg| leg.train.service_id == express)
+                .unwrap();
+            assert!(bypass.entered_ms > incoming.arrived_ms);
+            assert!(bypass.entered_ms < incoming.arrived_ms + configs[0].dwell_ms);
+            assert!(outgoing.entered_ms > bypass.arrived_ms);
+            tick(&mut world, bypass.entered_ms + 1);
+
+            let bytes = rosenfu_storage::encode(&world).unwrap();
+            let mut reopened = rosenfu_storage::decode(&bytes).unwrap();
+            assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), bytes);
+            let mut wrong = reopened.operation_save().unwrap();
+            wrong.invalidated = true;
+            wrong.runtime.paused = true;
+            let east_lane = format!("rail:{}:section:0:lane:1", east.0);
+            let invalid_lane = format!("rail:{}:section:0:lane:0", east.0);
+            let spec = wrong
+                .runtime
+                .services
+                .iter_mut()
+                .find(|s| s.service_id == local)
+                .unwrap();
+            for key in spec
+                .legs
+                .iter_mut()
+                .flat_map(|l| &mut l.sections)
+                .flat_map(|s| &mut s.resources)
+            {
+                if *key == east_lane {
+                    key.clone_from(&invalid_lane);
+                }
+            }
+            assert!(reopened.restore_operation(Some(wrong)).is_err());
+            assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), bytes);
+            tick(&mut world, 1_000_000);
+            tick(&mut reopened, 1_000_000);
+            assert_eq!(world.operation_save(), reopened.operation_save());
+        }
+    }
+    let (mut opposing, configs, _) = fixture_with_direction(true, true, 1., 80., 0., [true, false]);
+    opposing.configure_operation(configs).unwrap();
+    assert_ne!(opposing.operation().unwrap().runtime.save().format, 7);
 }

@@ -583,9 +583,10 @@ removing a catalog entry never silently changes an old recipe's geometry.
 A release that intends to reopen existing enabled saves must preserve their
 entries. Missing, changed, or unsupported records never fall back.
 
-This only creates the recipe's trust/replay format. Existing world
-`ofm_gameplay_bus_routes` and the storage version gates only understand
-legacy `BusPathBinding`. Real world admission must add a new gated route
-variant, rebuild its geometry against this catalog on load, and derive the
-compatibility lock set for both new and existing overlapping dispatch legs.
-No changes to current world/save bytes, app UI, or distribution are made here.
+The isolated world projection keeps recipes separate from legacy
+`ofm_gameplay_bus_routes`. Schema 36 permits normal storage for one isolated
+classic road route and rejects mixed route/dispatch capabilities. Installed
+catalog replay must still succeed against its retained archive. Existing
+worlds without recipes use their old validators and schema; older releases
+must reject schema 36 rather than reinterpret it under a legacy capability.
+No provider entries or UI authoring are enabled here.

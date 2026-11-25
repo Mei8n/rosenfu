@@ -40,8 +40,8 @@ const FRACTIONAL_BUS_SCHEMA: u64 = 34;
 // One combined envelope. New profiles require independently admitted
 // payload capabilities; the label never enables gameplay by itself.
 const COMBINED_CAPABILITIES_SCHEMA: u64 = 35;
-// Reserved, not readable/writable yet. Detect its route field even if a
-// newer document is mislabeled, so recovery cannot overwrite asserted proof.
+// A separate schema so an older client detects this as unavailable capability
+// rather than treating a proof-bearing world as recoverable corruption.
 const INSTALLED_SEAM_BUS_SCHEMA: u64 = 36;
 const INSTALLED_SEAM_BUS_ROUTES: &str = "ofm_installed_seam_bus_routes";
 const FRACTIONAL_BUS_STREET_TRAM_PROFILE: &[&str] = &[
@@ -179,6 +179,7 @@ fn current_wire_schema(version: u64) -> bool {
             | CONNECTED_TERMINAL_NECK_SCHEMA
             | FRACTIONAL_BUS_SCHEMA
             | COMBINED_CAPABILITIES_SCHEMA
+            | INSTALLED_SEAM_BUS_SCHEMA
     ) || (cfg!(feature = "standard-periodic-rail")
         && matches!(
             version,
@@ -406,6 +407,9 @@ fn wire_schema(
     draft: &WorldDraft,
     operation: Option<&rosenfu_core::world::WorldOperationSave>,
 ) -> u64 {
+    if !draft.ofm_installed_seam_bus_routes.is_empty() {
+        return INSTALLED_SEAM_BUS_SCHEMA;
+    }
     if draft.carries_chain_street_tram_proof()
         || draft.carries_general_fractional_bus_proof()
         || combined_profile(draft, operation).is_some()
@@ -694,7 +698,11 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
     if version != 26 && !current_wire_schema(version) {
         return Err(StorageError::UnsupportedVersion(version));
     }
-    if value["world"].get(INSTALLED_SEAM_BUS_ROUTES).is_some() {
+    // Schema 36 is typed-only: never take JSON's last duplicate or ignore
+    // new fields via legacy compatibility.
+    if version == INSTALLED_SEAM_BUS_SCHEMA
+        || value["world"].get(INSTALLED_SEAM_BUS_ROUTES).is_some()
+    {
         return Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA));
     }
     // Combined files must use the exact typed grammar. If this parser is
@@ -839,11 +847,69 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
     restore_document(document, version)
 }
 
+fn check_installed_seam_profile(
+    version: u64,
+    declared_capabilities: bool,
+    draft: &WorldDraft,
+    operation: Option<&rosenfu_core::world::WorldOperationSave>,
+    has_demand: bool,
+) -> Result<(), StorageError> {
+    let has_recipe = !draft.ofm_installed_seam_bus_routes.is_empty();
+    if version != INSTALLED_SEAM_BUS_SCHEMA && !has_recipe {
+        return Ok(());
+    }
+    #[cfg(feature = "standard-periodic-rail")]
+    if operation.is_some_and(|op| op.has_standard_timetable()) {
+        return Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA));
+    }
+    if version != INSTALLED_SEAM_BUS_SCHEMA
+        || draft.ofm_installed_seam_bus_routes.len() != 1
+        || declared_capabilities
+        || has_demand
+        || !draft.ofm_gameplay_bus_routes.is_empty()
+        || !draft.road_transport.tram_sections.is_empty()
+        || draft.carries_street_tram_proof()
+        || draft.carries_chain_street_tram_proof()
+        || draft.carries_adjacent_street_tram_proof()
+        || operation.is_some_and(|o| {
+            o.invalidated
+                || o.runtime.format != 2
+                || !o.configs.is_empty()
+                || o.crossing_reservations
+                || o.parallel_join_lanes
+        })
+    {
+        return Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA));
+    }
+    Ok(())
+}
+
 fn restore_document<W: Into<WorldDraft>>(
     document: SaveDocument<W>,
     version: u64,
 ) -> Result<World, StorageError> {
     let draft = document.world.into();
+    check_installed_seam_profile(
+        version,
+        document.capabilities.is_some(),
+        &draft,
+        document.operation.as_ref(),
+        document.fixed_od_scenario.is_some(),
+    )?;
+    if version == INSTALLED_SEAM_BUS_SCHEMA {
+        // A release with missing installed authority must not permit normal
+        // overwrite/recovery. Also fail closed on corrupt or forged projection
+        // and on any operation save that cannot be recompiled against it.
+        let unavailable = |_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA);
+        let store = document.road_evidence.restore(false).map_err(unavailable)?;
+        let mut world = World::from_saved_draft(draft, store)
+            .map_err(|_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))?;
+        world
+            .restore_operation(document.operation)
+            .map_err(|_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))?;
+        validate_save_footprint(&save_document(&world))?;
+        return Ok(world);
+    }
     check_combined_profile(
         version,
         document.capabilities.as_deref(),
@@ -1001,6 +1067,20 @@ fn checked_save_document(world: &World) -> Result<BorrowedSaveDocument<'_>, Stor
         return Err(StorageError::InvalidHeader);
     }
     let document = save_document(world);
+    check_installed_seam_profile(
+        document.schema_version,
+        document.capabilities.is_some(),
+        document.world,
+        document.operation.as_ref(),
+        document.fixed_od_scenario.is_some(),
+    )?;
+    if document.schema_version == INSTALLED_SEAM_BUS_SCHEMA {
+        let mut checked = World::new(world.snapshot().clone())
+            .map_err(|_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))?;
+        checked
+            .restore_operation(document.operation.clone())
+            .map_err(|_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))?;
+    }
     if document.schema_version == COMBINED_CAPABILITIES_SCHEMA && document.capabilities.is_none() {
         return Err(StorageError::UnsupportedVersion(
             COMBINED_CAPABILITIES_SCHEMA,
@@ -1492,6 +1572,7 @@ mod tests {
             wire["schema_version"] = schema.into();
             for routes in [
                 serde_json::json!({"B":{"version":1,"catalogKey":"example"}}),
+                serde_json::json!({}),
                 serde_json::Value::Null,
             ] {
                 wire["world"][INSTALLED_SEAM_BUS_ROUTES] = routes;

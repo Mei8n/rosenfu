@@ -567,33 +567,33 @@ pub(crate) fn inline_platform_handoff(spec: &ServiceRunSpec) -> bool {
 }
 
 /// Validate the persisted resource skeleton even when construction changed:
-/// west approach -> explicit middle branch -> east approach. A local keeps
-/// only its middle block; its only cross-service waits can be on the eastern
+/// entry approach -> explicit middle branch -> exit approach. A local keeps
+/// only its middle block; its only cross-service waits can be on the exit
 /// throat or stem, neither of which can be held by a parked train.
-pub(crate) fn fixed_refuge_resources(spec: &ServiceRunSpec) -> Option<[u64; 3]> {
-    fn groups(leg: &RunLeg) -> Option<(Vec<u64>, BTreeSet<&str>)> {
-        let mut ids = Vec::new();
+pub(crate) fn fixed_refuge_resources(spec: &ServiceRunSpec) -> Option<([u64; 3], bool)> {
+    fn groups(leg: &RunLeg) -> Option<(Vec<(u64, u8)>, BTreeSet<&str>)> {
+        let mut lanes = Vec::new();
         let mut joins = BTreeSet::new();
         for section in &leg.sections {
             let mut lane = None;
             for r in &section.resources {
-                if let Some((id, 0, 0)) = inline_lane_key(r) {
-                    if lane.replace(id).is_some() {
+                if let Some((id, 0, side @ 0..=1)) = inline_lane_key(r) {
+                    if lane.replace((id, side)).is_some() {
                         return None;
                     }
                 } else {
                     joins.insert(r.as_str());
                 }
             }
-            let id = lane?;
-            if ids.last() != Some(&id) {
-                ids.push(id);
+            let lane = lane?;
+            if lanes.last() != Some(&lane) {
+                lanes.push(lane);
             }
-            if ids.len() > 3 {
+            if lanes.len() > 3 {
                 return None;
             }
         }
-        Some((ids, joins))
+        Some((lanes, joins))
     }
     let expect = |joins: &BTreeSet<&str>, pairs: &[(u64, &str)]| {
         joins.len() == pairs.len()
@@ -601,40 +601,65 @@ pub(crate) fn fixed_refuge_resources(spec: &ServiceRunSpec) -> Option<[u64; 3]> 
                 .iter()
                 .all(|(id, end)| joins.contains(format!("rail:join:{id}:{end}").as_str()))
     };
-    let [west, middle, east] = match spec.legs.as_slice() {
+    let ports = |side: u8| {
+        if side == 0 {
+            ("End", "Start")
+        } else {
+            ("Start", "End")
+        }
+    };
+    let (entry, middle, exit, side) = match spec.legs.as_slice() {
         [through] => {
             let (route, joins) = groups(through)?;
-            let [w, m, e] = route.as_slice() else {
+            let [(entry, side), (mid, 0), (exit, far)] = route.as_slice() else {
                 return None;
             };
-            if !expect(
-                &joins,
-                &[(*w, "End"), (*m, "Start"), (*m, "End"), (*e, "Start")],
-            ) {
+            let (leave, enter) = ports(*side);
+            if side != far
+                || !expect(
+                    &joins,
+                    &[
+                        (*entry, leave),
+                        (*mid, enter),
+                        (*mid, leave),
+                        (*exit, enter),
+                    ],
+                )
+            {
                 return None;
             }
-            [*w, *m, *e]
+            (*entry, *mid, *exit, *side)
         }
         [incoming, outgoing] => {
             let (into, joins_in) = groups(incoming)?;
             let (out, joins_out) = groups(outgoing)?;
-            let ([w, m], [same, e]) = (into.as_slice(), out.as_slice()) else {
+            let ([(entry, side), (mid, 0)], [(same, 0), (exit, far)]) =
+                (into.as_slice(), out.as_slice())
+            else {
                 return None;
             };
-            if m != same
+            let (leave, enter) = ports(*side);
+            if mid != same
+                || side != far
                 || !expect(
                     &joins_in,
-                    &[(*w, "End"), (*m, "Start"), (*m, "End"), (*e, "Start")],
+                    &[
+                        (*entry, leave),
+                        (*mid, enter),
+                        (*mid, leave),
+                        (*exit, enter),
+                    ],
                 )
-                || !expect(&joins_out, &[(*m, "End"), (*e, "Start")])
+                || !expect(&joins_out, &[(*mid, leave), (*exit, enter)])
             {
                 return None;
             }
-            [*w, *m, *e]
+            (*entry, *mid, *exit, *side)
         }
         _ => return None,
     };
-    (west != middle && west != east && middle != east).then_some([west, middle, east])
+    (entry != middle && entry != exit && middle != exit)
+        .then_some(([entry, middle, exit], side == 0))
 }
 
 fn progressive_release_offsets(

@@ -109,11 +109,25 @@ pub fn replay_installed_westbound_seam(
     archive: &EvidenceStore,
     recipe: &InstalledWestboundSeamRecipe,
 ) -> Result<WestboundSeamTraversal> {
+    #[cfg(test)]
+    if let Some(result) = TEST_CATALOG.with(|catalog| {
+        catalog
+            .borrow()
+            .as_ref()
+            .map(|catalog| catalog.replay(archive, recipe))
+    }) {
+        return result;
+    }
     static CATALOG: OnceLock<Result<Catalog>> = OnceLock::new();
     match CATALOG.get_or_init(|| Catalog::load(INSTALLED)) {
         Ok(catalog) => catalog.replay(archive, recipe),
         Err(error) => Err(*error),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CATALOG: std::cell::RefCell<Option<Catalog>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -261,5 +275,168 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"version":1,"receipts":[&receipt,&receipt]}))
                 .unwrap();
         assert!(matches!(Catalog::load(&duplicates), Err(Error::Binding)));
+    }
+
+    #[test]
+    fn installed_recipe_admits_exact_world_and_restarts_bound_operation() {
+        use crate::operation::{Timetable, TrainState, Vehicle};
+        use crate::world::{BusOperationConfig, World, WorldDraft};
+
+        let (receipt, archive) = fixture(false);
+        let bytes =
+            serde_json::to_vec(&serde_json::json!({"version":1,"receipts":[receipt]})).unwrap();
+        let catalog = Catalog::load(&bytes).unwrap();
+        let recipe = InstalledWestboundSeamRecipe {
+            version: 1,
+            catalog_key: catalog.0.keys().next().unwrap().clone(),
+        };
+        let old = TEST_CATALOG.with(|slot| slot.replace(Some(catalog)));
+        struct Reset(Option<Catalog>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TEST_CATALOG.with(|slot| {
+                    slot.replace(self.0.take());
+                });
+            }
+        }
+        let _reset = Reset(old);
+        let mut world = World::default();
+        let player = world.add_player("player".into()).unwrap();
+        let owner = world.add_company(player, "operator".into()).unwrap();
+        let original = world.snapshot().clone();
+        assert!(world
+            .candidate_with_installed_seam_bus(owner, "bus".into(), "Bus".into(), recipe.clone())
+            .is_err());
+        assert_eq!(world.snapshot(), &original);
+        let with_archive =
+            World::new(original.with_road_evidence(archive.clone()).unwrap()).unwrap();
+        let east = archive
+            .bindings()
+            .find(|t| t.x == 14553)
+            .unwrap()
+            .canonical_url
+            .clone();
+        let east_store = archive.scope(std::slice::from_ref(&east)).unwrap();
+        let vertex = |vertex| crate::ofm_evidence::BusVertex {
+            feature: 0,
+            line: 0,
+            vertex,
+        };
+        let path = crate::ofm_evidence::find_gameplay_bus_path(
+            &east_store,
+            &east,
+            vertex(0),
+            vertex(1),
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        let former = with_archive
+            .candidate_with_gameplay_ofm_bus(
+                owner,
+                "legacy".into(),
+                "Legacy".into(),
+                path.binding,
+                vec![],
+            )
+            .unwrap();
+        let legacy_before = former.snapshot().clone();
+        assert!(former
+            .candidate_with_installed_seam_bus(owner, "bus".into(), "Bus".into(), recipe.clone())
+            .is_err());
+        assert_eq!(former.snapshot(), &legacy_before);
+        let mut candidate = with_archive
+            .candidate_with_installed_seam_bus(owner, "bus".into(), "Bus".into(), recipe)
+            .unwrap();
+        let roads = &candidate.snapshot().road_transport;
+        assert_eq!(
+            (
+                roads.nodes.len(),
+                roads.edges.len(),
+                roads.bus_routes.len(),
+                roads.bus_stops.len()
+            ),
+            (3, 2, 1, 2)
+        );
+        assert!(with_archive.snapshot().road_transport.bus_routes.is_empty());
+
+        let good = serde_json::to_vec(candidate.snapshot()).unwrap();
+        let mut bad = candidate.snapshot().clone();
+        bad.road_transport.edges[0].id.push_str("-tampered");
+        assert!(World::from_saved_draft(bad, archive.clone()).is_err());
+        let mut reopened = World::from_saved_draft(
+            serde_json::from_slice::<WorldDraft>(&good).unwrap(),
+            archive,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_vec(reopened.snapshot()).unwrap(), good);
+
+        let config = BusOperationConfig {
+            route_id: "bus".into(),
+            timetable: Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 1000,
+                headway_ms: 1000,
+            },
+            vehicle: Vehicle {
+                max_speed_kmh: 35.,
+                acceleration_mps2: 1.,
+                braking_mps2: 1.,
+                length_m: 12.,
+            },
+            assumed_speed_kmh: 35.,
+            dwell_ms: 0,
+            turnaround_ms: None,
+        };
+        candidate
+            .configure_all_operation(vec![], vec![config])
+            .unwrap();
+        let runtime = &mut candidate.operation_mut().unwrap().runtime;
+        runtime.advance_to(1001, 20).unwrap();
+        let mut trains = runtime.trains();
+        assert!(matches!(
+            trains.next().unwrap().state,
+            TrainState::Moving { .. }
+        ));
+        assert!(matches!(
+            trains.next().unwrap().state,
+            TrainState::Waiting { .. }
+        ));
+        drop(trains);
+        let checkpoint = candidate.operation_save().unwrap();
+        assert_eq!(
+            checkpoint.runtime.services[0].legs[0].sections[0]
+                .resources
+                .iter()
+                .filter(|k| k.starts_with("ofm-bus:fragment-lock:"))
+                .count(),
+            2
+        );
+        let mut broken = checkpoint.clone();
+        broken.runtime.services[0].legs[0].sections[0]
+            .resources
+            .pop();
+        assert!(reopened.restore_operation(Some(broken)).is_err());
+        let mut invalidated = checkpoint.clone();
+        invalidated.invalidated = true;
+        assert!(reopened.restore_operation(Some(invalidated)).is_err());
+        assert!(reopened.operation().is_none());
+        reopened
+            .restore_operation(Some(
+                serde_json::from_slice(&serde_json::to_vec(&checkpoint).unwrap()).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(reopened.operation_save(), Some(checkpoint));
+        let advance = |w: &mut World| {
+            w.operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(120_000, 50)
+                .unwrap()
+        };
+        let result = advance(&mut candidate);
+        assert_eq!(result, advance(&mut reopened));
+        assert_eq!(result.arrivals.len(), 2);
+        assert!(result.arrivals[1].delay_ms > 0);
     }
 }
