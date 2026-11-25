@@ -15,16 +15,61 @@ test('uses physical shared joins and renders only one direction at every zoom',(
  const lane=container.querySelector('[data-physical-alignment]')!.getAttribute('d')!,movement=container.querySelector('[data-track-movement]')!.getAttribute('d')!;
  expect(container.querySelectorAll('[data-track-movement]')).toHaveLength(1);expect(movement.split(' ')[0].slice(1)).toBe(lane.split(' ').at(-1)!.slice(1));}
 });
-function Harness({world}:{world:object}){const state=useTrackRenderGeometry(world,true);return <div>{state.value?'ready':state.error?'failed':'pending'}</div>;}
+function Harness({world,epoch=0,enabled=true}:{world:object;epoch?:number;enabled?:boolean}){
+ const state=useTrackRenderGeometry(world,enabled,epoch);
+ return <div>{state.value?'ready':state.error??'pending'}</div>;
+}
+function deferred<T>(){
+ let resolve!:(value:T)=>void,reject!:(error:Error)=>void;
+ const promise=new Promise<T>((ok,fail)=>{resolve=ok;reject=fail;});
+ return {promise,resolve,reject};
+}
 test('does not accept late geometry from the previous world and clears old geometry immediately',async()=>{
- let resolveOld!:(x:TrackRenderGeometry)=>void;const first={},second={};
+ let resolveOld!:(x:TrackRenderGeometry)=>void;const first={},waiting={},second={};
  vi.mocked(invoke).mockImplementation((_command,args)=>(args as {world?:unknown})?.world===first?new Promise(resolve=>{resolveOld=resolve as typeof resolveOld;}):Promise.resolve(geometry));
- const {rerender}=render(<Harness world={first}/>);rerender(<Harness world={second}/>);await screen.findByText('ready');
+ const {rerender}=render(<Harness world={first}/>);
+ rerender(<Harness world={waiting}/>);
+ expect(invoke).toHaveBeenCalledTimes(1);
+ rerender(<Harness world={second} epoch={1}/>);
+ await screen.findByText('ready');
  await act(async()=>{resolveOld({...geometry,lanes:[]});});expect(screen.getByText('ready')).toBeTruthy();
- expect(invoke).toHaveBeenCalledWith('preview_track_render_geometry',{world:second});
+ expect(invoke).toHaveBeenLastCalledWith('preview_track_render_geometry',{world:second});expect(invoke).toHaveBeenCalledTimes(2);
 });
 test('reports invalid or failed results instead of inventing lane geometry',async()=>{
- vi.mocked(invoke).mockResolvedValue({});render(<Harness world={{}}/>);await waitFor(()=>expect(screen.getByText('failed')).toBeTruthy());
+ vi.mocked(invoke).mockResolvedValue({});render(<Harness world={{}}/>);await waitFor(()=>expect(screen.getByText(/描画データが不正/)).toBeTruthy());
+});
+test('coalesces rapid edits to the newest pending snapshot without publishing a stale error',async()=>{
+ const first={draft:1},middle={draft:2},last={draft:3};
+ const active=deferred<TrackRenderGeometry>(),next=deferred<TrackRenderGeometry>();
+ vi.mocked(invoke).mockReturnValueOnce(active.promise).mockReturnValueOnce(next.promise);
+ const {rerender}=render(<Harness world={first}/>);
+ rerender(<Harness world={middle}/>);
+ rerender(<Harness world={last}/>);
+ expect(invoke).toHaveBeenCalledTimes(1);
+ expect(screen.getByText('pending')).toBeTruthy();
+ await act(async()=>active.reject(Error('outdated failure')));
+ expect(screen.getByText('pending')).toBeTruthy();
+ expect(invoke).toHaveBeenCalledTimes(2);
+ expect(invoke).toHaveBeenLastCalledWith('preview_track_render_geometry',{world:last});
+ await act(async()=>next.resolve(geometry));
+ expect(screen.getByText('ready')).toBeTruthy();
+});
+test('disabling or unmounting drops waiting geometry but enabling can try again',async()=>{
+ const first={},second={},third={};
+ const active=deferred<TrackRenderGeometry>(),next=deferred<TrackRenderGeometry>();
+ vi.mocked(invoke).mockReturnValueOnce(active.promise).mockReturnValueOnce(next.promise);
+ const {rerender,unmount}=render(<Harness world={first}/>);
+ rerender(<Harness world={second}/>);
+ rerender(<Harness world={second} enabled={false}/>);
+ await act(async()=>active.resolve(geometry));
+ expect(screen.getByText('pending')).toBeTruthy();
+ expect(invoke).toHaveBeenCalledTimes(1);
+ rerender(<Harness world={second}/>);
+ expect(invoke).toHaveBeenLastCalledWith('preview_track_render_geometry',{world:second});
+ rerender(<Harness world={third}/>);
+ unmount();
+ await act(async()=>next.resolve(geometry));
+ expect(invoke).toHaveBeenCalledTimes(2);
 });
 test('explicit internal movements are rendered once rather than invented from crossing pixels',()=>{
  const {container}=render(<svg><TrackGeometryLayer geometry={{...geometry,movements:[],internal_movements:[{points:[b,c]},{points:[c,b]}]}} camera={DEFAULT_CAMERA} lines={[]} selectedId=""/></svg>);expect(container.querySelectorAll('[data-internal-track-movement]')).toHaveLength(1);expect(container.querySelectorAll('[data-track-movement]')).toHaveLength(0);
