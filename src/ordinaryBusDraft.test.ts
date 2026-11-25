@@ -1,5 +1,5 @@
 import {expect,it,vi} from 'vitest';
-import {prepareOrdinaryBusQuery,sameOrdinaryBusPath,snapOrdinaryBusVertex,verifyOrdinaryBusPreview} from './ordinaryBusDraft';
+import {prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,reacquireNearbyOrdinaryBusQuery,sameOrdinaryBusPath,snapOrdinaryBusVertex,verifyOrdinaryBusPreview} from './ordinaryBusDraft';
 import type {RoadSnapshot} from './automaticRoadData';
 import {roadTileBounds,type OpenFreeMapRoadLine} from './openFreeMapRoadData';
 const raw='1'.repeat(64), base='https://tiles.openfreemap.org/planet/r1/14',a={latitude:35.67504,longitude:139.748},b={latitude:35.67504,longitude:139.752};
@@ -119,4 +119,20 @@ it('compares memoized and newly assembled proof by semantic field ordering, not 
  const {start:from,end:to,...rest}=original.path;
  expect(sameOrdinaryBusPath(original.path,{end:{vertex:to.vertex,feature:to.feature,line:to.line},...rest,start:from})).toBe(true);
  expect(sameOrdinaryBusPath(original.path,{...rest,start:to,end:from})).toBe(false);
+});
+
+it('does not reacquire a detour from different road bytes at the same cell',async()=>{
+ const a0=start(),b0=end(),key=base+'/14552/6452.pbf',nearKey=base+'/14553/6452.pbf';
+ const near={...line,x:14553,id:'ofm:r1:14:14553:6452:0:0'};
+ const snapshot=fixture([near]);
+ const descriptors=[key,nearKey].map(canonical_url=>({binding:{canonical_url,raw_sha256:raw}}));
+ const read=vi.fn();
+ const q=await prepareOrdinaryBusQuery(a0,b0,'bus','B','token',read,descriptors);
+ const expanded=await prepareNearbyOrdinaryBusQuery(q,snapshot,read,descriptors);
+ if(!expanded)throw Error('two-tile context expected');
+ expect(await reacquireNearbyOrdinaryBusQuery(expanded,snapshot,read,descriptors)).toEqual(expanded);
+ const changed={...snapshot,tileSnapshots:snapshot.tileSnapshots!.map((t,i)=>
+  i===0?t:{...t,bundle:{...t.bundle,sourceSha256:'3'.repeat(64)}})};
+ await expect(reacquireNearbyOrdinaryBusQuery(expanded,changed,read,descriptors)).rejects.toThrow('変わりました');
+ expect(read).not.toHaveBeenCalled();
 });
