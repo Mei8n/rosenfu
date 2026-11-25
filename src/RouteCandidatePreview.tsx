@@ -7,8 +7,13 @@ export type Segment = { kind: "alignment"; alignment_id: string; from: string; t
 export type Candidate = { stations: string[]; segments: Segment[] };
 export type Candidates = { shortest_candidate_index?: number | null; status: "no_path" | "unique" | "ambiguous" | "incomplete"; candidates: Candidate[]; truncated: boolean };
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };
+export type StationSearchContext={
+ stationSearchDescription?: ReadonlyMap<string,string>;
+ onLocateStation?: (id:string)=>void;
+};
+const normalizeStationName=(text:string)=>text.normalize('NFKC').trim().toLowerCase();
 type EndpointPick = {side:"start"|"end"; state:"idle"|"queued"|"running"};
-type Props = {
+type Props = StationSearchContext & {
   entityLabel?: string;
   onStationClick?: (id:string)=>boolean;
   isStopping?: (id:string)=>boolean;
@@ -27,9 +32,10 @@ type Props = {
   onSave?: (name: string, membership: Membership) => Promise<void>;
 };
 /** Station clicks define ordered constraints; only explicit Finish persists the route. */
-export function RouteCandidatePreview({onStationClick,isStopping,candidateLength,recommendCandidate,onCandidateChange,onSelectionChange,entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave}:Props){
+export function RouteCandidatePreview({onStationClick,isStopping,candidateLength,recommendCandidate,onCandidateChange,onSelectionChange,entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave,stationSearchDescription,onLocateStation}:Props){
  const initialName=editRoute?.name??defaultName;
  const [name,setName]=useState(initialName);
+ const [stationQuery,setStationQuery]=useState("");
  const [ordered,setOrdered]=useState<string[]>([]);
  const editingMap=!!editRoute?.path;
  const stationClick=useRef(onStationClick);stationClick.current=onStationClick;
@@ -52,13 +58,40 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  const recommendation=useMemo(()=>result?recommendCandidate?.(result):null,[result,recommendCandidate]);
  const generation=useRef(0), pendingSave=useRef(false);
  const blocked=useRef(false);blocked.current=!enabled||stale;
- const names=new Map(stations.map(s=>[s.id,s.name]));
+ const names=useMemo(()=>new Map(stations.map(s=>[s.id,s.name])),[stations]);
+ const searchableStations=useMemo(()=>{
+  const counts=new Map<string,number>(),descriptions=new Map<string,number>();
+  const rows=stations.map(station=>{
+   const name=normalizeStationName(station.name),description=stationSearchDescription?.get(station.id)??'';
+   counts.set(name,(counts.get(name)??0)+1);
+   const key=JSON.stringify([name,description]);
+   descriptions.set(key,(descriptions.get(key)??0)+1);
+   return {station,name,description,key};
+  });
+  const ordinals=new Map<string,number>();
+  return rows.map(({station,name,description,key})=>{
+   const duplicate=(counts.get(name)??0)>1;
+   const ordinal=(ordinals.get(key)??0)+1;ordinals.set(key,ordinal);
+   const context=duplicate?[description,(descriptions.get(key)??0)>1?`候補 ${ordinal}`:''].filter(Boolean).join(' / '):'';
+   return {station,name,context,duplicate};
+  });
+ },[stations,stationSearchDescription]);
+ const stationSearch=useMemo(()=>{
+  const query=normalizeStationName(stationQuery);
+  if(!query)return {rows:[],count:0};
+  const exact:typeof searchableStations=[],partial:typeof searchableStations=[];
+  for(const row of searchableStations){
+   if(row.name===query)exact.push(row);
+   else if(row.name.includes(query))partial.push(row);
+  }
+  return {rows:exact.concat(partial).slice(0,24),count:exact.length+partial.length};
+ },[stationQuery,searchableStations]);
  const editingInputs=useRef({names,candidateLength});editingInputs.current={names,candidateLength};
  const stationName=(id:string)=>names.get(id)??`駅 ${id}`;
  function clearEndpoint(){if(endpointPick.current?.state==="running")setLoading(false);endpointPick.current=null;}
  useEffect(()=>{if(mapPickTarget===null)clearEndpoint();},[mapPickTarget]);
  function invalidate(){generation.current++;if(endpointPick.current)endpointPick.current.state="idle";setResult(null);setMembership(null);setChosen(null);setLoading(false);setStale(false);setShowChoices(false);setChoiceRequired(false);setError("");}
- useEffect(()=>{invalidate();orderedRef.current=[];setOrdered([]);setName(initialName);},[resetKey]);
+ useEffect(()=>{invalidate();orderedRef.current=[];setOrdered([]);setName(initialName);setStationQuery("");},[resetKey]);
  useEffect(()=>{generation.current++;if(endpointPick.current)endpointPick.current.state="idle";setLoading(false);setMembership(null);setShowChoices(false);setStale(orderedRef.current.length>1);return()=>{generation.current++;};},[worldVersion]);
  useEffect(()=>{onDirty?.(ordered.length>0||name!==initialName);},[ordered,name,initialName,onDirty]);
  async function membershipFor(candidate:Candidate){
@@ -135,14 +168,18 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  function beginEndpoint(side:'start'|'end'){
   clearEndpoint();
   const pick:EndpointPick={side,state:"idle"};endpointPick.current=pick;
-  onMapPick?.(side,id=>{
+  onMapPick?.(side,id=>selectEndpoint(id,pick));
+ }
+ function selectEndpoint(id:string,pick=endpointPick.current){
+   if(!pick)return;
    if(endpointPick.current!==pick||pick.state!=="idle"||pendingSave.current||blocked.current||!editingInputs.current.names.has(id))return;
    pick.state="queued";applyMapEdit(id,pick);
-  });
  }
  function beginSequence(){
   clearEndpoint();
-  onMapPick?.("sequence",id=>{
+  onMapPick?.("sequence",selectSequence);
+ }
+ function selectSequence(id:string){
    if(pendingSave.current||blocked.current||!editingInputs.current.names.has(id))return;
    if(editingMap){
     if(id===orderedRef.current[0]||id===orderedRef.current.at(-1)){beginEndpoint(id===orderedRef.current[0]?'start':'end');return;}
@@ -151,7 +188,6 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
    }
    if(orderedRef.current.includes(id)){setError("同じ駅は重複して指定できません。");return;}
    const next=[...orderedRef.current,id];orderedRef.current=next;setOrdered(next);void search(next);
-  });
  }
  function beginEditing(){
   const path=editRoute?.path;if(!path)return;
@@ -177,7 +213,18 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
   <p className="muted">編集終了でワールドに適用します。ファイルに残すには「保存」が必要です。</p>
   <label>{entityLabel}名<input autoComplete="off" value={name} maxLength={80} disabled={!enabled||saving} onChange={e=>setName(e.target.value)}/></label>
   {editingMap&&<p>{entityLabel==='系統'?'中間駅をクリックすると停車・通過を切り替えます。':'中間駅をクリックすると経由指定を追加・解除できます。'}始点・終点を変更するには、地図の端の駅をクリックしてから新しい駅を選んでください。</p>}
-  {editingMap&&(mapPickTarget==="start"||mapPickTarget==="end")&&<p role="status">地図で新しい{mapPickTarget==="start"?"始点":"終点"}を選択してください。</p>}
+  {editingMap&&(mapPickTarget==="start"||mapPickTarget==="end")&&<p role="status">地図か駅名検索で新しい{mapPickTarget==="start"?"始点":"終点"}を選択してください。</p>}
+  {(mapPickTarget==="sequence"||mapPickTarget==="start"||mapPickTarget==="end")&&<div className="route-station-search">
+   <label>駅名で検索<input type="search" value={stationQuery} autoComplete="off" maxLength={80} disabled={!enabled||saving||stale}
+    onChange={e=>setStationQuery(e.target.value)}/></label>
+   {stationQuery.trim()!==""&&<p className="muted" aria-live="polite">{stationSearch.count===0?'一致する駅がありません':`${stationSearch.count}件${stationSearch.count>24?'（先頭24件を表示）':''}`}</p>}
+   {stationSearch.rows.length>0&&<ul aria-label="駅名検索結果">{stationSearch.rows.map(({station,context,duplicate})=><li key={station.id}>
+    <button type="button" className="secondary" disabled={!enabled||saving||stale||(mapPickTarget!=="sequence"&&loading)}
+     onClick={()=>{if(mapPickTarget==="sequence")selectSequence(station.id);else selectEndpoint(station.id);setStationQuery("");}}>{station.name}{context&&<> <small>{context}</small></>}</button>
+    {duplicate&&onLocateStation&&<button type="button" className="secondary route-station-locate" aria-label={`${station.name} ${context}を地図で確認`}
+     onClick={()=>onLocateStation(station.id)}>地図で確認</button>}
+   </li>)}</ul>}
+  </div>}
   <ol aria-label="選択した駅">{ordered.map((id,i)=>{
    const side=i===0?'start':i===ordered.length-1?'end':null;
    const role=side==='start'?'始点':side==='end'?'終点':'経由';

@@ -118,3 +118,25 @@ it('observes a rectangle through the same raw provider without re-downloading it
  await expect(repo.observeTiles([cells[0],cells[0]],'rev')).rejects.toThrow('範囲');
  expect(f).toHaveBeenCalledTimes(5);
 });
+
+it('requests the exact catalog revision despite live rollover, without admitting fallback bytes',async()=>{
+ const current='20261122_080013_pt',old='20261101_080013_pt';
+ const oldRaw=fixture('service'),latestRaw=fixture('primary');
+ const oldSha=(await decode(oldRaw)).bundle.sourceSha256;
+ let reply:'fallback'|'missing'|'exact'='fallback';
+ const f=vi.fn(async(url:unknown,_init?:RequestInit)=>{
+  if(String(url).endsWith('/planet'))return new Response(JSON.stringify({maxzoom:14,tiles:[`https://tiles.openfreemap.org/planet/${current}/{z}/{x}/{y}.pbf`]}));
+  if(String(url).includes('/'+old+'/'))return reply==='missing'?new Response(null,{status:404}):new Response(new Uint8Array(reply==='exact'?oldRaw:latestRaw));
+  return new Response(new Uint8Array(latestRaw));
+ });
+ const repository=createOpenFreeMapRoadRepository(f as typeof fetch);
+ await repository.load({west:139.75,east:139.751,south:35.68,north:35.681});
+ const pin={revision:old,z:14 as const,x:14552,y:6451,rawSha256:oldSha,decoderRule:OFM_EVIDENCE_RULE};
+ await expect(repository.readPinnedSeamTiles([pin])).rejects.toThrow('SHA-256');
+ reply='missing';await expect(repository.readPinnedSeamTiles([pin])).rejects.toThrow('404');
+ reply='exact';const exact=await repository.readPinnedSeamTiles([pin]);
+ expect(exact.rawTiles[0].bytes).toEqual(oldRaw);
+ expect(f).toHaveBeenLastCalledWith(`https://tiles.openfreemap.org/planet/${old}/14/14552/6451.pbf`,expect.objectContaining({redirect:'error'}));
+ await expect(repository.readTileEvidenceBatch([pin])).rejects.toThrow('取得済み');
+ expect(f.mock.calls.filter(([url])=>String(url).endsWith('/planet'))).toHaveLength(1);
+});

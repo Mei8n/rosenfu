@@ -65,6 +65,17 @@ export function useAutomaticRoad(bounds:GraphBounds,enabled:boolean,world:unknow
   try{const evidence=await provider.readTileEvidenceBatch(refs,signal);return matches()?{status:'ready',evidence}:{status:'stale'};}
   catch(error){return matches()?{status:'unavailable',reason:`道路証拠未取得：${String(error)}`}:{status:'stale'};}
  },[key,world,enabled]);
+ const readPinnedSeamTiles=useCallback(async(refs:readonly OpenFreeMapEvidenceRequest[],signal?:AbortSignal):Promise<CurrentRoadEvidenceResult>=>{
+  const matches=()=>!signal?.aborted&&current.current.enabled&&current.current.key===key&&current.current.world===world;
+  if(!matches())return {status:'stale'};
+  if(!provider)return {status:'unavailable',reason:'道路データの提供元がありません。'};
+  try{
+   const evidence=await provider.readPinnedSeamTiles(refs,signal);
+   return matches()?{status:'ready',evidence}:{status:'stale'};
+  }catch(error){
+   return matches()?{status:'unavailable',reason:`確認済みの版を取得できません：${String(error)}`}:{status:'stale'};
+  }
+ },[key,world,enabled]);
  const observeRouteTiles=useCallback(async(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal)=>{
   const matches=()=>!signal?.aborted&&current.current.enabled&&current.current.key===key&&current.current.world===world;
   if(!matches()||!provider)throw Error('道路取得が終了しました。位置を選び直してください。');
@@ -72,5 +83,5 @@ export function useAutomaticRoad(bounds:GraphBounds,enabled:boolean,world:unknow
   if(!matches())throw Error('道路取得範囲が変わりました。位置を選び直してください。');
   return observed;
  },[key,world,enabled]);
- return {...state,readTileEvidenceBatch,observeRouteTiles,retry:()=>setAttempt(n=>n+1),ensureCurrent};
+ return {...state,readTileEvidenceBatch,readPinnedSeamTiles,observeRouteTiles,retry:()=>setAttempt(n=>n+1),ensureCurrent};
 }

@@ -1,10 +1,10 @@
 import {useRef,useState,useEffect,useLayoutEffect,useCallback,useMemo} from 'react';
 import {invoke} from '@tauri-apps/api/core';
-import {RouteCandidatePreview,type Candidate,type Membership} from './RouteCandidatePreview';
+import {RouteCandidatePreview,type Candidate,type Membership,type StationSearchContext} from './RouteCandidatePreview';
 import {resolveServicePath,referenceKey,sameSegment,sameOccurrence,type ServicePath,type PathWorld,type PathPreview} from './servicePaths';
 import type {RouteBinding} from './ServiceRouteBinding';
 import type {CreateServicePath} from './ServicePathCreator';
-type Props={onCandidateChange:(candidate:Candidate|null)=>void;onSelectionChange:(ids:string[])=>void;service:{id:string;name:string;start:string};path:ServicePath;binding?:RouteBinding;world:PathWorld;stations:{id:string;name:string}[];enabled:boolean;candidateLength:(path:Candidate)=>number;onDirty:(dirty:boolean)=>void;onSave:(draft:CreateServicePath)=>Promise<void>;onMapPick:(target:'start'|'end'|'via'|'sequence'|null,select?:(id:string)=>void)=>void;mapPickTarget:'start'|'end'|'via'|'sequence'|null};
+type Props=StationSearchContext&{onCandidateChange:(candidate:Candidate|null)=>void;onSelectionChange:(ids:string[])=>void;service:{id:string;name:string;start:string};path:ServicePath;binding?:RouteBinding;world:PathWorld;stations:{id:string;name:string}[];enabled:boolean;candidateLength:(path:Candidate)=>number;onDirty:(dirty:boolean)=>void;onSave:(draft:CreateServicePath)=>Promise<void>;onMapPick:(target:'start'|'end'|'via'|'sequence'|null,select?:(id:string)=>void)=>void;mapPickTarget:'start'|'end'|'via'|'sequence'|null};
 export function ServiceMapEditor(props:Props){
  const {service,path,binding,world,stations,enabled,onDirty,onSave,onMapPick,mapPickTarget,candidateLength}=props;
  const [editing,setEditing]=useState(false);
@@ -40,7 +40,7 @@ export function ServiceMapEditor(props:Props){
   setEditing(false);onDirty(false);onMapPick(null);
  }
  if(!editing)return <><button disabled={!enabled||!binding||repeated} onClick={()=>{setStopOverrides({});setEditing(true);onDirty(true);}}>地図で系統を編集</button>{repeated&&<p>同じ駅を複数回通る系統は区間編集を利用してください。</p>}</>;
- return <RouteCandidatePreview onCandidateChange={candidateChanged} onSelectionChange={props.onSelectionChange} entityLabel="系統" editRoute={{id:service.id,name:service.name,path:original.path}} onStationClick={id=>{
+ return <RouteCandidatePreview stationSearchDescription={props.stationSearchDescription} onLocateStation={props.onLocateStation} onCandidateChange={candidateChanged} onSelectionChange={props.onSelectionChange} entityLabel="系統" editRoute={{id:service.id,name:service.name,path:original.path}} onStationClick={id=>{
   const ids=selectedCandidate.current?.stations;
   if(!ids||id===ids[0]||id===ids.at(-1)||!ids.includes(id))return false;
   // Multiple map clicks can arrive before React commits another render.

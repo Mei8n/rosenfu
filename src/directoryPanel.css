@@ -28,3 +28,10 @@
 .directory-search select { min-width:0; width:100%; box-sizing:border-box; }
 .service-directory-routes { display:block; color:var(--muted); margin-top:2px; }
 .route-via-actions { display:inline-flex; gap:4px; margin-inline-start:6px; }
+
+.route-station-search ul { max-height:12rem; overflow:auto; list-style:none; margin:0; padding:0; }
+.route-station-search li + li { margin-top:4px; }
+.route-station-search li button { width:100%; text-align:start; }
+.route-station-search small { margin-inline-start:5px; }
+.route-station-search li:has(.route-station-locate) { display:flex; gap:4px; align-items:stretch; }
+.route-station-search li .route-station-locate { width:auto; flex-shrink:0; }
