@@ -142,7 +142,7 @@ function denseStopEditor(){
   const legs=segments.map((segment,i)=>({key:String(9+i),segment}));
   return {legs,occurrences:resolveServicePath(start,legs,world),requires_stop_selection:true};
  });
- render(<ServiceMapEditor service={{id:'s',name:'長距離急行',start:'1'}} path={path} binding={{kind:'route',route_id:'r1'}}
+ const {container}=render(<ServiceMapEditor service={{id:'s',name:'長距離急行',start:'1'}} path={path} binding={{kind:'route',route_id:'r1'}}
   world={world} stations={stations} enabled onDirty={vi.fn()} onSave={onSave}
   candidateLength={()=>0} onCandidateChange={vi.fn()} onSelectionChange={vi.fn()}
   onMapPick={(_target,select)=>{pick=select;}} mapPickTarget="sequence"/>);
@@ -150,7 +150,13 @@ function denseStopEditor(){
  return {
   toggle:(...ids:string[])=>act(()=>ids.forEach(id=>pick?.(id))),onSave,
   reads:()=>({stopReads,placementReads}),
-  displayed:(id:string)=>screen.getByLabelText<HTMLInputElement>(`地図選択の停車駅 ${id}`).checked,
+  displayed:(id:string)=>{
+   // Match the accessible label directly instead of enumerating every
+   // label and associated control in the 240-row diagram on each read.
+   const controls=container.querySelectorAll<HTMLInputElement>(`input[type="checkbox"][aria-label="地図選択の停車駅 ${id}"]`);
+   expect(controls, `expected one stop marker for row ${id}`).toHaveLength(1);
+   return controls[0].checked;
+  },
  };
 }
 
