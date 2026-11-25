@@ -1717,6 +1717,68 @@ fn ordinary_bus_crosses_two_exact_seams_without_raw_seam_vertices() {
 }
 
 #[test]
+fn ordinary_bus_same_tile_endpoints_can_need_a_neighboring_tile() {
+    let (tiles, store) = bus_rectangle(&[
+        (
+            14552,
+            6451,
+            &[
+                (&[[3200, 1600], [4200, 1600]], None),
+                (&[[4200, 2400], [3200, 2400]], None),
+            ],
+        ),
+        (
+            14553,
+            6451,
+            &[
+                (&[[-104, 1600], [900, 1600]], None),
+                (&[[900, 2400], [-104, 2400]], None),
+                (&[[900, 1600], [900, 2400]], Some(("oneway", "yes"))),
+            ],
+        ),
+    ]);
+    let (start, end) = (bus_vertex(0, 0), bus_vertex(1, 1));
+    let west_key = &tiles[0].canonical_url;
+    let west = store.scope(std::slice::from_ref(west_key)).unwrap();
+    let one_cell = find_gameplay_bus_path(&west, west_key, start, end, true).unwrap();
+    assert!(one_cell.is_none());
+
+    let mut query = bus_rectangle_query(&tiles, end, true);
+    query.end_tile_key = Some(tiles[0].canonical_url.clone());
+    let path = reconstruct_gameplay_bus_path(&store, &query)
+        .unwrap()
+        .unwrap();
+    assert_eq!(path.binding, query);
+    assert_eq!(
+        path.spans
+            .iter()
+            .map(|span| span.binding_key.as_str())
+            .collect::<Vec<_>>(),
+        [
+            tiles[0].canonical_url.as_str(),
+            tiles[1].canonical_url.as_str(),
+            tiles[1].canonical_url.as_str(),
+            tiles[1].canonical_url.as_str(),
+            tiles[0].canonical_url.as_str(),
+        ]
+    );
+
+    query.start = end;
+    query.end = start;
+    assert!(reconstruct_gameplay_bus_path(&store, &query)
+        .unwrap()
+        .is_none());
+    query.respect_oneway = false;
+    let reversed = reconstruct_gameplay_bus_path(&store, &query)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reversed.points,
+        path.points.iter().rev().copied().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn ordinary_bus_seam_refuses_nonidentical_nearby_or_grade_separated_fragments() {
     for (offset, tag) in [
         (1, None),

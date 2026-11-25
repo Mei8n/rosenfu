@@ -4,10 +4,10 @@ import {createOrdinaryBusHover} from './ordinaryBusHover';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
-import {cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareOrdinaryBusQuery,restoreOrdinaryBusControls,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
+import {cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,reacquireNearbyOrdinaryBusQuery,restoreOrdinaryBusControls,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
 import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type BusControlEnd,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
-type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean};
+type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean;nearby?:true};
 type DraftSpec={id:string;respectOneway:boolean;pattern?:OrdinaryBusPattern;gradePolicy?:OrdinaryBusGradePolicy;savedPath?:OrdinaryBusQuery['path']};
 type Input={
  active:boolean;allow:boolean;autoRoute:boolean;closedCapable?:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;descriptors:readonly unknown[];
@@ -127,6 +127,9 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
    const name=latest.current.name.trim();
    const query:OrdinaryBusQuery=f.verified.retained?
     {expectedWorldToken:await latest.current.input.token(),routeId:currentSpec.id,name,path:f.verified.path,rawEvidence:null,tileBinding:null}:
+    f.verified.nearby?await reacquireNearbyOrdinaryBusQuery(
+     {expectedWorldToken:await latest.current.input.token(),routeId:currentSpec.id,name,path:f.verified.path,rawEvidence:null,tileBinding:null},
+     latest.current.input.snapshot,latest.current.input.read,latest.current.input.descriptors,controller.signal):
     await build(f.body.controls,currentSpec,name,controller.signal,true,!!f.body.closed);
    if(controller.signal.aborted||!latest.current.input.active||latest.current.input.scope!==scope||!latest.current.input.allow||frameRef.current?.finish!==f)return;
    if(query.expectedWorldToken!==f.verified.token||!sameOrdinaryBusPath(query.path,f.verified.path))throw Error('ワールドや道路が更新されました。位置を選び直してください。');
@@ -207,11 +210,23 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
       }
      }
     }
+    let nearby:false|true=false;
+    const src=latest.current.input;
+    if('refusedLeg' in matched&&!currentSpec.savedPath&&src.observe&&src.allow){
+     const extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,ctrl.signal);
+     if(!alive())return;
+     if(extra){
+      const alt=await queryNative(extra,()=>alive()&&latest.current.input.allow);
+      if(!alive()||!alt)return;
+      const checked=match(alt,controls,extra.path.pattern);
+      if('preview' in checked&&!checked.preview.returnUnavailableReason){matched=checked;query=extra;nearby=true;}
+     }
+    }
     if('preview' in matched&&query.path.pattern==='closedOneWay'&&!!matched.preview.loopFallbackStop===!!query.path.interiorStops?.length)
      throw Error('環状系統の途中停留所を確認できません。');
     const outcome:{reason:string;leg?:number}|{verified:Verified;resolvedEnd?:DraftControl}='refusedLeg' in matched?{reason:'この区間を道路でつなげません。',leg:matched.refusedLeg}:
       matched.preview.returnUnavailableReason&&!(latest.current.input.closedCapable&&!currentSpec.savedPath)?{reason:`復路を作れません。${matched.preview.returnUnavailableReason}`}:
-      {verified:{preview:matched.preview,token:query.expectedWorldToken,path:query.path},resolvedEnd};
+      {verified:{preview:matched.preview,token:query.expectedWorldToken,path:query.path,...(nearby?{nearby}:{})},resolvedEnd};
     if('verified' in outcome)lastProof.current=query;
     handle(settleBusValidation<Verified>(frameRef.current!,next.scope,check.id,outcome));
    }catch(e){

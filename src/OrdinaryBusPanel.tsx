@@ -5,7 +5,7 @@ import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadDataState,RoadSnapshot} from './automaticRoadData';
 import {OFM_EVIDENCE_LIMITS,OFM_LIMITS} from './openFreeMapRoadData';
-import {hasObservedOrdinaryBusTile,ordinaryBusTileFootprint,prepareOrdinaryBusQuery,snapOrdinaryBusSegment,snapOrdinaryBusVertex,verifyOrdinaryBusPreview,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
+import {hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,ordinaryBusTileFootprint,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,snapOrdinaryBusSegment,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
 
 type Route={id:string;name:string;pattern?:OrdinaryBusPattern;path?:OrdinaryBusPath};
 type Draft={id:string;respectOneway:boolean;fractional?:true;generalFractional?:true;savedInteriorStops?:BusInteriorStop[];pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
@@ -88,14 +88,26 @@ export function useOrdinaryBusDraft(input:Input){
    const token=await input.token();
    if(!alive())return;
    verifiedSource();
-   const query=await prepareOrdinaryBusQuery(start,end,title,draft.id,token,input.read,input.descriptors,controller.signal,input.observe,draft.pattern,[],draft.respectOneway,draft.savedInteriorStops??[],undefined,!!draft.generalFractional);
+   let query=await prepareOrdinaryBusQuery(start,end,title,draft.id,token,input.read,input.descriptors,controller.signal,input.observe,draft.pattern,[],draft.respectOneway,draft.savedInteriorStops??[],undefined,!!draft.generalFractional);
    if(!alive())return;
    verifiedSource();
    const result=await input.preview(query);
    if(!alive())return;
    verifiedSource();
-   if('failedLegIndex' in result)throw Error('この区間を道路でつなげません。');
-   const preview=verifyOrdinaryBusPreview(result,start,end,draft.pattern);
+   let matched=matchOrdinaryBusPreview(result,start,end,draft.pattern,[start,end]);
+   if('refusedLeg' in matched&&newRoute&&!draft.fractional&&current.current.observe&&current.current.allow){
+    const src=current.current;
+    const extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,controller.signal);
+    if(!alive())return;
+    if(extra&&current.current.allow){
+     const alt=await current.current.preview(extra);
+     if(!alive())return;
+     const checked=matchOrdinaryBusPreview(alt,start,end,draft.pattern,[start,end]);
+     if('preview' in checked&&!checked.preview.returnUnavailableReason){matched=checked;query=extra;}
+    }
+   }
+   if('refusedLeg' in matched)throw Error('この区間を道路でつなげません。');
+   const preview=matched.preview;
    if(draft.fractional&&!draft.generalFractional&&preview.points.length!==2)throw Error('道路区間の確認結果が一致しません。');
    if(alive())setDraft({...draft,end,preview,query});
   }catch(e){

@@ -36,7 +36,7 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;savedOpenVia?:boolean;savedInterior?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean;fractional?:boolean;generalFractional?:boolean;generalFractionalStops?:boolean}){
+async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;savedOpenVia?:boolean;savedInterior?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean;nearbyDetour?:boolean;fractional?:boolean;generalFractional?:boolean;generalFractionalStops?:boolean}){
  const authored=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
   ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
  ]}]}:tile;
@@ -59,7 +59,7 @@ async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?
  const bindings=config.rectangle?[bind(14551,leftRaw,leftKey),bind(14552,raw,key)]:[bind(14552,raw,key)];
  observe.mockResolvedValue(bindings);
  read.mockImplementation(async (refs:{x:number;y:number}[])=>{
-  const requested=config.seamAlternative?bindings.filter(binding=>refs.some(ref=>ref.x===binding.x&&ref.y===binding.y)):bindings;
+  const requested=config.seamAlternative||config.nearbyDetour?bindings.filter(binding=>refs.some(ref=>ref.x===binding.x&&ref.y===binding.y)):bindings;
   return {status:'ready',evidence:{
    rawTiles:requested.map(entry=>({sha256:entry.rawSha256,bytes:Uint8Array.of(21+bindings.indexOf(entry))})),
    bindings:requested,
@@ -145,6 +145,26 @@ test('a normal bus tool uses observed geometry and a native route before explici
  })));
  await screen.findByRole('button',{name:'バス系統を引き直す'});
  expect(screen.getByLabelText('作成済みのバス経路')).toBeTruthy();
+});
+test.each([false,true])('a same-cell detour uses exact neighboring evidence through Confirm (waypoints: %s)',async waypoints=>{
+ const preview=vi.fn(async (args?:unknown)=>{
+  const {path}=(args as {path:{rule:string}});
+  return path.rule==='ofm_ground_bus_z14_v1'?{points:[],lengthM:0,failedLegIndex:0}:{points:[a,left,b],lengthM:721};
+ });
+ const map=(await setup({preview,rectangle:true,waypoints,nearbyDetour:true}))!;
+ map.pressPoint(a);
+ map.pressPoint(b);
+ await screen.findByText('道路経路 721 m・停留所2か所');
+ expect(preview).toHaveBeenCalledTimes(2);
+ expect(preview.mock.calls[0][0]).toMatchObject({path:{rule:'ofm_ground_bus_z14_v1',tileKey:key}});
+ const proof={rule:'ofm_ground_bus_rectangle_z14_v2',tileKey:key,endTileKey:key,
+  additionalTiles:[{tileKey:leftKey,tileRawSha256:leftRaw}]};
+ expect(preview.mock.calls[1][0]).toMatchObject({expectedWorldToken:'world-exact',path:proof});
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({
+  expectedWorldToken:'world-exact',path:expect.objectContaining(proof),
+  contextTiles:expect.arrayContaining([expect.objectContaining({tileBinding:expect.objectContaining({rawSha256:leftRaw})})]),
+ })));
 });
 test('no path is not drawn as a straight fallback and can be cancelled',async()=>{
  const map=(await setup({preview:async()=>{throw '道路経路を確認できませんでした。';}}))!;
@@ -904,8 +924,11 @@ test.each([true,false])('an alternate in another cell is used only inside an unc
   expect(observe).toHaveBeenCalledTimes(1);
  }else{
   await screen.findByText('この区間を道路でつなげません。');
-  expect(previews).toHaveLength(1);
-  expect(read).toHaveBeenCalledTimes(1);
+  expect(previews).toHaveLength(2);
+  // Nearby search may broaden the pinned scope, never shift the selected stop.
+  expect(previews[1]).toMatchObject({path:{endTileKey:leftKey,end:{feature:9,line:0,vertex:0},
+   additionalTiles:[{tileKey:key,tileRawSha256:raw}]}});
+  expect(read).toHaveBeenCalledTimes(2);
   expect(observe).not.toHaveBeenCalled();
  }
  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());

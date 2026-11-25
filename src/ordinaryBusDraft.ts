@@ -252,8 +252,61 @@ export async function prepareOrdinaryBusQuery(
   path={...base,rule:'ofm_ground_bus_rectangle_z14_v2',endTileKey:territory(b),additionalTiles:refs.filter(t=>!sameTile(t,a)).map(t=>({tileKey:territory(t),tileRawSha256:t.rawSha256}))};
  }
  const out:OrdinaryBusQuery={expectedWorldToken,routeId,name,path,rawEvidence:null,tileBinding:null};
+ return attachOrdinaryBusEvidence(out,refs,read,descriptors,signal);
+}
+async function attachOrdinaryBusEvidence(query:OrdinaryBusQuery,refs:OpenFreeMapEvidenceRequest[],read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal){
  const pairs=await readObservedRoadTilePairs(refs,read,descriptors,signal);
- return !pairs.length?out:path.rule==='ofm_ground_bus_z14_v1'?{...out,...pairs[0]}:{...out,contextTiles:pairs};
+ return !pairs.length?query:query.path.rule==='ofm_ground_bus_z14_v1'?{...query,...pairs[0]}:{...query,contextTiles:pairs};
+}
+
+/** One extra bounded query, using only complete rectangles from the same observed revision. */
+export async function prepareNearbyOrdinaryBusQuery(
+ query:OrdinaryBusQuery,snapshot:RoadSnapshot|undefined,read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal,
+):Promise<OrdinaryBusQuery|undefined>{
+ const path=query.path;
+ if(signal?.aborted||path.rule!=='ofm_ground_bus_z14_v1'||path.sameAtomStops||path.fractionalTerminals)return;
+ const visible=tilesOf(snapshot).map(t=>t.binding);
+ if(visible.length>OFM_EVIDENCE_LIMITS.batchTiles)return;
+ const first=visible.find(t=>territory(t)===path.tileKey&&t.rawSha256===path.tileRawSha256);
+ if(!first)return;
+ const cells=new Map<string,OpenFreeMapEvidenceRequest>();
+ for(const t of visible){
+  if(t.revision!==first.revision||Math.abs(t.x-first.x)>1||Math.abs(t.y-first.y)>1)continue;
+  const key=t.x+'/'+t.y;
+  if(cells.has(key))return;
+  cells.set(key,t);
+ }
+ let best:OpenFreeMapEvidenceRequest[]=[];
+ for(let west=0;west<=1;west++)for(let east=0;east<=1;east++)
+ for(let north=0;north<=1;north++)for(let south=0;south<=1;south++){
+  const count=(west+east+1)*(north+south+1);
+  if(count<=Math.max(1,best.length))continue;
+  const candidate:OpenFreeMapEvidenceRequest[]=[];
+  for(let x=first.x-west;x<=first.x+east;x++)for(let y=first.y-north;y<=first.y+south;y++){
+   const tile=cells.get(x+'/'+y);
+   if(tile)candidate.push(tile);
+  }
+  if(candidate.length===count)best=candidate;
+ }
+ if(!best.length)return;
+ const {sameAtomStops:_,...base}=path;
+ const revised:OrdinaryBusPath={...base,rule:'ofm_ground_bus_rectangle_z14_v2',endTileKey:path.tileKey,
+  additionalTiles:best.filter(t=>t!==first).map(t=>({tileKey:territory(t),tileRawSha256:t.rawSha256}))};
+ return attachOrdinaryBusEvidence({...query,path:revised,rawEvidence:null,tileBinding:null},best,read,descriptors,signal);
+}
+
+/** Confirm reacquires the same pinned evidence, never a smaller control rectangle. */
+export async function reacquireNearbyOrdinaryBusQuery(
+ query:OrdinaryBusQuery,snapshot:RoadSnapshot|undefined,read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal,
+):Promise<OrdinaryBusQuery>{
+ if(query.path.rule!=='ofm_ground_bus_rectangle_z14_v2')throw Error('経路の確認範囲が変わりました。');
+ const visible=tilesOf(snapshot).map(t=>t.binding);
+ const refs=[query.path,...query.path.additionalTiles].map(proof=>{
+  const matches=visible.filter(t=>territory(t)===proof.tileKey&&t.rawSha256===proof.tileRawSha256);
+  if(matches.length!==1)throw Error('道路の元データが変わりました。位置を選び直してください。');
+  return matches[0];
+ });
+ return attachOrdinaryBusEvidence(query,refs,read,descriptors,signal);
 }
 export async function readObservedRoadTilePairs(refs:OpenFreeMapEvidenceRequest[],read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal):Promise<RawTilePair[]>{
  // Retained descriptors are hints; Rust still validates the chosen scope and bytes.
