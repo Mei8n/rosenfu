@@ -130,7 +130,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
     {expectedWorldToken:await latest.current.input.token(),routeId:currentSpec.id,name,path:f.verified.path,rawEvidence:null,tileBinding:null}:
     f.verified.nearby?await reacquireNearbyOrdinaryBusQuery(
      {expectedWorldToken:await latest.current.input.token(),routeId:currentSpec.id,name,path:f.verified.path,rawEvidence:null,tileBinding:null},
-     latest.current.input.snapshot,latest.current.input.read,latest.current.input.descriptors,controller.signal):
+     latest.current.input.snapshot,latest.current.input.read,latest.current.input.descriptors,controller.signal,latest.current.input.observe):
     await build(f.body.controls,currentSpec,name,controller.signal,true,!!f.body.closed);
    if(controller.signal.aborted||!latest.current.input.active||latest.current.input.scope!==scope||!latest.current.input.allow||frameRef.current?.finish!==f)return;
    if(query.expectedWorldToken!==f.verified.token||!sameOrdinaryBusPath(query.path,f.verified.path))throw Error('ワールドや道路が更新されました。位置を選び直してください。');
