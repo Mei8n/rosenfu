@@ -18,7 +18,7 @@ type BusWaypointProof={id:string;tileKey:string;vertex:Vertex};
 export type OrdinaryBusPreviewReply=OrdinaryBusPreview|{points:[];lengthM:0;failedLegIndex:number};
 export type OrdinaryBusPath=TileProof & {respectOneway:boolean;start:Vertex;end:Vertex;pattern?:OrdinaryBusPattern;gradePolicy?:OrdinaryBusGradePolicy;via?:BusWaypointProof[];interiorStops?:BusInteriorStop[]} & (
  {rule:'ofm_ground_bus_z14_v1';sameAtomStops?:readonly [number,number];fractionalTerminals?:readonly [number,number]}|
- {rule:'ofm_ground_bus_rectangle_z14_v2';endTileKey:string;additionalTiles:TileProof[];sameAtomStops?:never;fractionalTerminals?:readonly [number,number]});
+ {rule:'ofm_ground_bus_rectangle_z14_v2'|'ofm_ground_bus_shared_seam_z14_v3';endTileKey:string;additionalTiles:TileProof[];sameAtomStops?:never;fractionalTerminals?:readonly [number,number]});
 type RawTilePair={rawEvidence:RawTileEvidence;tileBinding:TileEvidenceBinding};
 export type RouteTileObserver=(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal)=>Promise<OpenFreeMapEvidenceRequest[]>;
 export type OrdinaryBusQuery={expectedWorldToken:string;routeId:string;name:string;path:OrdinaryBusPath;rawEvidence:RawTileEvidence|null;tileBinding:TileEvidenceBinding|null;contextTiles?:RawTilePair[]};
@@ -295,11 +295,17 @@ export async function prepareNearbyOrdinaryBusQuery(
  return attachOrdinaryBusEvidence({...query,path:revised,rawEvidence:null,tileBinding:null},best,read,descriptors,signal);
 }
 
+/** Prefer the old rule. A typed no-route result may reuse the exact same pinned bytes with the new rule. */
+export function retryOrdinaryBusSharedSeam(query:OrdinaryBusQuery):OrdinaryBusQuery|undefined{
+ if(query.path.rule!=='ofm_ground_bus_rectangle_z14_v2'||query.path.fractionalTerminals)return;
+ return {...query,path:{...query.path,rule:'ofm_ground_bus_shared_seam_z14_v3'}};
+}
+
 /** Confirm reacquires the same pinned evidence, never a smaller control rectangle. */
 export async function reacquireNearbyOrdinaryBusQuery(
  query:OrdinaryBusQuery,snapshot:RoadSnapshot|undefined,read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal,
 ):Promise<OrdinaryBusQuery>{
- if(query.path.rule!=='ofm_ground_bus_rectangle_z14_v2')throw Error('経路の確認範囲が変わりました。');
+ if(query.path.rule==='ofm_ground_bus_z14_v1')throw Error('経路の確認範囲が変わりました。');
  const visible=tilesOf(snapshot).map(t=>t.binding);
  const refs=[query.path,...query.path.additionalTiles].map(proof=>{
   const matches=visible.filter(t=>territory(t)===proof.tileKey&&t.rawSha256===proof.tileRawSha256);
@@ -437,7 +443,7 @@ export function restoreOrdinaryBusControls(path:OrdinaryBusPath,result:OrdinaryB
   if(!m||!sha(rawSha256)||!validIdx(Number(m[2]))||!validIdx(Number(m[3])))throw Error('保存済みの道路を確認できません。');
   return {z:14,revision:m[1],x:Number(m[2]),y:Number(m[3]),rawSha256,decoderRule:OFM_EVIDENCE_RULE};
  };
- const records=[path,...(path.rule==='ofm_ground_bus_rectangle_z14_v2'?path.additionalTiles:[])];
+ const records=[path,...(path.rule!=='ofm_ground_bus_z14_v1'?path.additionalTiles:[])];
  const anchor=(key:string,raw:Vertex,point:GeoPoint):BusAnchor=>{
   const record=records.find(t=>t.tileKey===key);
   if(!record||!point)throw Error('保存済みの道路を確認できません。');
@@ -445,7 +451,7 @@ export function restoreOrdinaryBusControls(path:OrdinaryBusPath,result:OrdinaryB
  };
  const ids=new Set(path.via?.map(c=>c.id)??[]);
  const freshId=()=>{const id=`b-${crypto.randomUUID()}`;if(ids.has(id))throw Error('経由点の識別子が重なっています。');ids.add(id);return id;};
- const first=anchor(path.tileKey,path.start,result.points[0]),last=anchor(path.rule==='ofm_ground_bus_rectangle_z14_v2'?path.endTileKey:path.tileKey,path.end,result.points.at(-1)!);
+ const first=anchor(path.tileKey,path.start,result.points[0]),last=anchor(path.rule!=='ofm_ground_bus_z14_v1'?path.endTileKey:path.tileKey,path.end,result.points.at(-1)!);
  const controls=[{id:freshId(),anchor:first},...(path.via??[]).map((v,i)=>({id:v.id,anchor:anchor(v.tileKey,v.vertex,result.points[result.viaPointIndices?.[i]??-1])})),{id:freshId(),anchor:last}];
  const matched=matchOrdinaryBusPreview(result,first,last,path.pattern,controls.map(c=>c.anchor));
  if(!('preview' in matched))throw Error('保存済みのバス経路を確認できません。');
@@ -460,9 +466,9 @@ export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly Bus
  const [first,last]=[controls[0].anchor,controls.at(-1)!.anchor],previous=prior.path;
  const startKey=territory(first.tile);
  const newStart=startKey!==previous.tileKey;
- if((newStart&&(!allowStartRebind||previous.rule!=='ofm_ground_bus_rectangle_z14_v2'))||
+ if((newStart&&(!allowStartRebind||previous.rule==='ofm_ground_bus_z14_v1'))||
    (previous.pattern==='closedOneWay'?!sameRawAnchor(first,last):samePlace(first.point,last.point))||controls.some((c,i)=>i>0&&samePlace(controls[i-1].anchor.point,c.anchor.point)))return;
- const proof=[previous,...(previous.rule==='ofm_ground_bus_rectangle_z14_v2'?previous.additionalTiles:[])];
+ const proof=[previous,...(previous.rule!=='ofm_ground_bus_z14_v1'?previous.additionalTiles:[])];
  if(controls.some(c=>!proof.some(p=>p.tileKey===territory(c.anchor.tile)&&p.tileRawSha256===c.anchor.tile.rawSha256)))return;
  let cells:[number,number][];
  try{cells=ordinaryBusCells(first.tile,last.tile,controls.slice(1,-1).map(c=>c.anchor.tile));}
@@ -471,7 +477,7 @@ export function cachedBusHoverQuery(prior:OrdinaryBusQuery,controls:readonly Bus
  const {via:_,...base}=previous;
  const via=controls.slice(1,-1).map(({id,anchor})=>({id,tileKey:territory(anchor.tile),vertex:anchor.raw}));
  const path:OrdinaryBusPath={...base,start:first.raw,end:last.raw,...(via.length?{via}:{})};
- if(path.rule==='ofm_ground_bus_rectangle_z14_v2'){
+ if(path.rule!=='ofm_ground_bus_z14_v1'){
   path.endTileKey=territory(last.tile);
   if(newStart){
    path.tileKey=startKey;path.tileRawSha256=first.tile.rawSha256;

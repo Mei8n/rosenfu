@@ -9,6 +9,7 @@ pub use bus::{
     reconstruct_gameplay_bus_path, resolve_fractional_bus_traversal, AuthoredTramChainGuide,
     AuthoredTramGuide, BusGradePolicy, BusInteriorStop, BusPath, BusPathBinding, BusPattern,
     BusTileProof, BusVertex, BusVia, FractionalBusTraversal, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
+    BUS_SHARED_SEAM_RULE,
 };
 mod candidates;
 mod path;

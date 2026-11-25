@@ -4,13 +4,13 @@ import {createOrdinaryBusHover} from './ordinaryBusHover';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
-import {cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,reacquireNearbyOrdinaryBusQuery,restoreOrdinaryBusControls,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
+import {cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,reacquireNearbyOrdinaryBusQuery,restoreOrdinaryBusControls,retryOrdinaryBusSharedSeam,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
 import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type BusControlEnd,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
 type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean;nearby?:true};
 type DraftSpec={id:string;respectOneway:boolean;pattern?:OrdinaryBusPattern;gradePolicy?:OrdinaryBusGradePolicy;savedPath?:OrdinaryBusQuery['path']};
 type Input={
- active:boolean;allow:boolean;autoRoute:boolean;closedCapable?:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;descriptors:readonly unknown[];
+ active:boolean;allow:boolean;autoRoute:boolean;sharedSeam?:boolean;closedCapable?:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;descriptors:readonly unknown[];
  observe?:RouteTileObserver;read:BusEvidenceReader;token:()=>Promise<string>;
  preview:(query:OrdinaryBusPreviewQuery)=>Promise<OrdinaryBusPreviewReply>;commit:(query:OrdinaryBusQuery)=>Promise<unknown>;
 };
@@ -109,8 +109,9 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
   const expectedWorldToken=await src.token();
   if(signal.aborted)throw Error('経路の確認を中止しました。');
   if(cached&&cached.expectedWorldToken===expectedWorldToken)return {...cached,name};
-  return prepareOrdinaryBusQuery(controls[0].anchor,controls.at(-1)!.anchor,name,currentSpec.id,expectedWorldToken,
+  const query=await prepareOrdinaryBusQuery(controls[0].anchor,controls.at(-1)!.anchor,name,currentSpec.id,expectedWorldToken,
    src.read,src.descriptors,signal,src.observe,pattern,controls.slice(1,-1),currentSpec.respectOneway,currentSpec.savedPath?.interiorStops,currentSpec.gradePolicy);
+  return currentSpec.savedPath?.rule==='ofm_ground_bus_shared_seam_z14_v3'?retryOrdinaryBusSharedSeam(query)??query:query;
  }
  async function finish(f:NonNullable<Frame['finish']>){
   if(!canEdit()||!spec.current||frameRef.current?.finish!==f)return;
@@ -212,13 +213,29 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
     }
     let nearby:false|true=false;
     const src=latest.current.input;
+    if('refusedLeg' in matched&&!currentSpec.savedPath&&src.sharedSeam&&src.allow){
+     const retry=retryOrdinaryBusSharedSeam(query);
+     if(retry){
+      const alt=await queryNative(retry,()=>alive()&&latest.current.input.allow);
+      if(!alive()||!alt)return;
+      const checked=match(alt,controls,retry.path.pattern);
+      if('preview' in checked&&!checked.preview.returnUnavailableReason){matched=checked;query=retry;nearby=true;}
+     }
+    }
     if('refusedLeg' in matched&&!currentSpec.savedPath&&src.observe&&src.allow){
-     const extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,ctrl.signal);
+     let extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,ctrl.signal);
      if(!alive())return;
      if(extra){
-      const alt=await queryNative(extra,()=>alive()&&latest.current.input.allow);
-      if(!alive()||!alt)return;
-      const checked=match(alt,controls,extra.path.pattern);
+      const current=()=>alive()&&latest.current.input.allow;
+      const alt=await queryNative(extra,current);
+      if(!current()||!alt)return;
+      let checked=match(alt,controls,extra.path.pattern);
+      const retry='refusedLeg' in checked&&latest.current.input.sharedSeam?retryOrdinaryBusSharedSeam(extra):undefined;
+      if(retry){
+       const revised=await queryNative(retry,current);
+       if(!current()||!revised)return;
+       checked=match(revised,controls,retry.path.pattern);extra=retry;
+      }
       if('preview' in checked&&!checked.preview.returnUnavailableReason){matched=checked;query=extra;nearby=true;}
      }
     }
