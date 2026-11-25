@@ -2848,6 +2848,44 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
     let nearby = reconstruct_gameplay_bus_path(&store, &nearby_request).unwrap();
     assert!(nearby.is_none());
 
+    // The new rule is explicit; the existing save binding remains exact.
+    let mut shared_request = nearby_request.clone();
+    shared_request.rule = BUS_SHARED_SEAM_RULE.into();
+    let shared = reconstruct_gameplay_bus_path(&store, &shared_request)
+        .unwrap()
+        .unwrap();
+    assert_eq!(shared.binding, shared_request);
+    assert_eq!(shared.spans.len(), 2);
+    let east_key = &receipt.tiles_west_east[1].canonical_url;
+    let east_only = store.scope(std::slice::from_ref(east_key)).unwrap();
+    let existing = find_gameplay_bus_path(
+        &east_only,
+        east_key,
+        bus_vertex(0, 1),
+        bus_vertex(0, 2),
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(existing.points, shared.points[..2]);
+    assert_eq!(existing.spans[0].fragment_id, shared.spans[0].fragment_id);
+    let legacy_atom = existing.source_atom_id(0).unwrap();
+    let shared_atoms = [
+        shared.source_atom_id(0).unwrap(),
+        shared.source_atom_id(1).unwrap(),
+    ];
+    assert_eq!(legacy_atom, shared_atoms[0]);
+    assert_witnessed_dispatch_roundtrip(shared_atoms, vec![legacy_atom]);
+    let serialized = serde_json::to_vec(&shared_request).unwrap();
+    let replayed = serde_json::from_slice(&serialized).unwrap();
+    assert_eq!(
+        reconstruct_gameplay_bus_path(&store, &replayed).unwrap(),
+        Some(shared)
+    );
+    assert!(reconstruct_gameplay_bus_path(&store, &nearby_request)
+        .unwrap()
+        .is_none());
+
     // Changing just the buffered endpoint to the shared crossing segment
     // yields the exact-cut positive control, with the same owned terminals.
     let mut exact_east = east_points;
@@ -2938,6 +2976,11 @@ fn opt_in_westbound_seam_verifies_exact_shared_atom_and_rejects_ambiguity() {
     assert_eq!(verify(&store, &wrong), Err(Error::Binding));
     let (contested, receipt) = setup(&east_points, true);
     assert_eq!(verify(&contested, &receipt), Err(Error::Binding));
+    let mut denied = ordinary(&receipt.tiles_west_east);
+    denied.rule = BUS_SHARED_SEAM_RULE.into();
+    assert!(reconstruct_gameplay_bus_path(&contested, &denied)
+        .unwrap()
+        .is_none());
 }
 
 fn assert_witnessed_dispatch_roundtrip(seam_keys: [String; 2], legacy_keys: Vec<String>) {

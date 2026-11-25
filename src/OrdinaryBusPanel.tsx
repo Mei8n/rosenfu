@@ -5,12 +5,12 @@ import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadDataState,RoadSnapshot} from './automaticRoadData';
 import {OFM_EVIDENCE_LIMITS,OFM_LIMITS} from './openFreeMapRoadData';
-import {hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,ordinaryBusTileFootprint,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,snapOrdinaryBusSegment,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
+import {hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,ordinaryBusTileFootprint,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,retryOrdinaryBusSharedSeam,snapOrdinaryBusSegment,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
 
 type Route={id:string;name:string;pattern?:OrdinaryBusPattern;path?:OrdinaryBusPath};
-type Draft={id:string;respectOneway:boolean;fractional?:true;generalFractional?:true;savedInteriorStops?:BusInteriorStop[];pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
+type Draft={id:string;respectOneway:boolean;keepSharedSeam?:boolean;fractional?:true;generalFractional?:true;savedInteriorStops?:BusInteriorStop[];pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
 type Input={
- on:boolean;allow:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;
+ on:boolean;allow:boolean;sharedSeam?:boolean;scope:unknown;snapshot?:RoadSnapshot;loading:boolean;
  route?:Route;multiple:boolean;roundTrip:boolean;fractionalAvailable?:boolean;generalFractionalAvailable?:boolean;waypoints?:boolean;autoStopsAvailable?:boolean;closedCapable?:boolean;observedGrade?:boolean;conflictingGraph:boolean;descriptors:readonly unknown[];
  observe?:RouteTileObserver;read:BusEvidenceReader;token:()=>Promise<string>;
  preview:(query:OrdinaryBusPreviewQuery)=>Promise<OrdinaryBusPreviewReply>;
@@ -54,6 +54,7 @@ export function useOrdinaryBusDraft(input:Input){
   cancel();const spec={id:editing?.id??`bus:${crypto.randomUUID()}`,pattern,
    ...(fractional?{fractional:true as const}:{}),
    ...(generalFractional?{generalFractional:true as const,savedInteriorStops:editing?.path?.interiorStops}:{}),
+   keepSharedSeam:editing?.path?.rule==='ofm_ground_bus_shared_seam_z14_v3',
    respectOneway:editing?editing.path?.respectOneway??false:respectOneway};setDraft(spec);
   if(input.waypoints&&!fractional)waypoints.start({...spec,savedPath:editing?.path,
    gradePolicy:editing?editing.path?.gradePolicy:input.observedGrade?'observedConnectors':undefined});
@@ -91,10 +92,20 @@ export function useOrdinaryBusDraft(input:Input){
    let query=await prepareOrdinaryBusQuery(start,end,title,draft.id,token,input.read,input.descriptors,controller.signal,input.observe,draft.pattern,[],draft.respectOneway,draft.savedInteriorStops??[],undefined,!!draft.generalFractional);
    if(!alive())return;
    verifiedSource();
+   if(draft.keepSharedSeam)query=retryOrdinaryBusSharedSeam(query)??query;
    const result=await input.preview(query);
    if(!alive())return;
    verifiedSource();
    let matched=matchOrdinaryBusPreview(result,start,end,draft.pattern,[start,end]);
+   if('refusedLeg' in matched&&newRoute&&!draft.fractional&&current.current.sharedSeam&&current.current.allow){
+    const retry=retryOrdinaryBusSharedSeam(query);
+    if(retry){
+     const alt=await current.current.preview(retry);
+     if(!alive())return;
+     const checked=matchOrdinaryBusPreview(alt,start,end,draft.pattern,[start,end]);
+     if('preview' in checked&&!checked.preview.returnUnavailableReason){matched=checked;query=retry;}
+    }
+   }
    if('refusedLeg' in matched&&newRoute&&!draft.fractional&&current.current.observe&&current.current.allow){
     const src=current.current;
     const extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,controller.signal);

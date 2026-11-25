@@ -36,7 +36,7 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;savedOpenVia?:boolean;savedInterior?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean;nearbyDetour?:boolean;fractional?:boolean;generalFractional?:boolean;generalFractionalStops?:boolean}){
+async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;sharedSeam?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;savedOpenVia?:boolean;savedInterior?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean;nearbyDetour?:boolean;fractional?:boolean;generalFractional?:boolean;generalFractionalStops?:boolean}){
  const authored=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
   ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
  ]}]}:tile;
@@ -82,7 +82,7 @@ async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?
    bus_routes:[first,second,foreign,nonordinary]},
  }:undefined;
  vi.mocked(invoke).mockImplementation(async (command,args)=>{
-  if(command==='engine_info')return {version:'ordinary-test',road_transport_enabled:true,ordinary_ofm_bus_enabled:config.ordinary!==false,ordinary_ofm_bus_fractional_enabled:config.fractional===true,ordinary_ofm_bus_ground_fractional_enabled:config.generalFractional===true,ordinary_ofm_bus_ground_fractional_stops_enabled:config.generalFractionalStops===true,ordinary_ofm_bus_rectangle_enabled:config.rectangle===true,ordinary_ofm_bus_multiple_enabled:config.multiple===true,ordinary_ofm_bus_round_trip_enabled:config.roundTrip===true,ordinary_ofm_bus_waypoints_enabled:config.waypoints===true,ordinary_ofm_bus_interior_stops_enabled:config.interiorStops===true,ordinary_ofm_bus_auto_stops_enabled:config.autoStops===true,ordinary_ofm_bus_closed_loop_enabled:config.closed===true,ordinary_ofm_bus_observed_grade_enabled:config.observedGrade===true,operation_enabled:config.operation===true,bus_operation_enabled:config.operation===true};
+  if(command==='engine_info')return {version:'ordinary-test',road_transport_enabled:true,ordinary_ofm_bus_enabled:config.ordinary!==false,ordinary_ofm_bus_fractional_enabled:config.fractional===true,ordinary_ofm_bus_ground_fractional_enabled:config.generalFractional===true,ordinary_ofm_bus_ground_fractional_stops_enabled:config.generalFractionalStops===true,ordinary_ofm_bus_rectangle_enabled:config.rectangle===true,ordinary_ofm_bus_shared_seam_enabled:config.sharedSeam===true,ordinary_ofm_bus_multiple_enabled:config.multiple===true,ordinary_ofm_bus_round_trip_enabled:config.roundTrip===true,ordinary_ofm_bus_waypoints_enabled:config.waypoints===true,ordinary_ofm_bus_interior_stops_enabled:config.interiorStops===true,ordinary_ofm_bus_auto_stops_enabled:config.autoStops===true,ordinary_ofm_bus_closed_loop_enabled:config.closed===true,ordinary_ofm_bus_observed_grade_enabled:config.observedGrade===true,operation_enabled:config.operation===true,bus_operation_enabled:config.operation===true};
   if(command==='ofm_world_token')return 'world-exact';
   if(command==='operation_snapshot')return {now_ms:0,paused:true,speed:1,invalidated:false,catching_up:false,
     timetable_edit_token:'fixture-operation-token',services:[],trains:[],bus_services:[]};
@@ -165,6 +165,22 @@ test.each([false,true])('a same-cell detour uses exact neighboring evidence thro
   expectedWorldToken:'world-exact',path:expect.objectContaining(proof),
   contextTiles:expect.arrayContaining([expect.objectContaining({tileBinding:expect.objectContaining({rawSha256:leftRaw})})]),
  })));
+});
+test.each([false,true])('a blocked exact seam can confirm the new rule with unchanged pins (waypoints: %s)',async waypoints=>{
+ const preview=vi.fn(async (args?:unknown)=>{
+  const {path}=(args as {path:{rule:string}});
+  return path.rule==='ofm_ground_bus_rectangle_z14_v2'?{points:[],lengthM:0,failedLegIndex:0}:{points:[left,a,b],lengthM:801};
+ });
+ const map=(await setup({preview,rectangle:true,sharedSeam:true,waypoints}))!;
+ map.pressPoint(left);map.pressPoint(b);
+ await screen.findByText('道路経路 801 m・停留所2か所');
+ expect(preview).toHaveBeenCalledTimes(2);
+ const initial=preview.mock.calls[0][0] as {path:{rule:string}};
+ const accepted={...initial,path:{...initial.path,rule:'ofm_ground_bus_shared_seam_z14_v3'}};
+ expect(initial.path.rule).toBe('ofm_ground_bus_rectangle_z14_v2');
+ expect(preview.mock.calls[1][0]).toEqual(accepted);
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining(accepted)));
 });
 test('no path is not drawn as a straight fallback and can be cancelled',async()=>{
  const map=(await setup({preview:async()=>{throw '道路経路を確認できませんでした。';}}))!;

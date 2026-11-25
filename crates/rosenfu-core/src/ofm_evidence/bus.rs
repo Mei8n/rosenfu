@@ -15,6 +15,7 @@ pub use fractional::{resolve_fractional_bus_traversal, FractionalBusTraversal};
 
 pub const BUS_GRAPH_RULE: &str = "ofm_ground_bus_z14_v1";
 pub const BUS_RECTANGLE_RULE: &str = "ofm_ground_bus_rectangle_z14_v2";
+pub const BUS_SHARED_SEAM_RULE: &str = "ofm_ground_bus_shared_seam_z14_v3";
 const MAX_GRAPH_POINTS: usize = 100_000;
 const MAX_VIAS: usize = 30;
 const MAX_MULTI_RELAXATIONS: usize = 1_000_000;
@@ -479,6 +480,71 @@ struct Line<'a> {
     grade: Grade,
     ports: BTreeMap<usize, Vec<Port>>,
 }
+/// Permit only a reciprocal candidate sharing the same unique supplier ID,
+/// source tags, and a complete adjacent directed atom in the common buffer.
+fn same_buffered_road(
+    store: &EvidenceStore,
+    low: &Line<'_>,
+    high: &Line<'_>,
+    axis: usize,
+    a: &Cut,
+    b: &Cut,
+) -> Result<bool> {
+    let Some(id) = low.raw.raw_feature_id else {
+        return Ok(false);
+    };
+    if high.raw.raw_feature_id != Some(id)
+        || low.raw.extent != 4096
+        || high.raw.extent != low.raw.extent
+        || !low.grade.is_ground()
+        || low.raw.attributes != high.raw.attributes
+        || ["access", "brunnel", "layer"]
+            .iter()
+            .any(|key| low.raw.attributes.contains_key(*key))
+        || store
+            .decoded(&low.tile.canonical_url)?
+            .unique_raw_road_line(id)
+            != Some(low.raw)
+        || store
+            .decoded(&high.tile.canonical_url)?
+            .unique_raw_road_line(id)
+            != Some(high.raw)
+    {
+        return Ok(false);
+    }
+    let av = &low.raw.coordinates;
+    let bv = &high.raw.coordinates;
+    let start = |p: &[[i32; 2]], cut: &Cut| p[cut.segment][axis] < p[cut.segment + 1][axis];
+    if start(av, a) != start(bv, b)
+        || a.fraction.0 == 0
+        || a.fraction.0 == a.fraction.1
+        || b.fraction.0 == 0
+        || b.fraction.0 == b.fraction.1
+    {
+        return Ok(false);
+    }
+    let diff = (u128::from(a.orthogonal.0) * u128::from(b.orthogonal.1))
+        .abs_diff(u128::from(b.orthogonal.0) * u128::from(a.orthogonal.1));
+    if 10 * diff > u128::from(a.orthogonal.1) * u128::from(b.orthogonal.1) {
+        return Ok(false);
+    }
+    let offset = low.raw.extent as i32;
+    let shared = |i: Option<usize>, j: Option<usize>| {
+        let (Some(i), Some(j)) = (i, j) else {
+            return false;
+        };
+        let (Some(ap), Some(bp)) = (av.get(i..i + 2), bv.get(j..j + 2)) else {
+            return false;
+        };
+        ap[0] != ap[1]
+            && ap.iter().zip(bp).all(|(x, y)| {
+                x[axis] - offset == y[axis] && x[1 - axis] == y[1 - axis]
+            })
+    };
+    Ok(shared(a.segment.checked_sub(1), b.segment.checked_sub(1))
+        || shared(Some(a.segment + 1), Some(b.segment + 1)))
+}
+
 type Groups = BTreeMap<(Cell, [i32; 2]), Vec<(usize, usize, bool)>>;
 
 impl BusPathBinding {
@@ -523,7 +589,7 @@ impl BusPathBinding {
     pub(crate) fn tile_keys(&self) -> Result<Vec<String>> {
         match self.rule.as_str() {
             BUS_GRAPH_RULE if self.additional_tiles.is_empty() && self.end_tile_key.is_none() => {}
-            BUS_RECTANGLE_RULE
+            BUS_RECTANGLE_RULE | BUS_SHARED_SEAM_RULE
                 if !self.additional_tiles.is_empty()
                     && self.additional_tiles.len() < MAX_TILES
                     && self.end_tile_key.as_ref().is_some_and(|end| {
@@ -747,9 +813,14 @@ fn build_observed_road_graph(
     {
         return Err(Error::Binding);
     }
+    let shared_seam = query.rule == BUS_SHARED_SEAM_RULE;
+    let rectangular = query.rule == BUS_RECTANGLE_RULE || shared_seam;
+    if shared_seam && authored_tram_guide {
+        return Err(Error::Unsupported);
+    }
     let mut extents = tiles.iter().flat_map(|t| t.lines.iter()).map(|l| l.extent);
     if let Some(first) = extents.next() {
-        if query.rule == BUS_RECTANGLE_RULE && extents.any(|extent| extent != first) {
+        if rectangular && extents.any(|extent| extent != first) {
             return Err(Error::Unsupported);
         }
     }
@@ -911,7 +982,7 @@ fn build_observed_road_graph(
     }
 
     let mut forward_seams = BTreeMap::new();
-    if query.rule == BUS_RECTANGLE_RULE {
+    if rectangular {
         let coords: Vec<_> = cells.iter().map(|c| (c.0, c.1)).collect();
         let seams = if authored_tram_guide {
             super::candidates::boundary_candidates_for_tram(store, &coords)?
@@ -953,7 +1024,13 @@ fn build_observed_road_graph(
             ) else {
                 continue;
             };
-            if a_cut.orthogonal.less(b_cut.orthogonal) || b_cut.orthogonal.less(a_cut.orthogonal) {
+            let exact = !a_cut.orthogonal.less(b_cut.orthogonal)
+                && !b_cut.orthogonal.less(a_cut.orthogonal);
+            if !exact
+                && (!shared_seam
+                    || seam.max_separation_meters > 0.05
+                    || !same_buffered_road(store, a_line, b_line, axis, &a_cut, &b_cut)?)
+            {
                 continue;
             }
             let extent = a_line.raw.extent;
