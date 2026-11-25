@@ -1213,3 +1213,35 @@ test('committed bus creation and removal share chronological undo and redo with 
  await step(true,['既存 A','既存 B','バス系統'],'新会社');
  await step(true,['既存 A','バス系統'],'新会社');
 });
+
+test.each([false,true])('confirm re-observes a panned-away shared seam cell only at its exact preview SHA (bytes changed: %s)',async changed=>{
+ const preview=vi.fn(async (args?:unknown)=>{
+  const {path}=(args as {path:{rule:string}});
+  return path.rule==='ofm_ground_bus_rectangle_z14_v2'?
+   {points:[],lengthM:0,failedLegIndex:0}:{points:[left,a,b],lengthM:801};
+ });
+ const map=(await setup({preview,rectangle:true,sharedSeam:true,waypoints:true}))!;
+ map.pressPoint(left);map.pressPoint(b);
+ await screen.findByText('道路経路 801 m・停留所2か所');
+ const approved=preview.mock.calls[1][0];
+ const ret=await observe.getMockImplementation()!();
+ const west=ret[0];
+ expect(west.rawSha256).toBe(leftRaw);
+ observe.mockClear();
+ read.mockClear();
+ observe.mockResolvedValueOnce([{...west,rawSha256:changed?'9'.repeat(64):leftRaw}]);
+ // Simulate the new viewport snapshot containing only the eastern cell.
+ snapshots=[tile];
+ fireEvent.change(screen.getByRole('textbox',{name:'バス系統名'}),{target:{value:'東西バス'}});
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ if(changed){
+  await screen.findByText('道路の元データが変わりました。位置を選び直してください。');
+  expect(read).not.toHaveBeenCalled();
+  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ }else{
+  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({...approved as object,name:'東西バス'})));
+  expect(read).toHaveBeenCalledTimes(1);
+ }
+ expect(observe).toHaveBeenCalledExactlyOnceWith([[14551,6452]],'r1',expect.any(AbortSignal));
+ expect(preview).toHaveBeenCalledTimes(2);
+});

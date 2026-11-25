@@ -301,17 +301,38 @@ export function retryOrdinaryBusSharedSeam(query:OrdinaryBusQuery):OrdinaryBusQu
  return {...query,path:{...query.path,rule:'ofm_ground_bus_shared_seam_z14_v3'}};
 }
 
-/** Confirm reacquires the same pinned evidence, never a smaller control rectangle. */
+/** Confirm reacquires only the exact proofs checked by the preview, not a
+ * rectangle derived from the camera. It may re-observe a panned-away cell,
+ * but only through the same observed revision and with the same byte hash. */
 export async function reacquireNearbyOrdinaryBusQuery(
- query:OrdinaryBusQuery,snapshot:RoadSnapshot|undefined,read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal,
+ query:OrdinaryBusQuery,snapshot:RoadSnapshot|undefined,read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal,observe?:RouteTileObserver,
 ):Promise<OrdinaryBusQuery>{
  if(query.path.rule==='ofm_ground_bus_z14_v1')throw Error('経路の確認範囲が変わりました。');
- const visible=tilesOf(snapshot).map(t=>t.binding);
- const refs=[query.path,...query.path.additionalTiles].map(proof=>{
-  const matches=visible.filter(t=>territory(t)===proof.tileKey&&t.rawSha256===proof.tileRawSha256);
-  if(matches.length!==1)throw Error('道路の元データが変わりました。位置を選び直してください。');
-  return matches[0];
+ const changed=()=>Error('道路の元データが変わりました。位置を選び直してください。');
+ const proofs=[query.path,...query.path.additionalTiles];
+ if(proofs.length>OFM_EVIDENCE_LIMITS.batchTiles||new Set(proofs.map(p=>p.tileKey)).size!==proofs.length)throw changed();
+ const refs=proofs.map(proof=>{
+  const match=proof.tileKey.match(/^https:\/\/tiles\.openfreemap\.org\/planet\/([A-Za-z0-9_]{1,64})\/14\/(\d{1,5})\/(\d{1,5})\.pbf$/);
+  if(!match||!validIdx(Number(match[2]))||!validIdx(Number(match[3]))||!sha(proof.tileRawSha256))throw changed();
+  const ref:OpenFreeMapEvidenceRequest={revision:match[1],z:14,x:Number(match[2]),y:Number(match[3]),rawSha256:proof.tileRawSha256,decoderRule:OFM_EVIDENCE_RULE};
+  if(territory(ref)!==proof.tileKey)throw changed();
+  return ref;
  });
+ const revision=refs[0].revision;
+ if(signal?.aborted||refs.some(ref=>ref.revision!==revision))throw changed();
+ const visible=tilesOf(snapshot).map(t=>t.binding);
+ const missing=refs.filter(ref=>{
+  const sameCell=visible.filter(t=>territory(t)===territory(ref));
+  if(sameCell.length>1||sameCell.length===1&&!sameTile(ref,sameCell[0]))throw changed();
+  return sameCell.length===0;
+ });
+ if(missing.length){
+  if(!observe)throw changed();
+  let observed:OpenFreeMapEvidenceRequest[];
+  try{observed=await observe(missing.map(({x,y})=>[x,y]),revision,signal);}
+  catch{throw changed();}
+  if(signal?.aborted||observed.length!==missing.length||missing.some(ref=>observed.filter(t=>t.z===14&&t.decoderRule===OFM_EVIDENCE_RULE&&sameTile(t,ref)).length!==1))throw changed();
+ }
  return attachOrdinaryBusEvidence(query,refs,read,descriptors,signal);
 }
 export async function readObservedRoadTilePairs(refs:OpenFreeMapEvidenceRequest[],read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal):Promise<RawTilePair[]>{
