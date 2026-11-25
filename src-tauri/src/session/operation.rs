@@ -853,6 +853,7 @@ impl WorldEditor {
                 headway_seconds: l.headway_seconds,
             })
             .collect::<Vec<_>>();
+        walks.extend(self.world.snapshot().fixed_od_station_walks());
         walks.extend(bus_transfers::coincident_ordinary_bus_walks(
             self.world.snapshot(),
             &legs,
@@ -1109,6 +1110,145 @@ mod tests {
         .unwrap();
         e
     }
+    #[test]
+    fn authored_station_walks_are_directional_and_survive_save_and_undo_without_merging() {
+        use rosenfu_core::world::RouteSegment;
+        let mut editor = editor();
+        let draft = editor.snapshot();
+        let (a, b) = (draft.stations[0].id, draft.stations[1].id);
+        let owner = editor.company;
+        let alignment = editor
+            .world
+            .build_alignment(
+                owner,
+                "line 2".into(),
+                vec![
+                    GeoPoint {
+                        latitude: 35.0,
+                        longitude: 139.02,
+                    },
+                    GeoPoint {
+                        latitude: 35.0,
+                        longitude: 139.04,
+                    },
+                ],
+            )
+            .unwrap();
+        let c = editor
+            .world
+            .place_station_on_alignment(owner, "淡路町".into(), alignment, 0.1, 100.0, 10.0)
+            .unwrap();
+        let d = editor
+            .world
+            .place_station_on_alignment(owner, "D".into(), alignment, 0.9, 100.0, 10.0)
+            .unwrap();
+        let segments = vec![RouteSegment::Alignment {
+            alignment_id: alignment,
+            from: c,
+            to: d,
+        }];
+        let stops = editor
+            .world
+            .preview_service_path(c, segments.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.reference)
+            .collect();
+        let service = editor
+            .world
+            .add_service_path(owner, "2".into(), c, segments, stops)
+            .unwrap();
+        editor
+            .configure_operation_service(
+                service,
+                Timetable {
+                    first_departure_ms: 0,
+                    last_departure_ms: 60_000,
+                    headway_ms: 60_000,
+                },
+                Vehicle {
+                    max_speed_kmh: 100.0,
+                    acceleration_mps2: 1.0,
+                    braking_mps2: 1.0,
+                    length_m: 80.0,
+                },
+                30_000,
+                &editor.operation_edit_token(),
+            )
+            .unwrap();
+        let nearby = editor
+            .world
+            .add_station(owner, "まだ未接続の駅".into(), 35.0, 139.02)
+            .unwrap();
+        let preview = |e: &WorldEditor, from: StationId, to: StationId| {
+            e.preview_fixed_od(from.0.to_string(), to.0.to_string(), Some(100.0), None)
+                .unwrap()
+        };
+        assert!(preview(&editor, a, d).rail.is_empty());
+        let before = editor.snapshot();
+        let legacy = rosenfu_storage::encode(&editor.world).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&legacy).unwrap();
+        assert!(json["world"].get("station_walk_links").is_none());
+        assert!(rosenfu_storage::decode(&legacy)
+            .unwrap()
+            .snapshot()
+            .station_walk_links
+            .is_empty());
+        assert!(editor
+            .edit_station_walk_link(a, d, Some(180), false)
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        editor
+            .edit_station_walk_link(b, c, Some(180), false)
+            .unwrap();
+        let linked = editor.snapshot();
+        let route = preview(&editor, a, d).rail.remove(0);
+        assert_eq!(route.time.walk_seconds, 180.0);
+        assert_eq!(route.time.wait_seconds, 60.0);
+        assert_eq!(route.time.transfers, 1);
+        assert_eq!(route.trips, 100.0);
+        let walks: Vec<_> = linked.fixed_od_station_walks().collect();
+        assert_eq!(walks.len(), 1);
+        assert_eq!(
+            (walks[0].from.clone(), walks[0].to.clone()),
+            (b.0.to_string(), c.0.to_string())
+        );
+        assert_eq!(linked.stations, before.stations);
+        assert_eq!(linked.station_groups, before.station_groups);
+        assert!(editor
+            .edit_station_walk_link(b, c, Some(180), true)
+            .is_err());
+        assert_eq!(editor.snapshot(), linked);
+        editor.undo_world_edit(linked.clone()).unwrap();
+        assert!(preview(&editor, a, d).rail.is_empty());
+        editor.redo_world_edit(editor.snapshot()).unwrap();
+        assert_eq!(preview(&editor, a, d).rail[0].time.walk_seconds, 180.0);
+        let bytes = rosenfu_storage::encode(&editor.world).unwrap();
+        let reopened = rosenfu_storage::decode(&bytes).unwrap();
+        assert_eq!(reopened.snapshot().stations, linked.stations);
+        assert_eq!(
+            reopened.snapshot().station_walk_links,
+            linked.station_walk_links
+        );
+        editor.world = reopened;
+        assert_eq!(preview(&editor, a, d).rail[0].time.walk_seconds, 180.0);
+        assert!(editor.delete_station(b).is_err());
+        editor.edit_station_walk_link(b, c, None, false).unwrap();
+        assert!(preview(&editor, a, d).rail.is_empty());
+        assert_eq!(editor.snapshot().stations, before.stations);
+        editor
+            .edit_station_walk_link(b, nearby, Some(60), false)
+            .unwrap();
+        assert!(preview(&editor, a, d).rail.is_empty());
+        editor
+            .edit_station_walk_link(nearby, c, Some(180), false)
+            .unwrap();
+        let route = preview(&editor, a, d).rail.remove(0);
+        assert_eq!(route.time.walk_seconds, 240.0);
+        assert_eq!(route.time.transfers, 1);
+    }
+
     #[cfg(feature = "standard-periodic-rail")]
     #[test]
     fn standard_rail_can_arm_before_the_first_run_without_retroactive_departures() {

@@ -40,6 +40,10 @@ const FRACTIONAL_BUS_SCHEMA: u64 = 34;
 // One combined envelope. New profiles require independently admitted
 // payload capabilities; the label never enables gameplay by itself.
 const COMBINED_CAPABILITIES_SCHEMA: u64 = 35;
+// Reserved, not readable/writable yet. Detect its route field even if a
+// newer document is mislabeled, so recovery cannot overwrite asserted proof.
+const INSTALLED_SEAM_BUS_SCHEMA: u64 = 36;
+const INSTALLED_SEAM_BUS_ROUTES: &str = "ofm_installed_seam_bus_routes";
 const FRACTIONAL_BUS_STREET_TRAM_PROFILE: &[&str] = &[
     "fractional_bus_same_ground_atom_v1",
     "street_tram_single_cell_v1",
@@ -689,6 +693,9 @@ fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
         .ok_or(StorageError::InvalidHeader)?;
     if version != 26 && !current_wire_schema(version) {
         return Err(StorageError::UnsupportedVersion(version));
+    }
+    if value["world"].get(INSTALLED_SEAM_BUS_ROUTES).is_some() {
+        return Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA));
     }
     // Combined files must use the exact typed grammar. If this parser is
     // reached, the label or declaration was attached to malformed typed
@@ -1466,6 +1473,42 @@ mod tests {
             decode(&serde_json::to_vec(&altered).unwrap()),
             Err(StorageError::UnsupportedVersion(FRACTIONAL_BUS_SCHEMA))
         ));
+    }
+
+    #[test]
+    fn installed_seam_bus_recipe_is_not_repairable_under_any_old_header() {
+        let world = World::default();
+        let baseline = encode(&world).unwrap();
+        assert_eq!(encode(&decode(&baseline).unwrap()).unwrap(), baseline);
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("seam-world.json");
+        let mut wire: serde_json::Value = serde_json::from_slice(&baseline).unwrap();
+        for schema in [
+            26,
+            SCHEMA_VERSION,
+            COMBINED_CAPABILITIES_SCHEMA,
+            INSTALLED_SEAM_BUS_SCHEMA,
+        ] {
+            wire["schema_version"] = schema.into();
+            for routes in [
+                serde_json::json!({"B":{"version":1,"catalogKey":"example"}}),
+                serde_json::Value::Null,
+            ] {
+                wire["world"][INSTALLED_SEAM_BUS_ROUTES] = routes;
+                let bytes = serde_json::to_vec(&wire).unwrap();
+                assert!(matches!(
+                    decode(&bytes),
+                    Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))
+                ));
+                std::fs::write(&path, &bytes).unwrap();
+                assert!(matches!(
+                    save_world(&path, &world),
+                    Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))
+                ));
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                assert!(!backup_path(&path).exists());
+            }
+        }
     }
 
     #[test]

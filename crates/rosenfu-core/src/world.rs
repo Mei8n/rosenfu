@@ -116,6 +116,8 @@ pub struct WorldDraft {
     pub road_snapshots: Vec<RoadSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub station_groups: Vec<StationGroup>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub station_walk_links: Vec<StationWalkLink>,
     /// Explicit infrastructure endpoint links, including supported three-port turnouts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alignment_connections: Vec<AlignmentConnection>,
@@ -173,6 +175,7 @@ impl Default for WorldDraft {
             road_evidence_descriptors: vec![],
             road_snapshots: vec![],
             station_groups: vec![],
+            station_walk_links: vec![],
             alignment_connections: vec![],
             view_state: None,
             construction_plans: None,
@@ -223,6 +226,7 @@ pub enum WorldError {
     StationOnGradient,
     StationFootprintOverlap,
     InvalidStationGroup,
+    InvalidStationWalkLink,
     SelfLoop,
     EmptyRoute,
     DisconnectedRoute,
@@ -235,6 +239,9 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::InvalidStationWalkLink) {
+            return write!(f, "徒歩連絡は自社の別々の駅間（直線1 km以内・1〜60分）に、同じ方向を重複せず設定してください。");
+        }
         if matches!(self, Self::InvalidRoadTransport) {
             return write!(f,"道路交通の参照が不整合です。併用軌道の関連付けを外してから線路を延伸・変更・撤去してください。");
         }
@@ -501,6 +508,7 @@ impl WorldDraft {
             .validate_world(self)
             .map_err(|_| WorldError::InvalidRoadTransport)?;
         self.validate_station_groups()?;
+        self.validate_station_walk_links()?;
         self.validate_alignment_connections()?;
         let maximum_id = self
             .players
@@ -795,7 +803,9 @@ mod construction_plans;
 pub use construction_plans::{ConstructionJunctionSource, ConstructionPlans};
 
 mod station_groups;
+mod station_walk_links;
 pub use station_groups::StationGroup;
+pub use station_walk_links::StationWalkLink;
 
 mod service_route_bindings;
 pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};

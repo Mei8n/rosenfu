@@ -491,6 +491,20 @@ async fn redo_world_edit(
     run_demolition(app, move |editor| editor.redo_world_edit(expected_world)).await
 }
 #[tauri::command]
+async fn edit_station_walk_link(
+    app: tauri::AppHandle,
+    from: StationId,
+    to: StationId,
+    seconds: Option<u16>,
+    both_directions: bool,
+) -> Result<WorldDraft, String> {
+    run_demolition(app, move |editor| {
+        editor.edit_station_walk_link(from, to, seconds, both_directions)
+    })
+    .await
+}
+
+#[tauri::command]
 fn rename_station(
     editor: State<'_, Mutex<WorldEditor>>,
     station_id: StationId,
@@ -1015,6 +1029,7 @@ fn main() {
             undo_world_edit,
             redo_world_edit,
             rename_station,
+            edit_station_walk_link,
             set_service_color,
             set_service_appearance,
             duplicate_service,
