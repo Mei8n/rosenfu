@@ -1085,3 +1085,69 @@ test('fractional Bus stop editor keeps the exact source cut while publishing onl
   {name:'停留所 1',occurrenceKey:keys[0],fractionQ:625_000},
  ]}});
 });
+
+test('committed bus creation and removal share chronological undo and redo with company edits',async()=>{
+ const map=(await setup({multiple:true,autoStart:false,preview:async()=>({points:[a,bend,b],lengthM:400})}))!;
+ type Snapshot=typeof world & {ofm_gameplay_bus_routes?:Record<string,unknown>;road_transport?:{bus_routes:{id:string;name:string}[]}};
+ const mock=vi.mocked(invoke);
+ const original=mock.getMockImplementation()!;
+ let current=await original('world_snapshot') as Snapshot;
+ const undo:Snapshot[]=[],redo:Snapshot[]=[];
+ const commit=(snapshot:Snapshot)=>{
+  undo.push(current);redo.length=0;current=snapshot;return current;
+ };
+ mock.mockImplementation(async (command,args)=>{
+  if(command==='rename_company'){
+   const {name}=args as {name:string};
+   return commit({...current,companies:[{...current.companies[0],name}]});
+  }
+  if(command==='put_gameplay_ofm_bus'){
+   return commit({...await original(command,args) as Snapshot,companies:current.companies});
+  }
+  if(command==='remove_gameplay_ofm_bus'){
+   const {routeId}=args as {routeId:string};
+   return commit({...current,ofm_gameplay_bus_routes:Object.fromEntries(Object.entries(current.ofm_gameplay_bus_routes??{}).filter(([id])=>id!==routeId)),
+    road_transport:{...current.road_transport,bus_routes:current.road_transport!.bus_routes.filter(route=>route.id!==routeId)}});
+  }
+  if(command==='undo_world_edit'||command==='redo_world_edit'){
+   const {expectedWorld}=args as {expectedWorld:Snapshot};
+   expect(expectedWorld.companies).toEqual(current.companies);
+   expect(expectedWorld.road_transport).toEqual(current.road_transport);
+   const forward=command==='redo_world_edit',target=(forward?redo:undo).pop();
+   if(!target)throw Error('missing native history');
+   (forward?undo:redo).push(current);current=target;return current;
+  }
+  return original(command,args);
+ });
+ fireEvent.click(screen.getByRole('tab',{name:'設定'}));
+ fireEvent.change(screen.getByLabelText('会社名'),{target:{value:'新会社'}});
+ fireEvent.click(screen.getByRole('button',{name:'設定変更'}));
+ await screen.findByText('会社名を変更しました。');
+ fireEvent.click(screen.getByRole('tab',{name:'建設'}));
+ fireEvent.click(screen.getByRole('tab',{name:'バス'}));
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
+ map.from();map.to();
+ fireEvent.click(await screen.findByRole('button',{name:'バス系統を確定'}));
+ const routeNames=()=>Array.from(screen.getByRole<HTMLSelectElement>('combobox',{name:'表示するバス系統'}).options,option=>option.text);
+ await waitFor(()=>expect(routeNames()).toEqual(['既存 A','既存 B','バス系統']));
+ fireEvent.change(screen.getByRole('combobox',{name:'表示するバス系統'}),{target:{value:'owned-b'}});
+ fireEvent.click(screen.getByRole('button',{name:'系統を削除'}));
+ fireEvent.click(screen.getByRole('button',{name:'削除を確定'}));
+ await waitFor(()=>expect(routeNames()).toEqual(['既存 A','バス系統']));
+ async function step(forward:boolean,names:string[],company:string){
+  const command=forward?'redo_world_edit':'undo_world_edit';
+  const calls=mock.mock.calls.filter(([name])=>name===command).length;
+  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:forward});
+  await waitFor(()=>{
+   expect(mock.mock.calls.filter(([name])=>name===command)).toHaveLength(calls+1);
+   expect(routeNames()).toEqual(names);
+   expect((document.querySelector('#company-name') as HTMLInputElement).value).toBe(company);
+  });
+ }
+ await step(false,['既存 A','既存 B','バス系統'],'新会社');
+ await step(false,['既存 A','既存 B'],'新会社');
+ await step(false,['既存 A','既存 B'],'C');
+ await step(true,['既存 A','既存 B'],'新会社');
+ await step(true,['既存 A','既存 B','バス系統'],'新会社');
+ await step(true,['既存 A','バス系統'],'新会社');
+});
