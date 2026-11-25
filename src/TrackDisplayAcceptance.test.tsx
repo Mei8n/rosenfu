@@ -109,3 +109,65 @@ test('junction selection follows the map dismissal controls but survives a drag'
  fireEvent.click(map);
  expect(hasSelection()).toBe(false);
 });
+
+test('route and service tabs project only visible service chains, preserving a stitched pair across a pan',async()=>{
+ const p=(longitude:number,latitude=35.67504)=>({latitude,longitude});
+ const line=(id:string,points:ReturnType<typeof p>[])=>({id,points,owner:'2',name:id});
+ const local=line('local',[p(139.76),p(139.77)]);
+ const west=line('chain-west',[p(139.40),p(139.90)]);
+ const east=line('chain-east',[p(139.90),p(140.30)]);
+ const next=line('new-area',[p(140.10),p(140.15)]);
+ const distant=Array.from({length:600},(_,i)=>line('distant-'+i,[p(141.3,43.1),p(141.31,43.1)]));
+ const alignments=[local,west,east,next,...distant];
+ const join={a:{alignment_id:west.id,endpoint:'end' as const},b:{alignment_id:east.id,endpoint:'start' as const}};
+ const used=[local,west,next,...distant];
+ const pairs=used.map(alignment=>[alignment.id+'-from',alignment.id+'-to']);
+ const station_placements=used.flatMap((alignment,i)=>[
+  {station_id:pairs[i][0],alignment_id:alignment.id,position:0.01},
+  {station_id:pairs[i][1],alignment_id:alignment===west?east.id:alignment.id,position:0.99},
+ ]);
+ const services=used.map((alignment,i)=>({id:String(i+10),owner:'2',name:alignment.id,start:pairs[i][0]}));
+ services.push({...services[1],id:'1000',name:'second chain service'});
+ const service_paths=services.map((service,i)=>{
+  const [from,to]=i<used.length?pairs[i]:pairs[1];
+  const segment=service.start===pairs[1][0]?{kind:'connected_alignments',from,to,connections:[join]}:
+   {kind:'alignment',alignment_id:used[i].id,from,to};
+  return {service_id:service.id,next_leg_key:'2',legs:[{key:'1',segment}],stops:[{kind:'start'},{kind:'on_leg',leg_key:'1',station_id:to}]};
+ });
+ const world={next_id:'9999',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],tracks:[],routes:[],services,service_paths,alignments,station_placements,alignment_connections:[join],
+  service_appearances:[{service_id:'11',color:'#aa0000'},{service_id:'1000',color:'#00bb00'}]};
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'service-viewport-test'};
+  if(command==='list_save_slots')return {active_slot_id:'test',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='water_mask_requests')return [];
+  if(command==='preview_track_render_geometry')return {lanes:[],movements:[]};
+  return world;
+ });
+ render(<App/>);await screen.findByText(/service-viewport-test/);
+ const map=screen.getByRole('img',{name:'駅配置用OpenStreetMap'});
+ const sections=()=>[...map.querySelectorAll('.service-map-section')];
+ const ids=()=>sections().map(el=>el.getAttribute('data-alignment-id'));
+ expect(ids()).toEqual([]);
+ fireEvent.click(screen.getByRole('tab',{name:'系統'}));
+ expect(sections()).toHaveLength(2);
+ expect(ids()).toEqual(['local','chain-west']);
+ const stitched=sections()[1];
+ const stripes=()=>[...stitched.querySelectorAll('[data-service-id]')];
+ expect(stripes().map(el=>el.getAttribute('stroke'))).toEqual(['#aa0000','#00bb00']);
+ expect(stitched.querySelector('title')?.textContent).toBe('chain-west / second chain service');
+ // Both outer endpoints are off screen, and the internal join must remain a
+ // single middle vertex on both bands rather than producing separate caps.
+ expect(stripes().map(el=>el.getAttribute('d')?.match(/L/g)?.length)).toEqual([2,2]);
+ const initialPath=stripes()[0].getAttribute('d');
+ panMap(730);
+ await waitFor(()=>expect(ids()).toEqual(['chain-west','new-area']));
+ expect(sections()[0]).toBe(stitched);
+ expect(stripes()[0].getAttribute('d')).not.toBe(initialPath);
+ expect(stripes()[0].getAttribute('d')?.match(/L/g)).toHaveLength(2);
+ fireEvent.click(screen.getByRole('tab',{name:'路線'}));
+ expect(ids()).toEqual(['chain-west','new-area']);
+ expect(sections()[0]).toBe(stitched);
+ expect(world.services).toHaveLength(604);
+});
