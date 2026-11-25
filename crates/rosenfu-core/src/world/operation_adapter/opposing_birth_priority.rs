@@ -12,21 +12,27 @@ const MAX_MAIN_OFFSET_M: f64 = 0.25;
 const MAX_BAY_OFFSET_M: f64 = 250.0;
 
 impl World {
-    pub(super) fn opposing_birth_priority(&self, op: &WorldOperation) -> Option<String> {
-        let [a, b] = op.configs.as_slice() else {
-            return None;
-        };
-        // An isolated shape and two opposing services only. No third
-        // contender, road operation or partially resolved batch enters.
+    pub(super) fn opposing_birth_priorities(&self, op: &WorldOperation) -> Vec<(String, String)> {
         if op.invalidated
             || op.runtime.admission_model() != RailAdmissionModel::Fixed
             || self.data.alignments.len() > MAX_PROOF_ALIGNMENTS
-            || !op.bus_configs.is_empty()
         {
-            return None;
+            return Vec::new();
         }
-        let spec = |id: ServiceId| op.runtime.service_spec(&id.0.to_string());
-        let (a, b) = (spec(a.service_id)?, spec(b.service_id)?);
+        op.runtime
+            .isolated_authority_pairs()
+            .into_iter()
+            .filter_map(|(a, b)| {
+                self.prove_opposing_birth(op.runtime.service_spec(a)?, op.runtime.service_spec(b)?)
+            })
+            .collect()
+    }
+
+    fn prove_opposing_birth(
+        &self,
+        a: &ServiceRunSpec,
+        b: &ServiceRunSpec,
+    ) -> Option<(String, String)> {
         let (local, through) = match (a.legs.len(), b.legs.len()) {
             (2, 1) => (a, b),
             (1, 2) => (b, a),
@@ -204,7 +210,7 @@ impl World {
         {
             return None;
         }
-        Some(local.service_id.clone())
+        Some((local.service_id.clone(), through.service_id.clone()))
     }
 }
 
