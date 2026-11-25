@@ -140,3 +140,46 @@ it('requests the exact catalog revision despite live rollover, without admitting
  await expect(repository.readTileEvidenceBatch([pin])).rejects.toThrow('取得済み');
  expect(f.mock.calls.filter(([url])=>String(url).endsWith('/planet'))).toHaveLength(1);
 });
+
+const interiorOfTile=(x:number,y=6451)=>{
+ const b=roadTileBounds(x,y);
+ return {west:b.west+.001,east:b.east-.001,south:b.south+.001,north:b.north-.001};
+};
+
+it('keeps a revisited tile decoded across one full cache scan without redownloading or rebuilding it',async()=>{
+ const raw=fixture(), f=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?
+  JSON.stringify({maxzoom:14,tiles:['https://tiles.openfreemap.org/planet/rev/{z}/{x}/{y}.pbf']}):new Uint8Array(raw)));
+ const repo=createOpenFreeMapRoadRepository(f as typeof fetch),hot=14500,cold=14501;
+ const first=await repo.load(interiorOfTile(hot));
+ for(let x=cold;x<hot+64;x++)await repo.load(interiorOfTile(x));
+ expect(f).toHaveBeenCalledTimes(65);
+ const justUsed=await repo.load(interiorOfTile(hot));
+ expect(justUsed.tileSnapshots[0]).toBe(first.tileSnapshots[0]);
+ await repo.load(interiorOfTile(hot+64));
+ expect(f).toHaveBeenCalledTimes(66);
+ const again=await repo.load(interiorOfTile(hot));
+ expect(again.tileSnapshots[0]).toBe(first.tileSnapshots[0]);
+ expect(again.bundle.graphSha256).toBe(first.bundle.graphSha256);
+ expect(f).toHaveBeenCalledTimes(66);
+ await repo.load(interiorOfTile(cold));
+ expect(f).toHaveBeenCalledTimes(67);
+});
+
+it('keeps revisited raw bytes hot for exact evidence without changing decoded or raw identities',async()=>{
+ const raw=fixture(),f=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?
+  JSON.stringify({maxzoom:14,tiles:['https://tiles.openfreemap.org/planet/rev/{z}/{x}/{y}.pbf']}):new Uint8Array(raw)));
+ const repo=createOpenFreeMapRoadRepository(f as typeof fetch),hot=14500,cold=14501;
+ const first=await repo.load(interiorOfTile(hot));
+ const rawSha256=first.tileSnapshots[0].bundle.sourceSha256;
+ for(let x=cold;x<hot+16;x++)await repo.load(interiorOfTile(x));
+ await repo.load(interiorOfTile(hot));
+ await repo.load(interiorOfTile(hot+16));
+ expect(f).toHaveBeenCalledTimes(18);
+ const ref={revision:'rev',z:14 as const,x:hot,y:6451,rawSha256,decoderRule:OFM_EVIDENCE_RULE};
+ await expect(repo.readTileEvidenceBatch([ref])).resolves.toMatchObject({rawTiles:[{sha256:rawSha256,bytes:raw}]});
+ expect(f).toHaveBeenCalledTimes(18);
+ await expect(repo.readTileEvidenceBatch([{...ref,rawSha256:'0'.repeat(64)}])).rejects.toThrow('一致');
+ expect(f).toHaveBeenCalledTimes(18);
+ await repo.readTileEvidenceBatch([{...ref,x:cold}]);
+ expect(f).toHaveBeenCalledTimes(19);
+});

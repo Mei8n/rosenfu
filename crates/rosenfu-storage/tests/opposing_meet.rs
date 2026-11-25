@@ -491,8 +491,39 @@ fn disconnected_running_service_does_not_defeat_a_meet_but_shared_authority_does
         .add_service_path(owner, "Other through".into(), start, route, stops)
         .unwrap();
     let mut reference = None;
-    for extra in [None, Some(isolated), Some(shares_throat)] {
-        let mut world = World::new(base.snapshot().clone()).unwrap();
+    for (extra, large_map) in [
+        (None, false),
+        (Some(isolated), false),
+        (Some(shares_throat), false),
+        (Some(isolated), true),
+    ] {
+        let mut draft = base.snapshot().clone();
+        if large_map {
+            let mut unused = draft
+                .alignments
+                .iter()
+                .find(|a| a.id == far)
+                .unwrap()
+                .clone();
+            unused.name = "Unrelated unserved infrastructure".into();
+            for i in 0..1_050 {
+                unused.id = AlignmentId(draft.next_id);
+                draft.next_id += 1;
+                let p = GeoPoint {
+                    latitude: 30.0 + f64::from(i / 50) * 0.04,
+                    longitude: 131.0 + f64::from(i % 50) * 0.04,
+                };
+                unused.points = vec![
+                    p,
+                    GeoPoint {
+                        longitude: p.longitude + 0.01,
+                        ..p
+                    },
+                ];
+                draft.alignments.push(unused.clone());
+            }
+        }
+        let mut world = World::new(draft).unwrap();
         let mut selected = configs.to_vec();
         if let Some(id) = extra {
             let mut config = configs[0].clone();
@@ -528,7 +559,7 @@ fn disconnected_running_service_does_not_defeat_a_meet_but_shared_authority_does
         assert_eq!(
             state(&ids[0]),
             &TrainState::Waiting { ready_ms: tie_at },
-            "extra={extra:?} ids={ids:?}"
+            "extra={extra:?} large_map={large_map} ids={ids:?}"
         );
         let siding_arrival = match state(&ids[1]) {
             TrainState::Moving {

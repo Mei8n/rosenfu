@@ -1,5 +1,6 @@
+import {DEFAULT_CAMERA,cameraAt,panCamera,unproject} from './map';
 // @vitest-environment jsdom
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,expect,test,vi} from 'vitest';
 import {invoke,isTauri} from '@tauri-apps/api/core';
 import {App} from './App';
@@ -171,3 +172,64 @@ test('route and service tabs project only visible service chains, preserving a s
  expect(sections()[0]).toBe(stitched);
  expect(world.services).toHaveLength(604);
 });
+
+test('built station viewport preserves a crossing platform, overhanging names and exact deletion IDs',async()=>{
+ const camera=cameraAt(DEFAULT_CAMERA.latitude,DEFAULT_CAMERA.longitude,13);
+ const p=(x:number,y:number)=>x<0?unproject(0,y,panCamera(camera,x,0)):unproject(x,y,camera);
+ const line={id:'alignment',owner:'2',name:'線路',points:[p(-450,300),p(225,300)]};
+ const station=(id:string,name:string,point:{latitude:number;longitude:number})=>({id,name,owner:'2',...point});
+ const stations=[
+  station('4','長いホーム',p(-100,300)),
+  station('5','中央',p(510,315)),
+  station('6','駅名が画面内に残る長い名前のサンプル駅',p(-110,425)),
+  station('7','東の駅',p(990,350)),
+  ...Array.from({length:260},(_,i)=>station(String(100+i),'遠隔駅',{latitude:43.1,longitude:141.3})),
+ ];
+ const world={next_id:'9999',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations,tracks:[],routes:[],services:[],alignments:[line],station_placements:[
+  {station_id:'4',alignment_id:line.id,position:350/675,length_m:4600,width_m:12},
+ ]};
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'station-viewport-test'};
+  if(command==='list_save_slots')return {active_slot_id:'test',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='water_mask_requests'||command==='road_assessments')return [];
+  return world;
+ });
+ render(<App/>);fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));
+ await screen.findByText(/station-viewport-test/);
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('autosave_status',{slotId:'test'}));
+ await act(async()=>{});
+ fireEvent.keyDown(window,{key:'+'});await screen.findByText('ZL 13 / Web Mercator');
+ const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
+ const ids=()=>[...map.querySelectorAll('.station-marker')].map(el=>el.getAttribute('data-station-id'));
+ const deleteIds=()=>[...map.querySelectorAll('[data-delete-station]')].map(el=>el.getAttribute('data-delete-station'));
+ const platform=map.querySelector('[data-station-id="4"] path.station-platform');
+ expect(ids()).toEqual(['4','5','7']);
+ expect(platform?.getAttribute('d')).toMatch(/^M-/);
+ expect(platform?.getAttribute('d')?.match(/L/g)).toHaveLength(3);
+ fireEvent.click(screen.getByRole('tab',{name:'設定'}));
+ fireEvent.click(screen.getByLabelText('駅名を表示'));
+ expect(ids()).toEqual(['4','5','6','7']);
+ expect(Number(map.querySelector('[data-station-id="6"] text')?.getAttribute('x'))).toBeLessThan(0);
+ fireEvent.click(screen.getByLabelText('駅名を表示'));
+ fireEvent.click(screen.getByRole('tab',{name:'建設'}));
+ fireEvent.click(screen.getByRole('tab',{name:'削除'}));
+ expect(deleteIds()).toEqual(['4','5','7']);
+ expect(map.querySelector('[data-delete-station="4"]')?.getAttribute('d')).toBe(platform?.getAttribute('d'));
+ panMap(730);
+ await waitFor(()=>expect(deleteIds()).toEqual(['7']));
+ expect(ids()).toEqual(['7']);
+ expect(world.stations).toHaveLength(264);
+ const target=map.querySelector('[data-delete-station="7"]')!;
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ for(const type of ['pointerdown','pointerup']){
+  const pointer=new Event(type,{bubbles:true,cancelable:true});
+  Object.assign(pointer,{clientX:260,clientY:350,button:0,pointerId:100,isPrimary:true});
+  fireEvent(target,pointer);
+ }
+ fireEvent.click(target);
+ expect(invoke).not.toHaveBeenCalledWith('delete_station',expect.anything());
+ fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('delete_station',expect.objectContaining({stationId:'7'})));
+},20000);

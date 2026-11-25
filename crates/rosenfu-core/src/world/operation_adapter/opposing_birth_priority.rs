@@ -2,7 +2,6 @@
 use super::*;
 
 const MAX_FIT_POINTS: usize = 256;
-const MAX_PROOF_ALIGNMENTS: usize = 1_024;
 const MAX_PROOF_RUN_SECTIONS: usize = 64;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 // Small chart at non-polar latitudes; allow one percent distance slack
@@ -11,28 +10,35 @@ const MAX_CHART_DEGREES: f64 = 0.05;
 const MAX_MAIN_OFFSET_M: f64 = 0.25;
 const MAX_BAY_OFFSET_M: f64 = 250.0;
 
-impl World {
-    pub(super) fn opposing_birth_priorities(&self, op: &WorldOperation) -> Vec<(String, String)> {
-        if op.invalidated
-            || op.runtime.admission_model() != RailAdmissionModel::Fixed
-            || self.data.alignments.len() > MAX_PROOF_ALIGNMENTS
-        {
-            return Vec::new();
+struct OpposingBirthGeometry<'a> {
+    alignments: BTreeMap<AlignmentId, &'a Alignment>,
+    incident: BTreeMap<AlignmentId, Vec<usize>>,
+    connections: &'a [AlignmentConnection],
+    placements: BTreeMap<(StationId, AlignmentId), &'a StationPlacement>,
+}
+
+impl<'a> OpposingBirthGeometry<'a> {
+    fn index(data: &'a WorldDraft) -> Self {
+        let mut incident = BTreeMap::<_, Vec<_>>::new();
+        for (i, link) in data.alignment_connections.iter().enumerate() {
+            incident.entry(link.a.alignment_id).or_default().push(i);
+            incident.entry(link.b.alignment_id).or_default().push(i);
         }
-        op.runtime
-            .isolated_authority_pairs()
-            .into_iter()
-            .filter_map(|(a, b)| {
-                self.prove_opposing_birth(op.runtime.service_spec(a)?, op.runtime.service_spec(b)?)
-            })
-            .collect()
+        let mut placements = BTreeMap::new();
+        for p in &data.station_placements {
+            placements
+                .entry((p.station_id, p.alignment_id))
+                .or_insert(p);
+        }
+        Self {
+            alignments: data.alignments.iter().map(|a| (a.id, a)).collect(),
+            incident,
+            connections: &data.alignment_connections,
+            placements,
+        }
     }
 
-    fn prove_opposing_birth(
-        &self,
-        a: &ServiceRunSpec,
-        b: &ServiceRunSpec,
-    ) -> Option<(String, String)> {
+    fn prove(&self, a: &ServiceRunSpec, b: &ServiceRunSpec) -> Option<(String, String)> {
         let (local, through) = match (a.legs.len(), b.legs.len()) {
             (2, 1) => (a, b),
             (1, 2) => (b, a),
@@ -87,24 +93,24 @@ impl World {
             return None;
         }
 
-        let component = [near, main, far, bay];
-        if self
-            .data
-            .alignment_connections
-            .iter()
-            .filter(|l| {
-                component.contains(&l.a.alignment_id) || component.contains(&l.b.alignment_id)
-            })
-            .count()
-            != 4
-        {
+        let mut incident = BTreeSet::new();
+        for id in [near, main, far, bay] {
+            for &index in self.incident.get(&id)? {
+                incident.insert(index);
+                if incident.len() > 4 {
+                    return None;
+                }
+            }
+        }
+        if incident.len() != 4 {
             return None;
         }
         let ends = |a, b| {
-            self.data.alignment_connections.iter().find_map(|l| {
-                match (l.a.alignment_id, l.b.alignment_id) {
-                    pair if pair == (a, b) => Some((l.a.endpoint, l.b.endpoint)),
-                    pair if pair == (b, a) => Some((l.b.endpoint, l.a.endpoint)),
+            incident.iter().find_map(|&i| {
+                let link = &self.connections[i];
+                match (link.a.alignment_id, link.b.alignment_id) {
+                    pair if pair == (a, b) => Some((link.a.endpoint, link.b.endpoint)),
+                    pair if pair == (b, a) => Some((link.b.endpoint, link.a.endpoint)),
                     _ => None,
                 }
             })
@@ -120,7 +126,7 @@ impl World {
         {
             return None;
         }
-        let get = |id| self.data.alignments.iter().find(|a| a.id == id);
+        let get = |id| self.alignments.get(&id).copied();
         let (near, main, far, bay) = (get(near)?, get(main)?, get(far)?, get(bay)?);
         for a in [near, main, far, bay] {
             if a.owner != main.owner
@@ -144,11 +150,7 @@ impl World {
         // either 30 m turnout lead. Must also prove non-overlap along the
         // entire parked interval, not just at its center.
         let station = StationId(incoming.to.parse().ok()?);
-        let placement = self
-            .data
-            .station_placements
-            .iter()
-            .find(|p| p.station_id == station && p.alignment_id == bay.id)?;
+        let placement = self.placements.get(&(station, bay.id))?;
         let train = local.vehicle.length_m;
         if train > 80.0 || placement.length_m < train + 4.0 || placement.width_m < 4.1 {
             return None;
@@ -211,6 +213,25 @@ impl World {
             return None;
         }
         Some((local.service_id.clone(), through.service_id.clone()))
+    }
+}
+
+impl World {
+    pub(super) fn opposing_birth_priorities(&self, op: &WorldOperation) -> Vec<(String, String)> {
+        if op.invalidated || op.runtime.admission_model() != RailAdmissionModel::Fixed {
+            return Vec::new();
+        }
+        let pairs = op.runtime.isolated_authority_pairs();
+        if pairs.is_empty() {
+            return Vec::new();
+        }
+        let geometry = OpposingBirthGeometry::index(&self.data);
+        pairs
+            .into_iter()
+            .filter_map(|(a, b)| {
+                geometry.prove(op.runtime.service_spec(a)?, op.runtime.service_spec(b)?)
+            })
+            .collect()
     }
 }
 
