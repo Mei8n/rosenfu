@@ -4,7 +4,12 @@ import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/reac
 import {invoke,isTauri} from '@tauri-apps/api/core';
 import {App} from './App';
 import {emptyConstructionPlans} from './constructionPlans';
+import {anchorIndices} from './deletionSections';
 vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:vi.fn()}));
+vi.mock('./deletionSections',async(importOriginal)=>{
+ const original=await importOriginal<typeof import('./deletionSections')>();
+ return {...original,anchorIndices:vi.fn(original.anchorIndices)};
+});
 const a={latitude:35.67504,longitude:139.72},b={latitude:35.67504,longitude:139.75},c={latitude:35.67504,longitude:139.78};
 const empty={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],tracks:[],routes:[],services:[],alignments:[],station_placements:[]};
 const alignment={id:'3',owner:'2',name:'線路',points:[a,b,c],anchor_indices:[0,1,2]};
@@ -101,6 +106,36 @@ test('planned intervals highlight and remove independently, preserving both side
  expect(map.querySelectorAll('[data-delete-plan-path="1"]')).toHaveLength(1);expect(map.querySelectorAll('[data-delete-plan-path="2"]')).toHaveLength(1);
  expect(map.querySelectorAll('[data-delete-anchor]')).toHaveLength(4);expect(map.querySelector('.candidate-draft')).toBeNull();
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(3);expect(map.querySelector('[data-delete-plan-path="2"]')).toBeNull();
+});
+test('opening a hover on a long planned path does not remap its anchors once per section',async()=>{
+ const anchors=Array.from({length:25},(_,i)=>({...a,longitude:a.longitude+i*.001}));
+ const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:anchors,draftFinished:true}});
+ const sections=map.querySelectorAll('[data-delete-plan-path="1"]');
+ expect(sections).toHaveLength(24);
+ const indices=vi.mocked(anchorIndices);
+ indices.mockClear();
+ fireEvent.pointerEnter(sections[12],{clientX:200,clientY:150});
+ expect(sections[12].classList.contains('deletion-hover')).toBe(true);
+ // Construction preview also uses a mapping; no matter how many
+ // sections are exposed there are only a handful of calls on this render.
+ const calls=indices.mock.calls.filter(([points])=>points.length===anchors.length).length;
+ expect(calls).toBeGreaterThan(0);
+ expect(calls).toBeLessThanOrEqual(4);
+});
+
+test('whole-path-only road-follow plan stays whole and supports undo and redo',async()=>{
+ const map=await start({...empty,construction_plans:{...emptyConstructionPlans(),draftPoints:[a,b,c],draftFinished:true,roadFollowing:true}});
+ const whole=()=>map.querySelectorAll('[data-delete-plan-path="1"]');
+ expect(whole()).toHaveLength(1);
+ expect(whole()[0].getAttribute('d')?.match(/L/g)).toHaveLength(2);
+ fireEvent.click(whole()[0]);
+ expect(screen.getByRole('dialog').textContent).not.toContain('計画線路の区間');
+ fireEvent.click(screen.getByRole('button',{name:'削除する'}));
+ expect(whole()).toHaveLength(0);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});
+ expect(whole()).toHaveLength(1);
+ fireEvent.keyDown(document.body,{key:'z',ctrlKey:true,shiftKey:true});
+ expect(whole()).toHaveLength(0);
 });
 test('split connection saves, reloads and builds two correctly oriented extensions',async()=>{
  const d={latitude:a.latitude,longitude:139.81},west={latitude:a.latitude,longitude:139.69},east={latitude:a.latitude,longitude:139.84};
