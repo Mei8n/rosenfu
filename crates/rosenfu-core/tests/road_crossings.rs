@@ -671,3 +671,138 @@ fn distant_snapshot_scope_cannot_create_crossing_ownership_or_certify_a_gap() {
     assert_eq!(reopened.road_assessment(rail).unwrap(), local);
     assert_eq!(reopened.snapshot().road_snapshots.len(), 4);
 }
+
+#[test]
+fn connected_port_components_admit_three_but_not_four_or_reversed_duplicates() {
+    use AlignmentEndpoint::{End, Start};
+    let (base, a, b) = connected_world(End, Start);
+    let mut draft = base.snapshot().clone();
+    let mut east = draft.alignments[1].clone();
+    east.id = AlignmentId(draft.next_id);
+    draft.next_id += 1;
+    // The second eastward branch diverges by less than the turnout's 5° limit.
+    east.points[1].latitude += 0.0003;
+    let mut west = draft.alignments[0].clone();
+    west.id = AlignmentId(draft.next_id);
+    draft.next_id += 1;
+    west.points[0].latitude -= 0.0003;
+    let port = |alignment_id, endpoint| AlignmentEndpointRef {
+        alignment_id,
+        endpoint,
+    };
+    let c = east.id;
+    let d = west.id;
+    draft.alignments.extend([east, west]);
+    // Reversed physical orientation in the link list must not change ownership.
+    draft.alignment_connections.push(AlignmentConnection {
+        a: port(c, Start),
+        b: port(a, End),
+    });
+    let turnout = World::new(draft.clone()).unwrap();
+    let rows = turnout.road_assessments();
+    assert_eq!(rows[&a].crossings.len(), 1);
+    assert_eq!(
+        rows.values().map(|row| row.crossings.len()).sum::<usize>(),
+        1
+    );
+    let mut duplicate = draft.clone();
+    duplicate.alignment_connections.push(AlignmentConnection {
+        a: port(b, Start),
+        b: port(a, End),
+    });
+    assert_eq!(
+        duplicate.validate(),
+        Err(WorldError::InvalidAlignmentConnection)
+    );
+    // Each edge is legal and within degree budget, but all four ports are
+    // one unsupported turnout. Across endpoints, no global membership leaks.
+    draft.alignment_connections.push(AlignmentConnection {
+        a: port(b, Start),
+        b: port(d, End),
+    });
+    assert_eq!(
+        draft.validate(),
+        Err(WorldError::InvalidAlignmentConnection)
+    );
+}
+
+fn separated_connected_rail_fixture(pairs: usize) -> WorldDraft {
+    use AlignmentEndpoint::{End, Start};
+    let (base, _, _) = connected_world(End, Start);
+    let mut draft = base.snapshot().clone();
+    let templates = std::mem::take(&mut draft.alignments);
+    draft.alignment_connections.clear();
+    for n in 0..pairs {
+        // Distinct geometry across hundreds of km; only a small fraction
+        // intersects the one synthetic road snapshot.
+        let y = n as f64 * 0.001;
+        let mut a = templates[0].clone();
+        let mut b = templates[1].clone();
+        a.id = AlignmentId(draft.next_id);
+        b.id = AlignmentId(draft.next_id + 1);
+        draft.next_id += 2;
+        a.points = vec![point(-0.01, y), point(0., y)];
+        b.points = vec![point(0., y), point(0.01, y)];
+        let port = |alignment_id, endpoint| AlignmentEndpointRef {
+            alignment_id,
+            endpoint,
+        };
+        draft.alignment_connections.push(AlignmentConnection {
+            a: port(a.id, End),
+            b: port(b.id, Start),
+        });
+        draft.alignments.extend([a, b]);
+    }
+    // Neither ordered alignment rows nor ordered link rows are an invariant.
+    draft.alignments.reverse();
+    draft.alignment_connections.reverse();
+    draft
+}
+
+#[test]
+fn distant_connected_tracks_never_steal_the_crossing_or_claim_coverage() {
+    let work = separated_connected_rail_fixture(70);
+    let world = World::new(work.clone()).unwrap();
+    let rows = world.road_assessments();
+    let nearest = work.alignments.last().unwrap().id;
+    assert_eq!(rows[&nearest].crossings.len(), 1);
+    assert!(rows[&nearest].roads_ready);
+    let mut detached = work;
+    detached.alignment_connections.pop();
+    let detached = World::new(detached).unwrap();
+    assert!(detached
+        .road_assessment(nearest)
+        .unwrap()
+        .crossings
+        .is_empty());
+    assert_eq!(rows.len(), 140);
+}
+
+#[test]
+#[ignore = "manual native synthetic benchmark"]
+fn measure_connected_alignment_geography() {
+    use sha2::{Digest, Sha256};
+    use std::{hint::black_box, time::Instant};
+    for pairs in [50, 500, 3_000] {
+        let draft = separated_connected_rail_fixture(pairs);
+        let world = World::new(draft.clone()).unwrap();
+        let mut checks = vec![];
+        let mut crossings = vec![];
+        let expected = Sha256::digest(serde_json::to_vec(&world.road_assessments()).unwrap());
+        for _ in 0..7 {
+            let t = Instant::now();
+            black_box(&draft).validate().unwrap();
+            checks.push(t.elapsed());
+            let t = Instant::now();
+            let rows = black_box(&world).road_assessments();
+            crossings.push(t.elapsed());
+            assert_eq!(Sha256::digest(serde_json::to_vec(&rows).unwrap()), expected);
+        }
+        checks.sort_unstable();
+        crossings.sort_unstable();
+        eprintln!(
+            "pairs={pairs} validation={:?} crossings={:?} sha={expected:x}",
+            checks[3], crossings[3]
+        );
+    }
+}

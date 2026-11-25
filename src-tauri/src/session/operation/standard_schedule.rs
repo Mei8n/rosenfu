@@ -19,6 +19,7 @@ pub struct StandardScheduleStatus {
     configuration_token: String,
     service_id: String,
     can_apply: bool,
+    nominal_cycle_ms: Option<u64>,
     active_elsewhere: bool,
     has_bus_configs: bool,
     authored: Option<StandardIntervals>,
@@ -84,16 +85,18 @@ impl WorldEditor {
         // The panel caches this structural eligibility by configuration token.
         // Backlog/vehicle/pause readiness comes from live ticks and is checked
         // again during Apply; don't cache a transient backlog as unsupported.
-        let can_apply = !active_elsewhere
-            && operation.is_some_and(|o| {
-                !o.invalidated
-                    && o.runtime
-                        .preview_nominal_fleet(
-                            &key,
-                            FleetPlanningRequest::TimedHeadway { headway_ms: MINUTE },
-                        )
-                        .is_ok()
+        let nominal_cycle_ms = operation
+            .filter(|o| !active_elsewhere && !o.invalidated)
+            .and_then(|o| {
+                o.runtime
+                    .preview_nominal_fleet(
+                        &key,
+                        FleetPlanningRequest::TimedHeadway { headway_ms: MINUTE },
+                    )
+                    .ok()
             })
+            .map(|plan| plan.cycle_ms);
+        let can_apply = nominal_cycle_ms.is_some()
             && self
                 .world
                 .operation_save()
@@ -125,6 +128,7 @@ impl WorldEditor {
             configuration_token: revision.to_owned(),
             service_id: key,
             can_apply,
+            nominal_cycle_ms,
             active_elsewhere,
             has_bus_configs: operation.is_some_and(|o| !o.bus_configs.is_empty()),
             authored,

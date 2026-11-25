@@ -1,8 +1,12 @@
-import {useEffect,useRef,useState,type FormEvent} from 'react';
+import {useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import './fixedOdPanel.css';
 import {OperationObservationMinute} from './OperationsPanel';
+import {nearbyTransferStations,TRANSFER_CANDIDATE_RADIUS_M,type TransferRoad,type TransferStation} from './busTransferCandidates';
+import type {RoadTransportData} from './RoadTransportPanel';
 type Named={id:string;name:string};
+type TransferStop=Named&Partial<Pick<RoadTransportData['bus_stops'][number],'edge_id'|'position'>>;
+const EMPTY_BUS_STOPS:TransferStop[]=[];
 export type FixedOdScenario={origin_station_id:string;destination_station_id:string;trips:number|null;alternative_seconds:number|null};
 export type FixedOdScenarioView={token:string;scenario:FixedOdScenario|null};
 type Allocation={stations:string[];services:string[];generalized_seconds:number;trips:number;time?:{walk_seconds:number;wait_seconds:number;ride_seconds:number;transfers:number}};
@@ -41,7 +45,7 @@ function BudgetResult({paths,budget,names}:{paths:Allocation[];budget:BudgetInpu
  </section>;
 }
 
-export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled,worldVersion,saveScenario}:{stations:Named[];services:Named[];busStops?:Named[];busRoutes?:Named[];enabled:boolean;worldVersion:unknown;saveScenario?:(expectedToken:string,scenario:FixedOdScenario|null)=>Promise<FixedOdScenarioView>}){
+export function FixedOdPanel({stations,services,busStops=EMPTY_BUS_STOPS,busRoutes=[],busTransferRoad,enabled,worldVersion,saveScenario}:{stations:TransferStation[];services:Named[];busStops?:TransferStop[];busRoutes?:Named[];busTransferRoad?:TransferRoad;enabled:boolean;worldVersion:unknown;saveScenario?:(expectedToken:string,scenario:FixedOdScenario|null)=>Promise<FixedOdScenarioView>}){
  const [origin,setOrigin]=useState(''),[destination,setDestination]=useState('');
  const [useTransfer,setUseTransfer]=useState(false);
  const [transferStation,setTransferStation]=useState(''),[transferStop,setTransferStop]=useState(''),[walkMinutes,setWalkMinutes]=useState('');
@@ -81,6 +85,12 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
  const observationStart=observed?.itinerary?.ready_ms;
  const error=failure?.world===worldVersion?failure?.message:null;
  const stops=busStops.map(stop=>({...stop,id:`bus:${stop.id}`}));
+ const candidates=useMemo(()=>{
+  if(!enabled||!useTransfer||!busTransferRoad||!transferStop.startsWith('bus:'))return [];
+  const stop=busStops.find(candidate=>candidate.id===transferStop.slice(4));
+  if(typeof stop?.edge_id!=='string'||typeof stop.position!=='number')return [];
+  return nearbyTransferStations(stations,busTransferRoad,{id:stop.id,edge_id:stop.edge_id,position:stop.position});
+ },[enabled,useTransfer,busTransferRoad,busStops,transferStop,stations]);
  const stationNames=new Map([...stations,...stops].map(s=>[s.id,s.name]));
  const serviceNames=new Map(services.map(s=>[s.id,s.name]));
  for(const route of busRoutes)serviceNames.set(`bus:${route.id}`,route.name);
@@ -180,6 +190,13 @@ export function FixedOdPanel({stations,services,busStops=[],busRoutes=[],enabled
       <label>乗り換えバス停<select value={transferStop} onChange={event=>{setTransferStop(event.target.value);dirty();}}>
        <option value="">バス停を選択</option>{stops.map(stop=><option key={stop.id} value={stop.id}>{stop.name}</option>)}
       </select></label>
+      {candidates.length>0&&<section aria-label="近くの乗り換え駅候補">
+       <p>バス停から直線約{TRANSFER_CANDIDATE_RADIUS_M} m以内の駅候補です。徒歩経路や所要時間は未確認です。</p>
+       <ul>{candidates.map(candidate=><li key={candidate.id}><button type="button"
+        disabled={candidate.id===transferStation} onClick={()=>{setTransferStation(candidate.id);setWalkMinutes('');dirty();}}>
+        {candidate.name}（直線 約{Math.round(candidate.distanceM)} m）を選ぶ
+       </button></li>)}</ul>
+      </section>}
       <label>徒歩の所要時間（分）<input type="number" min="1" max="60" step="1" value={walkMinutes} onChange={event=>{setWalkMinutes(event.target.value);dirty();}}/></label>
       <p>徒歩は両方向に同じ時間で試算します。実際の徒歩経路や設備ではなく、この条件は保存しません。</p>
      </>}

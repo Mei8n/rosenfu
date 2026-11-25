@@ -1355,6 +1355,16 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
+        let expected = e
+            .preview_nominal_trainsets(
+                config.service_id,
+                &after.configuration_token,
+                rosenfu_core::operation::service_planning::FleetPlanningRequest::TimedHeadway {
+                    headway_ms: 60_000,
+                },
+            )
+            .unwrap();
+        assert_eq!(status["nominalCycleMs"].as_u64(), Some(expected.cycle_ms));
         assert_eq!(status["authored"]["overrides"]["morningRush"], 6);
         let revision = &after.configuration_token;
         let origin = status["origin"]["id"].as_str().unwrap().to_owned();

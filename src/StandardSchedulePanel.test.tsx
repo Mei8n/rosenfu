@@ -89,3 +89,38 @@ test('multi-day time bands preserve the prior duration on edit and send the vali
  fireEvent.click(screen.getByRole('button',{name:'変更を適用'}));
  expect(apply).toHaveBeenCalledWith({service:'3',expected:'edit',baseMinutes:10,overrides:rates,boundariesMinutes:bounds,activeDays:14});
 });
+
+test('a time-band fleet count yields an explicit rounded draft interval without changing other bands',async()=>{
+ ipc.mockResolvedValueOnce({...plain,nominalCycleMs:725_000});
+ render(panel());
+ fireEvent.click(await screen.findByText('編成数から時間帯の間隔を決める'));
+ fireEvent.change(screen.getByLabelText('夕ラッシュの間隔（分）'),{target:{value:'7'}});
+ fireEvent.change(screen.getByLabelText('間隔に反映する時間帯'),{target:{value:'morningRush'}});
+ const count=screen.getByLabelText('試算用の編成数');
+ fireEvent.change(count,{target:{value:'3'}});
+ expect(fireEvent.keyDown(count,{key:'Enter'})).toBe(false);
+ expect(apply).not.toHaveBeenCalled();
+ expect(screen.getByText('試算結果：5分おき')).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'試算した間隔を入力欄に反映'}));
+ expect((screen.getByLabelText('朝ラッシュの間隔（分）') as HTMLInputElement).value).toBe('5');
+ expect((screen.getByLabelText('基本の間隔（分）') as HTMLInputElement).value).toBe('10');
+ expect(apply).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'時間帯ダイヤを適用'}));
+ expect(apply).toHaveBeenCalledWith({service:'3',expected:'edit',baseMinutes:10,boundariesMinutes:bounds,
+  overrides:{earlyMorning:null,morningRush:5,midday:null,eveningRush:7,lateNight:null}});
+});
+
+test('out-of-range fleet intervals cannot override a timetable draft',async()=>{
+ ipc.mockResolvedValueOnce({...plain,nominalCycleMs:14_400_001});
+ render(panel());
+ fireEvent.click(await screen.findByText('編成数から時間帯の間隔を決める'));
+ const count=screen.getByLabelText('試算用の編成数');
+ const button=screen.getByRole('button',{name:'試算した間隔を入力欄に反映'}) as HTMLButtonElement;
+ fireEvent.change(count,{target:{value:'1'}});
+ expect(button.disabled).toBe(true);
+ expect(screen.getByText(/240分を超えます/)).toBeTruthy();
+ fireEvent.change(count,{target:{value:'0'}});
+ expect(button.disabled).toBe(true);
+ expect((screen.getByLabelText('基本の間隔（分）') as HTMLInputElement).value).toBe('10');
+ expect(apply).not.toHaveBeenCalled();
+});
