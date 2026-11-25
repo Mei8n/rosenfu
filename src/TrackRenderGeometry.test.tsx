@@ -29,3 +29,33 @@ test('reports invalid or failed results instead of inventing lane geometry',asyn
 test('explicit internal movements are rendered once rather than invented from crossing pixels',()=>{
  const {container}=render(<svg><TrackGeometryLayer geometry={{...geometry,movements:[],internal_movements:[{points:[b,c]},{points:[c,b]}]}} camera={DEFAULT_CAMERA} lines={[]} selectedId=""/></svg>);expect(container.querySelectorAll('[data-internal-track-movement]')).toHaveLength(1);expect(container.querySelectorAll('[data-track-movement]')).toHaveLength(0);
 });
+
+test('culls only offscreen native geometry and retains crossing lines and stroke margin',()=>{
+ const make=(alignment_id:string,points:TrackRenderGeometry['lanes'][number]['points'])=>({alignment_id,section_index:0,lane_index:0,points});
+ const p=(longitude:number)=>({...a,longitude});
+ const strokes={...geometry,lanes:[
+  make('visible',[a,b]),make('margin',[p(139.81),p(139.811)]),
+  make('through',[p(139.60),p(139.90)]),make('elsewhere',[p(140.0),p(140.1)]),
+ ],movements:[geometry.movements[0],geometry.movements[1],{...geometry.movements[0],points:[p(140),p(140.1)]}]};
+ const mapSize={width:500,height:600};
+ const {container,rerender}=render(<svg><TrackGeometryLayer geometry={strokes} camera={DEFAULT_CAMERA} mapSize={mapSize} lines={[]} selectedId=""/></svg>);
+ const lanes=()=>[...container.querySelectorAll('[data-physical-alignment]')].map(e=>e.getAttribute('data-physical-alignment'));
+ expect(lanes()).toEqual(['visible','margin','through']);
+ expect(container.querySelectorAll('[data-track-movement]')).toHaveLength(1);
+ rerender(<svg><TrackGeometryLayer geometry={strokes} camera={{...DEFAULT_CAMERA,longitude:140.05}} mapSize={mapSize} lines={[]} selectedId="elsewhere"/></svg>);
+ expect(lanes()).toEqual(['elsewhere']);expect(container.querySelector('[data-physical-alignment]')?.classList.contains('alignment-selected')).toBe(true);
+ expect(container.querySelector('[data-track-movement]')?.getAttribute('data-track-movement')).toBe('1');
+});
+
+test('large dispersed map indexes infrastructure once and mounts only visible native lanes',()=>{
+ let reads=0;
+ const lines=Array.from({length:6000},(_,index)=>({get id(){reads++;return String(index);}}));
+ const lanes=lines.map((_,index)=>({alignment_id:String(index),section_index:0,lane_index:0,points:index<12?[a,b]:[{latitude:43.1,longitude:141.3},{latitude:43.2,longitude:141.4}]}));
+ const large={lanes,movements:[]};
+ const {container,rerender}=render(<svg><TrackGeometryLayer geometry={large} camera={DEFAULT_CAMERA} lines={lines} selectedId=""/></svg>);
+ expect(container.querySelectorAll('[data-physical-alignment]')).toHaveLength(12);
+ expect(reads).toBe(6000);
+ rerender(<svg><TrackGeometryLayer geometry={large} camera={{...DEFAULT_CAMERA,longitude:139.755}} lines={lines} selectedId=""/></svg>);
+ expect(container.querySelectorAll('[data-physical-alignment]')).toHaveLength(12);
+ expect(reads).toBe(6000);
+});

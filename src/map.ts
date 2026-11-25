@@ -64,10 +64,16 @@ export function zoomCameraAt(camera:Camera,zoom:number,anchor:{x:number;y:number
   const y=mercatorY(point.latitude)-(anchor.y-MAP_VIEWBOX.height/2)/scale;
   return cameraAt(clamp(latitudeAt(y),MAP_BOUNDS.south,MAP_BOUNDS.north),clamp(x*360-180,MAP_BOUNDS.west,MAP_BOUNDS.east),nextZoom);
 }
-export function viewBounds(camera = DEFAULT_CAMERA, size: { width: number; height: number } = MAP_VIEWBOX) {
-  const visible = mapViewport(size.width, size.height);
-  const nw = unproject(visible.x,visible.y,camera), se = unproject(visible.x+visible.width,visible.y+visible.height,camera);
-  return { west: nw.longitude, east: se.longitude, north: nw.latitude, south: se.latitude };
+export function viewBounds(camera = DEFAULT_CAMERA, size: { width: number; height: number } = MAP_VIEWBOX, padding = 0) {
+  checkCamera(camera);
+  const visible = mapViewport(size.width, size.height), scale = scaleFor(camera.zoom);
+  const x = worldX(camera.longitude), y = mercatorY(camera.latitude);
+  // Padding uses SVG logical coordinates, including just outside the viewbox.
+  const west = (x + (visible.x - padding - MAP_VIEWBOX.width / 2) / scale) * 360 - 180;
+  const east = (x + (visible.x + visible.width + padding - MAP_VIEWBOX.width / 2) / scale) * 360 - 180;
+  const north = latitudeAt(y + (visible.y - padding - MAP_VIEWBOX.height / 2) / scale);
+  const south = latitudeAt(y + (visible.y + visible.height + padding - MAP_VIEWBOX.height / 2) / scale);
+  return { west, east, north, south };
 }
 /** Visible logical area for SVG xMidYMid slice. Fill the window without stretching geography. */
 export function mapViewport(width: number, height: number) {
