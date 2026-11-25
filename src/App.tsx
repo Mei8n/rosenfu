@@ -727,10 +727,17 @@ export function App() {
   const drawPath = (points: GeoPoint[]) => mapPath(points, camera);
   // Camera changes filter before building SVG paths; editing still owns all geometry.
   const alignmentBounds=useMemo(()=>alignments.map(alignment=>({alignment,bounds:trackBounds(alignment.points)})),[alignments]);
-  const visibleAlignmentPaths=useMemo(()=>{
-    const view=trackViewport(camera,mapSize);
-    return alignmentBounds.filter(row=>intersectsTrackView(row.bounds,view)).map(({alignment})=>({alignment,hit:mapPath(alignment.points,camera)}));
-  },[alignmentBounds,camera,mapSize]);
+  const trackView=useMemo(()=>trackViewport(camera,mapSize),[camera,mapSize]);
+  const visibleAlignmentPaths=useMemo(
+    ()=>alignmentBounds.filter(row=>intersectsTrackView(row.bounds,trackView)).map(({alignment})=>({alignment,hit:mapPath(alignment.points,camera)})),
+    [alignmentBounds,camera,trackView],
+  );
+  // Leave the original section index attached to a target after filtering.
+  // No splitting or projection of offscreen lines when entering deletion mode.
+  const visibleDeletionSections=useMemo(()=>activeTool!=="delete"?[]:visibleAlignmentPaths.flatMap(({alignment})=>
+    deletionSections(alignment).filter(section=>intersectsTrackView(trackBounds(section.points),trackView))
+      .map(section=>({alignmentId:alignment.id,sectionIndex:section.index,path:mapPath(section.points,camera)}))
+  ),[activeTool,visibleAlignmentPaths,trackView,camera]);
   const drawInfrastructurePath=(points:GeoPoint[],value:SectionInfrastructure=DEFAULT_INFRASTRUCTURE)=>schematicTrackPaths(points.map(point=>project(point.latitude,point.longitude,camera)),value.track_count).join(" ");
   function changeHeight(level:SectionInfrastructure["level"]){
     if(!heightAnchor){setInfrastructure(value=>({...value,level}));return;}
@@ -1095,7 +1102,7 @@ export function App() {
     if(target.kind==="plan-anchor")return "アンカー";
     if(target.kind==="plan-path")return "計画線路";
     if(target.kind==="plan-section")return "計画線路の区間";
-    const line=alignments.find(line=>line.id===target.alignmentId),section=line&&deletionSections(line)[target.sectionIndex];
+    const line=alignmentsById.get(target.alignmentId),section=line&&deletionSections(line)[target.sectionIndex];
     return section?`建設済みの線路 ${(alignmentLength(section.points)/1000).toFixed(2)} km`:"建設済みの線路";
   }
   function deletionBlocked(target:DeleteTarget):string{
@@ -1104,7 +1111,7 @@ export function App() {
     if(target.kind==="plan-section"||target.kind==="plan-anchor"){const path=target.pathId===activePathId?parkCurrentPlan():parkedPaths.find(path=>path.id===target.pathId);if(path?.junctionSource)return "分岐計画の部分削除は未対応です。計画全体の削除は可能です。";}
     // Section safety depends on the removed span, not references to the whole line.
     // The transactional backend validates station overlap and surviving endpoints.
-    if(target.kind==="built-section")return world?.alignments?.find(a=>a.id===target.alignmentId)?.owner!==world?.companies[0]?.id?"他社の線路は削除できません":"";
+    if(target.kind==="built-section")return alignmentsById.get(target.alignmentId)?.owner!==world?.companies[0]?.id?"他社の線路は削除できません":"";
     if(target.kind==="station"){
       if(world?.stations.find(station=>station.id===target.stationId)?.owner!==world?.companies[0]?.id)return "他社の駅は削除できません";
       const refs=stationReferences(target.stationId);return refs?`${refs}が使用中です`:"";
@@ -2802,7 +2809,7 @@ export function App() {
               </g>}
               {activeTool==="select"&&<g className="range-selection-layer" pointerEvents="none">{rangeSelection.flatMap(row=>{const line=alignments.find(line=>line.id===row.alignmentId);return line?deletionSections(line).filter(section=>row.sectionIndices.includes(section.index)).map(section=><path key={row.alignmentId+":"+section.index} data-selected-alignment={row.alignmentId} data-selected-section={section.index} className="selected-built-section" strokeWidth={8/viewport.scale} d={drawPath(section.points)}/>):[];})}{selectionBox&&(()=>{const b=selectionBounds(selectionBox);return <rect className="selection-box" x={b.left} y={b.top} width={b.right-b.left} height={b.bottom-b.top}/>;})()}</g>}
               {activeTool==="delete"&&enabled&&<g className="deletion-layer">
-                {alignments.flatMap(line=>deletionSections(line).map(section=>{const target:DeleteTarget={kind:"built-section",alignmentId:line.id,sectionIndex:section.index};return <path key={line.id+":"+section.index} data-delete-alignment={line.id} data-delete-section={section.index} d={drawPath(section.points)} {...deleteHitProps(target)}/>;}))}
+                {visibleDeletionSections.map(({alignmentId,sectionIndex,path})=><path key={alignmentId+":"+sectionIndex} data-delete-alignment={alignmentId} data-delete-section={sectionIndex} d={path} {...deleteHitProps({kind:"built-section",alignmentId,sectionIndex})}/>)}
                 {[...parkedPaths.map(path=>({id:path.id,points:path.points,line:path.line,whole:!!path.reference||!!path.ofmPath||path.ofmPath||path.roadFollowing})),{id:activePathId,points:draftPoints,line:draftLine,whole:legacyRoadDraft}].map(path=><g key={path.id}>
                   {deletionSections({points:path.line,anchor_indices:path.whole?undefined:anchorIndices(path.points,path.line)}).map(section=><path key={section.index} data-delete-plan-path={path.id} data-delete-plan-section={section.index} d={drawPath(section.points)} {...deleteHitProps(path.whole||!anchorIndices(path.points,path.line)?{kind:"plan-path",pathId:path.id}:{kind:"plan-section",pathId:path.id,sectionIndex:section.index})}/>)}
                   {path.points.map((point,index)=>{const p=project(point.latitude,point.longitude,camera);return <rect key={index} data-delete-anchor={index} data-delete-path={path.id} x={p.x-8/viewport.scale} y={p.y-8/viewport.scale} width={16/viewport.scale} height={16/viewport.scale} {...deleteHitProps({kind:"plan-anchor",pathId:path.id,index},true)}/>;})}
