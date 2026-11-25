@@ -115,7 +115,7 @@ import { MAP_PROVIDERS } from "./mapProviders";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, FormEvent, CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { invoke as nativeInvoke, isTauri } from "@tauri-apps/api/core";
-import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, requestedTileCoverage, viewBounds, mapViewport } from "./map";
+import { MAP_BOUNDS as BOUNDS, MAP_VIEWBOX, GSI_TILES, project, coordinatesFromClient, DEFAULT_CAMERA, cameraAt, panCamera, visibleTiles, requestedTileCoverage, viewBounds, mapViewport, vehicleViewport } from "./map";
 import { GsiBackground } from "./GsiBackground";
 import type { Camera } from "./map";
 import {RetainedRoadLayer,useRetainedRoadView} from "./RetainedRoadLayer";
@@ -245,6 +245,7 @@ export function App() {
   const setBackground=(value:"sample"|"gsi"|"osm")=>displaySettings.update({background:value});
   const provider = MAP_PROVIDERS[background === "sample" ? "osm" : background];
   const requestedTiles = useMemo(() => background === "sample" ? [] : visibleTiles(requestedCamera,background,mapSize,pixelRatio), [requestedCamera,background,mapSize,pixelRatio]);
+  const markerViewport=useMemo(()=>vehicleViewport(camera,mapSize),[camera,mapSize]);
   const bounds = useMemo(()=>viewBounds(camera,mapSize),[camera,mapSize]);
   const [manualGraphBundle,setGraphBundle]=useState<ReferenceGraphBundle|null>(null);
   const [graphVisible,setGraphVisible]=useState(true);
@@ -2473,7 +2474,7 @@ export function App() {
     }finally{busyRef.current=false;setBusy(false);}
   }
   return (
-    <OperationProvider available={status==="ready"&&!companySetupRequired&&info?.operation_enabled===true} blocked={busy} epoch={worldEpoch} worldVersion={world} onChange={()=>{setDirty(true);setOperationRevision(n=>n+1);}} onRunningChange={setOperationRunning} acquireMutation={()=>{if(busyRef.current)return null;busyRef.current=true;setBusy(true);return ()=>{busyRef.current=false;setBusy(false);};}}>
+    <OperationProvider available={status==="ready"&&!companySetupRequired&&info?.operation_enabled===true} blocked={busy} epoch={worldEpoch} worldVersion={world} vehicleViewport={markerViewport} onChange={()=>{setDirty(true);setOperationRevision(n=>n+1);}} onRunningChange={setOperationRunning} acquireMutation={()=>{if(busyRef.current)return null;busyRef.current=true;setBusy(true);return ()=>{busyRef.current=false;setBusy(false);};}}>
     <main className="workbench" data-theme={theme} style={{"--rail-width":lineWidth,"--map-track-width":mapMetrics.track+"px","--map-track-casing":mapMetrics.trackCasing+"px","--station-label-size":mapMetrics.stationLabelSize+"px","--map-contrast":contrast/100,"--panel-width":panelWidth+"px","--ui-font":textSize+"px"} as CSSProperties}>
       <header className="app-header">
         <div className="session-status"><span className={`connection-dot ${status}`} aria-hidden="true" />{status === "ready" ? `${info?.version} / エンジン接続済み` : status === "preview" ? "ブラウザプレビュー" : status === "loading" ? "接続中" : "接続エラー"}</div>
@@ -2649,7 +2650,7 @@ export function App() {
               {parallelMode&&parallelStart&&(()=>{const q=project(parallelStart.point.latitude,parallelStart.point.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
               {parallelMode&&parallelPreview&&<TrackStroke d={drawInfrastructurePath(parallelPreview.line,infrastructure)} data-track-count={infrastructure.track_count} className="draft-path candidate-draft" pointerEvents="none"/>}
               {parallelMode&&parallelCandidate&&!parallelStart&&(()=>{const line=offsetTrack(parallelCandidate.source.points,parallelCandidate.projection!.offset),p=line&&hoverPoint&&parallelProjection(line,hoverPoint)?.point;if(!p)return null;const q=project(p.latitude,p.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
-              <OperationVehicleLayer camera={camera} scale={viewport.scale}/>
+              <OperationVehicleLayer camera={camera} scale={viewport.scale} crop={viewport}/>
               <JunctionPoints key={worldEpoch} lines={alignments} connections={world?.alignment_connections??[]} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"&&!roadMapPicking}/>
               {parkedPaths.map(plan=><g key={plan.id} className={plan.planId===activePlanId?undefined:"inactive-plan"}><TrackStroke d={drawInfrastructurePath(plan.line,plan.infrastructure)} data-track-count={plan.infrastructure?.track_count??1} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"&&!roadMapPicking){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
@@ -2839,7 +2840,7 @@ export function App() {
           <section className="service-editor" role="tabpanel" id="workspace-panel-services" aria-labelledby="workspace-tab-services" hidden={activeTool !== "services"}>
             <h3>系統</h3>
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
-            <ServiceDirectory key={`services-${worldEpoch}`} showLiveOperation={mainTab==="services"} services={world?.services??[]} appearances={world?.service_appearances} selected={serviceId} enabled={enabled} onChoose={chooseService} onCreate={()=>{if(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty){chooseService(null);return;}chooseService(null);cancelRouteMapPick();setServiceCreating(true);setServiceSequenceKey(key=>key+1);}}/>
+            <ServiceDirectory key={`services-${worldEpoch}`} showLiveOperation={mainTab==="services"} services={world?.services??[]} appearances={world?.service_appearances} routes={world?.routes} bindings={world?.service_route_bindings} selected={serviceId} enabled={enabled} onChoose={chooseService} onCreate={()=>{if(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty){chooseService(null);return;}chooseService(null);cancelRouteMapPick();setServiceCreating(true);setServiceSequenceKey(key=>key+1);}}/>
             {serviceCreating&&serviceId===null&&<ServiceMapCreator onCandidateChange={setRouteSelectedCandidate} onSelectionChange={setRouteSelectedStations} key={`map-service-${pathDraftEpoch}`} world={world??previewWorld} stations={world?.stations??[]} enabled={enabled&&mainTab==="services"} defaultName={(()=>{let n=1;while(world?.services.some(row=>row.name===`系統${n}`))n++;return `系統${n}`;})()} onDirty={setPathServiceDirty} onSave={async draft=>{await createPathService(draft);setServiceCreating(false);cancelRouteMapPick();}} onCancel={()=>{setServiceCreating(false);setPathServiceDirty(false);cancelRouteMapPick();}} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="services")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} mapPickTarget={routeMapPick} startSequenceKey={serviceSequenceKey}/>}
             {!serviceCreating&&serviceId===null&&<ServiceFromRoute key={`route-service-${worldEpoch}-${pathDraftEpoch}`} routes={world?.routes??[]} paths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled&&!serviceDirty&&(!pathServiceDirty||routeServiceDirty)} onDirty={dirty=>{setRouteServiceDirty(dirty);setPathServiceDirty(dirty);}} onSave={createPathService}/>}
             <details><summary>区間・直通を指定して作成</summary>

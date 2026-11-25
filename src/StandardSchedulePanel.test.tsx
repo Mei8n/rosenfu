@@ -22,7 +22,7 @@ test('five standard fields with opt-in ownership token; changing input does not 
  const morning=await screen.findByLabelText('朝ラッシュの間隔（分）');
  fireEvent.change(morning,{target:{value:'6'}});
  expect(apply).not.toHaveBeenCalled();
- expect(screen.getByText(/24ゲーム時間だけ有効/)).toBeTruthy();
+ expect((screen.getByLabelText('有効期間（ゲーム日）') as HTMLInputElement).value).toBe('1');
  expect(screen.queryByText(/旧0.2.1では開けません/)).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'時間帯ダイヤを適用'}));
  expect(apply).toHaveBeenCalledWith({service:'3',expected:'edit',baseMinutes:10,overrides:rates,boundariesMinutes:bounds});
@@ -34,7 +34,6 @@ test('applied native timetable displays the finite window and explicit OD, not a
  assignment:{rail:[{trips:70,time:{wait_seconds:360,ride_seconds:150}}],alternative_trips:30,unserved_trips:0,unresolved_trips:0}});
  render(panel(false));
  expect(await screen.findByText(/終了後に自動で延長しません/)).toBeTruthy();
- expect(screen.getByText(/鉄道・バスの全ダイヤが消去されます/)).toBeTruthy();
  expect(screen.getByText(/朝ラッシュ 06:00～10:00：6分おき/)).toBeTruthy();
  expect(screen.queryByRole('button',{name:'時間帯ダイヤを適用'})).toBeNull();
  fireEvent.click(screen.getByRole('button',{name:'この時間の固定ODを試算'}));
@@ -74,4 +73,19 @@ test.each([330_000,14_460_000,0])('does not round or silently replace unsupporte
  fireEvent.click(screen.getByRole('button',{name:'時間帯ダイヤを適用'}));
  expect(apply).toHaveBeenCalledWith({service:'3',expected:'edit',baseMinutes:7,
   overrides:{earlyMorning:null,morningRush:null,midday:null,eveningRush:null,lateNight:null},boundariesMinutes:bounds});
+});
+
+test('multi-day time bands preserve the prior duration on edit and send the validated day count',async()=>{
+ ipc.mockResolvedValueOnce({...plain,authored:{baseMinutes:10,overrides:rates,boundariesMinutes:bounds,startMs:60_000,endMs:60_000+7*86_400_000},departureCount:651});
+ render(panel());
+ fireEvent.click(await screen.findByRole('button',{name:'時間帯ダイヤを変更'}));
+ const days=screen.getByLabelText('有効期間（ゲーム日）') as HTMLInputElement;
+ expect(days.value).toBe('7');
+ fireEvent.change(days,{target:{value:'31'}});
+ fireEvent.submit(days.closest('form')!);
+ expect(screen.getByRole('alert').textContent).toMatch(/1〜30ゲーム日/);
+ expect(apply).not.toHaveBeenCalled();
+ fireEvent.change(days,{target:{value:'14'}});
+ fireEvent.click(screen.getByRole('button',{name:'変更を適用'}));
+ expect(apply).toHaveBeenCalledWith({service:'3',expected:'edit',baseMinutes:10,overrides:rates,boundariesMinutes:bounds,activeDays:14});
 });

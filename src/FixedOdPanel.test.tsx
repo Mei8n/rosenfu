@@ -182,3 +182,45 @@ test('keeps the captured minute and marks it stale after a clock tick without re
   'operation_snapshot','preview_observed_fixed_od','advance_operation'
  ]);
 });
+
+function budgetInput(){
+ fireEvent.change(screen.getByLabelText('出発駅'),{target:{value:'1'}});
+ fireEvent.change(screen.getByLabelText('到着駅'),{target:{value:'2'}});
+ fireEvent.change(screen.getByLabelText('鉄道以外の所要時間（分・任意）'),{target:{value:'30'}});
+ fireEvent.click(screen.getByLabelText('運賃と費用を比較する'));
+ fireEvent.change(screen.getByLabelText('公共交通の運賃（円／乗車）'),{target:{value:'200'}});
+ fireEvent.change(screen.getByLabelText('代替手段の費用（円／移動）'),{target:{value:'100'}});
+ fireEvent.change(screen.getByLabelText('時間価値（円／時）'),{target:{value:'1200'}});
+ fireEvent.change(screen.getByLabelText('乗車ごとにかかる費用（円／乗車）'),{target:{value:'25'}});
+ fireEvent.click(screen.getByRole('button',{name:'需要を試算'}));
+}
+test('priced preview asks native routing and counts transfers once per boarding rather than counting route segments',async()=>{
+ vi.mocked(invoke).mockResolvedValue({...result,rail:[
+  {...result.rail[0],services:['3'],stations:['1','6','2'],trips:50},
+  {...result.rail[0],services:['3','4'],stations:['1','6','2'],trips:25},
+ ]});
+ render(<FixedOdPanel stations={stations} services={[...services,{id:'4',name:'普通'}]} enabled worldVersion={1}/>);
+ budgetInput();
+ expect(invoke).toHaveBeenCalledExactlyOnceWith('preview_fixed_od',{
+  originStationId:'1',destinationStationId:'2',trips:100,alternativeSeconds:1800,
+  prices:{publicFareYen:200,alternativeCostYen:100,valueOfTimeYenPerHour:1200},
+ });
+ const budget=await screen.findByRole('region',{name:'この需要条件の運賃と費用の概算'});
+ expect(within(budget).getByText('100回',{selector:'dd'})).toBeTruthy();
+ expect(within(budget).getByText('20,000円',{selector:'dd'})).toBeTruthy();
+ expect(within(budget).getByText('2,500円',{selector:'dd'})).toBeTruthy();
+ expect(within(budget).getByText('17,500円',{selector:'dd'})).toBeTruthy();
+ expect(within(budget).getByText('普通: 25回 / 4,375円')).toBeTruthy();
+ expect((screen.getByRole('button',{name:'運行の遅れを含めて試算'}) as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.change(screen.getByLabelText('公共交通の運賃（円／乗車）'),{target:{value:'300'}});
+ expect(screen.queryByRole('region',{name:'この需要条件の運賃と費用の概算'})).toBeNull();
+});
+test.each([
+ {...result,search_complete:false,unresolved_trips:100},
+ {...result,potential_trips:null},
+])('never shows projected money for unresolved or unknown demand',async allocation=>{
+ vi.mocked(invoke).mockResolvedValue(allocation);
+ render(panel());budgetInput();
+ await screen.findByRole('region',{name:'ダイヤを使った需要試算結果'});
+ expect(screen.queryByRole('region',{name:'この需要条件の運賃と費用の概算'})).toBeNull();
+});

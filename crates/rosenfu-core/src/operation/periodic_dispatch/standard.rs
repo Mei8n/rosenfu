@@ -204,6 +204,38 @@ impl OperationRuntime {
         Ok(())
     }
 
+    /// Return just this origin to its untouched absolute timetable. Any
+    /// departure at or before the processed tick stays in the past.
+    pub(crate) fn clear_standard_timetable(
+        &mut self,
+        service_id: &str,
+    ) -> Result<(), OperationError> {
+        if !self.paused
+            || !self.started
+            || !self.trains.is_empty()
+            || !self.occupied.is_empty()
+            || !self.timetable_handoffs.is_empty()
+        {
+            return Err(OperationError::InvalidClock);
+        }
+        if self
+            .standard_timetable
+            .as_ref()
+            .is_none_or(|active| active.service_id != service_id)
+        {
+            return Err(OperationError::InvalidTimetable);
+        }
+        let service = self
+            .services
+            .get_mut(service_id)
+            .filter(|service| service.departure_source.is_periodic())
+            .ok_or(OperationError::InvalidTimetable)?;
+        service.departure_source = DepartureSource::Absolute;
+        service.next_departure = service.next_unprocessed_departure(true, self.now_ms);
+        self.standard_timetable = None;
+        Ok(())
+    }
+
     pub(crate) fn saved_standard_timetable(&self) -> Option<&StandardDailyV1> {
         self.standard_timetable.as_ref()
     }

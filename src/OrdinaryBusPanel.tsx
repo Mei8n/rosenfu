@@ -23,6 +23,7 @@ export function useOrdinaryBusDraft(input:Input){
  const [autoStops,setAutoStops]=useState(false);
  const [newRoute,setNewRoute]=useState(false);
  const [respectOneway,setRespectOneway]=useState(false);
+ const [newPattern,setNewPattern]=useState<'roundTrip'|'oneWay'>('roundTrip');
  const [name,setName]=useState('バス系統');
  const [error,setError]=useState('');
  const [waiting,setWaiting]=useState(false);
@@ -39,7 +40,7 @@ export function useOrdinaryBusDraft(input:Input){
   job.current?.abort();job.current=undefined;setWaiting(false);setDraft(undefined);setError('');setDeleting(false);
  }
  useEffect(()=>{
-  cancel();setRespectOneway(false);
+  cancel();setRespectOneway(false);setNewPattern('roundTrip');
   return ()=>{job.current?.abort();job.current=undefined;};
  },[input.on,input.scope]);
  function start(kind:'new'|'edit'|'fractional'){
@@ -49,7 +50,7 @@ export function useOrdinaryBusDraft(input:Input){
   const generalFractional=!!editing?.path?.fractionalTerminals||kind==='fractional'&&!!input.generalFractionalAvailable;
   const fractional=generalFractional||kind==='fractional'||!!editing?.path?.sameAtomStops;
   if(fractional&&(!input.fractionalAvailable||generalFractional&&!input.generalFractionalAvailable||editing?.pattern))return;
-  const pattern=fractional?undefined:editing?editing.pattern:input.roundTrip?'openRoundTrip':undefined;
+  const pattern=fractional?undefined:editing?editing.pattern:input.roundTrip&&newPattern==='roundTrip'?'openRoundTrip':undefined;
   cancel();const spec={id:editing?.id??`bus:${crypto.randomUUID()}`,pattern,
    ...(fractional?{fractional:true as const}:{}),
    ...(generalFractional?{generalFractional:true as const,savedInteriorStops:editing?.path?.interiorStops}:{}),
@@ -125,7 +126,7 @@ export function useOrdinaryBusDraft(input:Input){
  }
  function selectDeleting(value:boolean){setError('');setDeleting(value);}
  const visible=usingWaypoints&&draft?{...draft,pattern:waypoints.closed?'closedOneWay' as const:draft.pattern,start:waypoints.controls[0]?.anchor,end:waypoints.controls.length>1?waypoints.controls.at(-1)?.anchor:undefined,preview:waypoints.preview}:draft;
- return {draft:visible,name,setName,autoStops,setAutoStops,respectOneway,setRespectOneway,showAuto:!!input.autoStopsAvailable&&usingWaypoints&&newRoute,error:error||waypoints.error,waiting:waiting||waypoints.checking||waypoints.committing,deleting,selectDeleting,start,cancel,pick,commit,remove,
+ return {draft:visible,name,setName,autoStops,setAutoStops,respectOneway,setRespectOneway,showAuto:!!input.autoStopsAvailable&&usingWaypoints&&newRoute,chooseNewPattern:input.roundTrip,newPattern,setNewPattern,error:error||waypoints.error,waiting:waiting||waypoints.checking||waypoints.committing,deleting,selectDeleting,start,cancel,pick,commit,remove,
   mutating:()=>mutation.current||waypoints.committing,rectangle:!!input.observe&&!draft?.fractional,waypoints:usingWaypoints,fractionalAvailable:!!input.fractionalAvailable,
   extending:waypoints.extending&&!waypoints.closed,closed:waypoints.closed,closedCapable:!!input.closedCapable&&newRoute,exitExtension:waypoints.exitExtension,offerHover:waypoints.offerHover,clearHover:waypoints.clearHover,hoverPreview:waypoints.hoverPreview,allowFinish:waypoints.ready,controls:waypoints.controls,activeControl:waypoints.active==='start'?waypoints.controls[0]?.id:waypoints.controls.at(-1)?.id,
   failedLeg:waypoints.failedLeg,refusedControls:waypoints.frame?.refusal?.attempt.controls,
@@ -139,6 +140,8 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
  roadSource:Pick<RoadDataState,'status'|'message'>&{retry:()=>void};
 }){
  const {draft,waiting,error}=state,disabled=!enabled||waiting;
+ const oneWayGuidance=state.chooseNewPattern&&(!route||multiple)
+  ?'片道で運行する場合は下書きを取り消し、新しい系統を「片道」で作成してください。':'';
  const tileLimit=state.rectangle?OFM_EVIDENCE_LIMITS.batchTiles:1;
  const chosen=state.waypoints?state.controls.map(({anchor})=>anchor.tile):[draft?.start?.tile,draft?.end?.tile].filter(tile=>tile!==undefined);
  let tileFootprint:number|undefined;
@@ -161,6 +164,10 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
     <p>タイル数は取得済みの件数ではありません。経路が成立するか、転送上限に収まるかは別に確認します。</p>
    </details>
    {!draft&&!state.deleting&&(!route||multiple)&&<>
+    {state.chooseNewPattern&&<label>新しいバス系統の運行方向<select value={state.newPattern} disabled={disabled}
+     onChange={event=>state.setNewPattern(event.target.value==='oneWay'?'oneWay':'roundTrip')}>
+     <option value="roundTrip">往復（往路と復路を確認）</option><option value="oneWay">片道（起点から終点のみ）</option>
+    </select></label>}
     <label><input type="checkbox" style={{width:"auto"}} checked={state.respectOneway} disabled={disabled}
      onChange={event=>state.setRespectOneway(event.target.checked)}/>地図データの一方通行に従う</label>
     <button type="button" disabled={disabled} onClick={()=>state.start('new')}>新しいバス系統</button>
@@ -170,6 +177,7 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
    {route&&(routes.length>1?<label>表示するバス系統<select value={route.id} disabled={disabled||!!draft||state.deleting}
     onChange={e=>onSelect(e.target.value)}>{routes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label>:<p>{route.name}</p>)}
    {route&&!draft&&!state.deleting&&<>
+    {state.chooseNewPattern&&<p>運行方向: {route.pattern==='openRoundTrip'?'往復':route.pattern==='closedOneWay'?'環状':'片道'}</p>}
     <button type="button" disabled={disabled||!!(route.path?.sameAtomStops||route.path?.fractionalTerminals)&&(!state.fractionalAvailable||!!route.pattern)}
      onClick={()=>state.start('edit')}>バス系統を引き直す</button>
     <button type="button" disabled={disabled} onClick={()=>state.selectDeleting(true)}>系統を削除</button>
@@ -178,6 +186,7 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
     {tileFootprint!==undefined&&<p>選択点から必要な確認範囲: {tileFootprint} / {tileLimit} タイル</p>}
     <label>バス系統名<input maxLength={120} autoComplete="off" value={state.name} disabled={disabled} onChange={e=>state.setName(e.target.value)}/></label>
     {draft.respectOneway&&<p>地図データの一方通行に従います</p>}
+    {!draft.fractional&&state.chooseNewPattern&&!state.closed&&<p>運行方向: {draft.pattern==='openRoundTrip'?'往復':'片道'}</p>}
     {draft.fractional&&<p>{draft.generalFractional?"確認できる道路を経由する片道系統です。復路は追加できません。":"同じ道路の一部分だけを使う片道系統です。交差点、途中停留所、複数の地図区画をまたぐ併用軌道・時間帯ダイヤとの併用はこの版では対応しません。"}</p>}
     {state.showAuto&&<label>停留所の配置<select value={state.autoStops?'auto':'manual'} disabled={disabled} onChange={event=>state.setAutoStops(event.target.value==='auto')}>
      <option value="auto">自動（およそ2km間隔）</option><option value="manual">手動（起点・終点のみ）</option>
@@ -185,7 +194,9 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
     <p role="status">{waiting?'道路経路を確認中':draft.preview?`道路経路 ${draft.fractional?Number(draft.preview.lengthM.toFixed(3)):Math.round(draft.preview.lengthM)} m・${state.showAuto&&state.autoStops?'途中停留所は確定時に配置':`停留所${(state.closed?1:2)+(draft.preview.interiorStops?.length??0)+(draft.preview.loopFallbackStop?1:0)}か所`}`:draft.start?(state.waypoints?'道路上の次の点を選択':'道路上の終点を選択'):'道路上の起点を選択'}</p>
     {draft.preview?.loopFallbackStop&&<p>{draft.preview.loopFallbackStop.name}（自動）</p>}
     {draft.preview?.returnPath&&<p>復路 {Math.round(draft.preview.returnPath.lengthM)} m</p>}
-    {draft.preview?.returnUnavailableReason&&<p role="alert">復路を作れません。{draft.preview.returnUnavailableReason}</p>}
+    {draft.preview?.returnUnavailableReason&&<p role="alert">復路を作れません。{draft.preview.returnUnavailableReason}
+     {oneWayGuidance&&<> {oneWayGuidance}</>}
+    </p>}
     {!draft.fractional&&<p>{state.rectangle?"近い範囲の道路を経由します。遠い場合や範囲内に確認できない道路がある場合は選び直してください。":"この版では同じ取得範囲で起点と終点を選びます。"}停留所は両端に作られます。</p>}
     {state.waypoints&&<><p>{state.closed?'環状系統（片方向）。線や点をドラッグして編集できます。':state.extending?
       (state.closedCapable?'道路を順にクリック。起点をクリックすると環状に、現在の端点かEnterで確定。':'道路を順にクリック。現在の端点をもう一度クリックするか、Enterで確定。'):
@@ -206,6 +217,6 @@ export function OrdinaryBusPanel({state,route,routes,onSelect,multiple,blocked,e
     <button type="button" disabled={disabled} onClick={()=>state.selectDeleting(false)}>削除を取り消す</button>
    </div>}
   </>}
-  {error&&<p role="alert">{error}</p>}
+  {error&&<p role="alert">{error}{!draft?.preview?.returnUnavailableReason&&error.startsWith('復路を作れません。')&&oneWayGuidance&&<> {oneWayGuidance}</>}</p>}
  </section>;
 }

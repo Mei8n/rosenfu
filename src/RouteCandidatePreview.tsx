@@ -85,7 +85,14 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
   finally{if(token===generation.current)setLoading(false);}
  }
  const lookup=(ids:string[])=>invoke<Candidates>('preview_route_candidates',{start:ids[0],end:ids.at(-1),...(ids.length>2?{viaStationIds:ids.slice(1,-1)}:{})});
- function applyMapEdit(id:string,endpoint?:EndpointPick){
+ function orderedChoice(ids:string[],result:Candidates){
+  if(result.truncated||result.status==='incomplete')throw Error('経路を確認しきれませんでした。元の編集内容を保持しています');
+  if(result.status==='no_path'||!result.candidates.length)throw Error('この順序では接続できません。元の編集内容を保持しています');
+  const shortest=result.shortest_candidate_index;
+  const index=Number.isInteger(shortest)&&shortest!>=0&&shortest!<result.candidates.length?shortest!:result.candidates.length===1?0:null;
+  return {ids,result,index};
+ }
+ function applyMapEdit(id:string,endpoint?:EndpointPick,reorder?:{direction:-1|1}){
   const session=generation.current;
   const current=()=>session===generation.current&&(!endpoint||endpointPick.current===endpoint);
   editQueue.current=editQueue.current.then(async()=>{
@@ -95,15 +102,17 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
    setLoading(true);setError("");
    try{
     let choice:{ids:string[];result:Candidates;index:number|null};
-    if(endpoint){
+    if(reorder){
+     const ids=[...orderedRef.current],from=ids.indexOf(id),to=from+reorder.direction;
+     if(from<1||from>=ids.length-1||to<1||to>=ids.length-1)return;
+     [ids[from],ids[to]]=[ids[to],ids[from]];
+     choice=orderedChoice(ids,await lookup(ids));
+    }else if(endpoint){
      const ids=replaceStationEndpoint(orderedRef.current,endpoint.side,id);
      if(ids.every((station,i)=>station===orderedRef.current[i])&&ids.length===orderedRef.current.length)return;
      const result=await lookup(ids);
-     if(result.truncated||result.status==='incomplete')throw Error('経路を確認しきれませんでした。元の編集内容を保持しています');
-     if(result.status==='no_path'||!result.candidates.length)throw Error('この駅には接続できません。元の編集内容を保持しています');
-     const shortest=result.shortest_candidate_index;
-     const index=Number.isInteger(shortest)&&shortest!>=0&&shortest!<result.candidates.length?shortest!:result.candidates.length===1?0:null;
-     choice={ids,result,index};
+     if(!result.truncated&&result.status!=='incomplete'&&(result.status==='no_path'||!result.candidates.length))throw Error('この駅には接続できません。元の編集内容を保持しています');
+     choice=orderedChoice(ids,result);
     }else{
      const length=editingInputs.current.candidateLength;
      if(!length)throw Error('経路の比較に必要な地図情報がありません');
@@ -167,7 +176,11 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
   <ol aria-label="選択した駅">{ordered.map((id,i)=>{
    const side=i===0?'start':i===ordered.length-1?'end':null;
    const role=side==='start'?'始点':side==='end'?'終点':'経由';
-   return <li key={id}>{editingMap&&side?<button type="button" className="secondary" disabled={!enabled||saving||loading||stale} aria-pressed={mapPickTarget===side} onClick={()=>mapPickTarget===side?beginSequence():beginEndpoint(side)}>{role}を変更: {stationName(id)}</button>:<>{stationName(id)}（{role}）</>}</li>;
+   return <li key={id}>{editingMap&&side?<button type="button" className="secondary" disabled={!enabled||saving||loading||stale} aria-pressed={mapPickTarget===side} onClick={()=>mapPickTarget===side?beginSequence():beginEndpoint(side)}>{role}を変更: {stationName(id)}</button>:<>{stationName(id)}（{role}）</>}
+    {!side&&ordered.length>=4&&<span className="route-via-actions">
+     <button type="button" className="secondary" disabled={!enabled||saving||loading||stale||i===1} aria-label={stationName(id)+'を一つ前へ'} onClick={()=>applyMapEdit(id,undefined,{direction:-1})}>↑</button>
+     <button type="button" className="secondary" disabled={!enabled||saving||loading||stale||i===ordered.length-2} aria-label={stationName(id)+'を一つ後ろへ'} onClick={()=>applyMapEdit(id,undefined,{direction:1})}>↓</button>
+    </span>}</li>;
   })}</ol>
   {mapPickTarget!=="sequence"&&<button disabled={!enabled||saving} onClick={beginSequence}>{mapPickTarget?"端点の選択をやめる":"駅の選択を再開"}</button>}
   {stale&&<button disabled={!enabled||loading||saving} onClick={()=>void search([...orderedRef.current])}>経路を再確認</button>}

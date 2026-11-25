@@ -276,3 +276,35 @@ test('cancelled endpoint mode ignores a late connected candidate and does not re
  expect(onCandidateChange).toHaveBeenLastCalledWith(path);
  expect(screen.queryByText('経路を確認中…')).toBeNull();
 });
+
+test('via order uses the native physical path and preserves the previous candidate when a reorder cannot connect',async()=>{
+ const ids=['1','2','4','3'];
+ const rows=[...stations,{id:'4',name:'経由先'}];
+ const build=(order:string[]):Candidate=>({stations:order,segments:order.slice(1).map((to,i)=>({kind:'alignment',alignment_id:'a',from:order[i],to}))});
+ const original=build(ids),onSave=vi.fn().mockResolvedValue(undefined);
+ let reject=true;
+ vi.mocked(invoke).mockImplementation(async(command,args)=>{
+  if(command==='preview_route_candidates'){
+   const a=args as {start:string;end:string;viaStationIds:string[]};
+   if(reject)return {status:'no_path',candidates:[],truncated:false};
+   return {status:'unique',candidates:[build([a.start,...a.viaStationIds,a.end])],truncated:false};
+  }
+  const a=args as {start:string;segments:Candidate['segments']};
+  const candidate=build([a.start,...a.segments.map(x=>x.to)]);
+  return {path:candidate,member_stations:candidate.stations,excluded_stations:[]};
+ });
+ render(<RouteCandidatePreview entityLabel="系統" editRoute={{id:'service',name:'普通',path:original}} stations={rows} worldVersion={world}
+  startSequenceKey={1} mapPickTarget="sequence" enabled canApply onSave={onSave}/>);
+ const down=screen.getByRole('button',{name:'中間を一つ後ろへ'});
+ fireEvent.click(down);await screen.findByText(/この順序では接続できません/);
+ expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'3',viaStationIds:['4','2']});
+ const order=()=>Array.from(screen.getByRole('list',{name:'選択した駅'}).querySelectorAll('li')).map(li=>li.textContent);
+ expect(order()[1]).toContain('中間');
+ expect(finish().disabled).toBe(false);
+ expect(onSave).not.toHaveBeenCalled();
+ reject=false;fireEvent.click(down);
+ await waitFor(()=>expect(order()[1]).toContain('経由先'));
+ expect(order()[2]).toContain('中間');
+ expect(onSave).not.toHaveBeenCalled();
+ fireEvent.click(finish());await waitFor(()=>expect(onSave).toHaveBeenCalledWith('普通',expect.objectContaining({path:build(['1','4','2','3'])})));
+});

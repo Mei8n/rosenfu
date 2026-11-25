@@ -1,7 +1,7 @@
 use super::*;
 use rosenfu_core::operation::{RailWaitReason, RailWaitScope, Timetable, Train, Vehicle};
 use rosenfu_core::world::FixedOdScenario;
-use rosenfu_core::world::{LiveBusMarker, LiveRailMarker, OperationServiceConfig};
+use rosenfu_core::world::{LiveBusMarker, LiveRailMarker, OperationServiceConfig, VehicleViewport};
 #[path = "operation/bus_transfers.rs"]
 mod bus_transfers;
 #[path = "operation/crossing_planning.rs"]
@@ -229,7 +229,11 @@ impl WorldEditor {
     }
 
     pub fn operation_snapshot(&self) -> OperationView {
-        self.full_operation_view(self.live_operation_view())
+        self.operation_snapshot_in(None)
+    }
+
+    pub fn operation_snapshot_in(&self, viewport: Option<VehicleViewport>) -> OperationView {
+        self.full_operation_view(self.live_operation_view(viewport))
     }
 
     fn full_operation_view(&self, live: OperationLiveView) -> OperationView {
@@ -245,7 +249,7 @@ impl WorldEditor {
         }
     }
 
-    fn live_operation_view(&self) -> OperationLiveView {
+    fn live_operation_view(&self, viewport: Option<VehicleViewport>) -> OperationLiveView {
         let o = self.world.operation();
         let now_ms = o.map_or(0, |o| o.runtime.now_ms());
         let configuration_token = self.operation_configuration_token();
@@ -261,8 +265,8 @@ impl WorldEditor {
             rail_timetable_handoff_in_progress: o
                 .is_some_and(|op| op.runtime.rail_timetable_handoff_in_progress()),
             configuration_token,
-            rail_markers: self.world.live_ground_rail_markers(),
-            bus_markers: self.world.live_straight_bus_markers(),
+            rail_markers: self.world.live_rail_markers_in(viewport),
+            bus_markers: self.world.live_bus_markers_in(viewport),
             #[cfg(feature = "standard-periodic-rail")]
             standard_schedule_active: self.world.has_standard_timetable(),
             trains: o
@@ -533,16 +537,34 @@ impl WorldEditor {
 
     /// A client only receives a lean tick if it has exactly the authoritative
     /// rail and bus configurations for this world/revision.
+    #[cfg(test)]
     pub fn advance_operation_with_configuration(
         &mut self,
         known_configuration_token: Option<&str>,
     ) -> Result<OperationTickView, String> {
-        self.advance_operation_state_at(std::time::Instant::now())?;
-        Ok(self.operation_tick_view(known_configuration_token))
+        self.advance_operation_in(known_configuration_token, None)
     }
 
+    pub fn advance_operation_in(
+        &mut self,
+        known_configuration_token: Option<&str>,
+        viewport: Option<VehicleViewport>,
+    ) -> Result<OperationTickView, String> {
+        self.advance_operation_state_at(std::time::Instant::now())?;
+        Ok(self.operation_tick_view_in(known_configuration_token, viewport))
+    }
+
+    #[cfg(test)]
     fn operation_tick_view(&self, known_configuration_token: Option<&str>) -> OperationTickView {
-        let live = self.live_operation_view();
+        self.operation_tick_view_in(known_configuration_token, None)
+    }
+
+    fn operation_tick_view_in(
+        &self,
+        known_configuration_token: Option<&str>,
+        viewport: Option<VehicleViewport>,
+    ) -> OperationTickView {
+        let live = self.live_operation_view(viewport);
         if known_configuration_token == Some(live.configuration_token.as_str()) {
             OperationTickView::Live(live)
         } else {
@@ -727,6 +749,7 @@ impl WorldEditor {
         )
     }
 
+    #[cfg(test)]
     pub fn preview_fixed_od_with_transfer(
         &self,
         origin_station_id: String,
@@ -734,6 +757,25 @@ impl WorldEditor {
         trips: Option<f64>,
         alternative_seconds: Option<f64>,
         transfer: Option<FixedOdRoadTransfer>,
+    ) -> Result<rosenfu_core::demand::OdAssignment, String> {
+        self.preview_fixed_od_with_prices(
+            origin_station_id,
+            destination_station_id,
+            trips,
+            alternative_seconds,
+            transfer,
+            None,
+        )
+    }
+
+    pub fn preview_fixed_od_with_prices(
+        &self,
+        origin_station_id: String,
+        destination_station_id: String,
+        trips: Option<f64>,
+        alternative_seconds: Option<f64>,
+        transfer: Option<FixedOdRoadTransfer>,
+        prices: Option<rosenfu_core::demand::ChoicePrices>,
     ) -> Result<rosenfu_core::demand::OdAssignment, String> {
         use rosenfu_core::demand::*;
         let scenario = FixedOdScenario {
@@ -834,10 +876,17 @@ impl WorldEditor {
             }],
             alternative_seconds,
         };
-        assign_fixed_od(&[od], &legs, &walks, &ChoiceWeights::default(), 10000)?
-            .into_iter()
-            .next()
-            .ok_or("需要結果がありません。".into())
+        assign_fixed_od_with_prices(
+            &[od],
+            &legs,
+            &walks,
+            &ChoiceWeights::default(),
+            10000,
+            prices,
+        )?
+        .into_iter()
+        .next()
+        .ok_or("需要結果がありません。".into())
     }
 }
 
@@ -907,6 +956,24 @@ mod tests {
                 scenario.alternative_seconds,
             )
             .unwrap();
+        let before_priced = editor.world.clone();
+        let priced = editor
+            .preview_fixed_od_with_prices(
+                scenario.origin_station_id.clone(),
+                scenario.destination_station_id.clone(),
+                scenario.trips,
+                scenario.alternative_seconds,
+                None,
+                Some(rosenfu_core::demand::ChoicePrices {
+                    public_fare_yen: 500,
+                    alternative_cost_yen: 0,
+                    value_of_time_yen_per_hour: 1200,
+                }),
+            )
+            .unwrap();
+        assert_eq!(preview.rail[0].time, priced.rail[0].time);
+        assert!(priced.alternative_trips > preview.alternative_trips);
+        assert_eq!(editor.world, before_priced);
         assert_eq!(preview.rail[0].time.wait_seconds, 30.0);
         assert!(preview.rail[0].time.ride_seconds > 0.0);
         assert_eq!(editor.fixed_od_scenario().scenario, Some(scenario.clone()));
@@ -1154,6 +1221,80 @@ mod tests {
         assert_eq!(
             rosenfu_storage::encode(&rosenfu_storage::decode(&departed).unwrap()).unwrap(),
             departed
+        );
+    }
+
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn standard_time_bands_repeat_on_later_days_and_reopen_without_a_schema_change() {
+        use rosenfu_core::operation::periodic_dispatch::standard::NamedBandOverrides;
+        const DAY: u64 = 86_400_000;
+        let mut e = editor();
+        let before = e.operation_snapshot();
+        let service = before.services[0].service_id;
+        let rates = NamedBandOverrides {
+            early_morning: None,
+            morning_rush: Some(6),
+            midday: None,
+            evening_rush: None,
+            late_night: None,
+        };
+        let bounds = [0, 360, 600, 960, 1200, 1440];
+        let original = rosenfu_storage::encode(&e.world).unwrap();
+        for invalid in [0, 31] {
+            assert!(e
+                .apply_standard_schedule_for_days(
+                    service,
+                    &before.timetable_edit_token,
+                    12,
+                    rates.clone(),
+                    bounds,
+                    invalid,
+                )
+                .is_err());
+            assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), original);
+        }
+        e.apply_standard_schedule_for_days(
+            service,
+            &before.timetable_edit_token,
+            12,
+            rates,
+            bounds,
+            7,
+        )
+        .unwrap();
+
+        let encoded = rosenfu_storage::encode(&e.world).unwrap();
+        let reopened = rosenfu_storage::decode(&encoded).unwrap();
+        assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), encoded);
+        for world in [&e.world, &reopened] {
+            let grid = world
+                .operation()
+                .unwrap()
+                .runtime
+                .standard_departure_grid(&service.0.to_string())
+                .unwrap();
+            assert_eq!(grid.active_window(), 60_000..60_000 + 7 * DAY);
+            for day in [0, DAY, 6 * DAY] {
+                assert_eq!(grid.departure_count(day + 21_600_000..day + 25_200_000), 10);
+                assert_eq!(grid.departure_count(day + 43_200_000..day + 46_800_000), 5);
+            }
+            assert_eq!(grid.departure_count(7 * DAY + 60_000..8 * DAY), 0);
+        }
+
+        let active = e.operation_snapshot();
+        assert!(e.restore_simple_rail_schedule(service, "stale").is_err());
+        assert_eq!(rosenfu_storage::encode(&e.world).unwrap(), encoded);
+        let restored = e
+            .restore_simple_rail_schedule(service, &active.timetable_edit_token)
+            .unwrap();
+        assert!(!restored.standard_schedule_active);
+        assert_eq!(restored.now_ms, active.now_ms);
+        assert_eq!(restored.services[0].timetable, before.services[0].timetable);
+        let simple = rosenfu_storage::encode(&e.world).unwrap();
+        assert_eq!(
+            rosenfu_storage::encode(&rosenfu_storage::decode(&simple).unwrap()).unwrap(),
+            simple
         );
     }
 

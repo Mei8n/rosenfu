@@ -957,6 +957,7 @@ fn main() {
             operation_commands::operation_snapshot,
             operation_commands::standard_schedule_status,
             operation_commands::apply_standard_schedule,
+            operation_commands::restore_simple_rail_schedule,
             operation_commands::preview_standard_schedule_od,
             operation_commands::preview_crossing_planning,
             operation_commands::preview_fixed_od,

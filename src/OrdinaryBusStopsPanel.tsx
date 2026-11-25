@@ -124,6 +124,14 @@ export function useOrdinaryBusStops(input:Input){
 
 export function OrdinaryBusStopsPanel({state}:{state:ReturnType<typeof useOrdinaryBusStops>}){
  const {draft,busy,choices,error,movingStopId}=state;
+ // The confirmed occurrence keys follow the outbound path, even when a
+ // geometrically identical segment is traversed more than once. Only reorder
+ // the view: authored IDs and their serialized order remain unchanged.
+ const sequence=new Map(draft?.preview.stopOccurrenceKeys.map((key,index)=>[key,index]));
+ const ordered=[...(draft?.stops??[])].sort((a,b)=>
+  (sequence.get(a.occurrenceKey)??Infinity)-(sequence.get(b.occurrenceKey)??Infinity)||a.fractionQ-b.fractionQ);
+ const views=new Map(draft?.preview.interiorStops?.map(view=>[view.id,view]));
+
  return <section aria-label="途中停留所の編集">
   <h3>途中停留所</h3>
   <p>{draft?.proof.path.pattern==='closedOneWay'?'経路上をクリックして追加。起終点はそのまま残ります。途中停留所がない場合は中間に自動停車します。':'経路上をクリックして追加。起点と終点の停留所はそのまま残ります。'}</p>
@@ -131,8 +139,8 @@ export function OrdinaryBusStopsPanel({state}:{state:ReturnType<typeof useOrdina
   {movingStopId&&<button type="button" onClick={state.cancelMove}>位置の変更を取り消す</button>}
   {draft?.preview.loopFallbackStop&&<p>{draft.preview.loopFallbackStop.name}（自動・追加すると置き換わります）</p>}
   {busy&&<p role="status">停留所を確認中</p>}
-  {draft?.stops.length?<ol>{draft.stops.map((st,i)=>{
-    const view=draft.preview.interiorStops?.find(item=>item.id===st.id);
+  {draft&&ordered.length?<ol aria-label="往路の停車順">{ordered.map((st,i)=>{
+    const view=views.get(st.id);
     return <li key={st.id}>
      <label>停留所名 {i+1}<input value={st.name} autoComplete="off" maxLength={200} disabled={busy||!!movingStopId} onChange={e=>state.rename(st.id,e.target.value)}/></label>
      {draft.preview.returnPath&&view&&!view.servesReturn&&<span> 往路のみ</span>}

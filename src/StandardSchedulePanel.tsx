@@ -3,7 +3,7 @@ import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {StandardRailFrequencyFields,frequencyBands,parseFrequencyDraft,type FrequencyBand,type FrequencyDraft} from './StandardRailFrequencyFields';
 
 type Overrides=Record<FrequencyBand,number|null>;
-export type ApplyStandardSchedule={service:string;expected:string;baseMinutes:number;overrides:Overrides;boundariesMinutes:number[]};
+export type ApplyStandardSchedule={service:string;expected:string;baseMinutes:number;overrides:Overrides;boundariesMinutes:number[];activeDays?:number};
 type Setup={baseMinutes:number;overrides:Overrides;boundariesMinutes:number[];startMs:number;endMs:number};
 type Stop={id:string;name:string};
 type Status={configurationToken:string;serviceId:string;canApply:boolean;activeElsewhere:boolean;hasBusConfigs?:boolean;authored:Setup|null;departureCount:number|null;origin:Stop|null;destinations:Stop[]};
@@ -16,13 +16,14 @@ function clockMinutes(m:number){return `${String(Math.floor(m/60)).padStart(2,'0
 function number(raw:string,min:number,max:number){const n=Number(raw);return /^[0-9]+$/.test(raw)&&Number.isSafeInteger(n)&&n>=min&&n<=max?n:null;}
 const bandNames=[...frequencyBands.map(row=>row[1]),'深夜の終了'];
 
-export function StandardSchedulePanel({service,revision,operationToken,currentHeadwayMs,enabled,canApply,applyBlocker,apply}:{service:string;revision:string;operationToken:string;currentHeadwayMs?:number;enabled:boolean;canApply:boolean;applyBlocker?:string|null;apply:(args:ApplyStandardSchedule)=>Promise<void>}){
+export function StandardSchedulePanel({service,revision,operationToken,currentHeadwayMs,originalLastDepartureMs,nowMs,enabled,canApply,applyBlocker,apply,restore}:{service:string;revision:string;operationToken:string;currentHeadwayMs?:number;originalLastDepartureMs?:number;nowMs?:number;enabled:boolean;canApply:boolean;applyBlocker?:string|null;apply:(args:ApplyStandardSchedule)=>Promise<void>;restore?:(args:{service:string;expected:string})=>Promise<void>}){
  const [status,setStatus]=useState<Status|null>(null),[error,setError]=useState('');
  const currentMinutes=(currentHeadwayMs??0)/minute;
  const inheritedBase=Number.isInteger(currentMinutes)&&currentMinutes>=1&&currentMinutes<=240?String(currentMinutes):'';
  const [draft,setDraft]=useState<FrequencyDraft>({baseMinutes:inheritedBase,overrides:{}});
  const [bounds,setBounds]=useState<string[]>(provisional);
  const [editing,setEditing]=useState(false);
+ const [activeDays,setActiveDays]=useState('1');
  const authored=status?.authored;
  function startEdit(){
   if(!authored)return;
@@ -30,6 +31,7 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
    frequencyBands.flatMap(([id])=>authored.overrides[id]===null?[]:[[id,String(authored.overrides[id])]]),
   )});
   setBounds(authored.boundariesMinutes.map(String));
+  setActiveDays(String(Math.ceil((authored.endMs-authored.startMs)/day)));
   setError('');
   setEditing(true);
  }
@@ -43,6 +45,8 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
  function save(event:FormEvent){
   event.preventDefault();if(!enabled||!canApply||!status?.canApply)return;
   setError('');
+  const days=number(activeDays,1,30);
+  if(days===null){setError('有効期間は1〜30ゲーム日で指定してください。');return;}
   const parsed=parseFrequencyDraft(draft);
   const boundsMinutes=bounds.map(b=>number(b,0,2879));
   if(!parsed||boundsMinutes.some((b,i)=>b===null||(i>0&&b<=(boundsMinutes[i-1]??Infinity)))||
@@ -50,7 +54,7 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
    setError('運転間隔と境界を確認してください。日をまたぐ境界は1440分以上で入力できます。');return;
   }
   const overrides=Object.fromEntries(frequencyBands.map(([id])=>[id,parsed.overrides[id]??null])) as Overrides;
-  void apply({service,expected:operationToken,baseMinutes:parsed.baseMinutes,overrides,boundariesMinutes:boundsMinutes as number[]});
+  void apply({service,expected:operationToken,baseMinutes:parsed.baseMinutes,overrides,boundariesMinutes:boundsMinutes as number[],...(days===1?{}:{activeDays:days})});
  }
  return <section aria-label="標準の時間帯ダイヤ">
   <h5>時間帯ダイヤ</h5>
@@ -65,9 +69,10 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
   </>}
   {status?.activeElsewhere?<p>別の系統が時間帯ダイヤを使用中です。この検証版では同時に1系統までです。</p>:
   status?.canApply&&(!authored||editing)?<form onSubmit={save}>
-   <p>基本の間隔と、必要なら朝夕などの本数を調整できます。適用後、少なくとも1分先の分境界から24ゲーム時間だけ有効です。曜日・祝日で変わりません。</p>
+   <p>基本の間隔と、必要なら朝夕などの本数を調整できます。適用後、少なくとも1分先の分境界から有効になり、指定日数だけ同じ時間帯を繰り返します。曜日・祝日で変わりません。</p>
    {!authored&&!inheritedBase&&<p>従来ダイヤの間隔をそのまま引き継げないため、基本の間隔を1～240分の整数で入力してください。</p>}
    <StandardRailFrequencyFields draft={draft} onChange={setDraft} disabled={!enabled}/>
+   <label>有効期間（ゲーム日）<input type="number" min="1" max="30" step="1" required disabled={!enabled} value={activeDays} onChange={e=>setActiveDays(e.target.value)}/></label>
    <details><summary>時間帯の境界（検証用の仮設定）</summary><p>ゲーム内の0時からの分数。既定の境界は仮設定で、現実の時刻表に基づきません。指定の外は基本間隔です。</p>
     {bounds.map((value,i)=><label key={i}>{bandNames[i]}（分）<input type="number" min="0" max="2879" step="1" value={value} onChange={e=>setBounds(old=>old.map((b,j)=>j===i?e.target.value:b))}/></label>)}
    </details>
@@ -77,12 +82,18 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
    <button type="submit" disabled={!enabled||!canApply}>{authored?'変更を適用':'時間帯ダイヤを適用'}</button>
    {authored&&<button type="button" onClick={()=>{setEditing(false);setError('');}}>変更を取り消す</button>}
   </form>:status&&!authored?<p>この系統ではまだ利用できません。対応する往復系統を従来方式で設定してください。</p>:!status&&!error&&<p>利用条件を確認中…</p>}
-  {authored&&<p>時間帯ダイヤをやめて従来の方式に戻すには「運行をリセット」を使います。時刻、運行中の車両、鉄道・バスの全ダイヤが消去されます。線路・駅・停留所・路線・系統と固定OD設定は残ります。</p>}
+  {authored&&restore&&<div>
+   <p>元の簡易ダイヤに戻すと、この系統の今後の発車だけが変わります。時刻や他の系統のダイヤはそのままです。</p>
+   {nowMs!==undefined&&originalLastDepartureMs!==undefined&&originalLastDepartureMs<=nowMs&&<p>元の終発は過ぎています。戻した後に、簡易ダイヤの発車時刻を設定し直してください。</p>}
+   {!canApply&&!editing&&<p role="status">{applyBlocker??'車両がいない状態で運行を一時停止してください。'}</p>}
+   <button type="button" disabled={!enabled||!canApply||editing} onClick={()=>void restore({service,expected:operationToken})}>元の簡易ダイヤに戻す</button>
+  </div>}
  </section>;
 }
 
 function StandardOdForm({status,stops,enabled}:{status:Status;stops:Stop[];enabled:boolean}){
  const setup=status.authored!;
+ const horizonMinutes=Math.ceil((setup.endMs-setup.startMs)/minute);
  const [origin,setOrigin]=useState(stops[0].id),[destination,setDestination]=useState(stops[1].id);
  const destinations=stops.slice(stops.findIndex(stop=>stop.id===origin)+1);
  const [trips,setTrips]=useState('100'),[alternative,setAlternative]=useState(''),[offset,setOffset]=useState('0'),[duration,setDuration]=useState('60');
@@ -93,7 +104,7 @@ function StandardOdForm({status,stops,enabled}:{status:Status;stops:Stop[];enabl
  async function run(event:FormEvent){
   event.preventDefault();if(!enabled||busy)return;
   const token=++revision.current;setResult(null);setError('');
-  const after=number(offset,0,1440),length=number(duration,1,1440),amount=number(trips,0,1_000_000_000);
+  const after=number(offset,0,horizonMinutes),length=number(duration,1,1440),amount=number(trips,0,1_000_000_000);
   const other=alternative===''?null:number(alternative,1,1440);
   if(after===null||length===null||amount===null||(alternative!==''&&other===null)){setError('人数と試算範囲を確認してください。');return;}
   if(!destinations.some(stop=>stop.id===destination))return;
@@ -118,7 +129,7 @@ function StandardOdForm({status,stops,enabled}:{status:Status;stops:Stop[];enabl
    <label>到着駅<select value={destination} onChange={e=>changed(setDestination,e.target.value)}>{destinations.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
    <label>仮の人数<input type="number" min="0" value={trips} onChange={e=>changed(setTrips,e.target.value)}/></label>
    <label>他の移動方法の所要時間（分・任意）<input type="number" min="1" value={alternative} onChange={e=>changed(setAlternative,e.target.value)}/></label>
-   <label>起点のダイヤ適用開始から何分後に乗車駅で待つか<input type="number" min="0" value={offset} onChange={e=>changed(setOffset,e.target.value)}/></label>
+   <label>起点のダイヤ適用開始から何分後に乗車駅で待つか<input type="number" min="0" max={horizonMinutes} value={offset} onChange={e=>changed(setOffset,e.target.value)}/></label>
    <label>発車を調べる時間（分）<input type="number" min="1" max="1440" value={duration} onChange={e=>changed(setDuration,e.target.value)}/></label>
    <button type="submit">この時間の固定ODを試算</button>
   </fieldset>

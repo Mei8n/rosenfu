@@ -342,6 +342,130 @@ mod tests {
     };
     use crate::operation::TrainState;
 
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn repeating_standard_bands_dispatch_at_later_days_and_stop_at_the_bound() {
+        use standard::{NamedBandOverrides, StandardIntervals};
+
+        let mut runtime = OperationRuntime::new(vec![run(5_000)]).unwrap();
+        let start = 60_000;
+        let end = start + 2 * WORLD_DAY_MS;
+        runtime
+            .set_standard_timetable(
+                "1".into(),
+                StandardIntervals {
+                    base_minutes: 240,
+                    overrides: NamedBandOverrides {
+                        early_morning: None,
+                        morning_rush: Some(6),
+                        midday: None,
+                        evening_rush: None,
+                        late_night: None,
+                    },
+                    boundaries_minutes: [0, 360, 600, 960, 1200, 1440],
+                    start_ms: start,
+                    end_ms: end,
+                },
+            )
+            .unwrap();
+        let grid = runtime.standard_departure_grid("1").unwrap();
+        let morning = 360 * 60_000;
+        let window = |offset| offset + morning..offset + morning + 3_600_000;
+        assert_eq!(grid.active_window(), start..end);
+        assert_eq!(grid.departure_count(window(0)), 10);
+        assert_eq!(grid.departure_count(window(WORLD_DAY_MS)), 10);
+        assert_eq!(grid.departure_count(window(2 * WORLD_DAY_MS)), 0);
+        let before = runtime.advance_to(WORLD_DAY_MS + morning, 10_000).unwrap();
+        assert!(
+            before.reached_target
+                && before
+                    .arrivals
+                    .iter()
+                    .all(|a| a.at_ms < WORLD_DAY_MS + morning)
+        );
+        let later = runtime
+            .advance_to(WORLD_DAY_MS + morning + 45_000, 100)
+            .unwrap();
+        assert!(later.reached_target);
+        assert_eq!(later.arrivals.len(), 2);
+        assert_eq!(later.arrivals[0].train.scheduled_ms, WORLD_DAY_MS + morning);
+        let after = runtime.advance_to(end + 3_600_000, 10_000).unwrap();
+        assert!(after.reached_target);
+        assert!(after.arrivals.iter().all(|a| a.train.scheduled_ms < end));
+        assert!(runtime.trains.is_empty());
+    }
+
+    #[cfg(feature = "standard-periodic-rail")]
+    #[test]
+    fn remove_only_the_selected_periodic_source_and_keep_future_absolute_departures() {
+        use standard::{NamedBandOverrides, StandardIntervals};
+        let mut selected = run(5_000);
+        selected.timetable = super::super::Timetable {
+            first_departure_ms: 300_000,
+            last_departure_ms: 1_500_000,
+            headway_ms: 600_000,
+        };
+        let mut other = run(5_000);
+        other.service_id = "2".into();
+        other.timetable = super::super::Timetable {
+            first_departure_ms: 250_000,
+            last_departure_ms: 1_450_000,
+            headway_ms: 600_000,
+        };
+        for leg in &mut other.legs {
+            leg.sections[0].resources = vec!["rail:2:section:0:lane:0".into()];
+        }
+        let mut runtime = OperationRuntime::new(vec![selected, other]).unwrap();
+        runtime.advance_to(55_000, 10).unwrap();
+        runtime
+            .set_standard_timetable(
+                "1".into(),
+                StandardIntervals {
+                    base_minutes: 10,
+                    overrides: NamedBandOverrides {
+                        early_morning: None,
+                        morning_rush: None,
+                        midday: None,
+                        evening_rush: None,
+                        late_night: None,
+                    },
+                    boundaries_minutes: [0, 360, 600, 960, 1200, 1440],
+                    start_ms: 120_000,
+                    end_ms: 120_000 + WORLD_DAY_MS,
+                },
+            )
+            .unwrap();
+        runtime.advance_to(600_000, 100).unwrap();
+        let busy = runtime.clone();
+        assert_eq!(
+            runtime.clear_standard_timetable("1"),
+            Err(OperationError::InvalidClock)
+        );
+        assert_eq!(runtime, busy);
+        runtime.advance_to(800_000, 100).unwrap();
+        let idle = runtime.clone();
+        assert_eq!(
+            runtime.clear_standard_timetable("2"),
+            Err(OperationError::InvalidTimetable)
+        );
+        assert_eq!(runtime, idle);
+        runtime.clear_standard_timetable("1").unwrap();
+        assert!(!runtime.has_standard_timetable());
+        assert_eq!(runtime.now_ms, 800_000);
+        assert_eq!(runtime.services["1"].next_departure, Some(900_000));
+        assert_eq!(runtime.services["2"], idle.services["2"]);
+        let save = runtime.save();
+        let mut reopened = OperationRuntime::restore(save).unwrap();
+        let next = reopened.advance_to(900_000, 100).unwrap();
+        assert_eq!(next.arrivals.len(), 2);
+        assert!(next.arrivals.iter().all(|a| a.train.service_id == "2"));
+        assert_eq!(reopened.trains.len(), 1);
+        assert_eq!(
+            reopened.trains.values().next().unwrap().key.scheduled_ms,
+            900_000
+        );
+    }
+
     fn timetable_request() -> Vec<DailyServiceBand> {
         vec![
             DailyServiceBand {

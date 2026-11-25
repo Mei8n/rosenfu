@@ -840,8 +840,8 @@ mod operation_adapter;
 #[cfg(feature = "periodic-world-qa")]
 pub use operation_adapter::periodic_qa;
 pub use operation_adapter::{
-    BusOperationConfig, LiveBusMarker, LiveRailMarker, OperationServiceConfig, WorldOperation,
-    WorldOperationSave,
+    BusOperationConfig, LiveBusMarker, LiveRailMarker, OperationServiceConfig, VehicleViewport,
+    WorldOperation, WorldOperationSave,
 };
 
 mod planned_crossing_delay;

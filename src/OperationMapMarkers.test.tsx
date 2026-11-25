@@ -94,3 +94,98 @@ test('ordinary bus uses the same native snapshot and distinct passive road marke
  expect(container.querySelector('[aria-label="表示できる走行中の列車"]')).not.toBeNull();
  expect(invoke).toHaveBeenCalledTimes(3);
 });
+
+test('paused panning requests one read-only scoped snapshot after settling',async()=>{
+ vi.useFakeTimers();
+ const a={left:.1,right:.2,top:.3,bottom:.4},b={...a,left:.12},c={...a,left:.15};
+ const snap=(bounds:typeof a)=><OperationProvider available blocked={false} epoch={1}
+   worldVersion="one" vehicleViewport={bounds} onChange={()=>{}}>
+   <svg><OperationVehicleLayer camera={camera} scale={2}/></svg>
+ </OperationProvider>;
+ vi.mocked(invoke).mockResolvedValue({...snapshot,paused:true});
+ const {rerender}=render(snap(a));
+ await act(async()=>{});
+ expect(invoke).toHaveBeenCalledWith('operation_snapshot',{vehicleViewport:a});
+ rerender(snap(b));
+ await act(async()=>vi.advanceTimersByTime(80));
+ rerender(snap(c));
+ await act(async()=>vi.advanceTimersByTime(119));
+ expect(invoke).toHaveBeenCalledTimes(1);
+ await act(async()=>vi.advanceTimersByTime(1));
+ expect(invoke).toHaveBeenCalledTimes(2);
+ expect(invoke).toHaveBeenLastCalledWith('operation_snapshot',{vehicleViewport:c});
+ await act(async()=>vi.advanceTimersByTime(1000));
+ expect(invoke).toHaveBeenCalledTimes(2);
+});
+
+test('running panning supplies its latest scope to the existing clock tick',async()=>{
+ vi.useFakeTimers();
+ const a={left:.1,right:.2,top:.3,bottom:.4},b={...a,left:.12};
+ const snap=(bounds:typeof a)=><OperationProvider available blocked={false} epoch={1}
+    worldVersion="one" vehicleViewport={bounds} onChange={()=>{}}><div/></OperationProvider>;
+ vi.mocked(invoke).mockResolvedValue(snapshot);
+ const {rerender}=render(snap(a));
+ await act(async()=>{});
+ rerender(snap(b));
+ expect(invoke).toHaveBeenCalledTimes(1);
+ await act(async()=>vi.advanceTimersByTime(500));
+ expect(invoke).toHaveBeenCalledTimes(2);
+ expect(invoke).toHaveBeenLastCalledWith('advance_operation',{knownConfigurationToken:'configuration-1',vehicleViewport:b});
+});
+
+test('marker paint respects narrow-window SVG crop',()=>{
+ const crop={x:400,y:0,width:200,height:600,scale:1};
+ const pointOutside={...marker(),alignment_start:{latitude:35,longitude:138.9},alignment_end:{latitude:35,longitude:138.99}};
+ const {container}=render(<svg><OperationMapMarkers markers={[pointOutside,marker()]} camera={camera} scale={1} crop={crop}/></svg>);
+ expect(container.querySelectorAll('circle')).toHaveLength(1);
+ expect(Number(container.querySelector('circle')?.getAttribute('cx'))).toBeCloseTo(500,6);
+});
+
+test('map motion only blends two committed samples on the same run and chord',()=>{
+ const cancel=vi.fn();
+ const animate=vi.fn(()=>({cancel}));
+ const previous=Object.getOwnPropertyDescriptor(SVGElement.prototype,'animate');
+ Object.defineProperty(SVGElement.prototype,'animate',{configurable:true,value:animate});
+ const matchMedia=vi.fn(()=>({matches:false}));
+ vi.stubGlobal('matchMedia',matchMedia);
+ const scene=(position:number,clockMs:number,enteredMs=0,keepMoving=true,activeCamera=camera,end=139.001)=><svg>
+   <OperationMapMarkers markers={[{...marker(position),entered_ms:enteredMs,alignment_end:{latitude:35,longitude:end}}]}
+     camera={activeCamera} scale={1} clockMs={clockMs} animate={keepMoving}/>
+ </svg>;
+ try{
+  const {container,rerender}=render(scene(.2,1000));
+  expect(animate).not.toHaveBeenCalled();
+  const before=Number(container.querySelector('circle')?.getAttribute('cx'));
+  rerender(scene(.4,1500));
+  const after=Number(container.querySelector('circle')?.getAttribute('cx'));
+  expect(after).toBeGreaterThan(before);
+  expect(animate).toHaveBeenCalledExactlyOnceWith(
+    [{transform:`translate(${before-after}px,0px)`},{transform:'translate(0px,0px)'}],
+    {duration:180,easing:'linear'},
+  );
+  rerender(scene(.6,2000,1600)); // a different leg on the same chord
+  expect(cancel).toHaveBeenCalledOnce();
+  rerender(scene(.7,2500,1600,true,camera,139.002)); // another chord
+  rerender(scene(.8,3000,1600,true,{...camera,longitude:139.0005},139.002)); // pan
+  rerender(scene(.9,3500,1600,false,{...camera,longitude:139.0005},139.002)); // pause
+  expect(animate).toHaveBeenCalledOnce();
+  rerender(scene(.9,3500,1600,true,{...camera,longitude:139.0005},139.002));
+  matchMedia.mockReturnValue({matches:true});
+  rerender(scene(1,4000,1600,true,{...camera,longitude:139.0005},139.002));
+  expect(animate).toHaveBeenCalledOnce(); // OS requests reduced motion
+ }finally{
+  if(previous)Object.defineProperty(SVGElement.prototype,'animate',previous);
+  else Reflect.deleteProperty(SVGElement.prototype,'animate');
+  vi.unstubAllGlobals();
+ }
+});
+
+test('authoritatively stopped rail marker uses a distinct accessible paint group',()=>{
+ const active=marker(.25);
+ const dwelling={...marker(.75),key:{...active.key,scheduled_ms:13},stationary:true};
+ const {container}=render(<svg><OperationMapMarkers markers={[active,dwelling]} camera={camera} scale={1}/></svg>);
+ const group=container.querySelector('[aria-label="表示できる列車"]');
+ expect(group?.querySelectorAll('circle')).toHaveLength(2);
+ expect(group?.querySelectorAll('circle')[0].getAttribute('fill')).toBe('#1453a0');
+ expect(group?.querySelectorAll('circle')[1].getAttribute('fill')).toBe('#f1f5ff');
+});

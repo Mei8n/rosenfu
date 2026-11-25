@@ -76,6 +76,21 @@ export function mapViewport(width: number, height: number) {
   const visibleWidth = width / scale, visibleHeight = height / scale;
   return { x:(MAP_VIEWBOX.width-visibleWidth)/2, y:(MAP_VIEWBOX.height-visibleHeight)/2, width:visibleWidth, height:visibleHeight, scale };
 }
+export type VehicleViewport={left:number;right:number;top:number;bottom:number};
+/** Native marker sampling uses the same logical crop and projection as SVG.
+ * Include a marker's radius and stroke, so it can enter the viewport smoothly. */
+export function vehicleViewport(camera:Camera, size:{width:number;height:number}):VehicleViewport{
+  const crop=mapViewport(size.width,size.height);
+  const worldScale=scaleFor(camera.zoom);
+  const pad=5/crop.scale;
+  const x=worldX(camera.longitude), y=mercatorY(camera.latitude);
+  return {
+    left:x+(crop.x-MAP_VIEWBOX.width/2-pad)/worldScale,
+    right:x+(crop.x+crop.width-MAP_VIEWBOX.width/2+pad)/worldScale,
+    top:y+(crop.y-MAP_VIEWBOX.height/2-pad)/worldScale,
+    bottom:y+(crop.y+crop.height-MAP_VIEWBOX.height/2+pad)/worldScale,
+  };
+}
 /** Convert client coordinates through the same uniform crop used to render the map. */
 export function coordinatesFromClient(clientX: number, clientY: number, rect: { left: number; top: number; width: number; height: number }, camera = DEFAULT_CAMERA) {
   if (![clientX, clientY, rect.left, rect.top, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0) return null;

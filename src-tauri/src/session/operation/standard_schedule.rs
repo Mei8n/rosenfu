@@ -10,6 +10,8 @@ use rosenfu_core::world::PlayerId;
 
 const MINUTE: u64 = 60_000;
 const DAY: u64 = 24 * 60 * MINUTE;
+// 30 days fits the existing 43,200-departure guard even at one departure/minute.
+const MAX_ACTIVE_DAYS: u16 = 30;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +134,7 @@ impl WorldEditor {
         })
     }
 
+    #[cfg(test)]
     pub fn apply_standard_schedule(
         &mut self,
         service: ServiceId,
@@ -140,8 +143,30 @@ impl WorldEditor {
         overrides: NamedBandOverrides,
         boundaries_minutes: [u16; 6],
     ) -> Result<OperationView, String> {
+        self.apply_standard_schedule_for_days(
+            service,
+            expected,
+            base_minutes,
+            overrides,
+            boundaries_minutes,
+            1,
+        )
+    }
+
+    pub fn apply_standard_schedule_for_days(
+        &mut self,
+        service: ServiceId,
+        expected: &str,
+        base_minutes: u16,
+        overrides: NamedBandOverrides,
+        boundaries_minutes: [u16; 6],
+        active_days: u16,
+    ) -> Result<OperationView, String> {
         let actor = self.standard_actor(service)?;
         self.require_current_timetable_token(expected)?;
+        if !(1..=MAX_ACTIVE_DAYS).contains(&active_days) {
+            return Err("有効期間は1〜30ゲーム日で指定してください。".into());
+        }
         let saved = self
             .world
             .operation_save()
@@ -152,7 +177,9 @@ impl WorldEditor {
             .checked_add(MINUTE)
             .and_then(|first| first.div_ceil(MINUTE).checked_mul(MINUTE))
             .ok_or("時刻が上限を超えます。")?;
-        let end_ms = start_ms.checked_add(DAY).ok_or("時刻が上限を超えます。")?;
+        let end_ms = start_ms
+            .checked_add(u64::from(active_days) * DAY)
+            .ok_or("時刻が上限を超えます。")?;
         let authored = StandardIntervals {
             base_minutes,
             overrides,
@@ -166,6 +193,34 @@ impl WorldEditor {
             rosenfu_core::operation::OperationError::InvalidTimetable => "間隔と時間帯の境界を確認してください。この系統または設定では適用できません。".to_owned(),
             _ => "この系統・線路構成は時間帯ダイヤに未対応です。元のダイヤは変更していません。".to_owned(),
         })?;
+        rosenfu_storage::ensure_world_saveable(&candidate)
+            .map_err(|_| "ダイヤを保存できません。変更していません。".to_owned())?;
+        self.world = candidate;
+        self.operation_tick = None;
+        self.update_operation_revision();
+        Ok(self.operation_snapshot())
+    }
+
+    pub fn restore_simple_rail_schedule(
+        &mut self,
+        service: ServiceId,
+        expected: &str,
+    ) -> Result<OperationView, String> {
+        let actor = self.standard_actor(service)?;
+        self.require_current_timetable_token(expected)?;
+        let saved = self
+            .world
+            .operation_save()
+            .ok_or("運行が設定されていません。")?;
+        let mut candidate = self.world.clone();
+        candidate
+            .clear_standard_timetable(&saved, actor, self.company, service)
+            .map_err(|err| match err {
+                rosenfu_core::operation::OperationError::InvalidClock => {
+                    "運行を一時停止し、全車両が運行を終えてから変更してください。".to_owned()
+                }
+                _ => "この系統の元の簡易ダイヤに戻せません。設定は変更していません。".to_owned(),
+            })?;
         rosenfu_storage::ensure_world_saveable(&candidate)
             .map_err(|_| "ダイヤを保存できません。変更していません。".to_owned())?;
         self.world = candidate;
