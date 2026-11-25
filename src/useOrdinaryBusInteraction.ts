@@ -4,7 +4,7 @@ import {createOrdinaryBusHover} from './ordinaryBusHover';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
-import {cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,reacquireNearbyOrdinaryBusQuery,restoreOrdinaryBusControls,retryOrdinaryBusSharedSeam,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
+import {BusSeamReadTimeout,cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,reacquireNearbyOrdinaryBusQuery,restoreOrdinaryBusControls,retryOrdinaryBusSharedSeam,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
 import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type BusControlEnd,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
 type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean;nearby?:true};
@@ -122,22 +122,37 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
   const currentSpec=spec.current,scope=input.scope;
   const controller=new AbortController();
   previewJob.current=controller;running.current=true;setCommitting(true);setError('');
+  const belongs=()=>!controller.signal.aborted&&latest.current.input.active&&latest.current.input.scope===scope&&frameRef.current?.finish===f;
+  const current=()=>belongs()&&latest.current.input.allow;
+  let readTimedOut=false,invalidProof=false,writeStarted=false;
+  const changed=()=>{invalidProof=true;return Error('ワールドや道路が更新されました。位置を選び直してください。');};
   try{
    // Do not retain repeated base64 blobs in Undo history. Reacquire the
    // exact evidence and require the previously approved path/token.
    const name=latest.current.name.trim();
-   const query:OrdinaryBusQuery=f.verified.retained?
-    {expectedWorldToken:await latest.current.input.token(),routeId:currentSpec.id,name,path:f.verified.path,rawEvidence:null,tileBinding:null}:
-    f.verified.nearby?await reacquireNearbyOrdinaryBusQuery(
-     {expectedWorldToken:await latest.current.input.token(),routeId:currentSpec.id,name,path:f.verified.path,rawEvidence:null,tileBinding:null},
-     latest.current.input.snapshot,latest.current.input.read,latest.current.input.descriptors,controller.signal,latest.current.input.observe):
-    await build(f.body.controls,currentSpec,name,controller.signal,true,!!f.body.closed);
-   if(controller.signal.aborted||!latest.current.input.active||latest.current.input.scope!==scope||!latest.current.input.allow||frameRef.current?.finish!==f)return;
-   if(query.expectedWorldToken!==f.verified.token||!sameOrdinaryBusPath(query.path,f.verified.path))throw Error('ワールドや道路が更新されました。位置を選び直してください。');
+   let query:OrdinaryBusQuery;
+   if(f.verified.retained||f.verified.nearby){
+    const expectedWorldToken=await latest.current.input.token();
+    if(!current())return;
+    if(expectedWorldToken!==f.verified.token)throw changed();
+    query={expectedWorldToken,routeId:currentSpec.id,name,path:f.verified.path,rawEvidence:null,tileBinding:null};
+    if(f.verified.nearby){
+     const source=latest.current.input;
+     try{
+      query=await reacquireNearbyOrdinaryBusQuery(query,source.snapshot,source.read,source.descriptors,controller.signal,source.observe);
+     }catch(e){
+      readTimedOut=e instanceof BusSeamReadTimeout;
+      throw e;
+     }
+    }
+   }else{
+    query=await build(f.body.controls,currentSpec,name,controller.signal,true,!!f.body.closed);
+   }
+   if(!current())return;
+   if(query.expectedWorldToken!==f.verified.token||!sameOrdinaryBusPath(query.path,f.verified.path))throw changed();
    const title=latest.current.name.trim();
    if(!title)throw Error('バス系統名を入力してください。');
    let path=query.path;
-   const current=()=>!controller.signal.aborted&&latest.current.input.active&&latest.current.input.scope===scope&&latest.current.input.allow&&frameRef.current?.finish===f;
    if(latest.current.input.autoRoute&&!currentSpec.savedPath){
     const evidence={...query,name:title,requestStopTargets:true as const};
     const result=await latest.current.input.preview({...evidence,requestAutoStopSuggestions:true});
@@ -152,11 +167,29 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
     }
    }
    if(!current())return;
+   writeStarted=true;
    await latest.current.input.commit({...query,name:title,path});latest.current.onCommitted();
   }catch(e){
    const now=frameRef.current;
-   if(now?.finish===f&&!controller.signal.aborted){publish({...now,finish:undefined});setError(errorText(e));}
+   if(now?.finish===f&&belongs()){
+    const ambiguousTimeout=writeStarted&&e instanceof DOMException&&e.name==='TimeoutError';
+    if(!latest.current.input.allow||invalidProof||f.verified.nearby&&!readTimedOut||ambiguousTimeout){
+     // A changed proof or any ambiguous result after read (notably a
+     // native commit failure) cannot be submitted again from this frame.
+     lastProof.current=undefined;
+     publish({...now,frame:{body:now.frame.body},finish:undefined});
+    }else{
+     publish({...now,finish:undefined});
+    }
+    if(latest.current.input.allow)setError(ambiguousTimeout?
+     'バス系統の確定結果を確認できませんでした。作成済みの系統を確認してください。':errorText(e));
+   }
   }finally{
+   const now=frameRef.current;
+   if(now?.finish===f&&belongs()&&!latest.current.input.allow){
+    lastProof.current=undefined;
+    publish({...now,frame:{body:now.frame.body},finish:undefined});
+   }
    if(previewJob.current===controller)previewJob.current=undefined;
    running.current=false;setCommitting(false);
   }

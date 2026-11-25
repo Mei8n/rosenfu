@@ -116,8 +116,12 @@ export function useAutomaticRoad(bounds:GraphBounds,enabled:boolean,world:unknow
  const observeRouteTiles=useCallback(async(cells:readonly (readonly [number,number])[],revision:string,signal?:AbortSignal)=>{
   const matches=()=>!signal?.aborted&&current.current.enabled&&current.current.key===key&&current.current.world===world;
   if(!matches()||!provider)throw Error('道路取得が終了しました。位置を選び直してください。');
-  const observed=await provider.observeTiles(cells,revision,signal);
-  if(!matches())throw Error('道路取得範囲が変わりました。位置を選び直してください。');
+  const stale=()=>Error('道路取得範囲が変わりました。位置を選び直してください。');
+  const observed=await provider.observeTiles(cells,revision,signal).catch(e=>{
+   if(!matches())throw stale();
+   throw e;
+  });
+  if(!matches())throw stale();
   return observed;
  },[key,world,enabled]);
  return {...state,readTileEvidenceBatch,readPinnedSeamTiles,observeRouteTiles,retry:()=>setAttempt(n=>n+1),ensureCurrent};

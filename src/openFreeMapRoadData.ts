@@ -50,13 +50,15 @@ export type OpenFreeMapEvidenceRequest={revision:string;z:14;x:number;y:number;r
 export type OpenFreeMapEvidenceBinding=OpenFreeMapEvidenceRequest&{key:string;url:string;license:'ODbL-1.0';attribution:string};
 export type OpenFreeMapEvidenceBatch={rawTiles:{sha256:string;bytes:Uint8Array}[];bindings:OpenFreeMapEvidenceBinding[]};
 export const OFM_EVIDENCE_LIMITS={cacheBytes:16*1024*1024,cacheEntries:16,batchBytes:8*1024*1024,batchTiles:16,pending:16} as const;
+export class OpenFreeMapTimeoutCooldown extends Error{}
+const isTimeout=(e:unknown)=>e instanceof DOMException&&e.name==='TimeoutError';
 export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:()=>number=Date.now){
  type Task={promise:Promise<OpenFreeMapTileSnapshot>;users:Set<symbol>;controller:AbortController};
  let template:Promise<{template:string;revision:string}>|undefined;
- let metadataRetryAfter=0,usedBytes=0,usedTiles=0,activeLoads=0;let metadataController:AbortController|undefined;let metadataReady=false;
+ let metadataRetryAfter=0,metadataTimedOut=false,usedBytes=0,usedTiles=0,activeLoads=0;let metadataController:AbortController|undefined;let metadataReady=false;
  let queue:Promise<unknown>=Promise.resolve();
  let rawCacheBytes=0,evidencePending=0;const rawCache=new Map<string,Uint8Array>(),knownRaw=new Map<string,string>();
- const cache=new Map<string,OpenFreeMapTileSnapshot>(),pending=new Map<string,Task>(),failures=new Map<string,number>();
+ const cache=new Map<string,OpenFreeMapTileSnapshot>(),pending=new Map<string,Task>(),failures=new Map<string,{at:number;timedOut:boolean}>();
  function rememberObserved(key:string,sha:string){
   knownRaw.delete(key);knownRaw.set(key,sha);
   while(knownRaw.size>OFM_LIMITS.cacheEntries)knownRaw.delete(knownRaw.keys().next().value!);
@@ -93,9 +95,9 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
  }
  function metadata(){
   if(metadataController?.signal.aborted&&!metadataReady)template=undefined;
-  if(!template){if(now()<metadataRetryAfter)return Promise.reject(Error('道路タイル情報再試行待機中です。'));
+  if(!template){if(now()<metadataRetryAfter)return Promise.reject(new (metadataTimedOut?OpenFreeMapTimeoutCooldown:Error)('道路タイル情報再試行待機中です。'));
    const ctrl=new AbortController();metadataController=ctrl;metadataReady=false;
-   const task=request(OFM_METADATA,ctrl.signal).then(b=>{const result=parseRoadTileTemplate(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(b)));check(ctrl.signal);metadataReady=true;return result;}).catch(e=>{if(template===task){template=undefined;if(!ctrl.signal.aborted)metadataRetryAfter=now()+OFM_LIMITS.retry;}throw e;});template=task;
+   const task=request(OFM_METADATA,ctrl.signal).then(b=>{const result=parseRoadTileTemplate(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(b)));check(ctrl.signal);metadataReady=true;return result;}).catch(e=>{if(template===task){template=undefined;if(!ctrl.signal.aborted){metadataRetryAfter=now()+OFM_LIMITS.retry;metadataTimedOut=isTimeout(e);}}throw e;});template=task;
   }return template;
  }
  function acquire(x:number,y:number,meta:{template:string;revision:string},user:symbol,owned:Set<Task>):Promise<OpenFreeMapTileSnapshot>{
@@ -116,7 +118,8 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
   if(task?.controller.signal.aborted){if(pending.get(key)===task)pending.delete(key);task=undefined;}
   if(!task){
    if(pending.size>=32)return Promise.reject(Error('道路タイル待機上限です。'));
-   if(now()-(failures.get(key)??-Infinity)<OFM_LIMITS.retry)return Promise.reject(Error('道路タイル再試行待機中です。'));
+   const failure=failures.get(key);
+   if(failure&&now()-failure.at<OFM_LIMITS.retry)return Promise.reject(new (failure.timedOut?OpenFreeMapTimeoutCooldown:Error)('道路タイル再試行待機中です。'));
    const controller=new AbortController();const created:Task={controller,users:new Set(),promise:Promise.resolve(null as unknown as OpenFreeMapTileSnapshot)};
    const work=queue.then(async()=>{
     check(controller.signal); // queued work with no subscribers performs no fetch
@@ -124,7 +127,7 @@ export function createOpenFreeMapRoadRepository(fetcher:typeof fetch=fetch,now:(
     usedTiles++;const bytes=await request(meta.template.replace('{z}','14').replace('{x}',String(x)).replace('{y}',String(y)),controller.signal);check(controller.signal);
     const snapshot=await decodeOpenFreeMapRoadTile(bytes,x,y,meta.revision,now());check(controller.signal);rememberRaw(key,snapshot.bundle.sourceSha256,bytes);return snapshot;
    }).then(snapshot=>{cache.set(key,snapshot);while(cache.size>OFM_LIMITS.cacheEntries)cache.delete(cache.keys().next().value!);return snapshot;}).catch(e=>{
-    if(!controller.signal.aborted){failures.set(key,now());while(failures.size>128)failures.delete(failures.keys().next().value!);}throw e;
+    if(!controller.signal.aborted){failures.set(key,{at:now(),timedOut:isTimeout(e)});while(failures.size>128)failures.delete(failures.keys().next().value!);}throw e;
    }).finally(()=>{if(pending.get(key)===created)pending.delete(key);});
    created.promise=work;task=created;pending.set(key,task);queue=work.catch(()=>undefined);
   }

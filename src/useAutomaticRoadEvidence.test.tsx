@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import {act,cleanup,renderHook} from '@testing-library/react';
 import {afterEach,expect,test,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({load:vi.fn(),read:vi.fn(),pinned:vi.fn()}));
-vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'fixture',load:mocks.load,readTileEvidenceBatch:mocks.read,readPinnedSeamTiles:mocks.pinned})}));
+const mocks=vi.hoisted(()=>({load:vi.fn(),read:vi.fn(),pinned:vi.fn(),observe:vi.fn()}));
+vi.mock('./roadProvider',()=>({createRoadProvider:()=>({name:'fixture',load:mocks.load,readTileEvidenceBatch:mocks.read,readPinnedSeamTiles:mocks.pinned,observeTiles:mocks.observe})}));
 import {useAutomaticRoad} from './useAutomaticRoad';
 const bounds={west:139.70,east:139.72,south:35.62,north:35.64};
 const snapshot={roads:[],tileSnapshots:[{revision:'fixed'}],bundle:{}};
@@ -24,4 +24,14 @@ test('pinned acquisition has an independent reader and rejects results from a su
  h.rerender({world:2});
  await act(async()=>finish(evidence));
  expect(await request).toEqual({status:'stale'});
+});
+
+test('a timeout from a retired road observation is stale, not a retryable transport error',async()=>{
+ const h=await setup();let reject!:(e:unknown)=>void;
+ mocks.observe.mockImplementation(()=>new Promise((_,fail)=>{reject=fail;}));
+ const request=h.result.current.observeRouteTiles([[14552,6451]],'fixed');
+ const result=expect(request).rejects.toThrow('道路取得範囲が変わりました');
+ h.rerender({world:2});
+ await act(async()=>reject(new DOMException('deadline','TimeoutError')));
+ await result;
 });
