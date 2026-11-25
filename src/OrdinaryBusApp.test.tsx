@@ -182,6 +182,29 @@ test.each([false,true])('a blocked exact seam can confirm the new rule with unch
  fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining(accepted)));
 });
+test.each([false,true])('the same-cell detour can also use corroborated seams (waypoints: %s)',async waypoints=>{
+ const preview=vi.fn(async (args?:unknown)=>{
+  const {path}=(args as {path:{rule:string}});
+  return path.rule==='ofm_ground_bus_shared_seam_z14_v3'?
+   {points:[a,left,b],lengthM:855}:{points:[],lengthM:0,failedLegIndex:0};
+ });
+ const map=(await setup({preview,rectangle:true,sharedSeam:true,waypoints,nearbyDetour:true}))!;
+ map.pressPoint(a);map.pressPoint(b);
+ await screen.findByText('道路経路 855 m・停留所2か所');
+ expect(preview).toHaveBeenCalledTimes(3);
+ expect(read).toHaveBeenCalledTimes(2);
+ const [initial,exact,shared]=preview.mock.calls.map(([args])=>args as {path:{rule:string};contextTiles:unknown[]});
+ expect(initial.path.rule).toBe('ofm_ground_bus_z14_v1');
+ expect(exact.path).toMatchObject({rule:'ofm_ground_bus_rectangle_z14_v2',tileKey:key,endTileKey:key,
+  additionalTiles:[{tileKey:leftKey,tileRawSha256:leftRaw}]});
+ expect(shared).toEqual({...exact,path:{...exact.path,rule:'ofm_ground_bus_shared_seam_z14_v3'}});
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.objectContaining({
+  ...shared,contextTiles:expect.arrayContaining(shared.contextTiles),
+ })));
+ const committed=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='put_gameplay_ofm_bus')?.[1] as typeof shared;
+ expect(committed.contextTiles).toHaveLength(shared.contextTiles.length);
+});
 test('no path is not drawn as a straight fallback and can be cancelled',async()=>{
  const map=(await setup({preview:async()=>{throw '道路経路を確認できませんでした。';}}))!;
  map.from();map.to();await screen.findByText('道路経路を確認できませんでした。');

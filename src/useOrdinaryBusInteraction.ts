@@ -223,12 +223,19 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
      }
     }
     if('refusedLeg' in matched&&!currentSpec.savedPath&&src.observe&&src.allow){
-     const extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,ctrl.signal);
+     let extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,ctrl.signal);
      if(!alive())return;
      if(extra){
-      const alt=await queryNative(extra,()=>alive()&&latest.current.input.allow);
-      if(!alive()||!alt)return;
-      const checked=match(alt,controls,extra.path.pattern);
+      const current=()=>alive()&&latest.current.input.allow;
+      const alt=await queryNative(extra,current);
+      if(!current()||!alt)return;
+      let checked=match(alt,controls,extra.path.pattern);
+      const retry='refusedLeg' in checked&&latest.current.input.sharedSeam?retryOrdinaryBusSharedSeam(extra):undefined;
+      if(retry){
+       const revised=await queryNative(retry,current);
+       if(!current()||!revised)return;
+       checked=match(revised,controls,retry.path.pattern);extra=retry;
+      }
       if('preview' in checked&&!checked.preview.returnUnavailableReason){matched=checked;query=extra;nearby=true;}
      }
     }

@@ -537,9 +537,10 @@ fn same_buffered_road(
             return false;
         };
         ap[0] != ap[1]
-            && ap.iter().zip(bp).all(|(x, y)| {
-                x[axis] - offset == y[axis] && x[1 - axis] == y[1 - axis]
-            })
+            && ap
+                .iter()
+                .zip(bp)
+                .all(|(x, y)| x[axis] - offset == y[axis] && x[1 - axis] == y[1 - axis])
     };
     Ok(shared(a.segment.checked_sub(1), b.segment.checked_sub(1))
         || shared(Some(a.segment + 1), Some(b.segment + 1)))

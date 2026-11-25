@@ -108,12 +108,18 @@ export function useOrdinaryBusDraft(input:Input){
    }
    if('refusedLeg' in matched&&newRoute&&!draft.fractional&&current.current.observe&&current.current.allow){
     const src=current.current;
-    const extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,controller.signal);
+    let extra=await prepareNearbyOrdinaryBusQuery(query,src.snapshot,src.read,src.descriptors,controller.signal);
     if(!alive())return;
     if(extra&&current.current.allow){
      const alt=await current.current.preview(extra);
-     if(!alive())return;
-     const checked=matchOrdinaryBusPreview(alt,start,end,draft.pattern,[start,end]);
+     if(!alive()||!current.current.allow)return;
+     let checked=matchOrdinaryBusPreview(alt,start,end,draft.pattern,[start,end]);
+     const retry='refusedLeg' in checked&&current.current.sharedSeam?retryOrdinaryBusSharedSeam(extra):undefined;
+     if(retry){
+      const revised=await current.current.preview(retry);
+      if(!alive()||!current.current.allow)return;
+      checked=matchOrdinaryBusPreview(revised,start,end,draft.pattern,[start,end]);extra=retry;
+     }
      if('preview' in checked&&!checked.preview.returnUnavailableReason){matched=checked;query=extra;}
     }
    }
