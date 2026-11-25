@@ -2826,6 +2826,7 @@ version = "0.2.2"
 dependencies = [
  "rosenfu-core",
  "rosenfu-storage",
+ "serde",
  "serde_json",
  "tempfile",
 ]

@@ -2,17 +2,29 @@ use rosenfu_core::world::World;
 use std::{env, error::Error, ffi::OsString, io, path::Path};
 
 mod road_proof;
+mod seam_authoring;
 
 fn usage() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "usage: rosenfu-cli [world new <path> | world inspect <path> | world road-coverage <path> <min-x> <min-y> <max-x> <max-y> | world verify-road-proof <approved.json> <sha256> <capture.rosenfu>]",
+        "usage: rosenfu-cli [world new <path> | world inspect <path> | world road-coverage <path> <min-x> <min-y> <max-x> <max-y> | world verify-road-proof <approved.json> <sha256> <capture.rosenfu> | world prepare-seam-catalog <approved.json> <approved-sha256> <west.pbf> <east.pbf> <reviewed-way.json> <new-candidate.json>]",
     )
 }
 fn run(args: Vec<OsString>) -> Result<(), Box<dyn Error>> {
     if args.is_empty() {
         println!("{}", serde_json::to_string(&rosenfu_core::engine_info())?);
         return Ok(());
+    }
+    if let [world, action, approved, digest, west, east, source, output] = args.as_slice() {
+        if world == "world" && action == "prepare-seam-catalog" {
+            return seam_authoring::prepare(
+                Path::new(approved),
+                digest.to_str().ok_or_else(usage)?,
+                [Path::new(west), Path::new(east)],
+                Path::new(source),
+                Path::new(output),
+            );
+        }
     }
     if let [world, action, approved, digest, capture] = args.as_slice() {
         if world == "world" && action == "verify-road-proof" {

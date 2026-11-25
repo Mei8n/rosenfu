@@ -108,7 +108,13 @@ From committed sources, run `python scripts/check-installed-seam-world.py`
 the current commit to a temporary directory, generates a two-tile invented
 road and a catalog entry for a synthetic revision, and runs the real storage
 writer/reader including operation wait, resumption, backup and refusal of
-forged locks. A second build restores the unmodified catalog and verifies
+forged locks. A separate process starts with an empty user profile and
+cache, reopens the normally written checkpoint, and verifies both buses
+continue with the preserved wait. Pass `--isolate-network` to require a
+Linux user/network namespace with no route during the cold start. This
+checks the saved road/dispatch state, not availability of offline basemap
+imagery or the desktop WebView. A second build restores the unmodified
+catalog and verifies
 the same checkpoint is rejected without changing the file or creating a
 backup. No Git ref, production catalog, default build target or network is
 modified. Set `ROSENFU_SEAM_QA_TARGET_DIR` to a dedicated QA-only directory
@@ -139,3 +145,44 @@ reference, refuses re-binding an existing tile, and replays the complete
 route before retaining the archive. Older/changed provider snapshots are
 not substituted; acquisition fails if its exact edition is no longer served
 by the normal workflow. No request is made in an empty-catalog build.
+
+## Preparing an additional release candidate offline
+
+This does not install trust or add a route to a running game. A reviewer must
+first identify a supported official producer edition, independently extract
+both original z14 payloads from its immutable release archive, and review the
+original OSM way and producer configuration. In particular the edition must
+have original way IDs enabled with the reviewed Planetiler/OpenMapTiles
+one-way identity and numeric mapping. A dated tile URL can answer with today's
+bytes and is not evidence of the edition. This tool does not download tiles,
+authenticate the source by itself, or grant real road access.
+
+Privately prepare:
+
+- An approval JSON object with `format: "rosenfu-seam-archive-approval-v1"`,
+  `producer_id_rule: "planetiler_openmaptiles_osm_way_10_plus_2_v1"`,
+  `tiles_west_east` (two full `TileBinding` objects, in geographic order),
+  `osm_way_id`, `osm_way_version`, and `reviewed_way_sha256`. Obtain the
+  SHA-256 of the exact approved file from the independent reviewer, not from
+  the same unreviewed payload as the inputs.
+- `reviewed-way.json`: the reviewer's normalized snapshot of that original
+  source way, with positive numeric `id` and `version`, ordered `points`
+  as `[longitude,latitude]`, and string-valued `tags`. Review the snapshot
+  against the original way at the same revision context before pinning it.
+- The two exact archive-extracted MVT payloads, uncompressed. Do not use
+  live dated aliases as a substitute for independent extraction.
+
+Run the local executable with:
+
+```text
+rosenfu-cli world prepare-seam-catalog approved.json <reviewer-approved-sha256> west.pbf east.pbf reviewed-way.json <new-private-candidate.json>
+```
+
+It verifies the input hashes, checks the reviewed source way's direction,
+class and boundary crossing against the tiles, derives unambiguous raw
+vertex ordinals, and replays the normal native proof (including exact
+shared raw geometry). On success it creates a new one-receipt manifest
+candidate only, never overwrites a file, and does not update the built-in
+catalog. Keep real results and raw inputs out of source control. Promoting a
+reviewed receipt to the compile-time product catalog, licensing/provenance
+review, and supported official archive access remain separate release steps.
