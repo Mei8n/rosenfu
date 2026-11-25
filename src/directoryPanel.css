@@ -33,3 +33,5 @@
 .route-station-search li + li { margin-top:4px; }
 .route-station-search li button { width:100%; text-align:start; }
 .route-station-search small { margin-inline-start:5px; }
+.route-station-search li:has(.route-station-locate) { display:flex; gap:4px; align-items:stretch; }
+.route-station-search li .route-station-locate { width:auto; flex-shrink:0; }

@@ -7,8 +7,13 @@ export type Segment = { kind: "alignment"; alignment_id: string; from: string; t
 export type Candidate = { stations: string[]; segments: Segment[] };
 export type Candidates = { shortest_candidate_index?: number | null; status: "no_path" | "unique" | "ambiguous" | "incomplete"; candidates: Candidate[]; truncated: boolean };
 export type Membership = { path: Candidate; member_stations: string[]; excluded_stations: string[] };
+export type StationSearchContext={
+ stationSearchDescription?: ReadonlyMap<string,string>;
+ onLocateStation?: (id:string)=>void;
+};
+const normalizeStationName=(text:string)=>text.normalize('NFKC').trim().toLowerCase();
 type EndpointPick = {side:"start"|"end"; state:"idle"|"queued"|"running"};
-type Props = {
+type Props = StationSearchContext & {
   entityLabel?: string;
   onStationClick?: (id:string)=>boolean;
   isStopping?: (id:string)=>boolean;
@@ -27,7 +32,7 @@ type Props = {
   onSave?: (name: string, membership: Membership) => Promise<void>;
 };
 /** Station clicks define ordered constraints; only explicit Finish persists the route. */
-export function RouteCandidatePreview({onStationClick,isStopping,candidateLength,recommendCandidate,onCandidateChange,onSelectionChange,entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave}:Props){
+export function RouteCandidatePreview({onStationClick,isStopping,candidateLength,recommendCandidate,onCandidateChange,onSelectionChange,entityLabel="路線",editRoute,defaultName="路線1",onCancelEdit,startSequenceKey,mapPickTarget,onMapPick,stations,worldVersion,resetKey,onDirty,enabled,canApply,onSave,stationSearchDescription,onLocateStation}:Props){
  const initialName=editRoute?.name??defaultName;
  const [name,setName]=useState(initialName);
  const [stationQuery,setStationQuery]=useState("");
@@ -54,18 +59,33 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
  const generation=useRef(0), pendingSave=useRef(false);
  const blocked=useRef(false);blocked.current=!enabled||stale;
  const names=useMemo(()=>new Map(stations.map(s=>[s.id,s.name])),[stations]);
+ const searchableStations=useMemo(()=>{
+  const counts=new Map<string,number>(),descriptions=new Map<string,number>();
+  const rows=stations.map(station=>{
+   const name=normalizeStationName(station.name),description=stationSearchDescription?.get(station.id)??'';
+   counts.set(name,(counts.get(name)??0)+1);
+   const key=JSON.stringify([name,description]);
+   descriptions.set(key,(descriptions.get(key)??0)+1);
+   return {station,name,description,key};
+  });
+  const ordinals=new Map<string,number>();
+  return rows.map(({station,name,description,key})=>{
+   const duplicate=(counts.get(name)??0)>1;
+   const ordinal=(ordinals.get(key)??0)+1;ordinals.set(key,ordinal);
+   const context=duplicate?[description,(descriptions.get(key)??0)>1?`候補 ${ordinal}`:''].filter(Boolean).join(' / '):'';
+   return {station,name,context,duplicate};
+  });
+ },[stations,stationSearchDescription]);
  const stationSearch=useMemo(()=>{
-  const normalize=(text:string)=>text.normalize('NFKC').trim().toLowerCase();
-  const query=normalize(stationQuery);
+  const query=normalizeStationName(stationQuery);
   if(!query)return {rows:[],count:0};
-  const exact:typeof stations=[],partial:typeof stations=[];
-  for(const station of stations){
-   const name=normalize(station.name);
-   if(name===query)exact.push(station);
-   else if(name.includes(query))partial.push(station);
+  const exact:typeof searchableStations=[],partial:typeof searchableStations=[];
+  for(const row of searchableStations){
+   if(row.name===query)exact.push(row);
+   else if(row.name.includes(query))partial.push(row);
   }
   return {rows:exact.concat(partial).slice(0,24),count:exact.length+partial.length};
- },[stationQuery,stations]);
+ },[stationQuery,searchableStations]);
  const editingInputs=useRef({names,candidateLength});editingInputs.current={names,candidateLength};
  const stationName=(id:string)=>names.get(id)??`駅 ${id}`;
  function clearEndpoint(){if(endpointPick.current?.state==="running")setLoading(false);endpointPick.current=null;}
@@ -198,9 +218,11 @@ export function RouteCandidatePreview({onStationClick,isStopping,candidateLength
    <label>駅名で検索<input type="search" value={stationQuery} autoComplete="off" maxLength={80} disabled={!enabled||saving||stale}
     onChange={e=>setStationQuery(e.target.value)}/></label>
    {stationQuery.trim()!==""&&<p className="muted" aria-live="polite">{stationSearch.count===0?'一致する駅がありません':`${stationSearch.count}件${stationSearch.count>24?'（先頭24件を表示）':''}`}</p>}
-   {stationSearch.rows.length>0&&<ul aria-label="駅名検索結果">{stationSearch.rows.map(station=><li key={station.id}>
+   {stationSearch.rows.length>0&&<ul aria-label="駅名検索結果">{stationSearch.rows.map(({station,context,duplicate})=><li key={station.id}>
     <button type="button" className="secondary" disabled={!enabled||saving||stale||(mapPickTarget!=="sequence"&&loading)}
-     onClick={()=>{if(mapPickTarget==="sequence")selectSequence(station.id);else selectEndpoint(station.id);setStationQuery("");}}>{station.name} <small>駅ID: {station.id}</small></button>
+     onClick={()=>{if(mapPickTarget==="sequence")selectSequence(station.id);else selectEndpoint(station.id);setStationQuery("");}}>{station.name}{context&&<> <small>{context}</small></>}</button>
+    {duplicate&&onLocateStation&&<button type="button" className="secondary route-station-locate" aria-label={`${station.name} ${context}を地図で確認`}
+     onClick={()=>onLocateStation(station.id)}>地図で確認</button>}
    </li>)}</ul>}
   </div>}
   <ol aria-label="選択した駅">{ordered.map((id,i)=>{

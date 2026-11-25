@@ -1,6 +1,6 @@
 import {useMemo,useState} from 'react';
 import './stationPanel.css';
-import {firstByKey} from './mapLookupIndex';
+import {stationRouteNames} from './stationRouteNames';
 type Station={id:string;name:string};
 type Group={station_id:string;members:string[]};
 type Route={id:string;name:string;start:string};
@@ -12,9 +12,7 @@ export function StationDirectory({stations,groups=NO_GROUPS,routes,paths=NO_PATH
  const [query,setQuery]=useState('');
  const rows=useMemo(()=>{
   const groupByMember=new Map(groups.flatMap(group=>group.members.map(id=>[id,group] as const)));
-  const routesByStation=new Map<string,Set<string>>();
-  const pathByRoute=firstByKey(paths,path=>path.route_id),platforms=new Set(placements.map(p=>p.station_id));
-  for(const route of routes){for(const id of pathByRoute.get(route.id)?.member_stations??[route.start]){const names=routesByStation.get(id)??new Set<string>();names.add(route.name);routesByStation.set(id,names);}}
+  const routesByStation=stationRouteNames(routes,paths),platforms=new Set(placements.map(p=>p.station_id));
   return stations.filter(station=>!groupByMember.has(station.id)||groupByMember.get(station.id)!.station_id===station.id).map(station=>{
    const members=groupByMember.get(station.id)?.members??[station.id];
    return {station,members,platformCount:members.filter(id=>platforms.has(id)).length,routeNames:[...new Set(members.flatMap(id=>[...(routesByStation.get(id)??[])]))]};

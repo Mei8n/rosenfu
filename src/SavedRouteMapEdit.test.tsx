@@ -80,7 +80,7 @@ test('one saved segment exposes all physical stations and explicitly choosing a 
  const search=screen.getByRole('searchbox',{name:'駅名で検索'});
  fireEvent.keyDown(search,{key:'Escape',isComposing:true,keyCode:229});
  fireEvent.change(search,{target:{value:'中間'}});
- fireEvent.click(screen.getByRole('button',{name:'中間 駅ID: 5'}));
+ fireEvent.click(screen.getByRole('button',{name:'中間'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'5',end:'4'}));
  expect(screen.queryByText(/2駅以上必要/)).toBeNull();expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='save_planned_route')).toBe(false);
 });

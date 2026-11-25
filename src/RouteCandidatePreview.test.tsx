@@ -314,7 +314,7 @@ test('station name search uses the same ordered preview and requires explicit ap
  const query=screen.getByRole('searchbox',{name:'駅名で検索'});
  for(const name of ['始発','中間','終点']){
   fireEvent.change(query,{target:{value:name}});
-  fireEvent.click(screen.getByRole('button',{name:new RegExp(name+' 駅ID')}));
+  fireEvent.click(screen.getByRole('button',{name}));
  }
  await screen.findByText('所属駅: 始発 → 中間 → 終点');
  expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'1',end:'3',viaStationIds:['2']});
@@ -329,6 +329,29 @@ test('search normalizes width and case, distinguishes equal names, and caps visi
  fireEvent.change(screen.getByRole('searchbox',{name:'駅名で検索'}),{target:{value:' AbC '}});
  const list=screen.getByRole('list',{name:'駅名検索結果'});
  const labels=Array.from(list.querySelectorAll('button'),x=>x.textContent);
- expect(labels).toHaveLength(24);expect(labels.slice(0,3)).toEqual(['ＡＢＣ 駅ID: a','abc 駅ID: b','東ＡBC 駅ID: prefix']);
+ expect(labels).toHaveLength(24);expect(labels.slice(0,3)).toEqual(['ＡＢＣ 候補 1','abc 候補 2','東ＡBC']);
  expect(screen.getByText('33件（先頭24件を表示）')).toBeTruthy();
+});
+
+test('same-name results use their route context and map preview without exposing internal IDs',async()=>{
+ const sakuragawa=[
+  {id:'s-hanshin-private',name:'桜川'},{id:'s-metro-private',name:'桜川'},{id:'s-omi-private',name:'桜川'},
+ ];
+ const h=setup();
+ const onLocateStation=vi.fn();
+ const stationSearchDescription=new Map([
+  [sakuragawa[0].id,'阪神なんば線'],[sakuragawa[1].id,'千日前線'],[sakuragawa[2].id,'近江鉄道'],
+ ]);
+ h.rerender(<RouteCandidatePreview {...h.props} stations={[...stations,...sakuragawa]} stationSearchDescription={stationSearchDescription} onLocateStation={onLocateStation}/>);
+ fireEvent.change(screen.getByRole('searchbox',{name:'駅名で検索'}),{target:{value:'桜川'}});
+ const box=screen.getByRole('list',{name:'駅名検索結果'});
+ expect(box.textContent).not.toMatch(/駅ID|private/);
+ const locate=screen.getByRole('button',{name:'桜川 近江鉄道を地図で確認'});
+ locate.focus();expect(document.activeElement).toBe(locate);fireEvent.click(locate);
+ expect(onLocateStation).toHaveBeenCalledWith('s-omi-private');expect(invoke).not.toHaveBeenCalled();
+ const result=screen.getByRole('button',{name:'桜川 千日前線'});
+ result.focus();expect(document.activeElement).toBe(result);fireEvent.click(result);
+ await h.click('3');
+ expect(invoke).toHaveBeenCalledWith('preview_route_candidates',{start:'s-metro-private',end:'3'});
+ expect(h.onSave).not.toHaveBeenCalled();
 });
