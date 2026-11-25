@@ -13,7 +13,7 @@ type Vehicle={max_speed_kmh:number;acceleration_mps2:number;braking_mps2:number;
 type Config={timetable:Timetable;vehicle:Vehicle;dwell_ms:number};
 type ServiceConfig=Config&{service_id:string};
 type BusConfig=Config&{route_id:string;assumed_speed_kmh:number;turnaround_ms?:number};
-type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'platform'|'track';wait_scope?:'held_across_connections'|'needs_across_connections';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
+type Train={key:{service_id:string;scheduled_ms:number};leg:number;delay_ms:number;waiting_for?:'crossing'|'junction'|'platform'|'track';wait_scope?:'held_across_connections'|'needs_across_connections'|'parked_on_shared_branch'|'shared_exit_for_bypass';state:{state:'waiting';ready_ms:number}|{state:'moving';entered_ms:number;arrival_ms:number;release_ms:number}};
 export type OperationView={standard_schedule_active?:boolean;now_ms:number;paused:boolean;speed:number;invalidated:boolean;catching_up:boolean;timetable_edit_token:string;timetable_edit_blocker?:string|null;rail_timetable_handoff_available?:boolean;rail_timetable_handoff_in_progress?:boolean;configuration_token?:string;services:ServiceConfig[];bus_services?:BusConfig[];trains:Train[];rail_markers?:unknown;bus_markers?:unknown};
 type OperationWire=Omit<OperationView,'services'|'bus_services'>&{services?:ServiceConfig[];bus_services?:BusConfig[]};
 type Commands={apply_standard_schedule:ApplyStandardSchedule;restore_simple_rail_schedule:{service:string;expected:string};reset_operation:undefined;set_operation_clock:{paused:boolean;speed:number};configure_operation_service:{serviceId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number};configure_bus_operation:{routeId:string;expectedOperationToken:string;timetable:Timetable;vehicle:Vehicle;dwellMs:number;assumedSpeedKmh:number;turnaroundMs?:number}};
@@ -274,7 +274,11 @@ function vehicleStatus(train:Train,now:number,invalidated:boolean,bus:boolean){
  // The native clock has already attempted dispatch at ready_ms. The engine
  // books the wait on entry, so accrue it in the view only while waiting.
  const reason=train.waiting_for==='crossing'?'平面交差':train.waiting_for==='junction'?'分岐・接続':train.waiting_for==='platform'?'ホームにいる別の列車':train.waiting_for==='track'?'線路':null;
- const detail=train.waiting_for==='junction'
+ const detail=train.wait_scope==='parked_on_shared_branch'&&train.waiting_for==='platform'
+  ?'停車中の列車と同じ枝を通るため、追い越せません。追い越させたい場合は、停車列車と通過列車の経路を別の枝に設定できるか確認してください。'
+  :train.wait_scope==='shared_exit_for_bypass'&&(train.waiting_for==='junction'||train.waiting_for==='track')
+  ?'別の枝を通る列車が合流側の進路を確保中です。進路が空いてから発車します。'
+  :train.waiting_for==='junction'
   ?train.wait_scope==='held_across_connections'?'相手列車が、接続部をまたぐ進路を確保中'
    :train.wait_scope==='needs_across_connections'?'次の停車駅まで、接続部をまたぐ進路が空くのを待っています':undefined
   :undefined;

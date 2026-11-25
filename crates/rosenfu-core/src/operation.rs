@@ -152,13 +152,15 @@ impl RailWaitReason {
     }
 }
 
-/// In Fixed operation, both ends of an alignment belong to one stop-to-stop
-/// reservation. This describes scope, not where the blocker physically is.
+/// Read-only context for a current reservation conflict. These labels are
+/// certified by the active model and never predict the exact release time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RailWaitScope {
     HeldAcrossConnections,
     NeedsAcrossConnections,
+    ParkedOnSharedBranch,
+    SharedExitForBypass,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -982,6 +984,41 @@ impl OperationRuntime {
                 .get(resource)
                 .and_then(|owner| self.trains.get(owner))
         };
+        if self.fixed_refuge() {
+            if let Some(owner) = owner() {
+                if reason == RailWaitReason::Track
+                    && matches!(owner.state, TrainState::Waiting { .. })
+                    && owner
+                        .leg
+                        .checked_sub(1)
+                        .and_then(|index| self.services[&owner.key.service_id].legs.get(index))
+                        .and_then(|before| before.through_lane.as_ref())
+                        == Some(resource)
+                {
+                    return Some((
+                        RailWaitReason::Platform,
+                        Some(RailWaitScope::ParkedOnSharedBranch),
+                    ));
+                }
+                // The certified two-branch model only allows this departure
+                // from the stop to share the outgoing stem/throat with a
+                // through service whose lockset does not include our branch.
+                if train.leg == 1
+                    && matches!(owner.state, TrainState::Moving { .. })
+                    && self.services[&owner.key.service_id].legs.len() == 1
+                    && self.services[&key.service_id].legs[0]
+                        .through_lane
+                        .as_ref()
+                        .is_some_and(|lane| {
+                            !self.services[&owner.key.service_id].legs[0]
+                                .resources
+                                .contains(lane)
+                        })
+                {
+                    return Some((reason, Some(RailWaitScope::SharedExitForBypass)));
+                }
+            }
+        }
         if reason == RailWaitReason::Track
             && self.inline_terminal_dwell()
             && owner().is_some_and(|owner| self.is_reached_terminal_lane(owner, resource))

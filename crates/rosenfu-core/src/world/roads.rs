@@ -559,6 +559,58 @@ fn assess_connected_road_crossings(
     });
     result
 }
+#[derive(Default)]
+struct CrossingNeighbors {
+    starts: Vec<GeoPoint>,
+    ends: Vec<GeoPoint>,
+}
+
+fn crossing_neighbors(
+    alignments: &[Alignment],
+    connections: &[AlignmentConnection],
+) -> std::collections::BTreeMap<AlignmentId, CrossingNeighbors> {
+    let mut neighbors = std::collections::BTreeMap::<_, CrossingNeighbors>::new();
+    if connections.is_empty() {
+        return neighbors;
+    }
+    let alignments: std::collections::BTreeMap<_, _> = alignments
+        .iter()
+        .map(|alignment| (alignment.id, alignment))
+        .collect();
+    for connection in connections {
+        let (Some(a), Some(b)) = (
+            alignments.get(&connection.a.alignment_id),
+            alignments.get(&connection.b.alignment_id),
+        ) else {
+            continue;
+        };
+        // Use physical profiles rather than categorical level labels.
+        if a.endpoint_height_m(connection.a.endpoint).abs() > 1e-6
+            || b.endpoint_height_m(connection.b.endpoint).abs() > 1e-6
+        {
+            continue;
+        }
+        // Append in original connection order, including both orientations
+        // for a connection whose endpoints belong to the same alignment.
+        for (here, other, alignment) in [
+            (connection.a, connection.b, b),
+            (connection.b, connection.a, a),
+        ] {
+            let points = &alignment.points;
+            let inside = match other.endpoint {
+                AlignmentEndpoint::Start => points[1],
+                AlignmentEndpoint::End => points[points.len() - 2],
+            };
+            let row = neighbors.entry(here.alignment_id).or_default();
+            match here.endpoint {
+                AlignmentEndpoint::Start => row.starts.push(inside),
+                AlignmentEndpoint::End => row.ends.push(inside),
+            }
+        }
+    }
+    neighbors
+}
+
 impl World {
     /// Add immutable reference coverage without discarding earlier loaded regions.
     pub fn add_road_snapshot(&mut self, snapshot: RoadSnapshot) -> Result<(), WorldError> {
@@ -594,43 +646,17 @@ impl World {
             &self.data.road_snapshots,
         );
         let inputs = RoadAssessmentInputs::new(&self.data.road_snapshots, bounds.as_deref());
+        let neighbors = crossing_neighbors(&self.data.alignments, &self.data.alignment_connections);
         for alignment in &self.data.alignments {
-            let mut starts = vec![];
-            let mut ends = vec![];
-            for connection in &self.data.alignment_connections {
-                for (here, other) in [(connection.a, connection.b), (connection.b, connection.a)] {
-                    if here.alignment_id != alignment.id {
-                        continue;
-                    }
-                    let Some(neighbor) = self
-                        .data
-                        .alignments
-                        .iter()
-                        .find(|a| a.id == other.alignment_id)
-                    else {
-                        continue;
-                    };
-                    // Use physical profiles, not categorical level labels. The world
-                    // validates equal endpoint positions, grades and explicit links.
-                    if alignment.endpoint_height_m(here.endpoint).abs() > 1e-6
-                        || neighbor.endpoint_height_m(other.endpoint).abs() > 1e-6
-                    {
-                        continue;
-                    }
-                    let inside = match other.endpoint {
-                        AlignmentEndpoint::Start => neighbor.points[1],
-                        AlignmentEndpoint::End => neighbor.points[neighbor.points.len() - 2],
-                    };
-                    match here.endpoint {
-                        AlignmentEndpoint::Start => starts.push(inside),
-                        AlignmentEndpoint::End => ends.push(inside),
-                    }
-                }
-            }
+            let (starts, ends) = neighbors
+                .get(&alignment.id)
+                .map_or((&[][..], &[][..]), |row| {
+                    (row.starts.as_slice(), row.ends.as_slice())
+                });
             let retained = observations.for_alignment(geometry_bounds(&alignment.points));
             result.insert(
                 alignment.id,
-                assess_connected_road_crossings(alignment, &inputs, &retained, &starts, &ends),
+                assess_connected_road_crossings(alignment, &inputs, &retained, starts, ends),
             );
         }
         let mut shared_endpoints: Vec<GeoPoint> = vec![];

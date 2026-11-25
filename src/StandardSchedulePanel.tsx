@@ -1,12 +1,12 @@
 import {invoke} from '@tauri-apps/api/core';
 import {useEffect,useRef,useState,type FormEvent} from 'react';
-import {StandardRailFrequencyFields,frequencyBands,parseFrequencyDraft,type FrequencyBand,type FrequencyDraft} from './StandardRailFrequencyFields';
+import {StandardRailFrequencyFields,frequencyBands,parseFrequencyDraft,TimeBandFleetPlanner,type FrequencyBand,type FrequencyDraft} from './StandardRailFrequencyFields';
 
 type Overrides=Record<FrequencyBand,number|null>;
 export type ApplyStandardSchedule={service:string;expected:string;baseMinutes:number;overrides:Overrides;boundariesMinutes:number[];activeDays?:number};
 type Setup={baseMinutes:number;overrides:Overrides;boundariesMinutes:number[];startMs:number;endMs:number};
 type Stop={id:string;name:string};
-type Status={configurationToken:string;serviceId:string;canApply:boolean;activeElsewhere:boolean;hasBusConfigs?:boolean;authored:Setup|null;departureCount:number|null;origin:Stop|null;destinations:Stop[]};
+type Status={configurationToken:string;serviceId:string;canApply:boolean;activeElsewhere:boolean;nominalCycleMs?:number|null;hasBusConfigs?:boolean;authored:Setup|null;departureCount:number|null;origin:Stop|null;destinations:Stop[]};
 type Od={status:'scheduled'|'no_departure_in_window'|'unverified_schedule';first_departure_ms:number|null;scheduled_departures:number|null;
  assignment:{rail:{trips:number;time:{wait_seconds:number;ride_seconds:number}}[];alternative_trips:number;unserved_trips:number;unresolved_trips:number}};
 const minute=60_000,day=1440*minute;
@@ -17,7 +17,8 @@ function number(raw:string,min:number,max:number){const n=Number(raw);return /^[
 const bandNames=[...frequencyBands.map(row=>row[1]),'深夜の終了'];
 
 export function StandardSchedulePanel({service,revision,operationToken,currentHeadwayMs,originalLastDepartureMs,nowMs,enabled,canApply,applyBlocker,apply,restore}:{service:string;revision:string;operationToken:string;currentHeadwayMs?:number;originalLastDepartureMs?:number;nowMs?:number;enabled:boolean;canApply:boolean;applyBlocker?:string|null;apply:(args:ApplyStandardSchedule)=>Promise<void>;restore?:(args:{service:string;expected:string})=>Promise<void>}){
- const [status,setStatus]=useState<Status|null>(null),[error,setError]=useState('');
+ const [loadedStatus,setStatus]=useState<Status|null>(null),[error,setError]=useState('');
+ const status=loadedStatus?.serviceId===service&&loadedStatus.configurationToken===revision?loadedStatus:null;
  const currentMinutes=(currentHeadwayMs??0)/minute;
  const inheritedBase=Number.isInteger(currentMinutes)&&currentMinutes>=1&&currentMinutes<=240?String(currentMinutes):'';
  const [draft,setDraft]=useState<FrequencyDraft>({baseMinutes:inheritedBase,overrides:{}});
@@ -72,6 +73,10 @@ export function StandardSchedulePanel({service,revision,operationToken,currentHe
    <p>基本の間隔と、必要なら朝夕などの本数を調整できます。適用後、少なくとも1分先の分境界から有効になり、指定日数だけ同じ時間帯を繰り返します。曜日・祝日で変わりません。</p>
    {!authored&&!inheritedBase&&<p>従来ダイヤの間隔をそのまま引き継げないため、基本の間隔を1～240分の整数で入力してください。</p>}
    <StandardRailFrequencyFields draft={draft} onChange={setDraft} disabled={!enabled}/>
+   <TimeBandFleetPlanner cycleMs={status.nominalCycleMs} disabled={!enabled} onAdopt={(target,minutes)=>{
+    setDraft(old=>target==='base'?{...old,baseMinutes:String(minutes)}:{...old,overrides:{...old.overrides,[target]:String(minutes)}});
+    setError('');
+   }}/>
    <label>有効期間（ゲーム日）<input type="number" min="1" max="30" step="1" required disabled={!enabled} value={activeDays} onChange={e=>setActiveDays(e.target.value)}/></label>
    <details><summary>時間帯の境界（検証用の仮設定）</summary><p>ゲーム内の0時からの分数。既定の境界は仮設定で、現実の時刻表に基づきません。指定の外は基本間隔です。</p>
     {bounds.map((value,i)=><label key={i}>{bandNames[i]}（分）<input type="number" min="0" max="2879" step="1" value={value} onChange={e=>setBounds(old=>old.map((b,j)=>j===i?e.target.value:b))}/></label>)}

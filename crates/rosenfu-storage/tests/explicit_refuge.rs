@@ -1,4 +1,6 @@
-use rosenfu_core::operation::{OperationError, OperationRuntime, Timetable, TrainState, Vehicle};
+use rosenfu_core::operation::{
+    OperationError, OperationRuntime, RailWaitReason, RailWaitScope, Timetable, TrainState, Vehicle,
+};
 use rosenfu_core::world::{
     AlignmentConnection, AlignmentEndpoint, AlignmentEndpointRef, AlignmentId, GeoPoint,
     OperationServiceConfig, RouteSegment, SectionInfrastructure, World,
@@ -216,6 +218,52 @@ fn native_fixed_refuge_and_same_branch_comparison() {
             assert_eq!(
                 (a.arrived_ms, b.entered_ms, e.entered_ms, e.arrived_ms),
                 (102_022, 282_022, 553_209, 732_454)
+            );
+        }
+    }
+}
+
+#[test]
+fn waiting_guidance_distinguishes_same_branch_and_shared_exit_without_changing_dispatch() {
+    for distinct in [false, true] {
+        let (mut world, configs, _) = fixture(distinct, false, 1., 80.);
+        world.configure_operation(configs.clone()).unwrap();
+        let local = configs[0].service_id.0.to_string();
+        let express = configs[1].service_id.0.to_string();
+        let query = |world: &World, service: &str| {
+            let runtime = &world.operation().unwrap().runtime;
+            let train = runtime
+                .trains()
+                .find(|t| t.key.service_id == service)
+                .unwrap();
+            runtime.rail_wait_advisory(&train.key)
+        };
+        tick(&mut world, 1_000);
+        assert!(!query(&world, &express).is_some_and(|(_, scope)| scope.is_some()));
+        tick(&mut world, 104_887);
+        assert_eq!(query(&world, &local), None); // scheduled dwell, not traffic delay
+        if distinct {
+            assert_eq!(query(&world, &express), None); // express has entered its own branch
+            tick(&mut world, 282_023);
+            assert!(matches!(
+                query(&world, &local),
+                Some((
+                    RailWaitReason::Track | RailWaitReason::Junction,
+                    Some(RailWaitScope::SharedExitForBypass)
+                ))
+            ));
+            let reopened =
+                rosenfu_storage::decode(&rosenfu_storage::encode(&world).unwrap()).unwrap();
+            assert_eq!(query(&reopened, &local), query(&world, &local));
+            tick(&mut world, 298_253);
+            assert_eq!(query(&world, &local), None);
+        } else {
+            assert_eq!(
+                query(&world, &express),
+                Some((
+                    RailWaitReason::Platform,
+                    Some(RailWaitScope::ParkedOnSharedBranch)
+                ))
             );
         }
     }

@@ -17,8 +17,12 @@ pub struct AlignmentConnection {
 impl WorldDraft {
     pub(super) fn validate_alignment_connections(&self) -> Result<(), WorldError> {
         let invalid = WorldError::InvalidAlignmentConnection;
-        let mut occupied = std::collections::BTreeMap::new();
-        let mut pairs = BTreeSet::new();
+        if self.alignment_connections.is_empty() {
+            return Ok(());
+        }
+        let alignments: std::collections::BTreeMap<_, _> =
+            self.alignments.iter().map(|a| (a.id, a)).collect();
+        let mut adjacency = std::collections::BTreeMap::<_, Vec<_>>::new();
         for connection in &self.alignment_connections {
             if connection.a == connection.b {
                 return Err(invalid);
@@ -26,39 +30,25 @@ impl WorldDraft {
             let key = |end: AlignmentEndpointRef| {
                 (end.alignment_id, end.endpoint == AlignmentEndpoint::End)
             };
-            let pair = if key(connection.a) < key(connection.b) {
-                (key(connection.a), key(connection.b))
-            } else {
-                (key(connection.b), key(connection.a))
-            };
-            if !pairs.insert(pair) {
-                return Err(invalid);
-            }
-            let mut ends = Vec::with_capacity(2);
-            for end in [connection.a, connection.b] {
+            let mut endpoint = |here: AlignmentEndpointRef, other: AlignmentEndpointRef| {
                 // At most three physical ports meet at a supported turnout.
-                let key = (end.alignment_id, end.endpoint == AlignmentEndpoint::End);
-                let degree = occupied.entry(key).or_insert(0);
-                *degree += 1;
-                if *degree > 2 {
-                    return Err(invalid);
+                let neighbors = adjacency.entry(key(here)).or_default();
+                if neighbors.len() >= 2 || neighbors.contains(&key(other)) {
+                    return Err(WorldError::InvalidAlignmentConnection);
                 }
-                let alignment = self
-                    .alignments
-                    .iter()
-                    .find(|a| a.id == end.alignment_id)
+                neighbors.push(key(other));
+                let alignment = alignments
+                    .get(&here.alignment_id)
                     .ok_or(WorldError::MissingReference("connection.alignment"))?;
-                let (point, inside) = match end.endpoint {
-                    AlignmentEndpoint::Start => (alignment.points[0], alignment.points[1]),
-                    AlignmentEndpoint::End => (
-                        alignment.points[alignment.points.len() - 1],
-                        alignment.points[alignment.points.len() - 2],
-                    ),
+                let points = &alignment.points;
+                let (point, inside) = match here.endpoint {
+                    AlignmentEndpoint::Start => (points[0], points[1]),
+                    AlignmentEndpoint::End => (points[points.len() - 1], points[points.len() - 2]),
                 };
-                ends.push((alignment, point, inside));
-            }
-            let (a, point, ai) = ends[0];
-            let (b, other, bi) = ends[1];
+                Ok((*alignment, point, inside))
+            };
+            let (a, point, ai) = endpoint(connection.a, connection.b)?;
+            let (b, other, bi) = endpoint(connection.b, connection.a)?;
             // Connections require equal actual elevation, not merely equal map coordinates.
             if a.owner != b.owner
                 || point != other
@@ -95,33 +85,27 @@ impl WorldDraft {
         }
         // Reject unsupported multi-way cliques/cycles rather than silently choosing
         // a movement. One turnout consists of a stem and two branches.
-        let tram_alignment_ids: BTreeSet<_> = self
-            .alignments
-            .iter()
-            .filter(|a| a.track_type == TrackType::Tram)
-            .map(|a| a.id)
-            .collect();
         let mut mixed_ports = BTreeSet::new();
-        for initial in occupied.keys() {
-            let mut ports = BTreeSet::from([*initial]);
-            loop {
-                let before = ports.len();
-                for (a, b) in &pairs {
-                    if ports.contains(a) || ports.contains(b) {
-                        ports.insert(*a);
-                        ports.insert(*b);
+        let mut visited = BTreeSet::new();
+        for initial in adjacency.keys().copied() {
+            if !visited.insert(initial) {
+                continue;
+            }
+            let mut ports = vec![initial];
+            let mut cursor = 0;
+            while let Some(port) = ports.get(cursor).copied() {
+                for other in adjacency[&port].iter().copied() {
+                    if visited.insert(other) {
+                        if ports.len() == 3 {
+                            return Err(invalid);
+                        }
+                        ports.push(other);
                     }
                 }
-                if ports.len() > 3 {
-                    return Err(invalid);
-                }
-                if ports.len() == before {
-                    break;
-                }
+                cursor += 1;
             }
-            if ports.iter().any(|(id, _)| tram_alignment_ids.contains(id))
-                && ports.iter().any(|(id, _)| !tram_alignment_ids.contains(id))
-            {
+            let is_tram = |&(id, _)| alignments[&id].track_type == TrackType::Tram;
+            if ports.iter().any(is_tram) && ports.iter().any(|port| !is_tram(port)) {
                 mixed_ports.extend(ports);
             }
         }
@@ -132,14 +116,11 @@ impl WorldDraft {
                 if !at_start && !at_end {
                     return false;
                 }
-                self.alignments
-                    .iter()
-                    .find(|a| a.id == p.alignment_id)
-                    .is_some_and(|a| {
-                        let half = p.length_m / (2. * a.length_m());
-                        (at_start && p.position <= half + 1e-9)
-                            || (at_end && p.position >= 1. - half - 1e-9)
-                    })
+                alignments.get(&p.alignment_id).is_some_and(|a| {
+                    let half = p.length_m / (2. * a.length_m());
+                    (at_start && p.position <= half + 1e-9)
+                        || (at_end && p.position >= 1. - half - 1e-9)
+                })
             })
         {
             return Err(WorldError::StationAtMixedTrackConnection);

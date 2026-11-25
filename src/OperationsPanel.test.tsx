@@ -562,3 +562,24 @@ test('returns only the selected rail service to its existing simple schedule wit
  expect(invoke).not.toHaveBeenCalledWith('reset_operation',undefined);
  expect(screen.getByText('1日目 19:26')).toBeTruthy();
 });
+
+test('shows only the confirmed meaning of a refuge wait, with the counted delay',async()=>{
+ const key=(scheduled_ms:number)=>({service_id:'12',scheduled_ms});
+ const rows:OperationView['trains']=[
+  {key:key(0),leg:0,delay_ms:1000,waiting_for:'platform',wait_scope:'parked_on_shared_branch',state:{state:'waiting',ready_ms:2000}},
+  {key:key(200),leg:1,delay_ms:0,waiting_for:'junction',wait_scope:'shared_exit_for_bypass',state:{state:'waiting',ready_ms:3000}},
+  {key:key(400),leg:1,delay_ms:0,waiting_for:'junction',wait_scope:'shared_exit_for_bypass',state:{state:'waiting',ready_ms:7000}},
+  {key:key(600),leg:1,delay_ms:0,waiting_for:'crossing',wait_scope:'shared_exit_for_bypass',state:{state:'waiting',ready_ms:4000}},
+ ];
+ vi.mocked(invoke).mockResolvedValue({...snapshot,now_ms:6000,services:[config],trains:rows});
+ render(operation());
+ const notes=(await screen.findByRole('list',{name:'運行中・待機中の列車'})).querySelectorAll('li');
+ expect(notes[0].textContent).toContain('同じ枝を通るため、追い越せません');
+ expect(notes[0].textContent).toContain('今回の進路待ち 4秒');
+ expect(notes[0].textContent).toContain('遅れ 5秒');
+ expect(notes[1].textContent).toContain('別の枝を通る列車が合流側の進路を確保中');
+ expect(notes[2].textContent).toContain('停車中');
+ expect(notes[2].textContent).not.toContain('合流側');
+ expect(notes[3].textContent).toContain('平面交差');
+ expect(notes[3].textContent).not.toContain('合流側');
+});
