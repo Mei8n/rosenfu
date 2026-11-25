@@ -233,6 +233,55 @@ impl<'a> LaneJoinIndex<'a> {
     }
 }
 
+/// Render-local arc lengths for a validated alignment. The underlying
+/// simulation sampler and exact turnout join endpoints remain unchanged.
+struct LaneArcLengths<'a> {
+    points: &'a [GeoPoint],
+    cumulative: Vec<f64>,
+    segment_lengths: Vec<f64>,
+    total: f64,
+}
+
+impl<'a> LaneArcLengths<'a> {
+    fn new(points: &'a [GeoPoint]) -> Self {
+        let mut cumulative = Vec::with_capacity(points.len());
+        let mut segment_lengths = Vec::with_capacity(points.len() - 1);
+        let mut total = 0.0;
+        cumulative.push(total);
+        for pair in points.windows(2) {
+            let length = super::alignment::distance(pair[0], pair[1]);
+            segment_lengths.push(length);
+            total += length;
+            cumulative.push(total);
+        }
+        Self {
+            points,
+            cumulative,
+            segment_lengths,
+            total,
+        }
+    }
+
+    fn point_at(&self, position: f64) -> GeoPoint {
+        if position <= 0.0 {
+            return self.points[0];
+        }
+        if position >= 1.0 {
+            return *self.points.last().expect("validated alignment");
+        }
+        let target = self.total * position;
+        let segment = self.cumulative[1..].partition_point(|&end| end < target);
+        let offset = target - self.cumulative[segment];
+        let fraction = (offset / self.segment_lengths[segment]).clamp(0.0, 1.0);
+        let a = self.points[segment];
+        let b = self.points[segment + 1];
+        GeoPoint {
+            latitude: a.latitude + (b.latitude - a.latitude) * fraction,
+            longitude: a.longitude + (b.longitude - a.longitude) * fraction,
+        }
+    }
+}
+
 impl World {
     pub fn track_render_geometry(&self) -> Result<TrackRenderGeometry, WorldError> {
         let movements = self.track_movement_geometries()?;
@@ -240,13 +289,8 @@ impl World {
         let joins = LaneJoinIndex::new(&movements, &internal_movements);
         let mut lanes = Vec::new();
         for a in &self.data.alignments {
-            let length = a.length_m();
-            let mut positions = vec![0.0];
-            let mut accumulated = 0.0;
-            for pair in a.points.windows(2) {
-                accumulated += super::alignment::distance(pair[0], pair[1]);
-                positions.push(accumulated / length);
-            }
+            let arc = LaneArcLengths::new(&a.points);
+            let positions: Vec<_> = arc.cumulative.iter().map(|&d| d / arc.total).collect();
             let boundaries = a
                 .anchor_indices
                 .clone()
@@ -299,20 +343,26 @@ impl World {
                     let lateral = ((f64::from(count) - 1.0) / 2.0 - f64::from(lane_index))
                         * TRACK_LANE_SPACING_M;
                     let mut ts = vec![low];
-                    ts.extend(positions.iter().copied().filter(|t| *t > low && *t < high));
+                    ts.extend(
+                        positions[anchors[0]..=anchors[1]]
+                            .iter()
+                            .copied()
+                            .filter(|t| *t > low && *t < high),
+                    );
                     ts.push(high);
                     let mut points: Vec<_> = ts
                         .into_iter()
                         .map(|t| {
+                            let center = arc.point_at(t);
                             let (x, y) = vector(
-                                a.point_at((t - 1e-5).max(0.0)),
-                                a.point_at((t + 1e-5).min(1.0)),
+                                arc.point_at((t - 1e-5).max(0.0)),
+                                arc.point_at((t + 1e-5).min(1.0)),
                             );
                             let norm = x.hypot(y);
                             if norm <= 1e-9 {
-                                a.point_at(t)
+                                center
                             } else {
-                                offset(a.point_at(t), -y / norm * lateral, x / norm * lateral)
+                                offset(center, -y / norm * lateral, x / norm * lateral)
                             }
                         })
                         .collect();
@@ -682,6 +732,48 @@ mod speed_tests {
         let r = 0.000_321_234;
         let roots = poly_roots_unit(&[r * r, -2.0 * r, 1.0]);
         assert!(roots.iter().any(|x| (*x - r).abs() < 1e-10));
+    }
+
+    #[test]
+    fn lane_arc_lengths_match_legacy_at_bends_and_between_vertices() {
+        let origin = GeoPoint {
+            latitude: 35.0,
+            longitude: 139.0,
+        };
+        let points = (0..129)
+            .map(|index| {
+                let x = f64::from(index) * 6.25;
+                let bend = if index >= 64 { (x - 400.0) * 0.9 } else { 0.0 };
+                offset(origin, x, (x * 0.01).sin() * 24.0 + bend)
+            })
+            .collect();
+        let alignment = Alignment {
+            id: AlignmentId(1),
+            owner: CompanyId(1),
+            name: "Render sampler".into(),
+            points,
+            anchor_indices: Some(vec![0, 64, 128]),
+            infrastructure: Vec::new(),
+            vertical_profile: None,
+            section_profiles: Vec::new(),
+            track_type: TrackType::Normal,
+            design_speed_kmh: None,
+        };
+        let arc = LaneArcLengths::new(&alignment.points);
+        assert_eq!(arc.total, alignment.length_m());
+        assert_eq!(arc.point_at(0.0), alignment.points[0]);
+        assert_eq!(arc.point_at(1.0), alignment.points[128]);
+        for &distance in &arc.cumulative {
+            let t = distance / arc.total;
+            for fraction in [(t - 1e-5).max(0.0), t, (t + 1e-5).min(1.0)] {
+                let expected = alignment.point_at(fraction);
+                let actual = arc.point_at(fraction);
+                assert!(
+                    super::super::alignment::distance(actual, expected) < 1e-6,
+                    "render sample differed at {fraction}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
     }
 
     #[test]
