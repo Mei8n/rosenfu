@@ -69,3 +69,40 @@ test('built and deletion hit paths follow view changes without renumbering secti
  fireEvent.click(screen.getByRole('button',{name:'削除する'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('delete_alignment_section',expect.objectContaining({alignmentId:'new-area',sectionIndex:1})));
 });
+
+test('junction selection follows the map dismissal controls but survives a drag',async()=>{
+ const point={latitude:35.67504,longitude:139.75};
+ const alignments=['幹線','本線','支線'].map((name,i)=>({id:String(i+3),name,owner:'2',track_type:'rail',points:[point,{...point,longitude:139.76,latitude:35.68+i*.01}]}));
+ const port=(alignment_id:string)=>({alignment_id,endpoint:'start'});
+ const world={next_id:'6',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],tracks:[],routes:[],services:[],alignments,alignment_connections:[{a:port('3'),b:port('4')},{a:port('3'),b:port('5')}],station_placements:[]};
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>{
+  if(command==='engine_info')return {name:'Rosenfu',version:'junction-dismissal-test'};
+  if(command==='list_save_slots')return {active_slot_id:'test',slots:[]};
+  if(command==='autosave_status')return {available:false};
+  if(command==='water_mask_requests'||command==='road_assessments')return [];
+  return world;
+ });
+ render(<App/>);await screen.findByText(/junction-dismissal-test/);
+ fireEvent.keyDown(window,{key:"Escape"});
+ const map=screen.getByRole('img',{name:'駅配置用OpenStreetMap'});
+ const marker=()=>screen.getByRole('button',{name:/分岐ポイント：.*幹線/});
+ const hasSelection=()=>marker().getAttribute('aria-pressed')==='true';
+ fireEvent.keyDown(marker(),{key:'Enter'});
+ expect(hasSelection()).toBe(true);
+ fireEvent.keyDown(window,{key:'Escape',isComposing:true,keyCode:229});
+ expect(hasSelection()).toBe(true);
+ fireEvent.keyDown(window,{key:'Escape'});
+ expect(hasSelection()).toBe(false);
+ fireEvent.keyDown(marker(),{key:'Enter'});
+ panMap(22);
+ fireEvent.click(marker());
+ expect(hasSelection()).toBe(true);
+ fireEvent.click(map);
+ expect(hasSelection()).toBe(true);
+ map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:1000,bottom:600,width:1000,height:600,toJSON:()=>({})});
+ const pointer=(type:string)=>{const e=new Event(type,{bubbles:true,cancelable:true});Object.assign(e,{clientX:500,clientY:300,button:0,pointerId:105,isPrimary:true});fireEvent(map,e);};
+ pointer('pointerdown');pointer('pointerup');
+ fireEvent.click(map);
+ expect(hasSelection()).toBe(false);
+});

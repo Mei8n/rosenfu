@@ -1,4 +1,4 @@
-import {useMemo,useState} from 'react';
+import {useMemo} from 'react';
 import {MAP_VIEWBOX,project,type Camera} from './map';
 import {firstByKey} from './mapLookupIndex';
 import {trackViewport} from './trackViewport';
@@ -8,8 +8,7 @@ type Endpoint={alignment_id:string;endpoint:'start'|'end'};
 type Line={id:string;name?:string;points:GeoPoint[]};
 type Link={a:Endpoint;b:Endpoint};
 const key=(p:Endpoint)=>p.alignment_id+':'+p.endpoint;
-export function JunctionPoints({lines,connections,camera,mapSize=MAP_VIEWBOX,selectable}:{lines:Line[];connections:Link[];camera:Camera;mapSize?:{width:number;height:number};selectable:boolean}){
- const [selected,setSelected]=useState<string|null>(null);
+export function JunctionPoints({lines,connections,camera,mapSize=MAP_VIEWBOX,selectable,selected,onSelectionChange,isPointerSelectionSuppressed}:{lines:Line[];connections:Link[];camera:Camera;mapSize?:{width:number;height:number};selectable:boolean;selected:string|null;onSelectionChange:(id:string|null)=>void;isPointerSelectionSuppressed?:()=>boolean}){
  const junctions=useMemo(()=>{
   const graph=new Map<string,Set<string>>(),ends=new Map<string,Endpoint>();
   const byId=firstByKey(lines,line=>line.id);
@@ -39,11 +38,11 @@ export function JunctionPoints({lines,connections,camera,mapSize=MAP_VIEWBOX,sel
   return junctions.filter(({point})=>point.longitude>=view.west&&point.longitude<=view.east&&point.latitude>=view.south&&point.latitude<=view.north);
  },[junctions,mapSize,camera]);
  return <g className="junction-points">{visible.map(item=>{
-  const p=project(item.point.latitude,item.point.longitude,camera),active=selected===item.id;
+  const p=project(item.point.latitude,item.point.longitude,camera),active=selectable&&selected===item.id;
   const label=item.names.join(' / ');
-  const toggle=()=>setSelected(active?null:item.id);
+  const toggle=()=>onSelectionChange(active?null:item.id);
   return <g key={item.id} role={selectable?'button':undefined} tabIndex={selectable?0:undefined} aria-label={label?`分岐ポイント：${label}`:"分岐ポイント"} aria-pressed={selectable?active:undefined} pointerEvents={selectable?'all':'none'}
-   onClick={event=>{if(selectable){event.stopPropagation();toggle();}}}
+   onClick={event=>{if(selectable){event.stopPropagation();if(!isPointerSelectionSuppressed?.())toggle();}}}
    onKeyDown={event=>{if(selectable&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggle();}}}>
    {label&&<title>分岐ポイント: {label}</title>}
    <circle cx={p.x} cy={p.y} r={active?7:5} fill={active?'#297bc2':'#fff'} stroke="#285a67" strokeWidth="2"/>
