@@ -1,3 +1,4 @@
+import {StationWalkLinks,type StationWalkEdit,type StationWalkLink} from "./StationWalkLinks";
 import {OrdinaryBusPanel,useOrdinaryBusDraft} from './OrdinaryBusPanel';
 import {OrdinaryBusStopsPanel,useOrdinaryBusStops} from './OrdinaryBusStopsPanel';
 import {prepareOrdinaryBusQuery,observedTramRoadAnchor,prepareAuthoredTramChainQuery,type OrdinaryBusPath,type OrdinaryBusPreviewReply,type OrdinaryBusQuery} from './ordinaryBusDraft';
@@ -165,6 +166,7 @@ type World = {
   alignments?: Alignment[];
   station_placements?: StationPlacement[];
   station_groups?: StationGroup[];
+  station_walk_links?: StationWalkLink[];
   next_id: string;
   players: { id: string; name: string }[];
   companies: { id: string; owner: string; name: string }[];
@@ -1132,7 +1134,8 @@ export function App() {
   function stationReferences(id: string) {
     const routes = world?.routes.filter(route => route.start === id || world.route_paths?.some(path => path.route_id === route.id && (path.member_stations.includes(id) || path.segments.some(segment => segment.from === id || segment.to === id)))) ?? [];
     const services = world?.services.filter(service => service.start === id || world.service_paths?.some(path => {if(path.service_id !== service.id)return false;try{return resolveServicePath(service.start,path.legs,world).some(o=>o.station_id===id);}catch{return true;}})) ?? [];
-    return [...routes.map(route=>"路線: "+route.name),...services.map(service=>"系統: "+service.name)].join(" / ");
+    return [...routes.map(route=>"路線: "+route.name),...services.map(service=>"系統: "+service.name),
+      ...(world?.station_walk_links?.some(link=>link.from===id||link.to===id)?["駅間の徒歩連絡"]:[])].join(" / ");
   }
   function selectStation(id: string) {
     if (busyRef.current||roadMapFrom!==null||roadPlayerMapPick) return;
@@ -1151,6 +1154,14 @@ export function App() {
   function beginStationNameEdit(){
     if(!enabled || busyRef.current || !selectedStation)return;
     stationNameInput.current?.focus();stationNameInput.current?.select();
+  }
+  function editStationWalk(edit:StationWalkEdit){
+    if(!enabled||unapplied||stationSettingsDirty||busyRef.current)return;
+    void perform(async()=>{
+      const snapshot=await invoke<World>("edit_station_walk_link",edit);
+      setWorld(snapshot);setDirty(true);setConfirmLoad(false);clearStationHistory();
+      setNotice(edit.seconds===null?"徒歩連絡を外しました。保存でファイルに反映します。":"徒歩連絡を登録しました。保存でファイルに反映します。");
+    });
   }
   function renameStation(event: FormEvent) {
     event.preventDefault();
@@ -2824,6 +2835,8 @@ export function App() {
               {world?.station_placements?.some((p) => p.station_id === selectedStation.id) && <form onSubmit={event=>event.preventDefault()}><fieldset disabled={!enabled&&!stationResizePending}><div className="coordinate-fields"><PlatformLengthInput id="edit-platform-length" label="選択駅の長さ" value={editLength} onChange={value=>{setStationResizeFailure(null);setEditLength(value);}}/></div><div className="route-actions">{stationResizePending&&<span role="status">反映中</span>}{!resizeValid&&<span role="status">2〜20両で入力してください</span>}{stationResizeFailure===resizeKey&&<button type="button" className="secondary" disabled={!enabled||!resizeValid} onClick={()=>{setStationResizeFailure(null);void resizePlatform();}}>長さ変更を再試行</button>}<button type="button" className="secondary" hidden={!platformDirty} disabled={!platformDirty||stationResizePending} onClick={() => { setStationResizeFailure(null);if(selectedPlacement){setEditLength(String(selectedPlacement.length_m));setEditWidth(String(selectedPlacement.width_m));} }}>ホーム長の下書きを破棄</button></div></fieldset></form>}
               {world?.station_groups?.find(g=>g.members.includes(selected??""))&&<label>ホーム<select aria-label="編集するホーム" value={selected??""} onChange={event=>selectStation(event.target.value)}>{world.station_groups.find(g=>g.members.includes(selected??""))!.members.map((id,index)=><option key={id} value={id}>ホーム {index+1}</option>)}</select></label>}<form onSubmit={renameStation}><fieldset disabled={!enabled}>
               <label htmlFor="edit-station-name">選択駅の名前</label><input ref={stationNameInput} id="edit-station-name" onKeyDown={event=>{if(event.key!=="Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode===229)return;event.preventDefault();event.stopPropagation();if(!enabled || busyRef.current)return;setEditStationName(selectedStation.name);stationNameEditButton.current?.focus();}} maxLength={80} value={editStationName} onChange={(event) => setEditStationName(event.target.value)} /><div className="route-actions" hidden={!stationDirty}><button type="submit" disabled={!enabled || !stationDirty || !editStationName.trim()}>駅名を適用</button><button type="button" className="secondary" disabled={!enabled || !stationDirty} onClick={() => setEditStationName(selectedStation.name)}>駅名下書きを破棄</button></div></fieldset></form>
+              {world&&<StationWalkLinks key={`${worldEpoch}:${selectedStation.id}`} station={selectedStation} stations={world.stations} groups={world.station_groups}
+                links={world.station_walk_links??[]} enabled={enabled&&!unapplied&&!stationSettingsDirty} onEdit={editStationWalk}/>}
               <button className="secondary danger" disabled={!enabled || unapplied || !!stationReferences(selectedStation.id)} onClick={() => setPendingDelete({ kind: "station", id: selectedStation.id })}>{world?.station_groups?.some(g=>g.members.includes(selectedStation.id))?"選択ホームを撤去":"選択駅を削除"}</button>
               {stationReferences(selectedStation.id) && <p className="field-hint">削除不可: {stationReferences(selectedStation.id)}</p>}
             </div>}

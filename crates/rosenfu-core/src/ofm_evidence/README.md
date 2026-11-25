@@ -567,3 +567,25 @@ perform that admission or change existing World operation saves. The headless
 regression exercises exclusivity and restart using the existing dispatcher
 with these explicitly derived resource keys; it does not certify stock
 world projectors, UI, routes in other editions, or shared tram conflicts.
+
+### Installed catalog and persisted recipe
+
+A future world route may retain an `InstalledWestboundSeamRecipe` (version and
+immutable catalog reference), not a receipt, expected digest, producer list,
+or alternate catalog path. `replay_installed_westbound_seam` reads only the
+manifest embedded in this installed release and scopes the retained archive
+to its specified tiles. The manifest is empty in stock builds until reviewed
+provider/edition entries are intentionally packaged. Packaging an entry
+requires independently verified provider identity, archive bytes, and source
+way correspondence; the manifest does not acquire or authenticate them.
+The catalog key is derived from stable v1 receipt content, so replacing or
+removing a catalog entry never silently changes an old recipe's geometry.
+A release that intends to reopen existing enabled saves must preserve their
+entries. Missing, changed, or unsupported records never fall back.
+
+This only creates the recipe's trust/replay format. Existing world
+`ofm_gameplay_bus_routes` and the storage version gates only understand
+legacy `BusPathBinding`. Real world admission must add a new gated route
+variant, rebuild its geometry against this catalog on load, and derive the
+compatibility lock set for both new and existing overlapping dispatch legs.
+No changes to current world/save bytes, app UI, or distribution are made here.

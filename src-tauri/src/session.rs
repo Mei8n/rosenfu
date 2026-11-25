@@ -1874,6 +1874,50 @@ impl WorldEditor {
             .map_err(|e| e.to_string())?;
         Ok(self.snapshot())
     }
+    pub fn edit_station_walk_link(
+        &mut self,
+        from: StationId,
+        to: StationId,
+        seconds: Option<u16>,
+        both_directions: bool,
+    ) -> Result<WorldDraft, String> {
+        use rosenfu_core::world::StationWalkLink;
+        let mut candidate = self.clone();
+        let mut draft = self.snapshot();
+        if ![from, to].into_iter().all(|id| {
+            draft
+                .stations
+                .iter()
+                .any(|station| station.id == id && station.owner == self.company)
+        }) {
+            return Err("自社の駅を選択してください。".into());
+        }
+        if let Some(seconds) = seconds {
+            draft
+                .station_walk_links
+                .push(StationWalkLink { from, to, seconds });
+            if both_directions {
+                draft.station_walk_links.push(StationWalkLink {
+                    from: to,
+                    to: from,
+                    seconds,
+                });
+            }
+        } else {
+            let before = draft.station_walk_links.len();
+            draft
+                .station_walk_links
+                .retain(|link| (link.from, link.to) != (from, to));
+            if before == draft.station_walk_links.len() {
+                return Err("削除する徒歩連絡が見つかりません。".into());
+            }
+        }
+        candidate.world.replace(draft).map_err(|e| e.to_string())?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        self.commit_edit(candidate, false)?;
+        Ok(self.snapshot())
+    }
+
     pub fn rename_station(
         &mut self,
         station_id: StationId,
@@ -1924,6 +1968,13 @@ impl WorldEditor {
             .any(|station| station.id == station_id && station.owner == self.company)
         {
             return Err("削除する駅が見つかりません。".into());
+        }
+        if candidate
+            .station_walk_links
+            .iter()
+            .any(|link| link.from == station_id || link.to == station_id)
+        {
+            return Err("駅を削除する前に徒歩連絡を外してください。".into());
         }
         if candidate.service_paths.iter().any(|p|self.world.service_path_occurrences(p.service_id).is_ok_and(|occurrences|occurrences.iter().any(|o|o.station_id==station_id)))
             || candidate.service_paths.iter().any(|p|p.stops.iter().any(|stop|matches!(stop,rosenfu_core::world::StationOccurrenceRef::OnLeg{station_id:id,..} if *id==station_id)) || p.legs.iter().any(|l|matches!(l.segment,rosenfu_core::world::RouteSegment::Alignment{from,to,..} | rosenfu_core::world::RouteSegment::ConnectedAlignments{from,to,..} if from==station_id || to==station_id)))
