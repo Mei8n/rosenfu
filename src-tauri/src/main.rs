@@ -510,7 +510,7 @@ async fn edit_station_walk_link(
     seconds: Option<u16>,
     both_directions: bool,
 ) -> Result<WorldDraft, String> {
-    run_demolition(app, move |editor| {
+    run_world_edit(app, move |editor| {
         editor.edit_station_walk_link(from, to, seconds, both_directions)
     })
     .await
