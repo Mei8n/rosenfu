@@ -11,9 +11,24 @@ pub(super) fn meeting_loop(
     let mut world = World::default();
     let player = world.add_player("Meet scenario".into()).unwrap();
     let owner = world.add_company(player, "Rail".into()).unwrap();
+    let (services, alignments, stations) =
+        append_meeting_loop(&mut world, owner, separate_bays, 0.);
+    (world, services, alignments, stations)
+}
+
+pub(super) fn append_meeting_loop(
+    world: &mut World,
+    owner: rosenfu_core::world::CompanyId,
+    separate_bays: bool,
+    longitude_offset: f64,
+) -> (
+    [OperationServiceConfig; 2],
+    [AlignmentId; 4],
+    [StationId; 4],
+) {
     let p = |longitude, dy| GeoPoint {
         latitude: 35. + dy,
-        longitude,
+        longitude: longitude + longitude_offset,
     };
     let mut build = |name, points| world.build_alignment(owner, name, points).unwrap();
     let west = build(
@@ -128,5 +143,5 @@ pub(super) fn meeting_loop(
             dwell_ms: 100_000,
         }
     });
-    (world, services, [west, east, main, side], [a, b, s, c])
+    (services, [west, east, main, side], [a, b, s, c])
 }

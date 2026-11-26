@@ -363,9 +363,11 @@ fn explicit_bay_calls_allow_an_opposing_meet_but_a_through_leg_contests_the_far_
     }
 }
 
-#[test]
-fn disconnected_running_service_does_not_defeat_a_meet_but_shared_authority_does() {
-    let (mut base, mut configs, _, [start, main, siding, end]) = meeting_loop(true);
+fn configure_through_and_siding_paths(
+    base: &mut World,
+    configs: &[OperationServiceConfig; 2],
+    [start, main, siding, end]: [StationId; 4],
+) -> Vec<RouteSegment> {
     let owner = base.snapshot().companies[0].id;
     let through = configs[0].service_id;
     let path = base
@@ -435,6 +437,15 @@ fn disconnected_running_service_does_not_defeat_a_meet_but_shared_authority_does
         local_stops,
     )
     .unwrap();
+
+    route
+}
+
+#[test]
+fn disconnected_running_service_does_not_defeat_a_meet_but_shared_authority_does() {
+    let (mut base, mut configs, _, [start, main, siding, end]) = meeting_loop(true);
+    let owner = base.snapshot().companies[0].id;
+    let route = configure_through_and_siding_paths(&mut base, &configs, [start, main, siding, end]);
 
     let tie_at = 20_000;
     for c in &mut configs {
@@ -597,6 +608,178 @@ fn disconnected_running_service_does_not_defeat_a_meet_but_shared_authority_does
         };
         assert_eq!(complete(&mut world), complete(&mut reopened));
         assert_eq!(reopened.operation_save(), world.operation_save());
+    }
+}
+
+#[test]
+fn simultaneous_disjoint_meets_keep_their_own_priority_and_saved_dispatch() {
+    use rosenfu_core::operation::OperationRuntime;
+
+    const TIE: u64 = 20_000;
+    const TARGET: u64 = 1_000_000;
+    let (mut base, a, _, a_stations) = meeting_loop(true);
+    let owner = base.snapshot().companies[0].id;
+    let (b, _, b_stations) = fixture::append_meeting_loop(&mut base, owner, true, 0.125);
+    configure_through_and_siding_paths(&mut base, &a, a_stations);
+    let b_route = configure_through_and_siding_paths(&mut base, &b, b_stations);
+    let [b_start, b_main, b_siding, _] = b_stations;
+    let stops = base
+        .preview_service_path(b_start, b_route.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .filter(|p| p.station_id != b_main)
+        .map(|p| p.reference)
+        .collect();
+    let b_extra = base
+        .add_service_path(owner, "Later B through".into(), b_start, b_route, stops)
+        .unwrap();
+    let mut extra = b[0].clone();
+    extra.service_id = b_extra;
+    extra.timetable.first_departure_ms = 450_000;
+    extra.timetable.last_departure_ms = 450_000;
+    let [a, b] = [a, b].map(|pair| {
+        pair.map(|mut c| {
+            c.timetable.first_departure_ms = TIE;
+            c.timetable.last_departure_ms = TIE;
+            c
+        })
+    });
+    let ids = [&a, &b].map(|pair| pair.each_ref().map(|c| c.service_id.0.to_string()));
+    let make_world = |selected: Vec<_>| {
+        let mut world = World::new(base.snapshot().clone()).unwrap();
+        world.configure_operation(selected).unwrap();
+        let result = world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(TIE, 128)
+            .unwrap();
+        assert!(result.reached_target);
+        assert!(result.arrivals.is_empty());
+        world
+    };
+    let trains = |rt: &OperationRuntime, ids: &[String; 2]| {
+        ids.each_ref().map(|id| {
+            rt.trains()
+                .find(|t| &t.key.service_id == id)
+                .unwrap()
+                .clone()
+        })
+    };
+    let replay = |rt: &OperationRuntime, ids: &[String; 2]| {
+        let replay = rt.preview_passenger_replay(TARGET, 256).unwrap();
+        assert!(replay.complete);
+        let legs: Vec<_> = replay
+            .completed_legs
+            .into_iter()
+            .filter(|leg| ids.contains(&leg.train.service_id))
+            .collect();
+        assert_eq!(legs.len(), 3);
+        legs
+    };
+
+    let isolated = [
+        a.to_vec(),
+        b.to_vec(),
+        [b.to_vec(), vec![extra.clone()]].concat(),
+    ]
+    .map(make_world);
+    let reference = isolated
+        .each_ref()
+        .into_iter()
+        .enumerate()
+        .map(|(i, world)| {
+            let rt = &world.operation().unwrap().runtime;
+            let ids = &ids[usize::from(i != 0)];
+            (trains(rt, ids), replay(rt, ids))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reference[0].0[0].state,
+        TrainState::Waiting { ready_ms: TIE }
+    );
+    assert_eq!(
+        reference[1].0[0].state,
+        TrainState::Waiting { ready_ms: TIE }
+    );
+    assert_eq!(
+        reference[2].0[1].state,
+        TrainState::Waiting { ready_ms: TIE }
+    );
+
+    for contested_b in [false, true] {
+        let mut selected = [a.to_vec(), b.to_vec()].concat();
+        if contested_b {
+            selected.push(extra.clone());
+        }
+        let mut world = make_world(selected);
+        let rt = &world.operation().unwrap().runtime;
+        for (island, expected) in [0, if contested_b { 2 } else { 1 }].into_iter().enumerate() {
+            assert_eq!(trains(rt, &ids[island]), reference[expected].0);
+            assert_eq!(replay(rt, &ids[island]), reference[expected].1);
+        }
+
+        // Pick a time inside every unopposed siding dwell, not just the
+        // first arrival, so the saved world really has both meets in flight.
+        let siding_leg = |i: usize, station: StationId, sequence| {
+            reference[i]
+                .1
+                .iter()
+                .find(|leg| {
+                    leg.train.service_id == ids[i][1]
+                        && leg.sequence == sequence
+                        && (if sequence == 0 { &leg.to } else { &leg.from })
+                            == &station.0.to_string()
+                })
+                .unwrap()
+        };
+        let mut save_at = siding_leg(0, a_stations[2], 0).arrived_ms + 1;
+        let mut leave_at = siding_leg(0, a_stations[2], 1).entered_ms;
+        if !contested_b {
+            save_at = save_at.max(siding_leg(1, b_siding, 0).arrived_ms + 1);
+            leave_at = leave_at.min(siding_leg(1, b_siding, 1).entered_ms);
+        }
+        assert!(save_at < leave_at);
+        let advance = |world: &mut World, at| {
+            let result = world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(at, 256)
+                .unwrap();
+            assert!(result.reached_target);
+            result.arrivals
+        };
+        let arrived = advance(&mut world, save_at);
+        for (island, station) in [a_stations[2], b_siding].into_iter().enumerate() {
+            if island == 0 || !contested_b {
+                assert!(arrived.iter().any(|arrival| {
+                    arrival.train.service_id == ids[island][1]
+                        && arrival.station_id == station.0.to_string()
+                }));
+                let rt = &world.operation().unwrap().runtime;
+                let local = &trains(rt, &ids[island])[1];
+                assert!(match local.state {
+                    // The head is at the siding, but the train can still
+                    // own its first leg until the rear clears the approach.
+                    TrainState::Moving {
+                        arrival_ms,
+                        release_ms,
+                        ..
+                    } => {
+                        local.leg == 0 && arrival_ms <= save_at && save_at < release_ms
+                    }
+                    TrainState::Waiting { .. } => local.leg == 1,
+                });
+            }
+        }
+        let bytes = rosenfu_storage::encode(&world).unwrap();
+        let mut loaded = rosenfu_storage::decode(&bytes).unwrap();
+        assert_eq!(rosenfu_storage::encode(&loaded).unwrap(), bytes);
+        assert_eq!(advance(&mut world, TARGET), advance(&mut loaded, TARGET));
+        assert_eq!(world.operation_save(), loaded.operation_save());
+        assert_eq!(loaded.operation().unwrap().runtime.trains().count(), 0);
     }
 }
 

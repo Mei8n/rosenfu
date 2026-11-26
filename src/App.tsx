@@ -372,8 +372,8 @@ export function App() {
   const [routeSelectedStations,setRouteSelectedStations]=useState<string[]>([]);
   const [routeMapPick,setRouteMapPick]=useState<"start"|"end"|"via"|"sequence"|null>(null);
   const routeMapSelect=useRef<((id:string)=>void)|null>(null);
-  function cancelRouteMapPick(){routeMapSelect.current=null;setRouteMapPick(null);}
-  useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch]);
+  const cancelRouteMapPick=useCallback(()=>{routeMapSelect.current=null;setRouteMapPick(null);},[]);
+  useEffect(()=>{cancelRouteMapPick();},[mainTab,worldEpoch,cancelRouteMapPick]);
   useEffect(()=>{setRouteMapEdit(null);setRouteSequenceKey(0);setRouteCreating(false);},[worldEpoch]);
   const [companySetupRequired,setCompanySetupRequired]=useState(false);
   const retainedRoadBasis=useMemo(()=>retainedRoadVisible?JSON.stringify(world?.road_evidence_descriptors??[]):"",[retainedRoadVisible,world?.road_evidence_descriptors]);
@@ -2242,7 +2242,7 @@ export function App() {
       setWorld(snapshot);setDirty(true);setConfirmLoad(false);resetRoute(created);setNotice("路線と所属駅を適用しました。系統の経路は変更していません。保存でファイルに反映します。");
     } finally {busyRef.current=false;setBusy(false);}
   }
-  function resetService(service?: OperatingService) {
+  const resetService=useCallback((service?:OperatingService)=>{
     setExtensionServiceDirty(false);
     setServiceCreating(false);setRouteServiceDirty(false);cancelRouteMapPick();
     setServiceAppearanceDirty(false);
@@ -2250,15 +2250,21 @@ export function App() {
     setServiceId(service?.id ?? null);
     setServiceStart(service?.start ?? "");
     setServiceDirty(false); setServiceHint(""); setPendingServiceChoice(null);
-  }
-  function chooseService(id: string | null) {
+  },[cancelRouteMapPick]);
+  const chooseService=useCallback((id:string|null)=>{
     if (!enabled) return;
     if(serviceAppearanceDirty){setServiceHint("先に系統色の変更を適用または取り消してください。");return;}
     if(bindingDirty){setServiceHint("先に関連付けの変更を適用または破棄してください。");return;}
     if(pathServiceDirty){setServiceHint("先に新形式下書きを破棄または適用してください。");return;}
     if (serviceDirty) { setPendingServiceChoice({ id }); return; }
     resetService(world?.services.find((service) => service.id === id));
-  }
+  },[enabled,serviceAppearanceDirty,bindingDirty,pathServiceDirty,serviceDirty,resetService,world?.services]);
+  const startServiceCreation=useCallback(()=>{
+    if(!enabled)return;
+    chooseService(null);
+    if(serviceActionHasEdits)return;
+    setServiceCreating(true);setServiceSequenceKey(key=>key+1);
+  },[enabled,chooseService,serviceActionHasEdits]);
   async function createPathService(draft:CreateServicePath){
     if(!enabled||busyRef.current||serviceDirty||serviceId!==null)throw Error("別の系統を編集中です。");
     busyRef.current=true;setBusy(true);try{const snapshot=await invoke<World>("create_service_path",draft);setWorld(snapshot);setDirty(true);setPathServiceDirty(false);setNotice("系統を作成しました。保存でファイルに反映します。");}finally{busyRef.current=false;setBusy(false);}
@@ -2947,7 +2953,7 @@ export function App() {
           <section className="service-editor" role="tabpanel" id="workspace-panel-services" aria-labelledby="workspace-tab-services" hidden={activeTool !== "services"}>
             <h3>系統</h3>
             {status==="preview"&&<p className="field-hint">閲覧専用のサンプルです。種別・ダイヤ・列車運行は未実装です。</p>}
-            <ServiceDirectory key={`services-${worldEpoch}`} showLiveOperation={mainTab==="services"} services={world?.services??[]} appearances={world?.service_appearances} routes={world?.routes} bindings={world?.service_route_bindings} selected={serviceId} enabled={enabled} onChoose={chooseService} onCreate={()=>{if(serviceDirty||pathServiceDirty||bindingDirty||serviceAppearanceDirty){chooseService(null);return;}chooseService(null);cancelRouteMapPick();setServiceCreating(true);setServiceSequenceKey(key=>key+1);}}/>
+            <ServiceDirectory key={`services-${worldEpoch}`} showLiveOperation={mainTab==="services"} services={world?.services} appearances={world?.service_appearances} routes={world?.routes} bindings={world?.service_route_bindings} selected={serviceId} enabled={enabled} onChoose={chooseService} onCreate={startServiceCreation}/>
             {serviceCreating&&serviceId===null&&<ServiceMapCreator stationSearchDescription={stationSearchDescription} onLocateStation={locateSearchStation} onCandidateChange={setRouteSelectedCandidate} onSelectionChange={setRouteSelectedStations} key={`map-service-${pathDraftEpoch}`} world={world??previewWorld} stations={world?.stations??[]} enabled={enabled&&mainTab==="services"} defaultName={(()=>{let n=1;while(world?.services.some(row=>row.name===`系統${n}`))n++;return `系統${n}`;})()} onDirty={setPathServiceDirty} onSave={async draft=>{await createPathService(draft);setServiceCreating(false);cancelRouteMapPick();}} onCancel={()=>{setServiceCreating(false);setPathServiceDirty(false);cancelRouteMapPick();}} onMapPick={(target,select)=>{if(!target){cancelRouteMapPick();return;}if(!enabled||mainTab!=="services")return;routeMapSelect.current=select??null;setRouteMapPick(target);changeMapMode("move");}} mapPickTarget={routeMapPick} startSequenceKey={serviceSequenceKey}/>}
             {!serviceCreating&&serviceId===null&&<ServiceFromRoute key={`route-service-${worldEpoch}-${pathDraftEpoch}`} routes={world?.routes??[]} paths={world?.route_paths??[]} stations={world?.stations??[]} world={world??previewWorld} enabled={enabled&&!serviceDirty&&(!pathServiceDirty||routeServiceDirty)} onDirty={dirty=>{setRouteServiceDirty(dirty);setPathServiceDirty(dirty);}} onSave={createPathService}/>}
             <details><summary>区間・直通を指定して作成</summary>

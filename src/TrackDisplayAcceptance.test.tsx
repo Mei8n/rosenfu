@@ -1,5 +1,5 @@
-import {DEFAULT_CAMERA,cameraAt,panCamera,unproject} from './map';
 // @vitest-environment jsdom
+import {DEFAULT_CAMERA,cameraAt,panCamera,unproject} from './map';
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,expect,test,vi} from 'vitest';
 import {invoke,isTauri} from '@tauri-apps/api/core';
@@ -162,14 +162,22 @@ test('route and service tabs project only visible service chains, preserving a s
  // single middle vertex on both bands rather than producing separate caps.
  expect(stripes().map(el=>el.getAttribute('d')?.match(/L/g)?.length)).toEqual([2,2]);
  const initialPath=stripes()[0].getAttribute('d');
- panMap(730);
- await waitFor(()=>expect(ids()).toEqual(['chain-west','new-area']));
- expect(sections()[0]).toBe(stitched);
- expect(stripes()[0].getAttribute('d')).not.toBe(initialPath);
- expect(stripes()[0].getAttribute('d')?.match(/L/g)).toHaveLength(2);
- fireEvent.click(screen.getByRole('tab',{name:'路線'}));
- expect(ids()).toEqual(['chain-west','new-area']);
- expect(sections()[0]).toBe(stitched);
+ const serviceNames=new Set(services.map(service=>service.name));
+ const segment=vi.spyOn(Intl.Segmenter.prototype,'segment');
+ try{
+  const list=screen.getByRole('table',{name:'系統一覧'});
+  expect(list.querySelectorAll('tbody tr')).toHaveLength(604);
+  panMap(730);
+  await waitFor(()=>expect(ids()).toEqual(['chain-west','new-area']));
+  expect(sections()[0]).toBe(stitched);
+  expect(stripes()[0].getAttribute('d')).not.toBe(initialPath);
+  expect(stripes()[0].getAttribute('d')?.match(/L/g)).toHaveLength(2);
+  fireEvent.click(screen.getByRole('tab',{name:'路線'}));
+  expect(ids()).toEqual(['chain-west','new-area']);
+  expect(sections()[0]).toBe(stitched);
+  // Neither pan nor hiding the mounted directory changes an entry name.
+  expect(segment.mock.calls.filter(([input])=>serviceNames.has(String(input)))).toHaveLength(0);
+ }finally{segment.mockRestore();}
  expect(world.services).toHaveLength(604);
 });
 
@@ -204,10 +212,12 @@ test('built station viewport preserves a crossing platform, overhanging names an
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
  const ids=()=>[...map.querySelectorAll('.station-marker')].map(el=>el.getAttribute('data-station-id'));
  const deleteIds=()=>[...map.querySelectorAll('[data-delete-station]')].map(el=>el.getAttribute('data-delete-station'));
- const platform=map.querySelector('[data-station-id="4"] path.station-platform');
+ // The zoom label rounds to two decimals and can read 13 before the
+ // animation crosses the exact zoom-13 platform threshold.
+ const platformPath=()=>map.querySelector('[data-station-id="4"] path.station-platform')?.getAttribute('d');
+ await waitFor(()=>expect(platformPath()).toMatch(/^M-/));
  expect(ids()).toEqual(['4','5','7']);
- expect(platform?.getAttribute('d')).toMatch(/^M-/);
- expect(platform?.getAttribute('d')?.match(/L/g)).toHaveLength(3);
+ expect(platformPath()?.match(/L/g)).toHaveLength(3);
  fireEvent.click(screen.getByRole('tab',{name:'設定'}));
  fireEvent.click(screen.getByLabelText('駅名を表示'));
  expect(ids()).toEqual(['4','5','6','7']);
@@ -216,7 +226,7 @@ test('built station viewport preserves a crossing platform, overhanging names an
  fireEvent.click(screen.getByRole('tab',{name:'建設'}));
  fireEvent.click(screen.getByRole('tab',{name:'削除'}));
  expect(deleteIds()).toEqual(['4','5','7']);
- expect(map.querySelector('[data-delete-station="4"]')?.getAttribute('d')).toBe(platform?.getAttribute('d'));
+ expect(map.querySelector('[data-delete-station="4"]')?.getAttribute('d')).toBe(platformPath());
  panMap(730);
  await waitFor(()=>expect(deleteIds()).toEqual(['7']));
  expect(ids()).toEqual(['7']);
