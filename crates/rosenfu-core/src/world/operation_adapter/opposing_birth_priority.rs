@@ -1,5 +1,6 @@
 //! Small default tie preference only. Reservations and rear-clear stay Fixed.
 use super::*;
+use crate::operation::OpposingBirthPriority;
 
 const MAX_FIT_POINTS: usize = 256;
 const MAX_PROOF_RUN_SECTIONS: usize = 64;
@@ -217,19 +218,28 @@ impl<'a> OpposingBirthGeometry<'a> {
 }
 
 impl World {
-    pub(super) fn opposing_birth_priorities(&self, op: &WorldOperation) -> Vec<(String, String)> {
+    pub(super) fn opposing_birth_priorities(
+        &self,
+        op: &WorldOperation,
+    ) -> Vec<OpposingBirthPriority> {
         if op.invalidated || op.runtime.admission_model() != RailAdmissionModel::Fixed {
             return Vec::new();
         }
-        let pairs = op.runtime.isolated_authority_pairs();
+        let pairs = op.runtime.opposing_authority_candidates();
         if pairs.is_empty() {
             return Vec::new();
         }
         let geometry = OpposingBirthGeometry::index(&self.data);
         pairs
             .into_iter()
-            .filter_map(|(a, b)| {
-                geometry.prove(op.runtime.service_spec(a)?, op.runtime.service_spec(b)?)
+            .filter_map(|(a, b, deferred)| {
+                let (siding, through) =
+                    geometry.prove(op.runtime.service_spec(a)?, op.runtime.service_spec(b)?)?;
+                Some(OpposingBirthPriority {
+                    siding,
+                    through,
+                    deferred: deferred.map(str::to_owned),
+                })
             })
             .collect()
     }
@@ -381,6 +391,7 @@ fn across_at(trace: &[ChordPoint], along: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operation::OpposingBirthPriority;
 
     #[test]
     fn rotated_separation_proves_the_whole_envelope_with_reversed_construction() {

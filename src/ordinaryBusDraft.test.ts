@@ -131,8 +131,19 @@ it('does not reacquire a detour from different road bytes at the same cell',asyn
  const expanded=await prepareNearbyOrdinaryBusQuery(q,snapshot,read,descriptors);
  if(!expanded)throw Error('two-tile context expected');
  expect(await reacquireNearbyOrdinaryBusQuery(expanded,snapshot,read,descriptors)).toEqual(expanded);
+ const observe=vi.fn();
+ expect(await reacquireNearbyOrdinaryBusQuery(expanded,undefined,read,descriptors,undefined,observe)).toEqual(expanded);
+ expect(observe).not.toHaveBeenCalled();
  const changed={...snapshot,tileSnapshots:snapshot.tileSnapshots!.map((t,i)=>
   i===0?t:{...t,bundle:{...t.bundle,sourceSha256:'3'.repeat(64)}})};
- await expect(reacquireNearbyOrdinaryBusQuery(expanded,changed,read,descriptors)).rejects.toThrow('変わりました');
+ await expect(reacquireNearbyOrdinaryBusQuery(expanded,changed,read,descriptors,undefined,observe)).rejects.toThrow('変わりました');
+ const newRevision={...snapshot,tileSnapshots:snapshot.tileSnapshots!.map((t,i)=>
+  i===0?{...t,bundle:{...t.bundle,source:{...t.bundle.source,source:key.replace('/r1/','/r2/')}}}:t)};
+ await expect(reacquireNearbyOrdinaryBusQuery(expanded,newRevision,read,descriptors,undefined,observe)).rejects.toThrow('変わりました');
+ expect(observe).not.toHaveBeenCalled();
+ observe.mockResolvedValue([]);
+ // Retaining only one of the two exact proofs still requires the other.
+ await expect(reacquireNearbyOrdinaryBusQuery(expanded,undefined,read,descriptors.slice(0,1),undefined,observe)).rejects.toThrow('変わりました');
+ expect(observe).toHaveBeenCalledExactlyOnceWith([[14553,6452]],'r1',undefined);
  expect(read).not.toHaveBeenCalled();
 });

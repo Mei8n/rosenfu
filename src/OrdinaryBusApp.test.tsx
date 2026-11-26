@@ -37,7 +37,7 @@ class TestPointerEvent extends MouseEvent {
 }
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();vi.unstubAllGlobals();});
 const world={next_id:'10',players:[{id:'1',name:'P'}],companies:[{id:'2',owner:'1',name:'C'}],stations:[],routes:[],services:[]};
-async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?:boolean;rectangle?:boolean;sharedSeam?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;savedOpenVia?:boolean;savedInterior?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean;nearbyDetour?:boolean;fractional?:boolean;generalFractional?:boolean;generalFractionalStops?:boolean}){
+async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;retainedTiles?:boolean;ordinary?:boolean;rectangle?:boolean;sharedSeam?:boolean;multiple?:boolean;autoStart?:boolean;roundTrip?:boolean;operation?:boolean;waypoints?:boolean;savedProof?:boolean;interiorStops?:boolean;autoStops?:boolean;closed?:boolean;closedSaved?:boolean;observedGrade?:boolean;savedOpenVia?:boolean;savedInterior?:boolean;retainedGrade?:boolean;retainedOneway?:boolean;reachableAlternative?:boolean;seamAlternative?:boolean;nearbyDetour?:boolean;fractional?:boolean;generalFractional?:boolean;generalFractionalStops?:boolean}){
  const authored=config.waypoints?{...tile,tileLines:[{...tile.tileLines[0],coordinates:[
   ...tile.tileLines[0].coordinates,[waypoint.longitude,waypoint.latitude],[waypointMoved.longitude,waypointMoved.latitude],
  ]}]}:tile;
@@ -111,7 +111,7 @@ async function setup(config:{preview:(args?:unknown)=>Promise<unknown>;ordinary?
     bus_routes:baseline.road_transport.bus_routes.filter(route=>route.id!==routeId),
    }};
   }
-  return baseline??world;
+  return config.retainedTiles?{...(baseline??world),road_evidence_descriptors:bindings.map(({url,rawSha256})=>({binding:{canonical_url:url,raw_sha256:rawSha256}}))}:baseline??world;
  });
  render(<App/>);await screen.findByText(/ordinary-test/);
  if(config.ordinary===false)return;
@@ -1304,5 +1304,29 @@ test.each(['read timeout','read cooldown','native timeout','changed token','reti
   expect(screen.queryByText(/選んだ経路はそのまま/)).toBeNull();
   if(kind==='changed token')expect(observe).not.toHaveBeenCalled();
  }
+ expect(preview).toHaveBeenCalledTimes(2);
+});
+
+
+test('confirm uses exact world-retained pins after the source cells leave the viewport, without a provider read',async()=>{
+ const preview=vi.fn(async (args?:unknown)=>{
+  const {path}=(args as {path:{rule:string}});
+  return path.rule==='ofm_ground_bus_rectangle_z14_v2'?
+   {points:[],lengthM:0,failedLegIndex:0}:{points:[left,a,b],lengthM:801};
+ });
+ const map=(await setup({preview,rectangle:true,sharedSeam:true,waypoints:true,retainedTiles:true}))!;
+ map.pressPoint(left);map.pressPoint(b);
+ await screen.findByText('道路経路 801 m・停留所2か所');
+ const approved=preview.mock.calls[1][0] as object;
+ expect(approved).not.toHaveProperty('contextTiles');
+ expect(read).not.toHaveBeenCalled();
+ observe.mockClear();
+ observe.mockRejectedValue(new DOMException('offline','TimeoutError'));
+ snapshots=[];
+ fireEvent.change(screen.getByRole('textbox',{name:'バス系統名'}),{target:{value:'保持済み東西バス'}});
+ fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',{...approved,name:'保持済み東西バス'}));
+ expect(observe).not.toHaveBeenCalled();
+ expect(read).not.toHaveBeenCalled();
  expect(preview).toHaveBeenCalledTimes(2);
 });

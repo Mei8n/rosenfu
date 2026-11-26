@@ -326,9 +326,11 @@ export async function reacquireNearbyOrdinaryBusQuery(
  if(signal?.aborted||refs.some(ref=>ref.revision!==revision))throw changed();
  const visible=tilesOf(snapshot).map(t=>t.binding);
  const missing=refs.filter(ref=>{
-  const sameCell=visible.filter(t=>territory(t)===territory(ref));
+  const sameCell=visible.filter(t=>t.x===ref.x&&t.y===ref.y);
   if(sameCell.length>1||sameCell.length===1&&!sameTile(ref,sameCell[0]))throw changed();
-  return sameCell.length===0;
+  // Already retained by this world: native confirmation will reconstruct
+  // this exact pin. Don't charge the live provider for an offscreen copy.
+  return sameCell.length===0&&!retainedRoadTile(ref,descriptors);
  });
  if(missing.length){
   if(!observe)throw changed();
@@ -345,13 +347,16 @@ export async function reacquireNearbyOrdinaryBusQuery(
  }
  return attachOrdinaryBusEvidence(query,refs,read,descriptors,signal);
 }
+function retainedRoadTile(tile:OpenFreeMapEvidenceRequest,descriptors:readonly unknown[]):boolean{
+ return descriptors.some(item=>{
+  if(!item||typeof item!=='object'||!('binding' in item)||!item.binding||typeof item.binding!=='object')return false;
+  const binding=item.binding as Record<string,unknown>;
+  return binding.canonical_url===territory(tile)&&binding.raw_sha256===tile.rawSha256;
+ });
+}
 export async function readObservedRoadTilePairs(refs:OpenFreeMapEvidenceRequest[],read:BusEvidenceReader,descriptors:readonly unknown[],signal?:AbortSignal):Promise<RawTilePair[]>{
  // Retained descriptors are hints; Rust still validates the chosen scope and bytes.
- const toFetch=refs.filter(t=>!descriptors.some(item=>{
-  if(!item||typeof item!=='object'||!('binding' in item)||!item.binding||typeof item.binding!=='object')return false;
-  const b=item.binding as Record<string,unknown>;
-  return b.canonical_url===territory(t)&&b.raw_sha256===t.rawSha256;
- }));
+ const toFetch=refs.filter(t=>!retainedRoadTile(t,descriptors));
  if(!toFetch.length)return [];
  const result=await read(toFetch,signal);
  if(signal?.aborted||result.status==='stale')throw Error('道路が更新されました。位置を選び直してください。');

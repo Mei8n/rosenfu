@@ -34,3 +34,24 @@ test('first matching route path and distinct platform membership stay live acros
  expect(screen.getByRole('button',{name:/中央 路線未所属/})).toBeTruthy();
  expect(screen.getByRole('button',{name:/東駅 本線/}).querySelector('[title="1ホーム"]')).toBeTruthy();
 });
+
+test('an unrelated parent render skips stable rows; search and replacement paths remain live',()=>{
+ const firstName=vi.fn(()=> '北口'), onSelect=vi.fn(), routes=[{id:'r',name:'本線',start:'1'}];
+ const stations=[{id:'1',get name(){return firstName();}},{id:'2',name:'東口'}];
+ const paths=[{route_id:'r',member_stations:['1']}];
+ const props={stations,routes,paths,selected:null,onSelect};
+ const screenFor=(hidden:boolean)=> <div hidden={hidden}><StationDirectory {...props}/></div>;
+ const {rerender}=render(screenFor(false));
+ fireEvent.change(screen.getByLabelText('駅を探す'),{target:{value:'本線'}});
+ expect(screen.getByRole('button',{name:/北口 本線/})).toBeTruthy();
+ firstName.mockClear();
+ rerender(screenFor(true));
+ rerender(screenFor(false));
+ expect(firstName).not.toHaveBeenCalled();
+ expect((screen.getByLabelText('駅を探す') as HTMLInputElement).value).toBe('本線');
+ rerender(<div><StationDirectory {...props} selected="2" paths={[{route_id:'r',member_stations:['2']}]}/></div>);
+ const east=screen.getByRole('button',{name:/東口 本線/});
+ expect(east.getAttribute('aria-pressed')).toBe('true');
+ expect(screen.queryByRole('button',{name:/北口/})).toBeNull();
+ fireEvent.click(east);expect(onSelect).toHaveBeenCalledExactlyOnceWith('2');
+});

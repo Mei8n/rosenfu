@@ -1,5 +1,6 @@
 import {replyToCommandOnce} from './testInvoke';
 import {settledMapClick} from './testMapClick';
+import {panMap} from './mapTestNavigation';
 // @vitest-environment jsdom
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -380,4 +381,21 @@ test("station shortcut resumes map placement after escape without changing tools
   expect(screen.queryByText("線路にカーソルを重ねてクリックで駅を配置")).toBeNull();
   fireEvent.keyDown(map,{key:"2"});
   expect(screen.getByText("線路にカーソルを重ねてクリックで駅を配置")).toBeTruthy();
+});
+
+test("station search survives hiding and panning, then selects the filtered station",async()=>{
+ const map=await start(placed);
+ fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+ fireEvent.change(screen.getByLabelText("駅を探す"),{target:{value:"新駅"}});
+ fireEvent.click(screen.getByRole("tab",{name:"建設"}));
+ const scene=map.querySelector("[data-sample-scene]")!;
+ const before=scene.getAttribute("patternTransform");
+ panMap(90);
+ await waitFor(()=>expect(scene.getAttribute("patternTransform")).not.toBe(before));
+ fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+ expect((screen.getByLabelText("駅を探す") as HTMLInputElement).value).toBe("新駅");
+ const station=screen.getByRole("button",{name:/^新駅 /});
+ fireEvent.click(station);
+ expect(station.getAttribute("aria-pressed")).toBe('true');
+ expect((screen.getByLabelText("選択駅の名前") as HTMLInputElement).value).toBe("新駅");
 });
