@@ -74,3 +74,22 @@ test('failed or unmounted saves do not announce completion',async()=>{
  fireEvent.click(screen.getByRole('button',{name:'保存済み系統の変更を適用'}));view.unmount();
  await act(async()=>resolve());expect(onSaved).not.toHaveBeenCalled();
 });
+
+test('repeated station visits have separate labels and retain their ordered stop keys',async()=>{
+ const loopLegs=[
+  {key:'7',segment:{...segment,to:'c'}},
+  {key:'8',segment:{...segment,from:'c',to:'a'}},
+  {key:'9',segment},
+ ];
+ const visits=resolveServicePath('a',loopLegs,world);
+ const save=vi.fn().mockResolvedValue(undefined);
+ render(<ServicePathEditor {...props} onSave={save} path={{...path,legs:loopLegs,next_leg_key:'10',stops:visits.map(o=>o.reference)}}/>);
+ const first=screen.getByLabelText('保存済み停車 2 b（1回目）') as HTMLInputElement;
+ const second=screen.getByLabelText('保存済み停車 4 b（2回目）') as HTMLInputElement;
+ const third=screen.getByLabelText('保存済み停車 6 b（3回目）') as HTMLInputElement;
+ expect(screen.getByText('b（2回目）')).toBeTruthy();
+ fireEvent.click(first);fireEvent.click(third);
+ expect([first.checked,second.checked,third.checked]).toEqual([false,true,false]);
+ fireEvent.click(screen.getByRole('button',{name:'保存済み系統の変更を適用'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledWith('通勤',visits.filter((_,i)=>i!==1&&i!==5).map(o=>o.reference)));
+});

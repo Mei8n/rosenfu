@@ -12,6 +12,7 @@ test('restore asks before discarding plans, failed restore retains them, success
  const view=render(<App/>);fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));await screen.findByText(/auto-test/);await waitFor(()=>expect(screen.queryByText("ワールドを更新しています。")).toBeNull());
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});fireEvent.click(map,{clientX:180,clientY:130});
  fireEvent.click(screen.getByRole('tab',{name:'セーブデータ'}));const panel=within(view.container.querySelector('#workspace-panel-saves')! as HTMLElement);await waitFor(()=>expect((panel.getByRole('button',{name:'自動保存から復元'}) as HTMLButtonElement).disabled).toBe(false));
+ expect(panel.queryByText(/2分ごとに自動保存/)).toBeNull();expect(panel.getByText('手動保存とは別に、ワールドと建設計画を保存します。')).toBeTruthy();
  expect(panel.queryByText(/自動保存間隔/)).toBeNull();expect(panel.queryByRole('combobox',{name:'自動保存間隔'})).toBeNull();
  fireEvent.click(panel.getByRole('button',{name:'自動保存から復元'}));expect(vi.mocked(invoke).mock.calls.some(([c])=>c==='load_autosave')).toBe(false);fireEvent.click(screen.getByRole('button',{name:'戻る'}));expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
  fireEvent.click(panel.getByRole('button',{name:'自動保存から復元'}));fireEvent.click(screen.getByRole('button',{name:'読込を続ける'}));await screen.findByText(/bad autosave/);expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);

@@ -1,13 +1,15 @@
 type Summary={newCrossingCount:number;roadsUnverified:boolean};
 function summary(value:unknown):Summary|null{
  if(!value||typeof value!=='object')return null;
- const v=value as Partial<Summary>;
- return Number.isSafeInteger(v.newCrossingCount)&&v.newCrossingCount!>=0&&typeof v.roadsUnverified==='boolean'?v as Summary:null;
+ if(!('newCrossingCount' in value)||!('roadsUnverified' in value))return null;
+ const {newCrossingCount,roadsUnverified}=value;
+ if(typeof newCrossingCount!=='number'||!Number.isSafeInteger(newCrossingCount)||newCrossingCount<0||typeof roadsUnverified!=='boolean')return null;
+ return {newCrossingCount,roadsUnverified};
 }
 /** A reference estimate only. Economy/charging is not implemented. Never turn
  * pending, failed or incomplete road data into a definitive zero crossings. */
 export function CrossingEstimate({value,pending=false}:{value:unknown;pending?:boolean}){
- if(value&&typeof value==="object"&&typeof (value as {validationError?:unknown}).validationError==="string")return null;
+ if(value&&typeof value==="object"&&"validationError" in value&&typeof value.validationError==="string")return null;
  const data=summary(value);
  if(pending||!data)return <div className="crossing-estimate">踏切：確認中</div>;
  return <div className="crossing-estimate">

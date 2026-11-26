@@ -17,3 +17,16 @@ test("orphan sidecars and invalid references never colour unrelated infrastructu
  const result=routeAppearance({...world,route_paths:[{route_id:"missing",segments:[{kind:"alignment",alignment_id:"a",from:"s1",to:"s2"}],member_stations:["s1"]}]});
  expect(result.stations.size).toBe(0);
 });
+
+test("candidate sections share clipping without changing saved route membership",async()=>{
+ const {routeSegmentSections}=await import('./routeAppearance');
+ const before=JSON.stringify(world);
+ const selected=routeSegmentSections(world,[{kind:'alignment',alignment_id:'a',from:'s1',to:'s2'}]);
+ expect(selected.get('a')![0]).toHaveLength(3);
+ expect(selected.get('a')![0][0].longitude).toBeCloseTo(139.005);
+ expect(selected.get('a')![0].at(-1)!.longitude).toBeCloseTo(139.015);
+ expect(routeSegmentSections(world,[{kind:'alignment',alignment_id:'missing',from:'s1',to:'s2'}]).size).toBe(0);
+ expect(routeSegmentSections(world,[]).size).toBe(0);
+ expect(JSON.stringify(world)).toBe(before);
+ expect(routeAppearance(world).alignmentSections.size).toBe(0);
+});

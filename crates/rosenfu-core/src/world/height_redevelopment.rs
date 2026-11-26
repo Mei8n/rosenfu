@@ -133,7 +133,7 @@ impl World {
         };
         let exit = candidate.split_at_distance(owner, selected, length - exit_length)?;
         let plateau = candidate.split_at_distance(owner, selected, entry_length)?;
-        let mut draft = candidate.data.clone();
+        let mut draft = candidate.snapshot().clone();
         for (span, start, end, start_grade, end_grade) in [
             (selected, h0, target, g0, 0.),
             (plateau, target, target, 0., 0.),

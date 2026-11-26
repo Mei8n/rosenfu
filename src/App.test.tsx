@@ -1,3 +1,5 @@
+import {mapRenderMetrics} from './mapRenderMetrics';
+import {DEFAULT_DISPLAY_SETTINGS} from './displaySettings';
 // @vitest-environment jsdom
 import React from "react";
 import {settledMapClick} from "./testMapClick";
@@ -267,16 +269,17 @@ test("rapid pan throttles new tile URLs while keeping shared DOM and existing ti
   const map = screen.getByRole("img", { name: "駅配置用地理院地図" });
   const original = new Map(Array.from(map.querySelectorAll("image")).map(image=>[image.getAttribute("data-tile-id")!,image]));
   for(const image of original.values()) fireEvent.load(image);
-  panMap(300);
+  // Both moves stay above the raster coverage threshold for the ordinary cadence.
+  panMap(180);
   act(()=>vi.advanceTimersByTime(100));
-  panMap(300);
-  const camera = panCamera(panCamera(DEFAULT_CAMERA,300,0),300,0);
+  panMap(180);
+  const camera = panCamera(panCamera(DEFAULT_CAMERA,180,0),180,0);
   expect(Array.from(map.querySelectorAll("image")).map(image=>image.getAttribute("data-tile-id"))).toEqual(Array.from(original.keys()));
   const first = GSI_TILES[0];
   expect(Number(original.get(first.id)!.getAttribute("x"))).toBeCloseTo(positionTile(first,camera).x,8);
   const marker = map.querySelector(".station-marker")!;
   const station = project(35.685,139.735,camera);
-  expect(Number(marker.querySelector("text")?.getAttribute("x"))).toBeCloseTo(station.x + 18);
+  expect(Number(marker.querySelector("text")?.getAttribute("x"))).toBeCloseTo(station.x + mapRenderMetrics(camera.zoom,DEFAULT_DISPLAY_SETTINGS.lineWidth,1).stationLabelOffset);
   // The second movement must not restart the first 250 ms window.
   act(()=>vi.advanceTimersByTime(149));
   expect(Array.from(map.querySelectorAll("image")).map(image=>image.getAttribute("data-tile-id"))).toEqual(Array.from(original.keys()));
@@ -660,7 +663,7 @@ test("persisted alignment route is shown and protected against legacy editing",a
  vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{name:"Rosenfu",version:"test-version"}:world);
  renderStationEditor();await screen.findByText(/test-version/);
  fireEvent.click(screen.getByRole("tab",{name:"路線"}));fireEvent.click(screen.getByRole("button",{name:"編集: 新方式本線"}));
- expect(screen.getByText("所属駅: 中央 → 東")).toBeTruthy();expect(screen.getByText(/建設線形 東西線形/)).toBeTruthy();
+ expect(within(screen.getByRole("list",{name:"所属駅"})).getAllByRole("listitem").map(item=>item.textContent)).toEqual(["中央","東"]);expect(screen.queryByText(/建設線形 東西線形/)).toBeNull();
  expect(screen.queryByLabelText("路線名")).toBeNull();
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="save_route")).toBe(false);
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));fireEvent.click(screen.getByRole("tab",{name:"駅"}));fireEvent.click(screen.getByRole("button",{name:/^中央 /}));

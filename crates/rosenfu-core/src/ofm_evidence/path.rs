@@ -6,6 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 type P = [f64; 2];
 const RULE: &str = "ofm_overlap_blend_v1";
 const METHOD: &str = "ofm_tile_path_v1";
+const TRAM_METHOD: &str = "ofm_authored_street_tram_v1";
+const TRAM_RULE: &str = "ofm_ground_tram_guide_v1";
+const ADJACENT_TRAM_RULE: &str = "ofm_ground_tram_adjacent_v2";
+const CHAIN_TRAM_RULE: &str = "ofm_ground_tram_chain_v1";
 const SEGMENTS: usize = 256;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,6 +51,86 @@ pub struct PathDescriptor {
     pub end: PathPick,
     pub ordered_spans: Vec<SourceSpan>,
     pub joins: Vec<PathJoin>,
+    /// Present only for a game-authored street tram; not a real lane right.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_tram_guide"
+    )]
+    pub tram_guide: Option<super::AuthoredTramGuide>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_chain_guide"
+    )]
+    pub tram_chain_guide: Option<super::AuthoredTramChainGuide>,
+}
+fn present_chain_guide<'de, D>(
+    input: D,
+) -> std::result::Result<Option<super::AuthoredTramChainGuide>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    super::AuthoredTramChainGuide::deserialize(input).map(Some)
+}
+
+/// Runtime dispatch between old one/two-cell proofs and the disjoint chain.
+#[derive(Clone, Copy)]
+pub enum AuthoredTramProof<'a> {
+    SingleOrAdjacent(&'a super::AuthoredTramGuide),
+    Chain(&'a super::AuthoredTramChainGuide),
+}
+impl<'a> From<&'a super::AuthoredTramGuide> for AuthoredTramProof<'a> {
+    fn from(value: &'a super::AuthoredTramGuide) -> Self {
+        Self::SingleOrAdjacent(value)
+    }
+}
+impl<'a> From<&'a super::AuthoredTramChainGuide> for AuthoredTramProof<'a> {
+    fn from(value: &'a super::AuthoredTramChainGuide) -> Self {
+        Self::Chain(value)
+    }
+}
+impl AuthoredTramProof<'_> {
+    pub(crate) fn evidence_request(self) -> Result<super::BusPathBinding> {
+        match self {
+            Self::SingleOrAdjacent(guide) => Ok(guide.evidence_request()),
+            Self::Chain(guide) => guide.evidence_request(),
+        }
+    }
+    pub(crate) fn geometry(self, store: &EvidenceStore) -> Result<Option<Vec<P>>> {
+        match self {
+            Self::SingleOrAdjacent(guide) => super::reconstruct_authored_tram_guide(store, guide),
+            Self::Chain(guide) => super::reconstruct_authored_tram_chain(store, guide),
+        }
+    }
+}
+fn present_tram_guide<'de, D>(
+    input: D,
+) -> std::result::Result<Option<super::AuthoredTramGuide>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    super::AuthoredTramGuide::deserialize(input).map(Some)
+}
+impl PathDescriptor {
+    /// Wire capability marker; its presence doesn't certify any geometry.
+    pub fn carries_street_tram_proof(&self) -> bool {
+        self.method == TRAM_METHOD
+            || self.tram_guide.is_some()
+            || self.carries_chain_street_tram_proof()
+    }
+
+    pub fn carries_chain_street_tram_proof(&self) -> bool {
+        self.algorithm == CHAIN_TRAM_RULE || self.tram_chain_guide.is_some()
+    }
+
+    pub fn carries_adjacent_street_tram_proof(&self) -> bool {
+        self.algorithm == ADJACENT_TRAM_RULE
+            || self
+                .tram_guide
+                .as_ref()
+                .is_some_and(|guide| guide.adjacent_end.is_some())
+    }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct DerivedPath {
@@ -229,6 +313,13 @@ pub fn reconstruct_path(
     if required.len() != required_keys.len() || required != available {
         return Err(Error::Binding);
     }
+    let scoped;
+    let store = if store.is_decoded_scope() {
+        store
+    } else {
+        scoped = store.scope(required_keys)?;
+        &scoped
+    };
     let tiles: Vec<_> = store.bindings().map(|b| (b.x, b.y)).collect();
     let pairs = boundary_candidates(store, &tiles)?;
     let mut adjacent: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -333,11 +424,76 @@ pub fn reconstruct_path(
             end: end.clone(),
             ordered_spans: spans,
             joins: blends.into_iter().map(|b| b.record).collect(),
+            tram_guide: None,
+            tram_chain_guide: None,
         },
         points,
         max_correction_meters: maximum,
     })
 }
+/// Use exactly the native guide solver used at point placement. The binding
+/// records the raw byte identity as well as the original fractional endpoints.
+pub(crate) fn reconstruct_street_tram_path(
+    store: &EvidenceStore,
+    guide: AuthoredTramProof<'_>,
+) -> Result<DerivedPath> {
+    let request = guide.evidence_request()?;
+    let points = guide
+        .geometry(store)?
+        .filter(|line| (2..=4096).contains(&line.len()))
+        .ok_or(Error::Binding)?;
+    let pick = |key: &str, vertex: super::BusVertex, q: Option<u32>| -> Result<PathPick> {
+        let fragment_prefix = key
+            .split_once("/planet/")
+            .and_then(|(_, tile)| tile.strip_suffix(".pbf"))
+            .ok_or(Error::Binding)?
+            .replace('/', ":");
+        Ok(PathPick {
+            fragment_id: format!("ofm:{fragment_prefix}:{}:{}", vertex.feature, vertex.line),
+            segment_index: vertex.vertex as usize,
+            fraction: f64::from(q.unwrap_or(0)) / 1_000_000.,
+        })
+    };
+    let end_key = request.end_tile_key.as_deref().unwrap_or(&request.tile_key);
+    let (algorithm, start_fraction, end_fraction, single, chain) = match guide {
+        AuthoredTramProof::SingleOrAdjacent(single) => (
+            if single.adjacent_end.is_some() {
+                ADJACENT_TRAM_RULE
+            } else {
+                TRAM_RULE
+            },
+            single.start_fraction_q,
+            single.end_fraction_q,
+            Some(single.clone()),
+            None,
+        ),
+        AuthoredTramProof::Chain(chain) => (
+            CHAIN_TRAM_RULE,
+            chain.start_fraction_q,
+            chain.end_fraction_q,
+            None,
+            Some(chain.clone()),
+        ),
+    };
+    Ok(DerivedPath {
+        descriptor: PathDescriptor {
+            method: TRAM_METHOD.into(),
+            algorithm: algorithm.into(),
+            geometry_derived: true,
+            coverage_verified: false,
+            required_binding_keys: request.tile_keys()?,
+            start: pick(&request.tile_key, request.start, start_fraction)?,
+            end: pick(end_key, request.end, end_fraction)?,
+            ordered_spans: vec![],
+            joins: vec![],
+            tram_guide: single,
+            tram_chain_guide: chain,
+        },
+        points,
+        max_correction_meters: 0.,
+    })
+}
+
 fn close(a: f64, b: f64, tolerance: f64) -> bool {
     b.is_finite() && (a - b).abs() <= tolerance
 }
@@ -347,6 +503,25 @@ pub fn validate_path_descriptor(
     store: &EvidenceStore,
     claim: &PathDescriptor,
 ) -> Result<DerivedPath> {
+    let guide = match (&claim.tram_guide, &claim.tram_chain_guide) {
+        (Some(guide), None) => Some(AuthoredTramProof::from(guide)),
+        (None, Some(guide)) => Some(AuthoredTramProof::from(guide)),
+        (None, None) => None,
+        (Some(_), Some(_)) => return Err(Error::Binding),
+    };
+    if let Some(guide) = guide {
+        if claim.method != TRAM_METHOD
+            || claim.required_binding_keys != guide.evidence_request()?.tile_keys()?
+            || !claim.ordered_spans.is_empty()
+            || !claim.joins.is_empty()
+        {
+            return Err(Error::Binding);
+        }
+        let actual = reconstruct_street_tram_path(store, guide)?;
+        return (actual.descriptor == *claim)
+            .then_some(actual)
+            .ok_or(Error::Binding);
+    }
     if claim.method != METHOD
         || claim.algorithm != RULE
         || !claim.geometry_derived

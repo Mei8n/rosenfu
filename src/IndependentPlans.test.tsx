@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {replyToCommandOnce} from './testInvoke';
 import {settledMapClick} from './testMapClick';
 import {LEVEL_LABELS} from './sectionInfrastructure';
@@ -342,7 +343,7 @@ test("section infrastructure survives plan switching Undo Redo save reload and b
  const level=(value:keyof typeof LEVEL_LABELS)=>screen.getByRole('button',{name:LEVEL_LABELS[value]});
  fireEvent.change(count(),{target:{value:'2'}});fireEvent.click(level('elevated'));
  await settledMapClick(map,{clientX:120,clientY:100});
- fireEvent.pointerMove(map,{clientX:200,clientY:100});
+ await settledPointerMove(map,{clientX:200,clientY:100});
  expect(map.querySelector('.candidate-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
  await settledMapClick(map,{clientX:200,clientY:100});await settledMapClick(map,{clientX:200,clientY:100});
  expect(map.querySelector('.confirmed-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
@@ -355,9 +356,12 @@ test("section infrastructure survives plan switching Undo Redo save reload and b
  await act(async()=>{fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});});
  const selectFirst=trackPanel().queryByRole('button',{name:/計画 1 を編集/});if(selectFirst)fireEvent.click(selectFirst);
  expect(count().value).toBe('2');expect(level('elevated').getAttribute('aria-pressed')).toBe('true');
+ expect(screen.getByText(/未着工計画はワールドと一緒に保存されます/)).toBeTruthy();
+ expect(screen.queryByText(/未着工計画は保存されません/)).toBeNull();
  vi.mocked(invoke).mockResolvedValueOnce({saved:true});
  fireEvent.click(screen.getByRole('button',{name:'保存'}));
  await screen.findByText('ワールドと未着工計画を保存しました。');
+ expect(screen.queryByText(/未着工計画はワールドと一緒に保存されます/)).toBeNull();
  const saved=(vi.mocked(invoke).mock.calls.find(([c])=>c==='save_world')![1] as {constructionPlans:import('./constructionPlans').ConstructionPlans}).constructionPlans;
  expect(saved.infrastructure).toEqual({track_count:2,level:'elevated'});
  expect(saved.parkedPaths[0].infrastructure).toEqual({track_count:4,level:'underground_2'});

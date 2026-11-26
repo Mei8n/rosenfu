@@ -4,13 +4,19 @@ type Placement={station_id:string;alignment_id:string;position:number};
 type CorridorWorld={station_placements?:Placement[];alignment_connections?:EndpointConnection[]};
 const sameEnd=(a:EndpointConnection["a"],b:EndpointConnection["a"])=>a.alignment_id===b.alignment_id&&a.endpoint===b.endpoint;
 export function sameConnection(a:EndpointConnection,b:EndpointConnection){return sameEnd(a.a,b.a)&&sameEnd(a.b,b.b);}
-export function corridorSpans(segment:Extract<Segment,{kind:"connected_alignments"}>,world:CorridorWorld){
- const from=world.station_placements?.find(p=>p.station_id===segment.from),to=world.station_placements?.find(p=>p.station_id===segment.to);
+type CorridorLookup={
+ placement:(id:string)=>Placement|undefined;
+ hasConnection:(link:EndpointConnection)=>boolean;
+};
+export function corridorSpans(segment:Extract<Segment,{kind:"connected_alignments"}>,world:CorridorWorld,lookup?:CorridorLookup){
+ const placement=lookup?.placement??((id:string)=>world.station_placements?.find(p=>p.station_id===id));
+ const hasConnection=lookup?.hasConnection??((link:EndpointConnection)=>world.alignment_connections?.some(c=>sameConnection(c,link)||sameConnection({a:c.b,b:c.a},link)));
+ const from=placement(segment.from),to=placement(segment.to);
  if(!from||!to||segment.from===segment.to||!segment.connections.length||segment.connections.length>256)throw Error("接続経路が無効です");
  const spans:{alignmentId:string;begin:number;finish:number}[]=[],seen=new Set<string>();
  let id=from.alignment_id,begin=from.position;
  for(const link of segment.connections){
-  if(link.a.alignment_id!==id||seen.has(id)||!world.alignment_connections?.some(c=>sameConnection(c,link)||sameConnection({a:c.b,b:c.a},link)))throw Error("線路の接続を確認できません");
+  if(link.a.alignment_id!==id||seen.has(id)||!hasConnection(link))throw Error("線路の接続を確認できません");
   seen.add(id);const finish=link.a.endpoint==="start"?0:1;
   if(begin===finish)throw Error("接続区間がありません");
   spans.push({alignmentId:id,begin,finish});id=link.b.alignment_id;begin=link.b.endpoint==="start"?0:1;
