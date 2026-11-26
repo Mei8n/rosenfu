@@ -337,3 +337,140 @@ fn ordinary_authored_tram_intersection_build_operate_and_reopen() {
     assert_eq!(returned.arrivals[0].train, train.key);
     assert_eq!(runtime.trains().count(), 0);
 }
+
+#[test]
+fn ordinary_shared_seam_survives_stock_world_editor_save_and_reopen() {
+    use base64::Engine;
+    use rosenfu_core::ofm_evidence::{
+        BusPathBinding, BusTileProof, BusVertex, BUS_RECTANGLE_RULE, BUS_SHARED_SEAM_RULE,
+        DECODER_RULE,
+    };
+    use session::{OfmBindingInput, OfmRawInput, WorldEditor};
+
+    let mut editor = WorldEditor::new();
+    editor.rename_company("バス会社".into()).unwrap();
+    // Same synthetic buffered feature as the native v3 proof test. The
+    // two cuts differ; no installed catalog, fixture import, or alternate
+    // storage reader participates in this normal authoring path.
+    let input = [
+        "Gk8KDnRyYW5zcG9ydGF0aW9ueAIogCASGAgVEgQAAAEBGAIiDAmgQZAcEicT1wSrAhoFY2xhc3MaBm9uZXdheSILCglzZWNvbmRhcnkiAigB",
+        "GlIKDnRyYW5zcG9ydGF0aW9ueAIogCASGwgVEgQAAAEBGAIiDwnoAvQcGscBYycTyRalCxoFY2xhc3MaBm9uZXdheSILCglzZWNvbmRhcnkiAigB",
+    ];
+    let cached = || {
+        input
+            .into_iter()
+            .enumerate()
+            .map(|(i, raw)| {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(raw)
+                    .unwrap();
+                let sha = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+                let x = 14552 + i as u32;
+                let key =
+                    format!("https://tiles.openfreemap.org/planet/synthetic_stock/14/{x}/6451.pbf");
+                (
+                    OfmRawInput {
+                        sha256: sha.clone(),
+                        byte_length: bytes.len(),
+                        base64: raw.into(),
+                    },
+                    OfmBindingInput {
+                        key: key.clone(),
+                        raw_sha256: sha,
+                        url: key,
+                        revision: "synthetic_stock".into(),
+                        z: 14,
+                        x,
+                        y: 6451,
+                        decoder_rule: DECODER_RULE.into(),
+                        license: "ODbL-1.0".into(),
+                        attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let inputs = cached();
+    let west = &inputs[0].1;
+    let east = &inputs[1].1;
+    let mut proof = BusPathBinding {
+        rule: BUS_RECTANGLE_RULE.into(),
+        same_atom_stops: None,
+        fractional_terminals: None,
+        grade_policy: None,
+        tile_key: east.key.clone(),
+        tile_raw_sha256: east.raw_sha256.clone(),
+        end_tile_key: Some(west.key.clone()),
+        pattern: None,
+        interior_stops: vec![],
+        via: vec![],
+        additional_tiles: vec![BusTileProof {
+            tile_key: west.key.clone(),
+            tile_raw_sha256: west.raw_sha256.clone(),
+        }],
+        respect_oneway: true,
+        start: BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: 1,
+        },
+        end: BusVertex {
+            feature: 0,
+            line: 0,
+            vertex: 2,
+        },
+    };
+    let route = "stock-seam";
+    let name = "境界横断";
+    let before = editor.snapshot();
+    let token = editor.ofm_world_token().unwrap();
+    let refused = editor
+        .preview_gameplay_ofm_bus(&token, route.into(), name.into(), proof.clone(), cached())
+        .unwrap();
+    assert_eq!(refused.failed_leg_index, Some(0));
+    assert!(refused.points.is_empty());
+    proof.rule = BUS_SHARED_SEAM_RULE.into();
+    let exact = editor
+        .preview_gameplay_ofm_bus(&token, route.into(), name.into(), proof.clone(), cached())
+        .unwrap();
+    assert_eq!(exact.failed_leg_index, None);
+    assert_eq!(exact.points.len(), 4);
+    let mut altered = cached();
+    altered[0].0.base64.replace_range(5..6, "Z");
+    assert!(editor
+        .put_gameplay_ofm_bus(&token, route.into(), name.into(), proof.clone(), altered)
+        .is_err());
+    assert_eq!(editor.snapshot(), before);
+    assert_eq!(editor.ofm_world_token().unwrap(), token);
+    let created = editor
+        .put_gameplay_ofm_bus(&token, route.into(), name.into(), proof, cached())
+        .unwrap();
+    assert_eq!(created.road_evidence_descriptors.len(), 2);
+    assert!(created.ofm_installed_seam_bus_routes.is_empty());
+    assert_eq!(created.road_transport.bus_routes[0].edges.len(), 3);
+    for sha in [&west.raw_sha256, &east.raw_sha256] {
+        assert!(created
+            .road_transport
+            .edges
+            .iter()
+            .any(|edge| &edge.revision == sha));
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("stock-seam.rosenfu");
+    editor.save(&file).unwrap();
+    let mut fresh = WorldEditor::new();
+    fresh.load(&file).unwrap();
+    assert_eq!(fresh.snapshot(), created);
+    assert_eq!(
+        fresh
+            .preview_gameplay_ofm_bus(
+                &fresh.ofm_world_token().unwrap(),
+                route.into(),
+                name.into(),
+                created.ofm_gameplay_bus_routes[route].clone(),
+                vec![],
+            )
+            .unwrap(),
+        exact
+    );
+}
