@@ -1,7 +1,7 @@
 import {useMemo} from 'react';
 import {MAP_VIEWBOX,project,type Camera} from './map';
 import {firstByKey} from './mapLookupIndex';
-import {trackViewport} from './trackViewport';
+import {createTrackViewportIndex,trackViewport} from './trackViewport';
 import type {GeoPoint} from './alignment';
 
 type Endpoint={alignment_id:string;endpoint:'start'|'end'};
@@ -10,6 +10,7 @@ type Link={a:Endpoint;b:Endpoint};
 const key=(p:Endpoint)=>p.alignment_id+':'+p.endpoint;
 export function JunctionPoints({lines,connections,camera,mapSize=MAP_VIEWBOX,selectable,selected,onSelectionChange,isPointerSelectionSuppressed}:{lines:Line[];connections:Link[];camera:Camera;mapSize?:{width:number;height:number};selectable:boolean;selected:string|null;onSelectionChange:(id:string|null)=>void;isPointerSelectionSuppressed?:()=>boolean}){
  const junctions=useMemo(()=>{
+  if(!connections.length)return null;
   const graph=new Map<string,Set<string>>(),ends=new Map<string,Endpoint>();
   const byId=firstByKey(lines,line=>line.id);
   for(const link of connections)for(const [a,b] of [[link.a,link.b],[link.b,link.a]]){
@@ -31,12 +32,9 @@ export function JunctionPoints({lines,connections,camera,mapSize=MAP_VIEWBOX,sel
    const names=[...new Set(group.map(join=>byId.get(ends.get(join)!.alignment_id)?.name?.trim()).filter((name):name is string=>!!name))];
    if(point)points.push({id:group.sort().join('|'),point,names});
   }
-  return points;
+  return createTrackViewportIndex(points.map(item=>({...item,points:[item.point]})),'display');
  },[lines,connections]);
- const visible=useMemo(()=>{
-  const view=trackViewport(camera,mapSize);
-  return junctions.filter(({point})=>point.longitude>=view.west&&point.longitude<=view.east&&point.latitude>=view.south&&point.latitude<=view.north);
- },[junctions,mapSize,camera]);
+ const visible=useMemo(()=>junctions?.visible(trackViewport(camera,mapSize))??[],[junctions,mapSize,camera]);
  return <g className="junction-points">{visible.map(item=>{
   const p=project(item.point.latitude,item.point.longitude,camera),active=selectable&&selected===item.id;
   const label=item.names.join(' / ');

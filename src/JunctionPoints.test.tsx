@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import {afterEach,expect,test} from 'vitest';
+import {afterEach,expect,test,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {useState,type ComponentProps} from 'react';
 import {JunctionPoints} from './JunctionPoints';
@@ -49,4 +49,35 @@ test('does not rebuild the endpoint index for another view of the same network',
  const {rerender}=render(app(139.75));
  expect(screen.getAllByRole('button')).toHaveLength(2);expect(idReads).toBe(720);
  rerender(app(141.5));expect(screen.getAllByRole('button')).toHaveLength(238);expect(idReads).toBe(720);
+});
+
+test('a connectionless snapshot does not index unrelated track IDs',()=>{
+ const idRead=vi.fn(()=> 'untouched');
+ const lines=[{get id(){return idRead();},points:[DEFAULT_CAMERA]}];
+ const {rerender}=render(<svg><JunctionFixture lines={lines} connections={[]} camera={DEFAULT_CAMERA} selectable/></svg>);
+ rerender(<svg><JunctionFixture lines={lines} connections={[]} camera={{...DEFAULT_CAMERA,longitude:140}} selectable/></svg>);
+ expect(screen.queryByRole('button')).toBeNull();
+ expect(idRead).not.toHaveBeenCalled();
+});
+
+test('large topology pans between exact port groups without rereading remote geometry',()=>{
+ let distantLongitudeReads=0;
+ const connections:Parameters<typeof JunctionPoints>[0]['connections']=[];
+ const lines=Array.from({length:512},(_,group)=>{
+  const port=(n:number)=>({alignment_id:`group-${group}-${n}`,endpoint:'start' as const});
+  connections.push({a:port(0),b:port(1)},{a:port(0),b:port(2)});
+  const longitude=group===0?139.75:group===1?140.05:130+(group%48)*.12;
+  const latitude=group<2?35.67504:30+Math.floor(group/48)*.25;
+  const point={latitude,get longitude(){if(group>1)distantLongitudeReads++;return longitude;}};
+  return [0,1,2].map(n=>({id:port(n).alignment_id,name:`試験分岐${group}-${n}`,points:[point]}));
+ }).flat();
+ const app=(longitude:number)=><svg><JunctionFixture lines={lines} connections={connections} camera={{...DEFAULT_CAMERA,longitude,zoom:16}} selectable/></svg>;
+ const {rerender}=render(app(139.75));
+ const first=screen.getByRole('button',{name:/試験分岐0-0/});
+ fireEvent.keyDown(first,{key:'Enter'});
+ expect(distantLongitudeReads).toBeGreaterThan(0);
+ distantLongitudeReads=0;
+ rerender(app(140.05));expect(screen.getByRole('button',{name:/試験分岐1-0/})).toBeTruthy();
+ rerender(app(139.75));expect(screen.getByRole('button',{name:/試験分岐0-0/}).getAttribute('aria-pressed')).toBe('true');
+ expect(distantLongitudeReads).toBe(0);
 });

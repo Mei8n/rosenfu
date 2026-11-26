@@ -2997,6 +2997,142 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_shared_seam_can_restore_only_the_missing_strict_return() {
+        use rosenfu_core::ofm_evidence::{
+            BusPathBinding, BusPattern, BusTileProof, BusVertex, BUS_RECTANGLE_RULE,
+            BUS_SHARED_SEAM_RULE, DECODER_RULE,
+        };
+        let mut editor = WorldEditor::new();
+        editor.rename_company("バス会社".into()).unwrap();
+        // Two directed roads connect the same terminals. Eastbound has an
+        // exact cut; westbound uses the closely matching buffered v3 proof.
+        // No installed catalog or fixture import participates in authoring.
+        let input = [
+            "GmoKDnRyYW5zcG9ydGF0aW9ueAIogCASGAgVEgQAAAEBGAIiDAmgQZAcEicT1wSrAhIZCBYSBAAAAQEYAiINCaA80BkS0AHQBbADABoFY2xhc3MaBm9uZXdheSILCglzZWNvbmRhcnkiAigB",
+            "GmwKDnRyYW5zcG9ydGF0aW9ueAIogCASGwgVEgQAAAEBGAIiDwnoAvQcGscBYycTyRalCxIYCBYSBAAAAQEYAiIMCY8CoB8SsAMAAI8DGgVjbGFzcxoGb25ld2F5IgsKCXNlY29uZGFyeSICKAE=",
+        ];
+        let cached = || {
+            input
+                .into_iter()
+                .enumerate()
+                .map(|(i, raw)| {
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(raw)
+                        .unwrap();
+                    let sha = rosenfu_core::ofm_evidence::raw_sha256(&bytes);
+                    let x = 14552 + i as u32;
+                    let key = format!(
+                        "https://tiles.openfreemap.org/planet/synthetic_stock/14/{x}/6451.pbf"
+                    );
+                    (
+                        OfmRawInput {
+                            sha256: sha.clone(),
+                            byte_length: bytes.len(),
+                            base64: raw.into(),
+                        },
+                        OfmBindingInput {
+                            key: key.clone(),
+                            raw_sha256: sha,
+                            url: key,
+                            revision: "synthetic_stock".into(),
+                            z: 14,
+                            x,
+                            y: 6451,
+                            decoder_rule: DECODER_RULE.into(),
+                            license: "ODbL-1.0".into(),
+                            attribution: "© OpenMapTiles © OpenStreetMap contributors".into(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let inputs = cached();
+        let west = &inputs[0].1;
+        let east = &inputs[1].1;
+        let mut proof = BusPathBinding {
+            rule: BUS_RECTANGLE_RULE.into(),
+            same_atom_stops: None,
+            fractional_terminals: None,
+            grade_policy: None,
+            tile_key: west.key.clone(),
+            tile_raw_sha256: west.raw_sha256.clone(),
+            end_tile_key: Some(east.key.clone()),
+            pattern: Some(BusPattern::OpenRoundTrip),
+            interior_stops: vec![],
+            via: vec![],
+            additional_tiles: vec![BusTileProof {
+                tile_key: east.key.clone(),
+                tile_raw_sha256: east.raw_sha256.clone(),
+            }],
+            respect_oneway: true,
+            start: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: 2,
+            },
+            end: BusVertex {
+                feature: 0,
+                line: 0,
+                vertex: 1,
+            },
+        };
+        let route = "stock-seam";
+        let name = "境界横断";
+        let before = editor.snapshot();
+        let token = editor.ofm_world_token().unwrap();
+        let refused = editor
+            .preview_gameplay_ofm_bus(&token, route.into(), name.into(), proof.clone(), cached())
+            .unwrap();
+        assert_eq!(refused.failed_leg_index, None);
+        assert!(refused.points.len() >= 3);
+        assert!(refused.return_unavailable_reason.is_some());
+        assert!(refused.return_path.is_none());
+        assert!(editor
+            .put_gameplay_ofm_bus(&token, route.into(), name.into(), proof.clone(), cached())
+            .is_err());
+        proof.rule = BUS_SHARED_SEAM_RULE.into();
+        let exact = editor
+            .preview_gameplay_ofm_bus(&token, route.into(), name.into(), proof.clone(), cached())
+            .unwrap();
+        assert_eq!(exact.failed_leg_index, None);
+        assert_eq!(exact.points, refused.points);
+        assert!(exact.return_unavailable_reason.is_none());
+        let returned = exact.return_path.as_ref().unwrap();
+        assert_eq!(returned.points.first(), exact.points.last());
+        assert_eq!(returned.points.last(), exact.points.first());
+        let mut altered = cached();
+        altered[0].0.base64.replace_range(5..6, "Z");
+        assert!(editor
+            .put_gameplay_ofm_bus(&token, route.into(), name.into(), proof.clone(), altered)
+            .is_err());
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.ofm_world_token().unwrap(), token);
+        let created = editor
+            .put_gameplay_ofm_bus(&token, route.into(), name.into(), proof, cached())
+            .unwrap();
+        assert_eq!(created.road_evidence_descriptors.len(), 2);
+        assert!(created.ofm_installed_seam_bus_routes.is_empty());
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("stock-seam.rosenfu");
+        editor.save(&file).unwrap();
+        let mut fresh = WorldEditor::new();
+        fresh.load(&file).unwrap();
+        assert_eq!(fresh.snapshot(), created);
+        assert_eq!(
+            fresh
+                .preview_gameplay_ofm_bus(
+                    &fresh.ofm_world_token().unwrap(),
+                    route.into(),
+                    name.into(),
+                    created.ofm_gameplay_bus_routes[route].clone(),
+                    vec![],
+                )
+                .unwrap(),
+            exact
+        );
+    }
+
+    #[test]
     fn ordinary_bus_strict_return_does_not_force_outbound_control_round_the_loop() {
         use rosenfu_core::ofm_evidence::{
             BusPathBinding, BusPattern, BusVertex, BusVia, BUS_GRAPH_RULE,

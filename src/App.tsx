@@ -203,6 +203,7 @@ const previewWorld: World = {
 };
 const detail = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+const NO_ALIGNMENT_CONNECTIONS:EndpointConnection[]=[];
 function mapPath(points: GeoPoint[], camera: Camera) {
   return points.map((point, index) => {
     const p = project(point.latitude, point.longitude, camera);
@@ -299,11 +300,19 @@ export function App() {
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(([entry]) => {
-      const {width,height} = entry.contentRect;
-      if(width > 0 && height > 0) setMapSize({width,height});
-    });
-    observer.observe(svg);
+    // Some WebViews report the SVG drawing bounds, including offscreen
+    // paths, rather than its CSS viewport. Pointer mapping uses the latter.
+    let lastWidth:number=MAP_VIEWBOX.width, lastHeight:number=MAP_VIEWBOX.height;
+    const measure=()=>{
+      const {width,height}=svg.getBoundingClientRect();
+      if(!Number.isFinite(width)||!Number.isFinite(height)||width<=0||height<=0||
+        (width===lastWidth&&height===lastHeight))return;
+      lastWidth=width;lastHeight=height;
+      setMapSize({width,height});
+    };
+    const observer=new ResizeObserver(measure);
+    observer.observe(svg.parentElement??svg);
+    measure();
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
@@ -965,6 +974,15 @@ export function App() {
     }
     return {stationGroupByMember,mergedStationIds};
   },[stationGroupDisplay]);
+  // Keep the grouping and its hit/inspection semantics for the entire
+  // world. Only attach the SVG artwork for groups touching the padded view.
+  const stationGroupViewport=useMemo(()=>createTrackViewportIndex(
+    stationGroupDisplay.filter(group=>group.members.length>1).map(group=>({
+      group,points:group.members.flatMap(member=>member.polygon),
+    })),'display'),[stationGroupDisplay]);
+  const visibleStationGroups=useMemo(()=>detailedStations?stationGroupViewport.visible(trackView):[],
+    [detailedStations,stationGroupViewport,trackView]);
+  const plannedStationsById=useMemo(()=>firstByKey(plannedStations,station=>station.id),[plannedStations]);
   const stationDisplayGroup=(id:string)=>stationGroupByMember.get(id);
   const occupiedStationPlatforms=[...(world?.station_placements??[]).map(p=>({lineId:p.alignment_id,position:p.position,lengthM:p.length_m})),...plannedPlatforms.flatMap(p=>p.line?[{lineId:p.line.id,position:p.position,lengthM:p.station.lengthM}]:[])];
   const hoveredPlannedStation=stationCursor?plannedPlatforms.find(p=>stationContainsPoint(p.polygon,stationCursor)):undefined;
@@ -2766,7 +2784,7 @@ export function App() {
               {parallelMode&&parallelPreview&&<TrackStroke d={drawInfrastructurePath(parallelPreview.line,infrastructure)} data-track-count={infrastructure.track_count} className="draft-path candidate-draft" pointerEvents="none"/>}
               {parallelMode&&parallelCandidate&&!parallelStart&&(()=>{const line=offsetTrack(parallelCandidate.source.points,parallelCandidate.projection!.offset),p=line&&hoverPoint&&parallelProjection(line,hoverPoint)?.point;if(!p)return null;const q=project(p.latitude,p.longitude,camera);return <circle cx={q.x} cy={q.y} r={5/viewport.scale} fill="white" stroke="#287c9e" strokeWidth={1.5/viewport.scale} pointerEvents="none"/>;})()}
               <OperationVehicleLayer camera={camera} scale={viewport.scale} crop={viewport}/>
-              <JunctionPoints mapSize={mapSize} selected={junctionSelection?.epoch===worldEpoch?junctionSelection.id:null} onSelectionChange={id=>setJunctionSelection(id===null?null:{epoch:worldEpoch,id})} isPointerSelectionSuppressed={()=>suppressSelectionClick.current} lines={alignments} connections={world?.alignment_connections??[]} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"&&!roadMapPicking}/>
+              <JunctionPoints mapSize={mapSize} selected={junctionSelection?.epoch===worldEpoch?junctionSelection.id:null} onSelectionChange={id=>setJunctionSelection(id===null?null:{epoch:worldEpoch,id})} isPointerSelectionSuppressed={()=>suppressSelectionClick.current} lines={alignments} connections={world?.alignment_connections??NO_ALIGNMENT_CONNECTIONS} camera={camera} selectable={enabled&&mapMode==="move"&&activeTool!=="delete"&&!roadMapPicking}/>
               {visibleParkedPaths.map(plan=><g key={plan.id} className={plan.planId===activePlanId?undefined:"inactive-plan"}><TrackStroke d={drawInfrastructurePath(plan.line,plan.infrastructure)} data-track-count={plan.infrastructure?.track_count??1} className={"draft-path parked-plan"+(mapMode==="move"&&selectedPlanPath===plan.id?" track-explicit-selection":"")} data-plan-id={plan.id} pointerEvents="none" /><path d={drawPath(plan.line)} className="plan-hover-hit" data-plan-hover-id={plan.id} onClick={event=>{if(mapMode==="move"&&!roadMapPicking){event.stopPropagation();selectTrackPath(plan.id);}}} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onPointerEnter={event=>hoverPlan(event,plan.id)} onPointerMove={event=>hoverPlan(event,plan.id)} onPointerLeave={()=>setPlanHover(null)} />{drawAnchors(plan.points,true,plan.id)}</g>)}
               {tangentGuide&&<line className="construction-tangent-guide" aria-label="円弧・直線の先端延長ガイド" x1={tangentGuide.start.x} y1={tangentGuide.start.y} x2={tangentGuide.end.x} y2={tangentGuide.end.y} stroke="#65716b" strokeWidth="1" strokeDasharray="6 4" opacity=".8" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
 
@@ -2787,7 +2805,7 @@ export function App() {
               {anchorPreview?.preview&&<g pointerEvents="none"><TrackStroke d={drawPath(anchorPreview.preview.line)} className={"draft-path anchor-drag-preview"+(anchorPreview.error?" invalid-candidate":"")} />{focusMarker(anchorPreview.preview.anchors[anchorPreview.index],"anchor",anchorPreview.snapped?"anchor-snap-ring snapped":"anchor-snap-ring",!anchorPreview.error)}</g>}
               {selectedStation&&selectedStationWalkLinks.length>0&&<StationWalkMapLayer selected={selectedStation} camera={camera}
                 viewport={viewport} passages={selectedStationWalkLinks}/>}
-              {detailedStations&&<><defs><filter id="station-group-outline" x="-10%" y="-10%" width="120%" height="120%"><feMorphology in="SourceAlpha" operator="dilate" radius={1/viewport.scale} result="expanded"/><feFlood floodColor="#333"/><feComposite in2="expanded" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>{stationGroupDisplay.filter(g=>g.members.length>1).map(group=><g key={group.id} className="station-group-footprint" data-station-group={group.id} pointerEvents="none"><title>{group.name}</title><g filter="url(#station-group-outline)">{group.members.map(member=>{const planned=plannedStations.find(s=>s.id===member.id),inactive=planned&&stationPlanId(planned)!==activePlanId;return <path key={member.id} data-group-platform={member.id} d={drawPath(member.polygon)+"Z"} fill={planned?(inactive?"#b1bac3":"#c4e6f3"):"white"} stroke={planned?(inactive?"#78838e":"#287c9e"):"none"} strokeWidth="1.5" strokeDasharray={planned?"4 3":undefined} vectorEffect="non-scaling-stroke"><title>{group.name}{planned?"（未着工）":""}</title></path>;})}</g></g>)}</>}
+              {detailedStations&&<><defs><filter id="station-group-outline" x="-10%" y="-10%" width="120%" height="120%"><feMorphology in="SourceAlpha" operator="dilate" radius={1/viewport.scale} result="expanded"/><feFlood floodColor="#333"/><feComposite in2="expanded" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>{visibleStationGroups.map(({group})=><g key={group.id} className="station-group-footprint" data-station-group={group.id} pointerEvents="none"><title>{group.name}</title><g filter="url(#station-group-outline)">{group.members.map(member=>{const planned=plannedStationsById.get(member.id),inactive=planned&&stationPlanId(planned)!==activePlanId;return <path key={member.id} data-group-platform={member.id} d={drawPath(member.polygon)+"Z"} fill={planned?(inactive?"#b1bac3":"#c4e6f3"):"white"} stroke={planned?(inactive?"#78838e":"#287c9e"):"none"} strokeWidth="1.5" strokeDasharray={planned?"4 3":undefined} vectorEffect="non-scaling-stroke"><title>{group.name}{planned?"（未着工）":""}</title></path>;})}</g></g>)}</>}
               {plannedPlatforms.map(({station,polygon,valid})=>{const p=project(station.point.latitude,station.point.longitude,camera);return <g key={station.id} className={"planned-station"+(stationPlanId(station)===activePlanId?"":" inactive-plan")} pointerEvents="none" opacity=".7"><title>{station.name}（未着工）{valid?"":"・線形の修正が必要"}</title>{detailedStations&&valid?<path d={drawPath(polygon)+"Z"} className="station-platform" visibility={mergedStationIds.has(station.id)?"hidden":undefined}/>:<circle visibility={stationDisplayGroup(station.id)&&stationDisplayGroup(station.id)?.id!==station.id?"hidden":undefined} cx={p.x} cy={p.y} r={mapMetrics.stationRadius} fill={valid?"#777":"#b34c4c"}/>}{stationNamesVisible&&stationDisplayGroup(station.id)?.id===station.id&&<text x={p.x+mapMetrics.stationLabelOffset} y={p.y-mapMetrics.stationLabelBaseline}>{stationDisplayGroup(station.id)?.name??station.name}（計画）</text>}</g>;})}
               {stationPreview.length >= 4 && <path d={drawPath(stationPreview) + "Z"} className="station-platform station-placement-preview" opacity=".65" pointerEvents="none" />}
               {referenceVisible && referenceResult.stations.map(station=>{const p=project(station.latitude,station.longitude,camera);return <g key={station.osmType+"/"+station.osmId} className="reference-station" pointerEvents="none"><title>参考駅: {station.name} ({station.kind})</title><path d={`M${p.x},${p.y-5} l5,5 -5,5 -5,-5 Z`}/><text x={p.x+9} y={p.y-7}>参考: {station.name}</text></g>;})}

@@ -5,7 +5,7 @@ import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadDataState,RoadSnapshot} from './automaticRoadData';
 import {OFM_EVIDENCE_LIMITS,OFM_LIMITS} from './openFreeMapRoadData';
-import {hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,ordinaryBusTileFootprint,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,retryOrdinaryBusSharedSeam,snapOrdinaryBusSegment,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
+import {hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,ordinaryBusNeedsSharedSeamRetry,ordinaryBusTileFootprint,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,retryOrdinaryBusSharedSeam,snapOrdinaryBusSegment,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusPath,type OrdinaryBusQuery,type OrdinaryBusPattern,type RouteTileObserver} from './ordinaryBusDraft';
 
 type Route={id:string;name:string;pattern?:OrdinaryBusPattern;path?:OrdinaryBusPath};
 type Draft={id:string;respectOneway:boolean;keepSharedSeam?:boolean;fractional?:true;generalFractional?:true;savedInteriorStops?:BusInteriorStop[];pattern?:OrdinaryBusPattern;start?:BusAnchor;end?:BusAnchor;preview?:OrdinaryBusPreview;query?:OrdinaryBusQuery};
@@ -97,7 +97,7 @@ export function useOrdinaryBusDraft(input:Input){
    if(!alive())return;
    verifiedSource();
    let matched=matchOrdinaryBusPreview(result,start,end,draft.pattern,[start,end]);
-   if('refusedLeg' in matched&&newRoute&&!draft.fractional&&current.current.sharedSeam&&current.current.allow){
+   if(ordinaryBusNeedsSharedSeamRetry(matched)&&newRoute&&!draft.fractional&&current.current.sharedSeam&&current.current.allow){
     const retry=retryOrdinaryBusSharedSeam(query);
     if(retry){
      const alt=await current.current.preview(retry);
@@ -114,7 +114,7 @@ export function useOrdinaryBusDraft(input:Input){
      const alt=await current.current.preview(extra);
      if(!alive()||!current.current.allow)return;
      let checked=matchOrdinaryBusPreview(alt,start,end,draft.pattern,[start,end]);
-     const retry='refusedLeg' in checked&&current.current.sharedSeam?retryOrdinaryBusSharedSeam(extra):undefined;
+     const retry=ordinaryBusNeedsSharedSeamRetry(checked)&&current.current.sharedSeam?retryOrdinaryBusSharedSeam(extra):undefined;
      if(retry){
       const revised=await current.current.preview(retry);
       if(!alive()||!current.current.allow)return;

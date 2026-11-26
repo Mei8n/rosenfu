@@ -52,7 +52,8 @@ jobs:
     name: Windows x64 α0.2 test package
     needs: check
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/dev/alpha-0.2-integration') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/dev/alpha-0.2-integration' &&
+       !contains(github.event.head_commit.message, '[skip windows package]')) ||
       (github.event_name == 'pull_request' &&
        github.base_ref == 'dev/alpha-0.2-integration' &&
        (github.head_ref == 'ci/alpha02-windows-test-package-20261120' ||

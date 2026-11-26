@@ -4,7 +4,7 @@ import {createOrdinaryBusHover} from './ordinaryBusHover';
 import type {GeoPoint} from './alignment';
 import type {Camera} from './map';
 import type {RoadSnapshot} from './automaticRoadData';
-import {BusSeamReadTimeout,cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,reacquireNearbyOrdinaryBusQuery,restoreOrdinaryBusControls,retryOrdinaryBusSharedSeam,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
+import {BusSeamReadTimeout,cachedBusHoverQuery,hasObservedOrdinaryBusTile,matchOrdinaryBusPreview,ordinaryBusNeedsSharedSeamRetry,prepareNearbyOrdinaryBusQuery,prepareOrdinaryBusQuery,reacquireNearbyOrdinaryBusQuery,restoreOrdinaryBusControls,retryOrdinaryBusSharedSeam,sameOrdinaryBusGeometry,sameOrdinaryBusPath,snapOrdinaryBusFreeEnd,snapOrdinaryBusVertex,type BusAnchor,type BusEvidenceReader,type OrdinaryBusGradePolicy,type OrdinaryBusPattern,type OrdinaryBusPreview,type OrdinaryBusPreviewQuery,type OrdinaryBusPreviewReply,type OrdinaryBusQuery,type RouteTileObserver} from './ordinaryBusDraft';
 import {clickBusControl,closeBusCircuit,moveBusControl,insertBusControl,removeBusControl,selectBusEnd,emptyBusInteraction,undoBusDraft,redoBusDraft,requestBusFinish,settleBusValidation,type BusControlEnd,type DraftControl,type OrdinaryBusInteraction} from './ordinaryBusInteraction';
 
 type Verified={preview:OrdinaryBusPreview;token:string;path:OrdinaryBusQuery['path'];retained?:boolean;nearby?:true};
@@ -246,7 +246,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
     }
     let nearby:false|true=false;
     const src=latest.current.input;
-    if('refusedLeg' in matched&&!currentSpec.savedPath&&src.sharedSeam&&src.allow){
+    if(ordinaryBusNeedsSharedSeamRetry(matched)&&!currentSpec.savedPath&&src.sharedSeam&&src.allow){
      const retry=retryOrdinaryBusSharedSeam(query);
      if(retry){
       const alt=await queryNative(retry,()=>alive()&&latest.current.input.allow);
@@ -263,7 +263,7 @@ export function useOrdinaryBusInteraction(input:Input,name:string,onCommitted:()
       const alt=await queryNative(extra,current);
       if(!current()||!alt)return;
       let checked=match(alt,controls,extra.path.pattern);
-      const retry='refusedLeg' in checked&&latest.current.input.sharedSeam?retryOrdinaryBusSharedSeam(extra):undefined;
+      const retry=ordinaryBusNeedsSharedSeamRetry(checked)&&latest.current.input.sharedSeam?retryOrdinaryBusSharedSeam(extra):undefined;
       if(retry){
        const revised=await queryNative(retry,current);
        if(!current()||!revised)return;
