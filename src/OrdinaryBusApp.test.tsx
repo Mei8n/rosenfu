@@ -1330,3 +1330,47 @@ test('confirm uses exact world-retained pins after the source cells leave the vi
  expect(read).not.toHaveBeenCalled();
  expect(preview).toHaveBeenCalledTimes(2);
 });
+
+test.each([
+ {waypoints:false,kind:'recovered'}, {waypoints:true,kind:'recovered'},
+ {waypoints:false,kind:'refused'}, {waypoints:true,kind:'refused'},
+ {waypoints:true,kind:'already complete'},
+] as const)('only a missing return triggers exact shared seam verification ($waypoints, $kind)',async ({waypoints,kind})=>{
+ const complete={points:[left,a,b],lengthM:801,returnPath:{points:[b,bend,left],lengthM:978}};
+ const partial={points:complete.points,lengthM:complete.lengthM,returnUnavailableReason:'終点から起点に戻れる道路がありません。'};
+ const preview=vi.fn(async (args?:unknown)=>{
+  const rule=(args as {path:{rule:string}}).path.rule;
+  if(kind==='already complete')return complete;
+  if(rule==='ofm_ground_bus_rectangle_z14_v2')return partial;
+  return kind==='recovered'?complete:{...partial,returnUnavailableReason:'別の復路拒否'};
+ });
+ const map=(await setup({preview,rectangle:true,sharedSeam:true,roundTrip:true,waypoints,autoStart:false}))!;
+ fireEvent.click(screen.getByRole('checkbox',{name:'地図データの一方通行に従う'}));
+ fireEvent.click(screen.getByRole('button',{name:'新しいバス系統'}));
+ map.pressPoint(left);map.pressPoint(b);
+ if(kind==='refused'){
+  await screen.findByText(/終点から起点に戻れる道路がありません/);
+  expect(screen.queryByText(/別の復路拒否/)).toBeNull(); // keep the original refusal
+  expect(screen.queryByLabelText('バス系統の復路プレビュー')).toBeNull();
+  const confirm=screen.queryByRole<HTMLButtonElement>('button',{name:'バス系統を確定'});
+  expect(confirm===null||confirm.disabled).toBe(true);
+  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+ }else{
+  await screen.findByText('復路 978 m');
+ }
+ const [initial,retry]=preview.mock.calls.map(([args])=>args as {path:{rule:string};expectedWorldToken:string});
+ expect(initial).toMatchObject({expectedWorldToken:'world-exact',path:{rule:'ofm_ground_bus_rectangle_z14_v2',pattern:'openRoundTrip',respectOneway:true}});
+ if(kind==='already complete'){
+  expect(preview).toHaveBeenCalledTimes(1);
+ }else{
+  expect(preview).toHaveBeenCalledTimes(2);
+  expect(retry).toEqual({...initial,path:{...initial.path,rule:'ofm_ground_bus_shared_seam_z14_v3'}});
+ }
+ expect(observe).toHaveBeenCalledTimes(1);
+ expect(read).toHaveBeenCalledTimes(1); // Neither alternative needs new bytes.
+ if(kind!=='refused'){
+  expect(invoke).not.toHaveBeenCalledWith('put_gameplay_ofm_bus',expect.anything());
+  fireEvent.click(screen.getByRole('button',{name:'バス系統を確定'}));
+  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('put_gameplay_ofm_bus',kind==='already complete'?initial:retry));
+ }
+});

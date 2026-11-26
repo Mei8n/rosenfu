@@ -1271,6 +1271,9 @@ fn equivalent_simultaneous_through_runs_admit_siding_regardless_of_service_ids()
                 continue;
             }
             assert_eq!(first, [&ids[1]]);
+            if *order == [1, 2, 0] {
+                assert_spaced_three_way_meets(&world, &configs, &ids);
+            }
             let replay = rt.preview_passenger_replay(TARGET, 256).unwrap();
             assert!(replay.complete && replay.completed_legs.len() == 4);
             let siding_inbound = &replay.completed_legs[0];
@@ -1329,5 +1332,143 @@ fn equivalent_simultaneous_through_runs_admit_siding_regardless_of_service_ids()
             assert_eq!(world.operation_save(), loaded.operation_save());
             assert_eq!(loaded.operation().unwrap().runtime.trains().count(), 0);
         }
+    }
+}
+
+fn assert_spaced_three_way_meets(
+    base: &World,
+    configs: &[OperationServiceConfig],
+    ids: &[String; 3],
+) {
+    use rosenfu_core::operation::OperationError;
+
+    const START: u64 = 20_000;
+    const GAP: u64 = 1_200_000;
+    const CLEAR_DEADLINE_FROM_BIRTH_MS: u64 = 610_000;
+
+    let mut recurring = configs.to_vec();
+    for config in &mut recurring {
+        config.timetable = Timetable {
+            first_departure_ms: START,
+            last_departure_ms: START + 2 * GAP,
+            headway_ms: GAP,
+        };
+    }
+    let run = |grid: &[OperationServiceConfig]| {
+        let mut fresh = World::new(base.snapshot().clone()).unwrap();
+        fresh.configure_operation(grid.to_vec()).unwrap();
+        fresh
+    };
+    let at = |world: &mut World, t| {
+        let result = world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(t, 256)
+            .unwrap();
+        assert!(result.reached_target);
+        result.arrivals
+    };
+    let get = |world: &World, service: usize, birth: u64| {
+        world
+            .operation()
+            .unwrap()
+            .runtime
+            .trains()
+            .find(|t| t.key.service_id == ids[service] && t.key.scheduled_ms == birth)
+            .unwrap()
+            .state
+            .clone()
+    };
+    let mut world = run(&recurring);
+    assert_eq!(world.operation_save().unwrap().runtime.format, 2);
+    for n in 0..3 {
+        let birth = START + n * GAP;
+        at(&mut world, birth - 1);
+        assert_eq!(world.operation().unwrap().runtime.trains().count(), 0);
+        at(&mut world, birth);
+        let inbound = get(&world, 1, birth);
+        if n == 0 {
+            let mut demo = world.clone();
+            let completion = at(&mut demo, birth + 3 * GAP / 4);
+            eprintln!(
+                "repeating meet: at birth {birth}, siding state {inbound:?}, arrivals {:?}",
+                completion
+                    .iter()
+                    .map(|a| (a.at_ms, a.delay_ms))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let TrainState::Moving {
+            entered_ms,
+            arrival_ms,
+            release_ms,
+        } = inbound
+        else {
+            panic!("repeated fresh tie {n}: siding should move first, got {inbound:?}");
+        };
+        assert_eq!(entered_ms, birth);
+        assert!(arrival_ms < release_ms);
+        at(&mut world, release_ms - 1);
+        assert_eq!(
+            get(&world, 0, birth),
+            TrainState::Waiting { ready_ms: birth }
+        );
+        assert_eq!(
+            get(&world, 2, birth),
+            TrainState::Waiting { ready_ms: birth }
+        );
+        if n == 1 {
+            let bytes = rosenfu_storage::encode(&world).unwrap();
+            let mut reopened = rosenfu_storage::decode(&bytes).unwrap();
+            assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), bytes);
+            for config in &recurring {
+                let mut changed = config.clone();
+                changed.timetable = Timetable {
+                    first_departure_ms: birth + 2 * GAP,
+                    last_departure_ms: birth + 2 * GAP,
+                    headway_ms: GAP,
+                };
+                for w in [&mut world, &mut reopened] {
+                    assert_eq!(
+                        w.handoff_active_rail_timetable(changed.clone()),
+                        Err(OperationError::OpposingMeetInProgress)
+                    );
+                    assert_eq!(rosenfu_storage::encode(w).unwrap(), bytes);
+                }
+            }
+            assert_eq!(
+                at(&mut world, birth + CLEAR_DEADLINE_FROM_BIRTH_MS),
+                at(&mut reopened, birth + CLEAR_DEADLINE_FROM_BIRTH_MS)
+            );
+            assert_eq!(world.operation_save(), reopened.operation_save());
+            assert_eq!(world.operation().unwrap().runtime.trains().count(), 0);
+        } else {
+            at(&mut world, release_ms);
+        }
+    }
+
+    // No change for crowded or unaligned schedules, even if all three
+    // trains are born together for the first departure.
+    for modify in [0, 1, 2] {
+        let mut control = recurring.clone();
+        if modify == 0 {
+            for c in &mut control {
+                // 900 s exceeds the siding + one through upper bound
+                // (691,280 ms), but not all three (975,470 ms).
+                c.timetable.last_departure_ms = START + 1_800_000;
+                c.timetable.headway_ms = 900_000;
+            }
+        } else if modify == 1 {
+            control[2].timetable.last_departure_ms += GAP;
+        } else {
+            control[2].timetable.first_departure_ms += 1;
+        }
+        let mut control = run(&control);
+        at(&mut control, START);
+        assert_eq!(
+            get(&control, 1, START),
+            TrainState::Waiting { ready_ms: START }
+        );
     }
 }

@@ -1324,29 +1324,39 @@ impl OperationRuntime {
             .then_some((birth, end))
     }
 
-    /// Admit the siding first for exactly three equivalent one-shot contenders:
-    /// the third service must have its own proof as an identical through run.
-    fn simultaneous_meet_birth(&self, pair: &OpposingBirthPriority) -> Option<u64> {
+    /// Reuse the same in-corridor three-train proof for an absolute grid only
+    /// when each batch could fully serialize, including all dwell and rear
+    /// clearance, before the next birth. A short or mismatched grid cannot
+    /// borrow the one-shot preference from its first simultaneous departure.
+    fn simultaneous_meet_grid(&self, pair: &OpposingBirthPriority) -> Option<&Timetable> {
         if !pair.shared_through {
             return None;
         }
-        let third = pair.deferred.as_deref()?;
-        let birth = self
-            .services
-            .get(&pair.siding)?
-            .spec
-            .timetable
-            .first_departure_ms;
-        [pair.siding.as_str(), pair.through.as_str(), third]
-            .into_iter()
-            .all(|id| {
-                self.services.get(id).is_some_and(|service| {
-                    !service.departure_source.is_periodic()
-                        && service.spec.timetable.first_departure_ms == birth
-                        && service.spec.timetable.last_departure_ms == birth
-                })
-            })
-            .then_some(birth)
+        let siding = self.services.get(&pair.siding)?;
+        let through = self.services.get(&pair.through)?;
+        let other = self.services.get(pair.deferred.as_ref()?)?;
+        let table = &siding.spec.timetable;
+        let one_shot = table.first_departure_ms == table.last_departure_ms;
+        for service in [siding, through, other] {
+            let grid = &service.spec.timetable;
+            if service.departure_source.is_periodic()
+                || grid.first_departure_ms != table.first_departure_ms
+                || grid.last_departure_ms != table.last_departure_ms
+                || (!one_shot && grid.headway_ms != table.headway_ms)
+            {
+                return None;
+            }
+        }
+        if !one_shot {
+            let bound = siding
+                .journey_ms
+                .checked_add(through.journey_ms)?
+                .checked_add(other.journey_ms)?;
+            if table.headway_ms <= bound {
+                return None;
+            }
+        }
+        Some(table)
     }
 
     /// Do not let a timetable handoff change the protection of an admitted
@@ -1357,27 +1367,24 @@ impl OperationRuntime {
             if pair.siding != edited && pair.through != edited && other != Some(edited) {
                 return false;
             }
-            let (birth, simultaneous) = if let Some(birth) = self.simultaneous_meet_birth(pair) {
-                (birth, true)
-            } else if let Some((birth, end)) = self.deferred_meet_window(pair) {
-                if other == Some(edited)
-                    && proposed.first_departure_ms == proposed.last_departure_ms
-                    && proposed.first_departure_ms > end
-                {
-                    return false;
-                }
-                (birth, false)
-            } else {
+            if let Some(grid) = self.simultaneous_meet_grid(pair) {
+                return self.trains.keys().any(|train| {
+                    (train.service_id == pair.siding
+                        || train.service_id == pair.through
+                        || other == Some(train.service_id.as_str()))
+                        && grid.contains(train.scheduled_ms)
+                });
+            }
+            let Some((birth, end)) = self.deferred_meet_window(pair) else {
                 return false;
             };
-            [
-                Some(pair.siding.as_str()),
-                Some(pair.through.as_str()),
-                other.filter(|_| simultaneous),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|id| {
+            if other == Some(edited)
+                && proposed.first_departure_ms == proposed.last_departure_ms
+                && proposed.first_departure_ms > end
+            {
+                return false;
+            }
+            [&pair.siding, &pair.through].into_iter().any(|id| {
                 self.trains.contains_key(&TrainKey {
                     service_id: id.to_owned(),
                     scheduled_ms: birth,
@@ -1396,7 +1403,7 @@ impl OperationRuntime {
             !pairs.contains(pair)
                 && (pair.deferred.is_none()
                     || self.deferred_meet_window(pair).is_some()
-                    || self.simultaneous_meet_birth(pair).is_some())
+                    || self.simultaneous_meet_grid(pair).is_some())
                 && self.trains.values().any(|train| {
                     train.key.service_id == pair.siding
                         && (train.leg > 0 || matches!(train.state, TrainState::Moving { .. }))
@@ -1450,7 +1457,10 @@ impl OperationRuntime {
                     if busy.contains(other) {
                         return None;
                     }
-                    if self.simultaneous_meet_birth(pair) == Some(at) {
+                    if self
+                        .simultaneous_meet_grid(pair)
+                        .is_some_and(|grid| grid.contains(at))
+                    {
                         if through >= other {
                             return None;
                         }

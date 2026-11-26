@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen,within} from "@testing-library/react";
+import {cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
+import {panMap} from "./mapTestNavigation";
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:vi.fn()}));
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 const center={latitude:35.67504,longitude:139.75};
@@ -117,4 +118,35 @@ test("trying to deselect does not discard station name, length or pending remova
  expect(screen.getByRole("button",{name:"削除を確定"})).toBeTruthy();
  expect(screen.getByText("駅の詳細")).toBeTruthy();
  expect(vi.mocked(invoke).mock.calls.some(([c])=>["rename_station","update_station_placement","delete_station"].includes(c))).toBe(false);
+});
+
+test("a large saved world shows grouped footprints only near the viewport and keeps both platforms when panning",async()=>{
+ const station_groups:typeof world.station_groups=[], stations:typeof world.stations=[],
+  station_placements:typeof world.station_placements=[], alignments:typeof world.alignments=[];
+ for(let i=0;i<48;i++){
+  const point={latitude:i<2?center.latitude:30+(i%35)*.12,
+   longitude:i===0?center.longitude:i===1?center.longitude+.018:131+Math.floor(i/35)*.7};
+  const offset=100+4*i;
+  const id=String(offset), other=String(offset+1), a=String(offset+2), b=String(offset+3);
+  station_groups.push({station_id:id,members:[id,other]});
+  stations.push({id,owner:"2",name:"試験駅"+i,...point},{id:other,owner:"2",name:"試験駅"+i,...point});
+  alignments.push({id:a,owner:"2",name:"横",points:[{...point,longitude:point.longitude-.006},{...point,longitude:point.longitude+.006}]},
+   {id:b,owner:"2",name:"縦",points:[{...point,latitude:point.latitude-.006},{...point,latitude:point.latitude+.006}]});
+  station_placements.push({station_id:id,alignment_id:a,position:.5,length_m:200,width_m:12},{station_id:other,alignment_id:b,position:.5,length_m:200,width_m:12});
+ }
+ const snapshot={...world,stations,station_placements,station_groups,alignments,next_id:"1300"};
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"large-station-group-test"}:snapshot);
+ render(<App/>);await screen.findByText(/large-station-group-test/);
+ const rendered=()=>[...document.querySelectorAll<SVGPathElement>("[data-group-platform]")]
+   .map(platform=>platform.getAttribute("data-group-platform"));
+ expect(rendered()).toEqual(["100","101"]);
+ panMap(.018/360*256*2**16);
+ await waitFor(()=>expect(rendered()).toEqual(["104","105"]));
+ fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+ expect(document.querySelector(".station-directory .count")?.textContent).toBe("48");
+ fireEvent.click(screen.getByRole("button",{name:/^試験駅0 /}));
+ const homes=screen.getByLabelText("編集するホーム") as HTMLSelectElement;
+ expect([...homes.options].map(option=>option.value)).toEqual(["100","101"]);
+ expect(rendered()).toEqual(["104","105"]);
 });

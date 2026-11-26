@@ -295,6 +295,11 @@ export async function prepareNearbyOrdinaryBusQuery(
  return attachOrdinaryBusEvidence({...query,path:revised,rawEvidence:null,tileBinding:null},best,read,descriptors,signal);
 }
 
+/** Retry an explicitly refused outbound leg or missing return, never a
+ * complete route or an unvalidated backend error. */
+export function ordinaryBusNeedsSharedSeamRetry(match:ReturnType<typeof matchOrdinaryBusPreview>):boolean{
+ return 'refusedLeg' in match||match.preview.returnUnavailableReason!==undefined;
+}
 /** Prefer the old rule. A typed no-route result may reuse the exact same pinned bytes with the new rule. */
 export function retryOrdinaryBusSharedSeam(query:OrdinaryBusQuery):OrdinaryBusQuery|undefined{
  if(query.path.rule!=='ofm_ground_bus_rectangle_z14_v2'||query.path.fractionalTerminals)return;
