@@ -106,10 +106,20 @@ OutFile "${OUTFILE}"
 !if "${INSTALLWEBVIEW2MODE}" != ""
   !error "Rosenfu local admin template requires webviewInstallMode: skip"
 !endif
+{{#if resources}}
+!error "Review the elevated local path checks before adding resources"
+{{/if}}
+{{#if binaries}}
+!error "Review the elevated local path checks before adding sidecars"
+{{/if}}
+{{#if installer_hooks}}
+!error "Review the elevated local path checks before adding installer hooks"
+{{/if}}
 !define ROSENFU_LOCAL_LAYOUT "rosenfu-local-machine-v1"
 !define ROSENFU_LOCAL_DIR "$PROGRAMFILES64\rosenfu"
 !define PLACEHOLDER_INSTALL_DIR "placeholder\rosenfu"
 Var RosenfuExisting
+Var RosenfuRegisteredDir
 InstallDir "${PLACEHOLDER_INSTALL_DIR}"
 
 VIProductVersion "${VERSIONWITHBUILD}"
@@ -210,7 +220,11 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; No legacy maintenance page: local admin setup never executes registry
 ; uninstall commands. Its own verified machine installs update in place.
 
-; Install location is fixed: never show a folder chooser or adopt /D.
+; Interactive first installs can choose a new directory in a protected local path.
+; Updates stay in the registered location.
+!define MUI_PAGE_CUSTOMFUNCTION_PRE RosenfuDirectoryPre
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE RosenfuDirectoryLeave
+!insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
 Var AppStartMenuFolder
@@ -290,8 +304,24 @@ Function .onInit
   ${EndIf}
   StrCpy $INSTDIR "${ROSENFU_LOCAL_DIR}"
   Call RosenfuReadRegistration
+  ${If} $RosenfuExisting == 1
+    StrCpy $INSTDIR "$RosenfuRegisteredDir"
+  ${EndIf}
+FunctionEnd
+
+Function RosenfuDirectoryPre
+  ${If} $RosenfuExisting == 1
+  ${OrIf} $PassiveMode == 1
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function RosenfuDirectoryLeave
   Call RosenfuValidateTarget
-  ${IfThen} $R8 != 1 ${|} Call RosenfuRefuse ${|}
+  ${If} $R8 != 1
+    MessageBox MB_ICONSTOP|MB_OK "$R9"
+    Abort
+  ${EndIf}
 FunctionEnd
 
 ; Read only the exact QA keys in the effective user's HKCU. A credentials
@@ -309,6 +339,7 @@ FunctionEnd
 
 Function RosenfuReadRegistration
   StrCpy $RosenfuExisting 0
+  StrCpy $RosenfuRegisteredDir ""
   !insertmacro RosenfuRequireNoCurrentUserQa "${UNINSTKEY}" 0x20119
   !insertmacro RosenfuRequireNoCurrentUserQa "${UNINSTKEY}" 0x20219
   !insertmacro RosenfuRequireNoCurrentUserQa "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLEID}" 0x20119
@@ -325,7 +356,7 @@ Function RosenfuReadRegistration
   ${EndIf}
   ${If} $0 != "${ROSENFU_LOCAL_LAYOUT}"
   ${OrIf} $2 != "${PRODUCTNAME}"
-  ${OrIf} $4 != "${ROSENFU_LOCAL_DIR}"
+  ${OrIf} $4 == ""
   ${OrIf} $3 != '$\"$4$\"'
   ${OrIf} $1 != '$\"$4\uninstall.exe$\"'
   ${OrIf} $5 != "${MAINBINARYNAME}.exe"
@@ -340,6 +371,7 @@ Function RosenfuReadRegistration
     StrCpy $R9 "インストール済みの QA 版より古いか、バージョンを確認できないため中止します。"
     Call RosenfuRefuse
   ${EndIf}
+  StrCpy $RosenfuRegisteredDir "$4"
   StrCpy $RosenfuExisting 1
 FunctionEnd
 
@@ -351,7 +383,7 @@ Function RosenfuRefuse
   Quit
 FunctionEnd
 
-; The machine installer keeps its fixed Program Files path and stock
+; The machine installer uses protected Program Files roots and the stock
 ; payload writer. In the owned directory, refuse either installed file
 ; if the opened object is not an ordinary single-link file.
 Function RosenfuCheckUniqueInstalledFile
@@ -380,12 +412,162 @@ Function RosenfuCheckUniqueInstalledFile
   unique_check_done:
 FunctionEnd
 
+; Validate paths for elevated operations without modifying chosen parent ACLs.
+Var RosenfuAclPath
+Var RosenfuAclIndex
+Var RosenfuAclRoot
+Var RosenfuAclOk
+Var RosenfuAclObject
+Var RosenfuAclMode
+
+!macro RosenfuAclDirectory prefix
+Function ${prefix}RosenfuAclObjectIsProtected
+  ; Input: absolute, fixed-drive path, previously checked ancestor.
+  ; The root may grant create-only access; descendants and files may not.
+  StrCpy $RosenfuAclOk 0
+  StrCpy $6 0
+  System::Call 'advapi32::GetNamedSecurityInfoW(w "$RosenfuAclObject", i 1, i 5, *p .r1, p 0, *p .r2, p 0, *p .r3) i .r0'
+  StrCmp $0 0 0 acl_done
+  StrCmp $1 0 acl_free
+  StrCmp $2 0 acl_free
+  ; Only owners who are outside ordinary user tokens may change the DACL.
+  StrCpy $7 $1
+  Call ${prefix}RosenfuTrustedSid
+  StrCmp $8 1 0 acl_free
+  System::Alloc 12
+  Pop $6
+  StrCmp $6 0 acl_free
+  StrCmp $6 "" acl_free
+  System::Call 'advapi32::GetAclInformation(p r2, p r6, i 12, i 2) i .r0'
+  StrCmp $0 0 acl_free
+  System::Call '*$6(i .r5)'
+  StrCmp $5 0 acl_free
+  StrCpy $4 0
+  acl_next:
+    IntCmp $4 $5 acl_pass 0 acl_free
+    System::Call 'advapi32::GetAce(p r2, i r4, *p .r7) i .r0'
+    StrCmp $0 0 acl_free
+    System::Call '*$7(i .r0, i .r9)'
+    IntOp $1 $0 & 0xff
+    ; Never treat an unrecognized or conditional ACE as a proof.
+    StrCmp $1 1 acl_advance ; ACCESS_DENIED_ACE can only reduce access.
+    StrCmp $1 0 0 acl_free ; ACCESS_ALLOWED_ACE.
+    IntOp $1 $0 & 0x800
+    StrCmp $1 0 0 acl_advance ; INHERIT_ONLY applies to descendants.
+    StrCmp $RosenfuAclMode "root" 0 +3
+      IntOp $9 $9 & 0x500d0150
+      Goto acl_masked
+    IntOp $9 $9 & 0x500d0156
+    acl_masked:
+    StrCmp $9 0 acl_advance
+    IntOp $7 $7 + 8 ; ACCESS_ALLOWED_ACE.SidStart.
+    Call ${prefix}RosenfuTrustedSid
+    StrCmp $8 1 0 acl_free
+    acl_advance:
+    IntOp $4 $4 + 1
+    Goto acl_next
+  acl_pass:
+    StrCpy $RosenfuAclOk 1
+  acl_free:
+    StrCmp $6 0 +3
+    StrCmp $6 "" +2
+      System::Free $6
+    StrCmp $3 0 +2
+      System::Call 'kernel32::LocalFree(p r3)'
+  acl_done:
+FunctionEnd
+
+; Use SID strings rather than localized names. Scratch: $0, $1, $7-$9.
+Function ${prefix}RosenfuTrustedSid
+  StrCpy $8 0
+  System::Call 'advapi32::ConvertSidToStringSidW(p r7, *p .r9) i .r0'
+  StrCmp $0 0 sid_done
+  System::Call 'kernel32::lstrcpynW(w .r1, p r9, i 100) p'
+  System::Call 'kernel32::LocalFree(p r9)'
+  StrCmp $1 "S-1-5-18" sid_trusted
+  StrCmp $1 "S-1-5-32-544" sid_trusted
+  StrCmp $1 "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" sid_trusted
+  Goto sid_done
+  sid_trusted:
+    StrCpy $8 1
+  sid_done:
+FunctionEnd
+
+; The caller supplies the longest existing directory. Check from the volume
+; root downward, so a mutable child cannot stand in for a verified ancestor.
+Function ${prefix}RosenfuCheckCustomTree
+  StrCpy $RosenfuAclOk 0
+  StrCpy $RosenfuAclRoot "$RosenfuAclPath" 3
+  StrCpy $0 "$RosenfuAclRoot" 2 1
+  StrCmp $0 ":\" 0 tree_bad
+  System::Call 'kernel32::GetDriveTypeW(w "$RosenfuAclRoot") i .r0'
+  StrCmp $0 3 0 tree_bad
+  ClearErrors
+  GetFullPathName $0 "$RosenfuAclPath"
+  IfErrors tree_bad
+  StrCmpS $0 "$RosenfuAclPath" 0 tree_bad
+  StrCpy $RosenfuAclObject "$RosenfuAclRoot"
+  StrCpy $RosenfuAclMode "root"
+  Call ${prefix}RosenfuCheckFolder
+  StrCmp $RosenfuAclOk 1 0 tree_bad
+  StrCpy $RosenfuAclIndex 3
+  tree_next:
+    StrCpy $0 "$RosenfuAclPath" 1 $RosenfuAclIndex
+    StrCmp $0 "" tree_last
+    StrCmp $0 "\" tree_component
+    IntOp $RosenfuAclIndex $RosenfuAclIndex + 1
+    Goto tree_next
+  tree_component:
+    StrCpy $RosenfuAclObject "$RosenfuAclPath" $RosenfuAclIndex
+    StrCpy $RosenfuAclMode "normal"
+    Call ${prefix}RosenfuCheckFolder
+    StrCmp $RosenfuAclOk 1 0 tree_bad
+    IntOp $RosenfuAclIndex $RosenfuAclIndex + 1
+    Goto tree_next
+  tree_last:
+    StrCmp "$RosenfuAclPath" "$RosenfuAclRoot" tree_done
+    StrCpy $RosenfuAclObject "$RosenfuAclPath"
+    StrCpy $RosenfuAclMode "normal"
+    Call ${prefix}RosenfuCheckFolder
+  tree_done:
+    Return
+  tree_bad:
+    StrCpy $RosenfuAclOk 0
+FunctionEnd
+
+Function ${prefix}RosenfuCheckFolder
+  StrCpy $RosenfuAclOk 0
+  System::Call 'kernel32::GetFileAttributesW(w "$RosenfuAclObject") i .r0'
+  IntOp $0 $0 & 0x410
+  StrCmp $0 16 0 folder_done
+  Call ${prefix}RosenfuAclObjectIsProtected
+  folder_done:
+FunctionEnd
+
+Function ${prefix}RosenfuCheckInstalledAcl
+  StrCpy $RosenfuAclMode "normal"
+  StrCpy $RosenfuAclObject "$INSTDIR\${MAINBINARYNAME}.exe"
+  Call ${prefix}RosenfuAclObjectIsProtected
+  StrCmp $RosenfuAclOk 1 0 installed_acl_done
+  StrCpy $RosenfuAclObject "$INSTDIR\uninstall.exe"
+  Call ${prefix}RosenfuAclObjectIsProtected
+  installed_acl_done:
+FunctionEnd
+!macroend
+!insertmacro RosenfuAclDirectory ""
+!insertmacro RosenfuAclDirectory "un."
+
 ; Validated fresh installs require a new directory; even an empty existing
 ; directory is not adopted. Recheck right before creating/copying files.
 Function RosenfuValidateTarget
   StrCpy $R8 0
-  StrCpy $R9 "Program Files の rosenfu フォルダーを安全に使用できません。既存フォルダーやリンクは変更しません。"
-  ${IfThen} $INSTDIR != "${ROSENFU_LOCAL_DIR}" ${|} Return ${|}
+  StrCpy $R9 "固定ローカルドライブ上で、管理者が保護している親フォルダーの下に、新しい rosenfu フォルダーを指定してください。既存フォルダーやリンクは使用できません。"
+  StrCpy $0 "$INSTDIR" 8 -8
+  StrCmp $0 "\rosenfu" 0 rosenfu_invalid
+  ${If} $RosenfuExisting == 1
+  ${AndIf} $INSTDIR != $RosenfuRegisteredDir
+    Return
+  ${EndIf}
   StrCpy $0 "$INSTDIR" 2 1
   ${IfThen} $0 != ":\" ${|} Return ${|}
   StrCpy $6 "$INSTDIR" 3
@@ -418,6 +600,15 @@ Function RosenfuValidateTarget
   ${If} ${Errors}
   ${OrIf} $7 != $0
     Return
+  ${EndIf}
+  ${If} $INSTDIR != "${ROSENFU_LOCAL_DIR}"
+    StrCpy $RosenfuAclPath "$0"
+    Call RosenfuCheckCustomTree
+    ${IfThen} $RosenfuAclOk != 1 ${|} Return ${|}
+    ${If} $RosenfuExisting == 1
+      Call RosenfuCheckInstalledAcl
+      ${IfThen} $RosenfuAclOk != 1 ${|} Return ${|}
+    ${EndIf}
   ${EndIf}
   StrCpy $0 "$INSTDIR"
   System::Call 'kernel32::GetFileAttributesW(w r0) i .r1 ?e'
@@ -467,6 +658,15 @@ Section Install
   Call RosenfuValidateTarget
   ${IfThen} $R8 != 1 ${|} Call RosenfuRefuse ${|}
   Call RosenfuRequireMachineWebView2
+  ${If} $RosenfuExisting == 0
+    System::Call 'kernel32::CreateDirectoryW(w "$INSTDIR", p 0) i .r1'
+    StrCmp $1 0 rosenfu_payload_failed
+  ${EndIf}
+  ${If} $INSTDIR != "${ROSENFU_LOCAL_DIR}"
+    StrCpy $RosenfuAclPath "$INSTDIR"
+    Call RosenfuCheckCustomTree
+    StrCmp $RosenfuAclOk 1 0 rosenfu_payload_failed
+  ${EndIf}
   ClearErrors
   SetOutPath $INSTDIR
   IfErrors rosenfu_payload_failed
@@ -531,6 +731,11 @@ Section Install
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}\DefaultIcon" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
   {{/each}}
+
+  ${If} $INSTDIR != "${ROSENFU_LOCAL_DIR}"
+    Call RosenfuCheckInstalledAcl
+    StrCmp $RosenfuAclOk 1 0 rosenfu_payload_failed
+  ${EndIf}
 
   ; Save $INSTDIR in registry for future installations
   WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
@@ -635,17 +840,18 @@ FunctionEnd
 ; Treat _?=, a relocated uninstaller or stale registration as untrusted
 ; context. Never retarget the uninstaller by assigning $INSTDIR.
 Function un.RosenfuRequireOwnedTarget
-  StrCmp $INSTDIR "${ROSENFU_LOCAL_DIR}" 0 un_rosenfu_invalid
+  StrCpy $0 "$INSTDIR" 8 -8
+  StrCmp $0 "\rosenfu" 0 un_rosenfu_invalid
   ReadRegStr $0 HKLM "${UNINSTKEY}" "RosenfuLocalLayout"
   StrCmp $0 "${ROSENFU_LOCAL_LAYOUT}" 0 un_rosenfu_invalid
   ReadRegStr $0 HKLM "${UNINSTKEY}" "DisplayName"
   StrCmp $0 "${PRODUCTNAME}" 0 un_rosenfu_invalid
   ReadRegStr $0 HKLM "${MANUPRODUCTKEY}" ""
-  StrCmp $0 "${ROSENFU_LOCAL_DIR}" 0 un_rosenfu_invalid
+  StrCmp $0 $INSTDIR 0 un_rosenfu_invalid
   ReadRegStr $0 HKLM "${UNINSTKEY}" "InstallLocation"
-  StrCmp $0 '$\"${ROSENFU_LOCAL_DIR}$\"' 0 un_rosenfu_invalid
+  StrCmp $0 '$\"$INSTDIR$\"' 0 un_rosenfu_invalid
   ReadRegStr $0 HKLM "${UNINSTKEY}" "UninstallString"
-  StrCmp $0 '$\"${ROSENFU_LOCAL_DIR}\uninstall.exe$\"' 0 un_rosenfu_invalid
+  StrCmp $0 '$\"$INSTDIR\uninstall.exe$\"' 0 un_rosenfu_invalid
   ReadRegStr $0 HKLM "${UNINSTKEY}" "MainBinaryName"
   StrCmp $0 "${MAINBINARYNAME}.exe" 0 un_rosenfu_invalid
   ReadRegStr $0 HKLM "${UNINSTKEY}" "DisplayVersion"
@@ -671,6 +877,13 @@ Function un.RosenfuRequireOwnedTarget
     StrCpy $0 "$3"
     Goto un_rosenfu_ancestor
   un_rosenfu_files:
+    ${If} $INSTDIR != "${ROSENFU_LOCAL_DIR}"
+      StrCpy $RosenfuAclPath "$INSTDIR"
+      Call un.RosenfuCheckCustomTree
+      StrCmp $RosenfuAclOk 1 0 un_rosenfu_invalid
+      Call un.RosenfuCheckInstalledAcl
+      StrCmp $RosenfuAclOk 1 0 un_rosenfu_invalid
+    ${EndIf}
     StrCpy $0 "$INSTDIR\${MAINBINARYNAME}.exe"
     System::Call 'kernel32::GetFileAttributesW(w r0) i .r1'
     IntOp $2 $1 & 0x410
