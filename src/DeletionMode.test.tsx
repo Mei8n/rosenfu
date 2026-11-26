@@ -253,3 +253,31 @@ test.each(['built', 'planned'] as const)('%s section confirmation defaults to de
  if(kind==='built')expect(map.querySelector('[data-delete-section]')).toBeNull();
  else expect(map.querySelectorAll('[data-delete-plan-section]')).toHaveLength(1);
 });
+
+test('parked plans cull only map targets, keeping crossing lines, lone anchors and original section IDs',async()=>{
+ const near=(longitude:number)=>({...b,longitude});
+ const west=near(138.8),west2=near(139.2),east=near(140.2);
+ const points=[west,west2,east],solo=[near(139.76)],off=[near(138.7),near(138.75)];
+ const make=(id:number,anchors:typeof points,line=anchors)=>({
+  id,planId:id,name:'計画 '+id,points:anchors,line,redo:[],designSpeedKmh:120,
+  trackType:'normal' as const,roadFollowing:false,extension:null,
+ });
+ const construction_plans={...emptyConstructionPlans(),draftPoints:[a],plans:[1,2,3,4].map(id=>({id,name:'計画 '+id})),
+  parkedPaths:[make(2,points),make(3,solo,[]),make(4,off)]};
+ const map=await start({...empty,construction_plans});
+ expect(map.querySelector('[data-plan-id="2"]')?.closest('.inactive-plan')).not.toBeNull();
+ expect(map.querySelector('[data-delete-plan-path="2"][data-delete-plan-section="1"]')).not.toBeNull();
+ expect(map.querySelector('[data-delete-path="3"][data-delete-anchor="0"]')).not.toBeNull();
+ expect(map.querySelector('[data-plan-id="4"],[data-delete-plan-path="4"],[data-delete-path="4"]')).toBeNull();
+ fireEvent.click(screen.getByRole('button',{name:'選択'}));
+ fireEvent.click(map.querySelector('[data-plan-hover-id="2"]')!);
+ expect(map.querySelector('[data-plan-id="2"]')?.classList.contains('track-explicit-selection')).toBe(true);
+ expect(map.querySelector('.candidate-draft')).toBeNull();
+ // Return to the world on disk with the camera pointing at plan 4. Its
+ // geometry and deletion identities are still available, not discarded.
+ cleanup();
+ const other=await start({...empty,construction_plans,view_state:{latitude:b.latitude,longitude:138.72,zoom:12}});
+ expect(other.querySelector('[data-plan-id="4"]')).not.toBeNull();
+ expect(other.querySelector('[data-delete-plan-path="4"][data-delete-plan-section="0"]')).not.toBeNull();
+ expect(other.querySelector('[data-delete-path="3"]')).toBeNull();
+});
