@@ -881,7 +881,7 @@ fn three_services_can_share_a_throat_if_the_third_cannot_start_until_after_clear
         advance(&mut world, TIE);
         let rt = &world.operation().unwrap().runtime;
         match at {
-            LATER => assert_eq!(states(rt), expected_initial),
+            LATER | TIE => assert_eq!(states(rt), expected_initial),
             0 => assert_eq!(
                 states(rt),
                 [
@@ -1177,4 +1177,157 @@ fn assert_refuge_priority_with_staggered_windows(
     assert_eq!(rt.trains().count(), 1);
     assert!(matches!(state(rt, 1, tail),
         TrainState::Moving{entered_ms,..} if entered_ms == tail));
+}
+
+#[test]
+fn equivalent_simultaneous_through_runs_admit_siding_regardless_of_service_ids() {
+    use rosenfu_core::operation::OperationError;
+    const TIE: u64 = 20_000;
+    const TARGET: u64 = 2_000_000;
+    // The two through services deliberately have no intermediate stop.
+    // Adding a main stop or using the siding makes the third run ineligible.
+    for (third_stops_in_main, third_uses_siding) in [(false, false), (true, false), (false, true)] {
+        let other_through = third_stops_in_main || third_uses_siding;
+        let (mut base, pair, _, [start, main, siding, end]) = meeting_loop(true);
+        let owner = base.snapshot().companies[0].id;
+        let route =
+            configure_through_and_siding_paths(&mut base, &pair, [start, main, siding, end]);
+        let route = if third_uses_siding {
+            base.route_candidates_via(start, end, &[siding])
+                .unwrap()
+                .candidates
+                .into_iter()
+                .find(|c| c.stations == [start, siding, end])
+                .unwrap()
+                .segments
+        } else {
+            route
+        };
+        let stops = base
+            .preview_service_path(start, route.clone())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .filter(|p| third_stops_in_main || (p.station_id != main && p.station_id != siding))
+            .map(|p| p.reference)
+            .collect();
+        let third = base
+            .add_service_path(owner, "Third user".into(), start, route, stops)
+            .unwrap();
+        let original = [pair[0].service_id, pair[1].service_id, third];
+        let table = Timetable {
+            first_departure_ms: TIE,
+            last_departure_ms: TIE,
+            headway_ms: 60_000,
+        };
+        // In the last ordering both through services originally went first.
+        let orders: &[[usize; 3]] = if other_through {
+            &[[0, 1, 2]]
+        } else {
+            &[[0, 1, 2], [1, 0, 2], [2, 1, 0], [1, 2, 0]]
+        };
+        for order in orders {
+            let mut draft = base.snapshot().clone();
+            let ids = order.map(|i| original[i]);
+            let assign = |id| {
+                original
+                    .iter()
+                    .zip(ids)
+                    .find_map(|(a, b)| (*a == id).then_some(b))
+                    .unwrap()
+            };
+            draft.services.iter_mut().for_each(|s| s.id = assign(s.id));
+            draft
+                .service_paths
+                .iter_mut()
+                .for_each(|p| p.service_id = assign(p.service_id));
+            let configs: Vec<_> = [pair[0].clone(), pair[1].clone(), pair[0].clone()]
+                .into_iter()
+                .zip(ids)
+                .map(|(c, service_id)| OperationServiceConfig {
+                    service_id,
+                    timetable: table.clone(),
+                    ..c
+                })
+                .collect();
+            let mut world = World::new(draft).unwrap();
+            world.configure_operation(configs.clone()).unwrap();
+            let r = world
+                .operation_mut()
+                .unwrap()
+                .runtime
+                .advance_to(TIE, 128)
+                .unwrap();
+            assert!(r.reached_target && r.arrivals.is_empty());
+            let ids = ids.map(|i| i.0.to_string());
+            let rt = &world.operation().unwrap().runtime;
+            let first = rt
+                .trains()
+                .filter(|t| matches!(t.state, TrainState::Moving { .. }))
+                .map(|t| t.key.service_id.as_str())
+                .collect::<Vec<_>>();
+            if other_through {
+                assert_eq!(first, [&ids[0]]);
+                continue;
+            }
+            assert_eq!(first, [&ids[1]]);
+            let replay = rt.preview_passenger_replay(TARGET, 256).unwrap();
+            assert!(replay.complete && replay.completed_legs.len() == 4);
+            let siding_inbound = &replay.completed_legs[0];
+            assert_eq!(
+                (
+                    siding_inbound.train.service_id.as_str(),
+                    siding_inbound.entered_ms,
+                    siding_inbound.cumulative_reservation_wait_ms
+                ),
+                (ids[1].as_str(), TIE, 0)
+            );
+            assert_eq!(siding_inbound.to, siding.0.to_string());
+            let save_at = siding_inbound.arrived_ms + 1;
+            let advance = |w: &mut World, at| {
+                let r = w
+                    .operation_mut()
+                    .unwrap()
+                    .runtime
+                    .advance_to(at, 256)
+                    .unwrap();
+                assert!(r.reached_target);
+                r.arrivals
+            };
+            let arrivals = advance(&mut world, save_at);
+            assert!(arrivals
+                .iter()
+                .any(|e| e.train.service_id == ids[1] && e.station_id == siding.0.to_string()));
+            world.operation_mut().unwrap().runtime.set_paused(true);
+            let save = rosenfu_storage::encode(&world).unwrap();
+            let mut loaded = rosenfu_storage::decode(&save).unwrap();
+            assert_eq!(rosenfu_storage::encode(&loaded).unwrap(), save);
+            let later = Timetable {
+                first_departure_ms: TARGET,
+                last_departure_ms: TARGET,
+                ..table
+            };
+            for config in &configs {
+                for w in [&mut world, &mut loaded] {
+                    assert_eq!(
+                        w.handoff_active_rail_timetable(OperationServiceConfig {
+                            timetable: later.clone(),
+                            ..config.clone()
+                        }),
+                        Err(OperationError::OpposingMeetInProgress)
+                    );
+                    assert_eq!(rosenfu_storage::encode(w).unwrap(), save);
+                }
+            }
+            // The whole group still fits the original better rear-clear time.
+            // Reach that deadline in both runs; the old worst ID order did not.
+            const DEADLINE: u64 = 595_470;
+            assert_eq!(
+                advance(&mut world, DEADLINE),
+                advance(&mut loaded, DEADLINE)
+            );
+            assert_eq!(world.operation_save(), loaded.operation_save());
+            assert_eq!(loaded.operation().unwrap().runtime.trains().count(), 0);
+        }
+    }
 }

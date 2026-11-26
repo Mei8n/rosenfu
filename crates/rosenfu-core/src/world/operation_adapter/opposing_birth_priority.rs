@@ -235,10 +235,28 @@ impl World {
             .filter_map(|(a, b, deferred)| {
                 let (siding, through) =
                     geometry.prove(op.runtime.service_spec(a)?, op.runtime.service_spec(b)?)?;
+                let shared_through = deferred.is_some_and(|third| {
+                    let (Some(extra), Some(through_spec), Some(siding_spec)) = (
+                        op.runtime.service_spec(third),
+                        op.runtime.service_spec(&through),
+                        op.runtime.service_spec(&siding),
+                    ) else {
+                        return false;
+                    };
+                    // Exact directed legs and vehicle let the two expresses
+                    // use the same authority and clearance windows. Prove
+                    // each opposing encounter against the World independently.
+                    extra.legs == through_spec.legs
+                        && extra.vehicle == through_spec.vehicle
+                        && geometry
+                            .prove(siding_spec, extra)
+                            .is_some_and(|(local, express)| local == siding && express == third)
+                });
                 Some(OpposingBirthPriority {
                     siding,
                     through,
                     deferred: deferred.map(str::to_owned),
+                    shared_through,
                 })
             })
             .collect()
@@ -391,7 +409,6 @@ fn across_at(trace: &[ChordPoint], along: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation::OpposingBirthPriority;
 
     #[test]
     fn rotated_separation_proves_the_whole_envelope_with_reversed_construction() {

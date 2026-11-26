@@ -240,6 +240,7 @@ pub(crate) struct OpposingBirthPriority {
     pub(crate) siding: String,
     pub(crate) through: String,
     pub(crate) deferred: Option<String>,
+    pub(crate) shared_through: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1164,7 +1165,7 @@ impl OperationRuntime {
         if self.timetable_handoffs.contains_key(id) {
             return Err(OperationError::TimetableHandoffPending);
         }
-        if self.changes_active_deferred_meet(id, &timetable) {
+        if self.changes_active_third_meet(id, &timetable) {
             return Err(OperationError::OpposingMeetInProgress);
         }
         let service = self.services.get_mut(id).expect("validated service");
@@ -1323,31 +1324,62 @@ impl OperationRuntime {
             .then_some((birth, end))
     }
 
-    /// Do not let a handoff insert a third contender after a conditional
-    /// meet has already been admitted. The existing save format can
-    /// reconstruct this guard from the unchanged schedules and live births.
-    fn changes_active_deferred_meet(&self, edited: &str, proposed: &Timetable) -> bool {
+    /// Admit the siding first for exactly three equivalent one-shot contenders:
+    /// the third service must have its own proof as an identical through run.
+    fn simultaneous_meet_birth(&self, pair: &OpposingBirthPriority) -> Option<u64> {
+        if !pair.shared_through {
+            return None;
+        }
+        let third = pair.deferred.as_deref()?;
+        let birth = self
+            .services
+            .get(&pair.siding)?
+            .spec
+            .timetable
+            .first_departure_ms;
+        [pair.siding.as_str(), pair.through.as_str(), third]
+            .into_iter()
+            .all(|id| {
+                self.services.get(id).is_some_and(|service| {
+                    !service.departure_source.is_periodic()
+                        && service.spec.timetable.first_departure_ms == birth
+                        && service.spec.timetable.last_departure_ms == birth
+                })
+            })
+            .then_some(birth)
+    }
+
+    /// Do not let a timetable handoff change the protection of an admitted
+    /// meet. Its third-service condition is reconstructed on save/reopen.
+    fn changes_active_third_meet(&self, edited: &str, proposed: &Timetable) -> bool {
         self.preferred_opposing_births.iter().any(|pair| {
-            if pair.siding != edited
-                && pair.through != edited
-                && pair.deferred.as_deref() != Some(edited)
-            {
+            let other = pair.deferred.as_deref();
+            if pair.siding != edited && pair.through != edited && other != Some(edited) {
                 return false;
             }
-            let Some((birth, end)) = self.deferred_meet_window(pair) else {
+            let (birth, simultaneous) = if let Some(birth) = self.simultaneous_meet_birth(pair) {
+                (birth, true)
+            } else if let Some((birth, end)) = self.deferred_meet_window(pair) {
+                if other == Some(edited)
+                    && proposed.first_departure_ms == proposed.last_departure_ms
+                    && proposed.first_departure_ms > end
+                {
+                    return false;
+                }
+                (birth, false)
+            } else {
                 return false;
             };
-            // An equally isolated one-shot later birth does not change
-            // either active participant or its protection on reload.
-            if pair.deferred.as_deref() == Some(edited)
-                && proposed.first_departure_ms == proposed.last_departure_ms
-                && proposed.first_departure_ms > end
-            {
-                return false;
-            }
-            [&pair.siding, &pair.through].into_iter().any(|id| {
+            [
+                Some(pair.siding.as_str()),
+                Some(pair.through.as_str()),
+                other.filter(|_| simultaneous),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|id| {
                 self.trains.contains_key(&TrainKey {
-                    service_id: id.clone(),
+                    service_id: id.to_owned(),
                     scheduled_ms: birth,
                 })
             })
@@ -1362,7 +1394,9 @@ impl OperationRuntime {
     ) -> bool {
         self.preferred_opposing_births.iter().any(|pair| {
             !pairs.contains(pair)
-                && (pair.deferred.is_none() || self.deferred_meet_window(pair).is_some())
+                && (pair.deferred.is_none()
+                    || self.deferred_meet_window(pair).is_some()
+                    || self.simultaneous_meet_birth(pair).is_some())
                 && self.trains.values().any(|train| {
                     train.key.service_id == pair.siding
                         && (train.leg > 0 || matches!(train.state, TrainState::Moving { .. }))
@@ -1396,9 +1430,8 @@ impl OperationRuntime {
             }
         }
         busy.extend(self.occupied.values().map(|key| key.service_id.as_str()));
-        // Components are disjoint. In a three-service component only
-        // one pair can qualify at a given time; its third user must be
-        // absent now and unable to start until the whole meet can clear.
+        // Components are disjoint. A proved three-way tie has two
+        // symmetric pair records; only the canonical one can reorder it.
         let swaps: Vec<_> = self
             .preferred_opposing_births
             .iter()
@@ -1407,10 +1440,28 @@ impl OperationRuntime {
                 let through = pair.through.as_str();
                 let a = *fresh.get(siding)?;
                 let b = *fresh.get(through)?;
+                if busy.contains(siding)
+                    || busy.contains(through)
+                    || !self.opposing_birth_schedule_qualifies(siding, through)
+                {
+                    return None;
+                }
                 if let Some(other) = pair.deferred.as_deref() {
+                    if busy.contains(other) {
+                        return None;
+                    }
+                    if self.simultaneous_meet_birth(pair) == Some(at) {
+                        if through >= other {
+                            return None;
+                        }
+                        let c = *fresh.get(other)?;
+                        let (first, second) = (b.min(c), b.max(c));
+                        // Rotate just these contenders, keeping the through
+                        // slots in original order and unrelated slots intact.
+                        return (a > first).then_some((a, first, (a > second).then_some(second)));
+                    }
                     let (birth, end) = self.deferred_meet_window(pair)?;
                     if birth != at
-                        || busy.contains(other)
                         || fresh.contains_key(other)
                         || !self.services[other]
                             .next_departure
@@ -1419,16 +1470,15 @@ impl OperationRuntime {
                         return None;
                     }
                 }
-                (a > b
-                    && !busy.contains(siding)
-                    && !busy.contains(through)
-                    && self.opposing_birth_schedule_qualifies(siding, through))
-                .then_some((a, b))
+                (a > b).then_some((a, b, None))
             })
             .collect();
         drop(fresh);
-        for (a, b) in swaps {
+        for (a, b, second) in swaps {
             waiting.swap(a, b);
+            if let Some(second) = second {
+                waiting.swap(a, second);
+            }
         }
     }
 
