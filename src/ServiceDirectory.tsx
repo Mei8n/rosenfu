@@ -1,10 +1,11 @@
-import {useMemo,useState} from 'react';
+import {memo,useMemo,useState} from 'react';
 import {firstByKey} from './mapLookupIndex';
 import {ServiceBadge,initialServiceSymbol,type ServiceSymbolShape} from './ServiceAppearanceControls';
 import './directoryPanel.css';
 import type {ServiceRouteBindingRecord} from './ServiceRouteBinding';
 import {useRailServiceActivity} from './OperationsPanel';
 type Service={id:string;name:string};
+const NO_SERVICES:Service[]=[];
 type Appearance={service_id:string;color:string;shape?:ServiceSymbolShape;symbol?:string|null};
 const NO_APPEARANCES:Appearance[]=[];
 type Route={id:string;name:string};
@@ -13,8 +14,21 @@ const NO_BINDINGS:ServiceRouteBindingRecord[]=[];
 const ALL='all';
 const INDEPENDENT='independent';
 const normalize=(text:string)=>text.normalize('NFKC').toLocaleLowerCase('ja');
-export function ServiceDirectory({services,appearances=NO_APPEARANCES,routes=NO_ROUTES,bindings=NO_BINDINGS,selected,enabled,onChoose,onCreate,showLiveOperation=true}:{services:Service[];appearances?:Appearance[];routes?:Route[];bindings?:ServiceRouteBindingRecord[];selected:string|null;enabled:boolean;onChoose:(id:string|null)=>void;onCreate:()=>void;showLiveOperation?:boolean}){
+type DirectoryProps={
+ services?:Service[];appearances?:Appearance[];routes?:Route[];bindings?:ServiceRouteBindingRecord[];
+ selected:string|null;enabled:boolean;onChoose:(id:string|null)=>void;onCreate:()=>void;
+};
+export function ServiceDirectory({showLiveOperation=true,...props}:DirectoryProps&{showLiveOperation?:boolean}){
  const activity=useRailServiceActivity(showLiveOperation);
+ return <ServiceDirectoryContent {...props} activity={activity}/>;
+}
+
+// The operation context and map can both update independently of the list.
+// Keep the rows until their directory inputs or vehicle counts actually change.
+const ServiceDirectoryContent=memo(function ServiceDirectoryContent({
+ services=NO_SERVICES,appearances=NO_APPEARANCES,routes=NO_ROUTES,bindings=NO_BINDINGS,
+ selected,enabled,onChoose,onCreate,activity,
+}:DirectoryProps&{activity:ReadonlyMap<string,number>|null}){
  const [query,setQuery]=useState('');
  const [requestedFilter,setFilter]=useState(ALL);
  const [grouped,setGrouped]=useState(false);
@@ -71,4 +85,4 @@ export function ServiceDirectory({services,appearances=NO_APPEARANCES,routes=NO_
   {!visible.length&&<p className="empty-state">{services.length?'一致する系統がありません':'まだ系統はありません。新規系統から地図上の駅を選択してください。'}</p>}
   {visible.length>0&&<small className="directory-note">稼働中は走行・停車・進路待ちの編成数です。保有編成数ではありません。乗客・収支は未対応です。</small>}
  </div>;
-}
+});
