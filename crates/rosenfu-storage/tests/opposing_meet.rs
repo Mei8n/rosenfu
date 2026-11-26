@@ -539,7 +539,7 @@ fn disconnected_running_service_does_not_defeat_a_meet_but_shared_authority_does
         if let Some(id) = extra {
             let mut config = configs[0].clone();
             config.service_id = id;
-            let at = if id == isolated { 0 } else { 450_000 };
+            let at = if id == isolated { 0 } else { tie_at + 1 };
             config.timetable.first_departure_ms = at;
             config.timetable.last_departure_ms = at;
             selected.push(config);
@@ -636,8 +636,8 @@ fn simultaneous_disjoint_meets_keep_their_own_priority_and_saved_dispatch() {
         .unwrap();
     let mut extra = b[0].clone();
     extra.service_id = b_extra;
-    extra.timetable.first_departure_ms = 450_000;
-    extra.timetable.last_departure_ms = 450_000;
+    extra.timetable.first_departure_ms = TIE + 1;
+    extra.timetable.last_departure_ms = TIE + 1;
     let [a, b] = [a, b].map(|pair| {
         pair.map(|mut c| {
             c.timetable.first_departure_ms = TIE;
@@ -781,6 +781,204 @@ fn simultaneous_disjoint_meets_keep_their_own_priority_and_saved_dispatch() {
         assert_eq!(world.operation_save(), loaded.operation_save());
         assert_eq!(loaded.operation().unwrap().runtime.trains().count(), 0);
     }
+}
+
+#[test]
+fn three_services_can_share_a_throat_if_the_third_cannot_start_until_after_clearance() {
+    use rosenfu_core::operation::{OperationError, OperationRuntime};
+
+    const TIE: u64 = 20_000;
+    const LATER: u64 = 900_000;
+    const TARGET: u64 = 2_000_000;
+    let (mut base, mut pair, _, [start, main, siding, end]) = meeting_loop(true);
+    let owner = base.snapshot().companies[0].id;
+    let route = configure_through_and_siding_paths(&mut base, &pair, [start, main, siding, end]);
+    let stops: Vec<_> = base
+        .preview_service_path(start, route.clone())
+        .unwrap()
+        .occurrences
+        .into_iter()
+        .filter(|p| p.station_id != main)
+        .map(|p| p.reference)
+        .collect();
+    let third = base
+        .add_service_path(
+            owner,
+            "Shared throat".into(),
+            start,
+            route.clone(),
+            stops.clone(),
+        )
+        .unwrap();
+    let fourth = base
+        .add_service_path(owner, "Fourth user".into(), start, route, stops)
+        .unwrap();
+    let ids = pair
+        .each_ref()
+        .map(|config| config.service_id.0.to_string());
+    for config in &mut pair {
+        config.timetable.first_departure_ms = TIE;
+        config.timetable.last_departure_ms = TIE;
+    }
+    let extra_at = |at| OperationServiceConfig {
+        service_id: third,
+        timetable: Timetable {
+            first_departure_ms: at,
+            last_departure_ms: at,
+            headway_ms: 60_000,
+        },
+        ..pair[0].clone()
+    };
+    let world_with = |extra: Option<OperationServiceConfig>| {
+        let mut world = World::new(base.snapshot().clone()).unwrap();
+        world
+            .configure_operation(pair.to_vec().into_iter().chain(extra).collect())
+            .unwrap();
+        world
+    };
+    let advance = |world: &mut World, to| {
+        let result = world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(to, 256)
+            .unwrap();
+        assert!(result.reached_target);
+        result.arrivals
+    };
+    let states = |rt: &OperationRuntime| {
+        ids.each_ref().map(|id| {
+            rt.trains()
+                .find(|train| &train.key.service_id == id)
+                .unwrap()
+                .state
+                .clone()
+        })
+    };
+    let replay = |rt: &OperationRuntime| {
+        let replay = rt.preview_passenger_replay(TARGET, 256).unwrap();
+        assert!(replay.complete);
+        replay.completed_legs
+    };
+    let mut isolated = world_with(None);
+    advance(&mut isolated, TIE);
+    let isolated_rt = &isolated.operation().unwrap().runtime;
+    let reference = replay(isolated_rt);
+    assert_eq!(reference.len(), 3);
+    let expected_initial = states(isolated_rt);
+    let siding_arrival = match expected_initial[1] {
+        TrainState::Moving {
+            entered_ms: TIE,
+            arrival_ms,
+            ..
+        } => arrival_ms,
+        ref other => panic!("isolation must admit the siding train: {other:?}"),
+    };
+    assert_eq!(expected_initial[0], TrainState::Waiting { ready_ms: TIE });
+
+    for at in [0, TIE, TIE + 1, LATER] {
+        let mut world = world_with(Some(extra_at(at)));
+        advance(&mut world, TIE);
+        let rt = &world.operation().unwrap().runtime;
+        match at {
+            LATER => assert_eq!(states(rt), expected_initial),
+            0 => assert_eq!(
+                states(rt),
+                [
+                    TrainState::Waiting { ready_ms: TIE },
+                    TrainState::Waiting { ready_ms: TIE }
+                ]
+            ),
+            _ => {
+                assert!(matches!(
+                    states(rt)[0],
+                    TrainState::Moving {
+                        entered_ms: TIE,
+                        ..
+                    }
+                ));
+                assert_eq!(states(rt)[1], TrainState::Waiting { ready_ms: TIE });
+            }
+        }
+        let actual = replay(rt);
+        assert_eq!(actual.len(), 4, "all three trains must finish");
+        let third_id = third.0.to_string();
+        let later_leg = actual
+            .iter()
+            .find(|leg| leg.train.service_id == third_id)
+            .unwrap();
+        if at == LATER {
+            assert_eq!(later_leg.entered_ms, LATER);
+            assert_eq!(
+                actual
+                    .into_iter()
+                    .filter(|leg| leg.train.service_id != third_id)
+                    .collect::<Vec<_>>(),
+                reference
+            );
+            let early = advance(&mut world, siding_arrival + 1);
+            assert!(early
+                .iter()
+                .any(|e| e.train.service_id == ids[1] && e.station_id == siding.0.to_string()));
+        }
+        world.operation_mut().unwrap().runtime.set_paused(true);
+        let save = rosenfu_storage::encode(&world).unwrap();
+        let mut reopened = rosenfu_storage::decode(&save).unwrap();
+        assert_eq!(reopened.operation_save(), world.operation_save());
+        if at == LATER {
+            let earlier = extra_at(siding_arrival + 2);
+            let mut departures_through_clearance = Vec::new();
+            for w in [&mut world, &mut reopened] {
+                assert_eq!(
+                    w.handoff_active_rail_timetable(earlier.clone()),
+                    Err(OperationError::OpposingMeetInProgress)
+                );
+                assert_eq!(rosenfu_storage::encode(w).unwrap(), save);
+                assert_eq!(w.handoff_active_rail_timetable(extra_at(LATER)), Ok(()));
+                assert_eq!(w.handoff_active_rail_timetable(extra_at(LATER + 1)), Ok(()));
+                departures_through_clearance.push(advance(w, LATER));
+                assert_eq!(
+                    w.operation().unwrap().runtime.trains().count(),
+                    0,
+                    "both trains and their rear clearance must precede the third birth"
+                );
+            }
+            assert_eq!(
+                departures_through_clearance[0],
+                departures_through_clearance[1]
+            );
+        }
+        assert_eq!(advance(&mut world, TARGET), advance(&mut reopened, TARGET));
+        assert_eq!(reopened.operation_save(), world.operation_save());
+        assert_eq!(reopened.operation().unwrap().runtime.trains().count(), 0);
+    }
+
+    let mut crowded = World::new(base.snapshot().clone()).unwrap();
+    crowded
+        .configure_operation(
+            pair.to_vec()
+                .into_iter()
+                .chain([
+                    extra_at(LATER),
+                    OperationServiceConfig {
+                        service_id: fourth,
+                        ..extra_at(LATER + 1)
+                    },
+                ])
+                .collect(),
+        )
+        .unwrap();
+    advance(&mut crowded, TIE);
+    let rt = &crowded.operation().unwrap().runtime;
+    assert!(matches!(
+        states(rt)[0],
+        TrainState::Moving {
+            entered_ms: TIE,
+            ..
+        }
+    ));
+    assert_eq!(states(rt)[1], TrainState::Waiting { ready_ms: TIE });
+    assert_eq!(replay(rt).len(), 5);
 }
 
 fn assert_spaced_opposing_repeats(

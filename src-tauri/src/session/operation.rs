@@ -360,6 +360,8 @@ impl WorldEditor {
             candidate.handoff_active_rail_timetable(request).map_err(|e| match e {
                 rosenfu_core::operation::OperationError::TimetableHandoffPending =>
                     "前のダイヤで発車した列車が残っています。その列車の運行が終わってから再変更してください。".to_owned(),
+                rosenfu_core::operation::OperationError::OpposingMeetInProgress =>
+                    "待避中の列車の進路に影響するため、発車時刻を変更できません。待避する2本が区間を抜けてから再変更してください。".to_owned(),
                 rosenfu_core::operation::OperationError::ReservationScopeChanged =>
                     "列車が残っている間は今後の発車時刻だけ変更できます。車両と停車時間は変更していません。".to_owned(),
                 rosenfu_core::operation::OperationError::InvalidTimetable =>

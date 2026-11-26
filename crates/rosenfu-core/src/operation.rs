@@ -18,6 +18,7 @@ pub enum OperationError {
     CrossingPlatform,
     ReservationScopeChanged,
     TimetableHandoffPending,
+    OpposingMeetInProgress,
     Overflow,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,7 +232,14 @@ pub struct OperationRuntime {
     rail_admission: RailAdmissionModel,
     // Re-derived from checked World geometry on configuration/restore. The
     // public runtime alone has no authority to choose this exact-meet tie.
-    preferred_opposing_births: Vec<(String, String)>,
+    preferred_opposing_births: Vec<OpposingBirthPriority>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpposingBirthPriority {
+    pub(crate) siding: String,
+    pub(crate) through: String,
+    pub(crate) deferred: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1136,10 +1144,7 @@ impl OperationRuntime {
         if id.parse::<u64>().is_err() {
             return Err(OperationError::InvalidPath);
         }
-        let service = self
-            .services
-            .get_mut(id)
-            .ok_or(OperationError::InvalidPath)?;
+        let service = self.services.get(id).ok_or(OperationError::InvalidPath)?;
         if service.departure_source.is_periodic() {
             return Err(OperationError::InvalidTimetable);
         }
@@ -1159,6 +1164,10 @@ impl OperationRuntime {
         if self.timetable_handoffs.contains_key(id) {
             return Err(OperationError::TimetableHandoffPending);
         }
+        if self.changes_active_deferred_meet(id, &timetable) {
+            return Err(OperationError::OpposingMeetInProgress);
+        }
+        let service = self.services.get_mut(id).expect("validated service");
         if Self::has_live_birth_at_or_before(&self.trains, id, self.now_ms) {
             self.timetable_handoffs.insert(
                 id.to_owned(),
@@ -1234,8 +1243,10 @@ impl OperationRuntime {
     }
 
     /// Partition by all compiled authorities, including station and throat
-    /// locks, not just the first sections or the edit-time track graph.
-    pub(crate) fn isolated_authority_pairs(&self) -> Vec<(&str, &str)> {
+    /// locks. Also consider components of exactly three, whose third user
+    /// must pass an independent time proof at dispatch. Never enumerate
+    /// pairs for a crowded authority.
+    pub(crate) fn opposing_authority_candidates(&self) -> Vec<(&str, &str, Option<&str>)> {
         let mut users = BTreeMap::<&str, BTreeSet<&str>>::new();
         for (id, service) in &self.services {
             for key in service.legs.iter().flat_map(|leg| &leg.resources) {
@@ -1245,40 +1256,115 @@ impl OperationRuntime {
         let mut peers = BTreeMap::<&str, BTreeSet<&str>>::new();
         let mut crowded = BTreeSet::new();
         for ids in users.into_values() {
-            if ids.len() > 2 {
+            if ids.len() > 3 {
                 crowded.extend(ids);
-            } else if ids.len() == 2 {
-                let a = *ids.first().unwrap();
-                let b = *ids.last().unwrap();
-                peers.entry(a).or_default().insert(b);
-                peers.entry(b).or_default().insert(a);
+            } else if ids.len() > 1 {
+                for &id in &ids {
+                    peers
+                        .entry(id)
+                        .or_default()
+                        .extend(ids.iter().copied().filter(|other| *other != id));
+                }
             }
         }
-        peers
-            .iter()
-            .filter_map(|(&a, neighbors)| {
-                let &b = neighbors.first()?;
-                (a < b
-                    && neighbors.len() == 1
-                    && peers.get(b).is_some_and(|other| other.len() == 1)
-                    && !crowded.contains(a)
-                    && !crowded.contains(b))
-                .then_some((a, b))
-            })
-            .collect()
+        let mut seen = BTreeSet::new();
+        let mut result = Vec::new();
+        for &root in peers.keys() {
+            if !seen.insert(root) {
+                continue;
+            }
+            let mut group = vec![root];
+            let mut i = 0;
+            while i < group.len() {
+                for &neighbor in &peers[group[i]] {
+                    if seen.insert(neighbor) {
+                        group.push(neighbor);
+                    }
+                }
+                i += 1;
+            }
+            if !(2..=3).contains(&group.len()) || group.iter().any(|id| crowded.contains(id)) {
+                continue;
+            }
+            for &a in &group {
+                for &b in &peers[a] {
+                    if a < b {
+                        let deferred = group.iter().copied().find(|id| *id != a && *id != b);
+                        result.push((a, b, deferred));
+                    }
+                }
+            }
+        }
+        result
     }
 
-    pub(crate) fn set_preferred_opposing_births(&mut self, pairs: Vec<(String, String)>) {
+    pub(crate) fn set_preferred_opposing_births(&mut self, pairs: Vec<OpposingBirthPriority>) {
         self.preferred_opposing_births = pairs;
+    }
+
+    /// This first extension is intentionally one-shot only. The third
+    /// service cannot be born until both proved runs could fully serialize,
+    /// including all dwells and rear clearance.
+    fn deferred_meet_window(&self, pair: &OpposingBirthPriority) -> Option<(u64, u64)> {
+        let a = self.services.get(&pair.siding)?;
+        let b = self.services.get(&pair.through)?;
+        let c = self.services.get(pair.deferred.as_ref()?)?;
+        let birth = a.spec.timetable.first_departure_ms;
+        let deferred = c.spec.timetable.first_departure_ms;
+        let end = birth.checked_add(a.journey_ms)?.checked_add(b.journey_ms)?;
+        (!a.departure_source.is_periodic()
+            && !b.departure_source.is_periodic()
+            && !c.departure_source.is_periodic()
+            && a.spec.timetable.last_departure_ms == birth
+            && b.spec.timetable.first_departure_ms == birth
+            && b.spec.timetable.last_departure_ms == birth
+            && c.spec.timetable.last_departure_ms == deferred
+            && deferred > end)
+            .then_some((birth, end))
+    }
+
+    /// Do not let a handoff insert a third contender after a conditional
+    /// meet has already been admitted. The existing save format can
+    /// reconstruct this guard from the unchanged schedules and live births.
+    fn changes_active_deferred_meet(&self, edited: &str, proposed: &Timetable) -> bool {
+        self.preferred_opposing_births.iter().any(|pair| {
+            if pair.siding != edited
+                && pair.through != edited
+                && pair.deferred.as_deref() != Some(edited)
+            {
+                return false;
+            }
+            let Some((birth, end)) = self.deferred_meet_window(pair) else {
+                return false;
+            };
+            // An equally isolated one-shot later birth does not change
+            // either active participant or its protection on reload.
+            if pair.deferred.as_deref() == Some(edited)
+                && proposed.first_departure_ms == proposed.last_departure_ms
+                && proposed.first_departure_ms > end
+            {
+                return false;
+            }
+            [&pair.siding, &pair.through].into_iter().any(|id| {
+                self.trains.contains_key(&TrainKey {
+                    service_id: id.clone(),
+                    scheduled_ms: birth,
+                })
+            })
+        })
     }
 
     /// Guard the exact proof during edits while its siding train can still
     /// depend on it, including after the partner has completed.
-    pub(crate) fn loses_active_opposing_birth_proof(&self, pairs: &[(String, String)]) -> bool {
+    pub(crate) fn loses_active_opposing_birth_proof(
+        &self,
+        pairs: &[OpposingBirthPriority],
+    ) -> bool {
         self.preferred_opposing_births.iter().any(|pair| {
             !pairs.contains(pair)
+                && (pair.deferred.is_none() || self.deferred_meet_window(pair).is_some())
                 && self.trains.values().any(|train| {
-                    train.key.service_id == pair.0
+                    train.key.service_id == pair.siding
                         && (train.leg > 0 || matches!(train.state, TrainState::Moving { .. }))
                 })
         })
@@ -1310,17 +1396,32 @@ impl OperationRuntime {
             }
         }
         busy.extend(self.occupied.values().map(|key| key.service_id.as_str()));
-        // Pairs are disjoint even across all future legs. Swapping two
-        // fresh births cannot change admission for anything between them.
+        // Components are disjoint. In a three-service component only
+        // one pair can qualify at a given time; its third user must be
+        // absent now and unable to start until the whole meet can clear.
         let swaps: Vec<_> = self
             .preferred_opposing_births
             .iter()
-            .filter_map(|(siding, through)| {
-                let a = *fresh.get(siding.as_str())?;
-                let b = *fresh.get(through.as_str())?;
+            .filter_map(|pair| {
+                let siding = pair.siding.as_str();
+                let through = pair.through.as_str();
+                let a = *fresh.get(siding)?;
+                let b = *fresh.get(through)?;
+                if let Some(other) = pair.deferred.as_deref() {
+                    let (birth, end) = self.deferred_meet_window(pair)?;
+                    if birth != at
+                        || busy.contains(other)
+                        || fresh.contains_key(other)
+                        || !self.services[other]
+                            .next_departure
+                            .is_some_and(|next| next > end)
+                    {
+                        return None;
+                    }
+                }
                 (a > b
-                    && !busy.contains(siding.as_str())
-                    && !busy.contains(through.as_str())
+                    && !busy.contains(siding)
+                    && !busy.contains(through)
                     && self.opposing_birth_schedule_qualifies(siding, through))
                 .then_some((a, b))
             })
