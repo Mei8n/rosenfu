@@ -87,9 +87,11 @@ test('normal rectangle replaces after Shift addition, and mode switch clears sel
 test('Delete confirmation clears a previous action error just like the delete button',async()=>{
  const map=await start();drag(map);
  fireEvent.change(screen.getByLabelText('選択区間の線路数変更'),{target:{value:'4'}});
- vi.mocked(invoke).mockImplementation(async (command,args)=>{throw Error(command==='update_alignment_section_infrastructure'?'更新競合':command);});
- fireEvent.click(screen.getByRole('button',{name:'選択区間へ適用'}));
+ vi.mocked(invoke).mockImplementation(async command=>{throw Error(command==='update_alignment_section_infrastructure'?'更新競合':command);});
+ // Flush the rejected operation and React's key-handler effect before retrying.
+ await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'選択区間へ適用'}));});
  await screen.findByText(/更新競合/);
+ await waitFor(()=>expect((screen.getByRole('button',{name:'選択区間を撤去'}) as HTMLButtonElement).disabled).toBe(false));
  fireEvent.keyDown(document.body,{key:'Delete'});
  expect(screen.getByRole('dialog')).toBeTruthy();expect(screen.queryByText(/更新競合/)).toBeNull();
  expect(invoke).not.toHaveBeenCalledWith('delete_alignment_sections',expect.anything());

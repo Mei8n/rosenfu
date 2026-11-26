@@ -1,7 +1,7 @@
 import {assertNever} from './assertNever';
 import type {WorkspaceTab} from './WorkspaceTabs';
 
-export type EditorTool='stations'|'tracks'|'routes'|'services'|'company'|'station-management'|'delete'|'select'|'inactive';
+export type EditorTool='stations'|'tracks'|'routes'|'services'|'company'|'station-management'|'delete'|'select'|'road-transport'|'ordinary-bus'|'inactive';
 export type Status='loading'|'preview'|'ready'|'error';
 export type MapMode='move'|'place'|'draw';
 
@@ -21,7 +21,7 @@ export function mapModeForTool(tool:EditorTool):MapMode {
   case 'tracks':return 'draw';
   case 'stations':return 'place';
   case 'routes':case 'services':case 'company':case 'station-management':
-  case 'delete':case 'select':case 'inactive':return 'move';
+  case 'delete':case 'select':case 'road-transport':case 'ordinary-bus':case 'inactive':return 'move';
   default:return assertNever(tool);
  }
 }
@@ -30,7 +30,7 @@ export function constructionMapMode(tool:EditorTool):MapMode {
  switch(tool){
   case 'stations':return 'place';
   case 'tracks':case 'routes':case 'services':case 'company':case 'station-management':
-  case 'delete':case 'select':case 'inactive':return 'draw';
+  case 'delete':case 'select':case 'road-transport':case 'ordinary-bus':case 'inactive':return 'draw';
   default:return assertNever(tool);
  }
 }

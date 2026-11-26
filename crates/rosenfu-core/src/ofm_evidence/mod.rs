@@ -1,18 +1,44 @@
 //! Immutable raw evidence can be shared by SHA, but decoding is bound to tile coordinates
 //! and a pinned rule. Hashes prove byte consistency, not supplier authenticity or coverage.
 //! No network, decompression, world mutation, or implicit repair is performed here.
+mod bus;
+mod bus_grade;
+pub(crate) use bus::BUS_STOP_DENOMINATOR;
+pub use bus::{
+    find_gameplay_bus_path, reconstruct_authored_tram_chain, reconstruct_authored_tram_guide,
+    reconstruct_gameplay_bus_path, resolve_fractional_bus_traversal, AuthoredTramChainGuide,
+    AuthoredTramGuide, BusGradePolicy, BusInteriorStop, BusPath, BusPathBinding, BusPattern,
+    BusTileProof, BusVertex, BusVia, FractionalBusTraversal, BUS_GRAPH_RULE, BUS_RECTANGLE_RULE,
+    BUS_SHARED_SEAM_RULE,
+};
 mod candidates;
 mod path;
+mod seam_catalog;
+pub use seam_catalog::{
+    has_installed_seam_catalog, missing_installed_seam_tiles, replay_installed_westbound_seam,
+    retained_installed_seam_candidates, stage_installed_seam_tiles, InstalledSeamAcquisition,
+    InstalledWestboundSeamRecipe,
+};
+mod seam_witness;
+pub(crate) use path::reconstruct_street_tram_path;
 pub use path::{
-    reconstruct_path, validate_path_descriptor, DerivedPath, PathDescriptor, PathJoin, PathPick,
-    SourceSpan,
+    reconstruct_path, validate_path_descriptor, AuthoredTramProof, DerivedPath, PathDescriptor,
+    PathJoin, PathPick, SourceSpan,
+};
+pub use seam_witness::{
+    replay_westbound_seam_traversal, verify_westbound_seam_receipt, WestboundSeamReceipt,
+    WestboundSeamTraversal, WestboundSeamWitness, WestboundSourceAtom, WESTBOUND_SEAM_WITNESS_RULE,
 };
 mod store;
+mod viewport;
 pub use candidates::{boundary_candidates, validate_boundary_candidates, BoundaryCandidate};
+pub use viewport::{retained_road_view, RetainedRoadView};
 mod wire;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-pub use store::{EvidenceDescriptor, EvidenceStore, RawEvidence};
+pub use store::{
+    EvidenceDescriptor, EvidenceStore, RawEvidence, MAX_PINNED_BINDINGS, MAX_PINNED_RAW_BYTES,
+};
 use wire::{bytes, once, var, Field, Reader};
 
 pub const DECODER_RULE: &str = "ofm_transportation_z14_v1";
@@ -33,6 +59,8 @@ pub enum Error {
     MissingTransportation,
     Unsupported,
     InvalidAttribute,
+    NoBusLeg(usize),
+    InvalidBusCircuit,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -65,6 +93,8 @@ pub enum RawValue {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileLine {
+    /// Original opaque MVT id, not a provenance claim or stable road identity.
+    pub raw_feature_id: Option<u64>,
     pub feature_index: u32,
     pub line_index: u32,
     pub extent: u32,
@@ -78,10 +108,45 @@ pub struct DecodedTile {
     pub binding: TileBinding,
     pub lines: Vec<TileLine>,
     pub canonical_sha256: String,
+    duplicate_feature_ids: BTreeSet<u64>,
+}
+impl DecodedTile {
+    /// Return an unambiguous, single-part admitted road line for a nonzero
+    /// supplier ID. The ID alone does not prove continuity or trust the
+    /// producer; callers must independently establish both.
+    pub fn unique_raw_road_line(&self, raw_feature_id: u64) -> Option<&TileLine> {
+        if raw_feature_id == 0 || self.duplicate_feature_ids.contains(&raw_feature_id) {
+            return None;
+        }
+        let mut matches = self
+            .lines
+            .iter()
+            .filter(|line| line.raw_feature_id == Some(raw_feature_id));
+        let first = matches.next()?;
+        (first.line_index == 0 && matches.next().is_none()).then_some(first)
+    }
 }
 pub struct EvidenceInput<'a> {
     pub binding: &'a TileBinding,
     pub raw: &'a [u8],
+}
+
+/// Canonical raw fragment identity shared by the route and crossing views.
+pub(crate) fn raw_road_fragment_id(binding: &TileBinding, line: &TileLine) -> String {
+    format!(
+        "ofm:{}:14:{}:{}:{}:{}",
+        binding.revision, binding.x, binding.y, line.feature_index, line.line_index
+    )
+}
+
+pub(crate) fn road_grid_lon_lat(x: f64, y: f64) -> [f64; 2] {
+    [
+        x / 16384. * 360. - 180.,
+        (std::f64::consts::PI * (1. - 2. * y / 16384.))
+            .sinh()
+            .atan()
+            .to_degrees(),
+    ]
 }
 
 pub fn raw_sha256(raw: &[u8]) -> String {
@@ -117,7 +182,7 @@ impl TileBinding {
 }
 /// Checks the whole request before decoding any tile, including reused evidence.
 /// Duplicate tile bindings and mixed provider revisions are rejected atomically.
-pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> {
+fn validate_request(inputs: &[EvidenceInput<'_>]) -> Result<()> {
     if inputs.is_empty() || inputs.len() > MAX_TILES {
         return Err(Error::Limit);
     }
@@ -135,6 +200,10 @@ pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> 
             return Err(Error::Limit);
         }
     }
+    Ok(())
+}
+pub fn decode_request(inputs: &[EvidenceInput<'_>]) -> Result<Vec<DecodedTile>> {
+    validate_request(inputs)?;
     inputs
         .iter()
         .map(|input| decode_tile(input.binding, input.raw))
@@ -148,6 +217,12 @@ pub fn decode_tile(binding: &TileBinding, raw: &[u8]) -> Result<DecodedTile> {
     if raw_sha256(raw) != binding.raw_sha256 {
         return Err(Error::Hash);
     }
+    decode_tile_with_verified_sha(binding, raw)
+}
+
+// The caller must already have checked the raw hash against the validated
+// binding. Archive callers obtain bytes only by SHA from the immutable store.
+fn decode_tile_with_verified_sha(binding: &TileBinding, raw: &[u8]) -> Result<DecodedTile> {
     let mut reader = Reader::new(raw);
     let mut transportation = None;
     let mut layers = 0;
@@ -171,12 +246,14 @@ pub fn decode_tile(binding: &TileBinding, raw: &[u8]) -> Result<DecodedTile> {
             once(&mut transportation, data)?;
         }
     }
-    let lines = decode_layer(transportation.ok_or(Error::MissingTransportation)?)?;
+    let (lines, duplicate_feature_ids) =
+        decode_layer(transportation.ok_or(Error::MissingTransportation)?)?;
     let canonical_sha256 = canonical_hash(binding, &lines);
     Ok(DecodedTile {
         binding: binding.clone(),
         lines,
         canonical_sha256,
+        duplicate_feature_ids,
     })
 }
 fn text(raw: &[u8], limit: usize) -> Result<&str> {
@@ -185,7 +262,7 @@ fn text(raw: &[u8], limit: usize) -> Result<&str> {
     }
     std::str::from_utf8(raw).map_err(|_| Error::Malformed)
 }
-fn decode_layer(raw: &[u8]) -> Result<Vec<TileLine>> {
+fn decode_layer(raw: &[u8]) -> Result<(Vec<TileLine>, BTreeSet<u64>)> {
     let mut reader = Reader::new(raw);
     let mut features = Vec::new();
     let mut keys = Vec::new();
@@ -238,6 +315,8 @@ fn decode_layer(raw: &[u8]) -> Result<Vec<TileLine>> {
     let mut lines = Vec::new();
     let mut points = 0;
     let mut words = 0;
+    let mut feature_ids = BTreeSet::new();
+    let mut duplicate_feature_ids = BTreeSet::new();
     for (index, data) in features.iter().enumerate() {
         let mut r = Reader::new(data);
         let mut tags = None;
@@ -251,6 +330,11 @@ fn decode_layer(raw: &[u8]) -> Result<Vec<TileLine>> {
                 3 => once(&mut kind, var(f)?)?,
                 4 => once(&mut geometry, bytes(f)?)?,
                 _ => {}
+            }
+        }
+        if let Some(id) = id.filter(|&id| id != 0) {
+            if !feature_ids.insert(id) {
+                duplicate_feature_ids.insert(id);
             }
         }
         let mut attrs = BTreeMap::new();
@@ -307,6 +391,7 @@ fn decode_layer(raw: &[u8]) -> Result<Vec<TileLine>> {
         )?;
         for (j, coordinates) in decoded.into_iter().enumerate() {
             lines.push(TileLine {
+                raw_feature_id: id,
                 feature_index: index as u32,
                 line_index: j as u32,
                 extent,
@@ -315,7 +400,7 @@ fn decode_layer(raw: &[u8]) -> Result<Vec<TileLine>> {
             });
         }
     }
-    Ok(lines)
+    Ok((lines, duplicate_feature_ids))
 }
 fn decode_value(raw: &[u8]) -> Result<RawValue> {
     let mut r = Reader::new(raw);
@@ -339,7 +424,7 @@ fn decode_value(raw: &[u8]) -> Result<RawValue> {
 fn zigzag(v: u64) -> i64 {
     ((v >> 1) as i64) ^ -((v & 1) as i64)
 }
-fn number(v: &RawValue) -> Option<f64> {
+pub(crate) fn number(v: &RawValue) -> Option<f64> {
     match v {
         RawValue::Float32(v) => Some(f32::from_bits(*v) as f64),
         RawValue::Float64(v) => Some(f64::from_bits(*v)),
@@ -363,8 +448,14 @@ fn validate_attributes(attrs: &BTreeMap<String, RawValue>) -> Result<()> {
             _ if matches!(key.as_str(), "layer" | "oneway") && number(v).is_some() => {}
             _ => return Err(Error::InvalidAttribute),
         }
-        if key == "brunnel" && !matches!(v,RawValue::String(s) if s=="bridge"||s=="tunnel") {
-            return Err(Error::InvalidAttribute);
+        if key == "brunnel" {
+            let valid_structure = match v {
+                RawValue::String(value) => matches!(value.as_str(), "bridge" | "tunnel" | "ford"),
+                _ => false,
+            };
+            if !valid_structure {
+                return Err(Error::InvalidAttribute);
+            }
         }
         if key == "layer" {
             let n = match v {
@@ -439,6 +530,8 @@ fn decode_geometry(
     lines.push(line);
     Ok(lines)
 }
+// Keep the v1 hash format: opaque feature IDs are already covered by the
+// raw byte digests, but do not change logical fragment/route identity.
 fn canonical_hash(binding: &TileBinding, lines: &[TileLine]) -> String {
     let mut h = Sha256::new();
     h.update(b"rosenfu-ofm-integer-context-v1\0");

@@ -16,3 +16,15 @@ test('offline guide has discoverable expandable topics without hiding operationa
  expect(container.textContent).toContain('接続先への自動探索');
  expect(container.textContent).toContain('建設費・維持費は未計算');
 });
+
+
+test('new players can find ordered construction and dispatch steps locally',()=>{
+ render(<UserGuide/>);
+ fireEvent.click(screen.getByText('操作ガイド'));
+ fireEvent.click(screen.getByText('まず2駅で列車を走らせる'));
+ const steps=[...screen.getByRole('list',{name:'最初の運行手順'}).querySelectorAll('li')];
+ expect(steps).toHaveLength(6);
+ expect(steps[1].textContent).toContain('計画を着工');
+ expect(steps[3].textContent).toContain('路線から作成');
+ expect(steps[5].textContent).toContain('再開');
+});

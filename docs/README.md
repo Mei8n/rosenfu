@@ -28,7 +28,7 @@
 - 路線・系統: [モデル](world-model.md)、[路線候補](route-candidate-preview.md)、[系統](operating-services.md)、[ServicePath導入設計](service-path-design.md)
 - 地図: [背景](map-backgrounds.md)、[ズーム](smooth-map-zoom.md)、[参考駅](reference-station-packs.md)、[参考グラフ](osm-reference-graph.md)、[バンドル](reference-graph-bundle.md)、[出典と延伸](reference-extension-provenance.md)、[オフライン調査](offline-map-research.md)
 - 将来設計: [分岐・勾配・車両](junction-and-grade-design.md)、[日本向け運賃](japan-fare-model-notes.md)、[駅運営・暦等の要求詳細](construction-and-service-planning.md)
-- 参考調査: [TrainsWorld](trainsworld-research.md)、[報告からの試験案](trainsworld-findings-integration-audit.md)、[空想鉄道・A列車](comparative-railway-games-plan.md)
+- 参考調査: [TrainsWorld 0.2.2 現行比較](trainsworld-parity-2026-11.md)、[公開初期の調査](trainsworld-research.md)、[報告からの試験案](trainsworld-findings-integration-audit.md)、[空想鉄道・A列車](comparative-railway-games-plan.md)
 - 履歴: [復旧記録](reconstruction-2026-11-13.md)、[初期駅間接続試作](station-prototype.md)、[撤回した計画永続化案](construction-plan-persistence-design.md)
 
 参照駅/道路変換ツールの手順は各機能文書から参照する。履歴文書の「現在」「未実装」は記録日時点の記述として読む。

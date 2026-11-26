@@ -1,0 +1,9 @@
+.route-station-selection { pointer-events: none; }
+.route-station-selection .route-selection-halo { fill: #2678bf26; stroke: #1967a8; stroke-width: 3; filter: drop-shadow(0 0 1px white); }
+.route-station-selection .route-selection-leader { fill: none; stroke: #1967a8; stroke-width: 2; }
+.route-station-selection .route-selection-label { fill: #145b96; stroke: white; stroke-width: 1.5; }
+.route-station-selection .route-selection-text { fill: white; stroke: none; font-size: 12px; font-weight: 700; font-family: sans-serif; }
+
+.route-station-selection .route-endpoint-picking .route-selection-halo { fill: #c75b292f; stroke: #b54a25; }
+.route-station-selection .route-endpoint-picking .route-selection-leader { stroke: #b54a25; }
+.route-station-selection .route-endpoint-picking .route-selection-label { fill: #a23917; }

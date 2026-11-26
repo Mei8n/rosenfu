@@ -60,3 +60,46 @@ test("animation measures elapsed time in the rAF clock even with a different per
  act(()=>callbacks.shift()!(100080));expect(camera.current.zoom).toBeGreaterThan(13);expect(camera.current.zoom).toBeLessThan(14);
  act(()=>callbacks.shift()!(100160));expect(camera.current.zoom).toBe(14);
 });
+test("strict raster bookkeeping follows request and load changes, not camera frames",()=>{
+ const start=cameraAt(35.675,139.75,12), zoom=cameraAt(35.675,139.75,13.25);
+ const first=visibleTiles(start,"osm"), second=visibleTiles(zoom,"osm");
+ const status=vi.fn();
+ const draw=(tiles:typeof first,camera:Camera)=><React.StrictMode><svg><GsiBackground tiles={tiles} camera={camera} width={1000} height={600} onStatus={status}/></svg></React.StrictMode>;
+ const view=render(draw(first,start));
+ const firstImages=[...view.container.querySelectorAll('image')];
+ const firstId=firstImages[0].getAttribute('data-tile-id');
+ const stale=firstImages.at(-1)!; // deliberately never settled in the first request
+ for(const image of firstImages.slice(0,-1))fireEvent.load(image);
+ expect(status.mock.calls.at(-1)?.[0]).toEqual({loaded:first.length-1,failed:0,total:first.length});
+ const filter=vi.spyOn(first,'filter'), every=vi.spyOn(first,'every');
+ status.mockClear();
+ for(const fraction of [12.1,12.2,12.3]){
+  const camera=cameraAt(35.675,139.75,fraction);
+  view.rerender(draw(first,camera));
+  const node=view.container.querySelector(`image[data-tile-id="${firstId}"]`);
+  expect(node).toBe(firstImages[0]);
+  const adjusted=positionTile(first[0],camera);
+  expect(Number(node?.getAttribute('x'))).toBe(adjusted.x);
+  expect(Number(node?.getAttribute('width'))).toBe(adjusted.width);
+ }
+ expect(filter).not.toHaveBeenCalled();
+ expect(every).not.toHaveBeenCalled();
+ expect(status).not.toHaveBeenCalled();
+ filter.mockRestore();every.mockRestore();
+
+ view.rerender(draw(second,zoom));
+ expect(view.container.querySelector(`image[data-tile-id="${firstId}"][data-fallback-tile]`)).toBe(firstImages[0]);
+ expect(status.mock.calls.at(-1)?.[0]).toEqual({loaded:0,failed:0,total:second.length});
+ fireEvent.load(stale);
+ fireEvent.load(firstImages[0]); // retained old node, now outside the current request
+ expect(status.mock.calls.at(-1)?.[0]).toEqual({loaded:0,failed:0,total:second.length});
+ const replacement=[...view.container.querySelectorAll('image:not([data-fallback-tile])')];
+ for(const image of replacement.slice(0,-1))fireEvent.load(image);
+ fireEvent.error(replacement.at(-1)!);
+ expect(status.mock.calls.at(-1)?.[0]).toEqual({loaded:second.length-1,failed:1,total:second.length});
+ expect(view.container.querySelectorAll('[data-fallback-tile]')).toHaveLength(0);
+ expect(view.container.querySelectorAll('[data-failed-tile]')).toHaveLength(1);
+ view.rerender(draw(first,start));
+ // A different settled request prunes the prior results; no invented app cache hit.
+ expect(status.mock.calls.at(-1)?.[0]).toEqual({loaded:0,failed:0,total:first.length});
+});

@@ -64,10 +64,16 @@ export function zoomCameraAt(camera:Camera,zoom:number,anchor:{x:number;y:number
   const y=mercatorY(point.latitude)-(anchor.y-MAP_VIEWBOX.height/2)/scale;
   return cameraAt(clamp(latitudeAt(y),MAP_BOUNDS.south,MAP_BOUNDS.north),clamp(x*360-180,MAP_BOUNDS.west,MAP_BOUNDS.east),nextZoom);
 }
-export function viewBounds(camera = DEFAULT_CAMERA, size: { width: number; height: number } = MAP_VIEWBOX) {
-  const visible = mapViewport(size.width, size.height);
-  const nw = unproject(visible.x,visible.y,camera), se = unproject(visible.x+visible.width,visible.y+visible.height,camera);
-  return { west: nw.longitude, east: se.longitude, north: nw.latitude, south: se.latitude };
+export function viewBounds(camera = DEFAULT_CAMERA, size: { width: number; height: number } = MAP_VIEWBOX, padding = 0) {
+  checkCamera(camera);
+  const visible = mapViewport(size.width, size.height), scale = scaleFor(camera.zoom);
+  const x = worldX(camera.longitude), y = mercatorY(camera.latitude);
+  // Padding uses SVG logical coordinates, including just outside the viewbox.
+  const west = (x + (visible.x - padding - MAP_VIEWBOX.width / 2) / scale) * 360 - 180;
+  const east = (x + (visible.x + visible.width + padding - MAP_VIEWBOX.width / 2) / scale) * 360 - 180;
+  const north = latitudeAt(y + (visible.y - padding - MAP_VIEWBOX.height / 2) / scale);
+  const south = latitudeAt(y + (visible.y + visible.height + padding - MAP_VIEWBOX.height / 2) / scale);
+  return { west, east, north, south };
 }
 /** Visible logical area for SVG xMidYMid slice. Fill the window without stretching geography. */
 export function mapViewport(width: number, height: number) {
@@ -75,6 +81,21 @@ export function mapViewport(width: number, height: number) {
   const scale = Math.max(width / MAP_VIEWBOX.width, height / MAP_VIEWBOX.height);
   const visibleWidth = width / scale, visibleHeight = height / scale;
   return { x:(MAP_VIEWBOX.width-visibleWidth)/2, y:(MAP_VIEWBOX.height-visibleHeight)/2, width:visibleWidth, height:visibleHeight, scale };
+}
+export type VehicleViewport={left:number;right:number;top:number;bottom:number};
+/** Native marker sampling uses the same logical crop and projection as SVG.
+ * Include a marker's radius and stroke, so it can enter the viewport smoothly. */
+export function vehicleViewport(camera:Camera, size:{width:number;height:number}):VehicleViewport{
+  const crop=mapViewport(size.width,size.height);
+  const worldScale=scaleFor(camera.zoom);
+  const pad=5/crop.scale;
+  const x=worldX(camera.longitude), y=mercatorY(camera.latitude);
+  return {
+    left:x+(crop.x-MAP_VIEWBOX.width/2-pad)/worldScale,
+    right:x+(crop.x+crop.width-MAP_VIEWBOX.width/2+pad)/worldScale,
+    top:y+(crop.y-MAP_VIEWBOX.height/2-pad)/worldScale,
+    bottom:y+(crop.y+crop.height-MAP_VIEWBOX.height/2+pad)/worldScale,
+  };
 }
 /** Convert client coordinates through the same uniform crop used to render the map. */
 export function coordinatesFromClient(clientX: number, clientY: number, rect: { left: number; top: number; width: number; height: number }, camera = DEFAULT_CAMERA) {
@@ -93,6 +114,17 @@ export function positionTile(tile: MapTile, camera: Camera): MapTile {
   const [zoom,x,y] = tile.id.split("/").map(Number);
   const count = 2 ** zoom, scale = scaleFor(camera.zoom);
   return { ...tile, x: (x / count - worldX(camera.longitude)) * scale + MAP_VIEWBOX.width / 2, y: (y / count - mercatorY(camera.latitude)) * scale + MAP_VIEWBOX.height / 2, width: scale / count, height: scale / count };
+}
+/** Screen fraction geometrically covered by one intact visibleTiles() request.
+ * That producer emits a rectangle in x-major order, not a subset of loaded tiles.
+ * Only its two corners need projection, even on high-DPI frames. */
+export function requestedTileCoverage(tiles: readonly MapTile[], camera: Camera, size: {width:number;height:number}) {
+  if (!tiles.length) return 0;
+  const first = positionTile(tiles[0], camera), last = positionTile(tiles[tiles.length - 1], camera);
+  const view = mapViewport(size.width, size.height);
+  const dx = Math.max(0, Math.min(last.x + last.width, view.x + view.width) - Math.max(first.x, view.x));
+  const dy = Math.max(0, Math.min(last.y + last.height, view.y + view.height) - Math.max(first.y, view.y));
+  return dx * dy / (view.width * view.height);
 }
 /** Enumerate only visible tiles at screen resolution, never prefetch or persist them.
  * Camera coordinates stay unchanged; finer raster tiles are drawn at smaller logical sizes.

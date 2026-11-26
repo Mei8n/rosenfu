@@ -17,3 +17,30 @@ test('keeps only the newest pending pointer and rejects stale preview results',(
  act(()=>h.result.current.cancel());act(()=>w.reply(w.sent.at(-1).id,{kind:'point',point:query(4).point}));expect(h.result.current.preview).toBeNull();
 });
 test('cancelled clicks cannot place geometry later and teardown terminates the worker',async()=>{const h=setup(),w=ControlledWorker.latest;let result:any;act(()=>{void h.result.current.click(query(1)).then(value=>result=value);});act(()=>h.result.current.cancel());await act(async()=>{});expect(result).toBeNull();act(()=>w.reply(w.sent.at(-1).id,{kind:'point',point:query(1).point}));expect(result).toBeNull();h.rerender({enabled:false});expect(w.terminated).toBe(true);});
+
+test('a retired click releases the editor lock without overlapping worker jobs',async()=>{
+ const h=setup(),w=ControlledWorker.latest;
+ const oldResult=vi.fn(),nextResult=vi.fn();
+ act(()=>{void h.result.current.click(query(1)).then(oldResult);});
+ const old=w.sent.at(-1);
+ act(()=>h.result.current.cancel());
+ expect(h.result.current.clickPending()).toBe(false);
+ act(()=>{
+  void h.result.current.click(query(2)).then(nextResult);
+  h.result.current.hover(query(3));
+ });
+ expect(h.result.current.clickPending()).toBe(true);
+ expect(w.sent.filter(m=>m.kind==='query')).toHaveLength(1);
+ await act(async()=>w.reply(old.id,{kind:'point',point:query(1).point}));
+ expect(oldResult).toHaveBeenCalledExactlyOnceWith(null);
+ expect(nextResult).not.toHaveBeenCalled();
+ expect(h.result.current.preview).toBeNull();
+ const next=w.sent.at(-1);
+ expect(next.query).toEqual(query(2));
+ expect(w.sent.filter(m=>m.kind==='query')).toHaveLength(2);
+ const expected={kind:'point',point:query(2).point};
+ await act(async()=>w.reply(next.id,expected));
+ expect(nextResult).toHaveBeenCalledExactlyOnceWith(expected);
+ expect(h.result.current.clickPending()).toBe(false);
+ expect(h.result.current.preview).toEqual(expected);
+});

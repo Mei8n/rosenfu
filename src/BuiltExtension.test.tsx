@@ -224,8 +224,8 @@ for(const sourceEnd of ['start','end'] as const)for(const targetEnd of ['start',
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(2);
 });
 
-test('destination hover refuses mismatched track type and cannot submit a fake join',async()=>{
- const target={...line,id:'4',track_type:'tram',points:[point(350,130),point(420,130)]};
+test('destination hover preserves ordinary rail/HS type mismatch refusal',async()=>{
+ const target={...line,id:'4',track_type:'high_speed',points:[point(350,130),point(420,130)]};
  const map=await start({alignments:[line,target]});
  await settledMapClick(map,{clientX:250,clientY:130});
  await settledPointerMove(map,{clientX:350,clientY:130});
@@ -233,6 +233,24 @@ test('destination hover refuses mismatched track type and cannot submit a fake j
  await settledMapClick(map,{clientX:350,clientY:130});
  expect(map.querySelectorAll('.draft-anchor')).toHaveLength(1);
  expect((screen.getByRole('button',{name:'計画を着工'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test.each([['normal','tram'],['tram','high_speed']] as const)('a %s draft connects to a built %s endpoint without changing the new span type',async(sourceType,targetType)=>{
+ const source={...line,track_type:sourceType};
+ const target={...line,id:'4',track_type:targetType,points:[point(350,130),point(420,130)]};
+ const map=await start({alignments:[source,target]});
+ await settledMapClick(map,{clientX:250,clientY:130});
+ await settledPointerMove(map,{clientX:352,clientY:131});
+ expect(map.querySelector('.destination-snap-ring')?.getAttribute('data-allowed')).toBe('true');
+ await settledMapClick(map,{clientX:352,clientY:131});
+ replyToCommandOnce('build_plan',world);
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expect.objectContaining({
+  trackType:sourceType,extension:{alignmentId:'3',endpoint:'end'},destination:{alignmentId:'4',endpoint:'start'},
+ })]})));
+ const sent=vi.mocked(invoke).mock.calls.find(([cmd])=>cmd==='build_plan')?.[1] as {alignments:{points:ReturnType<typeof point>[]}[]};
+ expect(sent.alignments[0].points[0]).toEqual(source.points[1]);
+ expect(sent.alignments[0].points.at(-1)).toEqual(target.points[0]);
 });
 
 test('legacy undone destination is recovered on load without creating session history',async()=>{
@@ -296,3 +314,49 @@ test('reconnected split pieces render a shared D coordinate and report its conne
  expect(screen.queryByText('他社の線路は延伸できません')).toBeNull();
 });
 
+
+test.each([
+ ['normal','トラム','tram',55],
+ ['high_speed','トラム','tram',55],
+ ['tram','通常','normal',115],
+ ['tram','高速','high_speed',270],
+] as const)('a deliberate %s → %s choice survives built start snapping and stays locked',async(sourceType,label,newType,speed)=>{
+ const source={...line,track_type:sourceType,design_speed_kmh:85};
+ const before=structuredClone(source);
+ const map=await start({alignments:[source]});
+ const choice=screen.getByRole('button',{name:label});
+ fireEvent.click(choice);
+ const input=screen.getByRole('spinbutton',{name:'線路の目標最高速度'}) as HTMLInputElement;
+ fireEvent.change(input,{target:{value:String(speed)}});
+ if(newType==='tram')fireEvent.click(screen.getByRole('button',{name:'道路に合わせる'}));
+ await settledMapClick(map,{clientX:253,clientY:132});
+ expect(choice.getAttribute('aria-pressed')).toBe('true');
+ expect(choice.matches(':disabled')).toBe(true);
+ expect(input.value).toBe(String(speed));
+ expect(input.disabled).toBe(true);
+ await settledMapClick(map,{clientX:310,clientY:130});
+ const expected=expect.objectContaining({
+   trackType:newType,designSpeedKmh:speed,extension:{alignmentId:'3',endpoint:'end'},points:[source.points[1],point(310,130)],
+ });
+ expect(invoke).toHaveBeenCalledWith('preview_construction_plan',expect.objectContaining({validationOnly:true,alignments:[expected]}));
+ replyToCommandOnce('build_plan',world);
+ fireEvent.click(screen.getByRole('button',{name:'計画を着工'}));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('build_plan',expect.objectContaining({alignments:[expected]})));
+ expect(source).toEqual(before);
+});
+
+test('snapping with no toolbar choice still inherits a built tram and its speed',async()=>{
+ const source={...line,track_type:'tram',design_speed_kmh:38};
+ const map=await start({alignments:[source]});
+ await settledMapClick(map,{clientX:250,clientY:130});
+ expect(screen.getByRole('button',{name:'トラム'}).getAttribute('aria-pressed')).toBe('true');
+ expect((screen.getByRole('spinbutton',{name:'線路の目標最高速度'}) as HTMLInputElement).value).toBe('38');
+});
+
+test('explicit same-family rail selection still inherits source type and speed',async()=>{
+ const map=await start({alignments:[{...line,design_speed_kmh:85}]});
+ fireEvent.click(screen.getByRole('button',{name:'高速'}));
+ await settledMapClick(map,{clientX:250,clientY:130});
+ expect(screen.getByRole('button',{name:'通常'}).getAttribute('aria-pressed')).toBe('true');
+ expect((screen.getByRole('spinbutton',{name:'線路の目標最高速度'}) as HTMLInputElement).value).toBe('85');
+});

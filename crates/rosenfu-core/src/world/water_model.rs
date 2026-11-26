@@ -321,21 +321,23 @@ pub(super) fn validate_with_model(
 ) -> Result<(), String> {
     after.validate().map_err(|e| e.to_string())?;
     validate_station_centers(before, after, model)?;
+    // Match by stable identity, not iteration order. Keep the first match
+    // just as the former linear lookup did, even for an external old draft.
+    let mut previous_alignments = BTreeMap::new();
+    for alignment in &before.alignments {
+        previous_alignments.entry(alignment.id).or_insert(alignment);
+    }
     let mut relevant: BTreeSet<_> = after
         .alignments
         .iter()
         .filter(|a| {
-            before
-                .alignments
-                .iter()
-                .find(|old| old.id == a.id)
-                .is_none_or(|old| {
-                    old.points != a.points
-                        || old.infrastructure != a.infrastructure
-                        || old.vertical_profile != a.vertical_profile
-                        || old.section_profiles != a.section_profiles
-                        || old.anchor_indices != a.anchor_indices
-                })
+            previous_alignments.get(&a.id).is_none_or(|old| {
+                old.points != a.points
+                    || old.infrastructure != a.infrastructure
+                    || old.vertical_profile != a.vertical_profile
+                    || old.section_profiles != a.section_profiles
+                    || old.anchor_indices != a.anchor_indices
+            })
         })
         .map(|a| a.id)
         .collect();
@@ -506,6 +508,26 @@ mod tests {
             .place_station_on_alignment(a.owner, "s".into(), a.id, 0.5, 100., 10.)
             .unwrap();
         (before, world.snapshot().clone())
+    }
+    #[test]
+    fn physical_water_delta_is_independent_of_alignment_order() {
+        let (_, before) = fixture(vec![p(139.7, 35.6), p(139.72, 35.6)], 0.);
+        let mut world = World::new(before).unwrap();
+        let owner = world.snapshot().alignments[0].owner;
+        world
+            .build_alignment(owner, "b".into(), vec![p(139.7, 35.7), p(139.72, 35.7)])
+            .unwrap();
+        let before = world.snapshot().clone();
+        let mut after = before.clone();
+        after.alignments.reverse();
+        after.alignments[0].name = "rename only".into();
+        let wet = wet();
+        validate_with_model(&before, &after, &wet).unwrap();
+        after.alignments[0].points[0].longitude += 0.00001;
+        assert_eq!(
+            validate_with_model(&before, &after, &wet),
+            Err(GROUND.into())
+        );
     }
     #[test]
     fn station_center_rejects_ground_water_only_and_propagates_missing_data() {

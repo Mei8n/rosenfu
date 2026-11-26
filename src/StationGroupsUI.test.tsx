@@ -2,9 +2,10 @@ import {settledPointerMove} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
-import {cleanup,fireEvent,render,screen,within} from "@testing-library/react";
+import {cleanup,fireEvent,render,screen,waitFor,within} from "@testing-library/react";
 import {invoke,isTauri} from "@tauri-apps/api/core";
 import {App} from "./App";
+import {panMap} from "./mapTestNavigation";
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:vi.fn()}));
 afterEach(()=>{cleanup();localStorage.clear();vi.resetAllMocks();});
 const center={latitude:35.67504,longitude:139.75};
@@ -69,3 +70,84 @@ test("crossing preview reports actual distance without inventing passenger data"
 
 });
 
+
+test("blank map or Escape closes the clean station inspector without touching its group",async()=>{
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"station-deselect-test"}:world);
+ render(<App/>);await screen.findByText(/station-deselect-test/);
+ fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+ const row=screen.getByRole("button",{name:/交差駅/});
+ fireEvent.click(document.querySelector(".station-marker")!);
+ expect(row.getAttribute("aria-pressed")).toBe("true");
+ const homes=screen.getByLabelText("編集するホーム") as HTMLSelectElement;
+ fireEvent.change(homes,{target:{value:"6"}});
+ expect(homes.value).toBe("6");
+ expect(document.querySelectorAll(".station-marker.selected")).toHaveLength(1);
+ const calls=vi.mocked(invoke).mock.calls.length;
+ fireEvent.click(screen.getByRole("img",{name:"駅配置用OpenStreetMap"}));
+ expect(screen.queryByText("駅の詳細")).toBeNull();
+ expect(row.getAttribute("aria-pressed")).toBe("false");
+ expect(document.querySelectorAll(".station-marker.selected")).toHaveLength(0);
+ expect(document.querySelectorAll("[data-group-platform]")).toHaveLength(2);
+
+ fireEvent.click(row);
+ expect(screen.getByText("駅の詳細")).toBeTruthy();
+ fireEvent.keyDown(window,{key:"Escape"});
+ expect(screen.queryByText("駅の詳細")).toBeNull();
+ expect(row.getAttribute("aria-pressed")).toBe("false");
+ expect(vi.mocked(invoke).mock.calls.slice(calls)).toEqual([]);
+});
+
+test("trying to deselect does not discard station name, length or pending removal",async()=>{
+ vi.mocked(isTauri).mockReturnValue(true);vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"station-deselect-drafts"}:world);
+ render(<App/>);await screen.findByText(/station-deselect-drafts/);
+ fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+ fireEvent.click(screen.getByRole("button",{name:/交差駅/}));
+ const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});
+ const name=screen.getByLabelText("選択駅の名前") as HTMLInputElement;
+ fireEvent.change(name,{target:{value:"変更途中"}});
+ fireEvent.click(map);fireEvent.keyDown(window,{key:"Escape"});
+ expect(name.value).toBe("変更途中");
+ fireEvent.click(screen.getByRole("button",{name:"駅名下書きを破棄"}));
+ const length=screen.getByLabelText("選択駅の長さ") as HTMLInputElement;
+ fireEvent.change(length,{target:{value:"1"}});
+ fireEvent.click(map);fireEvent.keyDown(window,{key:"Escape"});
+ expect(length.value).toBe("1");
+ expect(screen.getByText("2〜20両で入力してください")).toBeTruthy();
+ fireEvent.click(screen.getByRole("button",{name:"ホーム長の下書きを破棄"}));
+ fireEvent.click(screen.getByRole("button",{name:"選択ホームを撤去"}));
+ fireEvent.click(map);fireEvent.keyDown(window,{key:"Escape"});
+ expect(screen.getByRole("button",{name:"削除を確定"})).toBeTruthy();
+ expect(screen.getByText("駅の詳細")).toBeTruthy();
+ expect(vi.mocked(invoke).mock.calls.some(([c])=>["rename_station","update_station_placement","delete_station"].includes(c))).toBe(false);
+});
+
+test("a large saved world shows grouped footprints only near the viewport and keeps both platforms when panning",async()=>{
+ const station_groups:typeof world.station_groups=[], stations:typeof world.stations=[],
+  station_placements:typeof world.station_placements=[], alignments:typeof world.alignments=[];
+ for(let i=0;i<48;i++){
+  const point={latitude:i<2?center.latitude:30+(i%35)*.12,
+   longitude:i===0?center.longitude:i===1?center.longitude+.018:131+Math.floor(i/35)*.7};
+  const offset=100+4*i;
+  const id=String(offset), other=String(offset+1), a=String(offset+2), b=String(offset+3);
+  station_groups.push({station_id:id,members:[id,other]});
+  stations.push({id,owner:"2",name:"試験駅"+i,...point},{id:other,owner:"2",name:"試験駅"+i,...point});
+  alignments.push({id:a,owner:"2",name:"横",points:[{...point,longitude:point.longitude-.006},{...point,longitude:point.longitude+.006}]},
+   {id:b,owner:"2",name:"縦",points:[{...point,latitude:point.latitude-.006},{...point,latitude:point.latitude+.006}]});
+  station_placements.push({station_id:id,alignment_id:a,position:.5,length_m:200,width_m:12},{station_id:other,alignment_id:b,position:.5,length_m:200,width_m:12});
+ }
+ const snapshot={...world,stations,station_placements,station_groups,alignments,next_id:"1300"};
+ vi.mocked(isTauri).mockReturnValue(true);
+ vi.mocked(invoke).mockImplementation(async command=>command==="engine_info"?{version:"large-station-group-test"}:snapshot);
+ render(<App/>);await screen.findByText(/large-station-group-test/);
+ const rendered=()=>[...document.querySelectorAll<SVGPathElement>("[data-group-platform]")]
+   .map(platform=>platform.getAttribute("data-group-platform"));
+ expect(rendered()).toEqual(["100","101"]);
+ panMap(.018/360*256*2**16);
+ await waitFor(()=>expect(rendered()).toEqual(["104","105"]));
+ fireEvent.click(screen.getByRole("tab",{name:"駅"}));
+ expect(document.querySelector(".station-directory .count")?.textContent).toBe("48");
+ fireEvent.click(screen.getByRole("button",{name:/^試験駅0 /}));
+ const homes=screen.getByLabelText("編集するホーム") as HTMLSelectElement;
+ expect([...homes.options].map(option=>option.value)).toEqual(["100","101"]);
+ expect(rendered()).toEqual(["104","105"]);
+});

@@ -6,12 +6,12 @@ import type {ReferenceGraphPick} from './referenceGraphPath';
 /** Geometric drawing assistance only. Never establishes a physical rail junction,
  * legal tram access, or source provenance. Generated points still need the normal
  * construction validator. This is independent of the exact-source-copy pipeline. */
-export function createRoadFollowRouter(bundle:ReferenceGraphBundle){
+export function createRoadFollowRouter(bundle:ReferenceGraphBundle,exactSourceNodes=false){
  const graph=eligibleRoadGraph(bundle),nodes=new Map(graph.nodes.map(n=>[n.osmId,n])),edges=new Map(graph.edges.map(e=>[e.id,e]));
  const distance=(a:GraphPoint,b:GraphPoint)=>{const r=Math.PI/180,dlat=(b.latitude-a.latitude)*r,dlon=(b.longitude-a.longitude)*r;const h=Math.sin(dlat/2)**2+Math.cos(a.latitude*r)*Math.cos(b.latitude*r)*Math.sin(dlon/2)**2;return 12742000*Math.asin(Math.sqrt(Math.min(1,h)));};
  // Exact vertices may connect only within the same encoded level group. Missing
  // metadata stays in its own group; crossings without vertices never connect.
- const key=(id:string,edge:typeof graph.edges[number])=>{const p=nodes.get(id)!;return `vertex:${edge.layer??"unspecified"}:${edge.level??"unspecified"}:${p.longitude}:${p.latitude}`;};
+ const key=(id:string,edge:typeof graph.edges[number])=>{const p=nodes.get(id)!;return `vertex:${edge.layer??"unspecified"}:${edge.level??"unspecified"}:${exactSourceNodes?id:`${p.longitude}:${p.latitude}`}`;};
  type Arc={to:string;length:number};
  const baseLocations=new Map<string,GraphPoint>(),baseAdjacent=new Map<string,Arc[]>(),ends=new Map<string,{a:string;b:string}>();
  for(const edge of graph.edges){const a=key(edge.from,edge),b=key(edge.to,edge);baseLocations.set(a,nodes.get(edge.from)!);baseLocations.set(b,nodes.get(edge.to)!);ends.set(edge.id,{a,b});const length=distance(nodes.get(edge.from)!,nodes.get(edge.to)!);baseAdjacent.set(a,[...(baseAdjacent.get(a)??[]),{to:b,length}]);baseAdjacent.set(b,[...(baseAdjacent.get(b)??[]),{to:a,length}]);}

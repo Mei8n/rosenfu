@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod operation_commands;
+mod road_transport_commands;
 mod session;
 use session::construction_timing;
 mod water_zone_delivery;
@@ -12,11 +14,67 @@ struct EngineSessionInfo {
     #[serde(flatten)]
     engine: rosenfu_core::EngineInfo,
     company_setup_required: bool,
+    operation_enabled: bool,
+    standard_schedule_enabled: bool,
+    crossing_planning_enabled: bool,
+    fixed_od_enabled: bool,
+    rail_journey_replay_enabled: bool,
+    fixed_od_scenario_enabled: bool,
+    road_transport_enabled: bool,
+    ordinary_ofm_bus_enabled: bool,
+    ordinary_ofm_bus_fractional_enabled: bool,
+    ordinary_ofm_bus_ground_fractional_enabled: bool,
+    ordinary_ofm_bus_ground_fractional_stops_enabled: bool,
+    authored_tram_road_guide_enabled: bool,
+    authored_street_tram_enabled: bool,
+    authored_adjacent_street_tram_enabled: bool,
+    authored_chain_street_tram_enabled: bool,
+    ordinary_ofm_bus_rectangle_enabled: bool,
+    ordinary_ofm_bus_shared_seam_enabled: bool,
+    ordinary_ofm_bus_round_trip_enabled: bool,
+    ordinary_ofm_bus_closed_loop_enabled: bool,
+    ordinary_ofm_bus_observed_grade_enabled: bool,
+    ordinary_ofm_bus_multiple_enabled: bool,
+    installed_seam_bus_enabled: bool,
+    ordinary_ofm_bus_waypoints_enabled: bool,
+    ordinary_ofm_bus_interior_stops_enabled: bool,
+    ordinary_ofm_bus_auto_stops_enabled: bool,
+    road_tram_enabled: bool,
+    bus_operation_enabled: bool,
 }
 #[tauri::command]
 fn engine_info(editor: State<'_, Mutex<WorldEditor>>) -> Result<EngineSessionInfo, String> {
     Ok(EngineSessionInfo {
         engine: rosenfu_core::engine_info(),
+        operation_enabled: true,
+        standard_schedule_enabled: cfg!(feature = "standard-periodic-rail"),
+        crossing_planning_enabled: true,
+        fixed_od_enabled: true,
+        rail_journey_replay_enabled: true,
+        fixed_od_scenario_enabled: true,
+        road_transport_enabled: true,
+        ordinary_ofm_bus_enabled: true,
+        ordinary_ofm_bus_fractional_enabled: true,
+        ordinary_ofm_bus_ground_fractional_enabled:
+            rosenfu_storage::GENERAL_FRACTIONAL_BUS_SUPPORTED,
+        ordinary_ofm_bus_ground_fractional_stops_enabled:
+            rosenfu_storage::GENERAL_FRACTIONAL_BUS_STOPS_SUPPORTED,
+        authored_tram_road_guide_enabled: true,
+        authored_street_tram_enabled: true,
+        authored_adjacent_street_tram_enabled: true,
+        authored_chain_street_tram_enabled: road_transport_commands::TRAM_CHAIN_SAVE_ENABLED,
+        ordinary_ofm_bus_rectangle_enabled: true,
+        ordinary_ofm_bus_shared_seam_enabled: true,
+        ordinary_ofm_bus_round_trip_enabled: true,
+        ordinary_ofm_bus_closed_loop_enabled: true,
+        ordinary_ofm_bus_observed_grade_enabled: true,
+        ordinary_ofm_bus_multiple_enabled: true,
+        installed_seam_bus_enabled: rosenfu_core::ofm_evidence::has_installed_seam_catalog(),
+        ordinary_ofm_bus_waypoints_enabled: true,
+        ordinary_ofm_bus_interior_stops_enabled: true,
+        ordinary_ofm_bus_auto_stops_enabled: true,
+        road_tram_enabled: true,
+        bus_operation_enabled: true,
         company_setup_required: editor
             .lock()
             .map_err(|_| "world state unavailable")?
@@ -31,7 +89,8 @@ async fn preview_track_movement_geometry(
     run_world_snapshot(app, move |snapshot| {
         let _timing = construction_timing::Phase::new("preview_track_movement_geometry");
         snapshot
-            .world_for_ui_preview(world)?
+            .replace_retaining_road_evidence(world)
+            .map_err(|error| error.to_string())?
             .track_movement_geometries()
             .map_err(|error| error.to_string())
     })
@@ -45,12 +104,29 @@ async fn preview_track_render_geometry(
     run_world_snapshot(app, move |snapshot| {
         let _timing = construction_timing::Phase::new("preview_track_render_geometry");
         snapshot
-            .world_for_ui_preview(world)?
+            .replace_retaining_road_evidence(world)
+            .map_err(|error| error.to_string())?
             .track_render_geometry()
             .map_err(|error| error.to_string())
     })
     .await
 }
+#[tauri::command]
+async fn retained_road_view(
+    editor: State<'_, Mutex<WorldEditor>>,
+    rect: [u32; 4],
+) -> Result<rosenfu_core::ofm_evidence::RetainedRoadView, String> {
+    let archive = editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .retained_road_archive();
+    tauri::async_runtime::spawn_blocking(move || {
+        rosenfu_core::ofm_evidence::retained_road_view(&archive, rect).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "保存済み道路参考データを表示できません。".to_owned())?
+}
+
 #[tauri::command]
 fn ofm_world_token(editor: State<'_, Mutex<WorldEditor>>) -> Result<String, String> {
     editor
@@ -268,13 +344,16 @@ async fn preview_construction_plan(
     roads: Option<Vec<rosenfu_core::world::RoadSnapshot>>,
     validation_only: Option<bool>,
 ) -> Result<session::ConstructionPreview, String> {
-    let snapshot = editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .clone();
+    let validation_only = validation_only.unwrap_or(false);
+    let snapshot = {
+        let editor = editor.lock().map_err(|_| "world state unavailable")?;
+        // Both modes only read the captured world, water model and company.
+        // Do not clone unrelated interactive history or save bookkeeping.
+        editor.construction_validation_snapshot()
+    };
     // Validation can be expensive: never run it on the UI event-loop thread.
     tauri::async_runtime::spawn_blocking(move || {
-        if validation_only.unwrap_or(false) {
+        if validation_only {
             return snapshot.validate_construction_placement(
                 alignments,
                 stations.unwrap_or_default(),
@@ -332,7 +411,7 @@ async fn road_assessments(
 ) -> Result<Vec<(AlignmentId, rosenfu_core::world::RoadAssessment)>, String> {
     run_world_snapshot(app, move |snapshot| {
         let _compute = construction_timing::Phase::new("road_assessments.compute");
-        Ok(snapshot.road_assessments())
+        Ok(snapshot.road_assessments().into_iter().collect())
     })
     .await
 }
@@ -424,6 +503,20 @@ async fn redo_world_edit(
     run_world_edit(app, move |editor| editor.redo_world_edit(expected_world)).await
 }
 #[tauri::command]
+async fn edit_station_walk_link(
+    app: tauri::AppHandle,
+    from: StationId,
+    to: StationId,
+    seconds: Option<u16>,
+    both_directions: bool,
+) -> Result<WorldDraft, String> {
+    run_world_edit(app, move |editor| {
+        editor.edit_station_walk_link(from, to, seconds, both_directions)
+    })
+    .await
+}
+
+#[tauri::command]
 fn rename_station(
     editor: State<'_, Mutex<WorldEditor>>,
     station_id: StationId,
@@ -437,7 +530,7 @@ fn rename_station(
 // Read-only work uses an owned snapshot; CPU scans never hold the live mutex.
 async fn run_world_snapshot<T: Send + 'static>(
     app: tauri::AppHandle,
-    operation: impl FnOnce(WorldEditor) -> Result<T, String> + Send + 'static,
+    operation: impl FnOnce(rosenfu_core::world::World) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let queue = construction_timing::Phase::new("world_snapshot.queue");
     tauri::async_runtime::spawn_blocking(move || {
@@ -447,7 +540,7 @@ async fn run_world_snapshot<T: Send + 'static>(
             .state::<Mutex<WorldEditor>>()
             .lock()
             .map_err(|_| "world state unavailable")?
-            .clone();
+            .track_render_preview_base();
         drop(waiting);
         operation(snapshot)
     })
@@ -780,6 +873,19 @@ fn list_save_slots(
         .list_save_slots(&save_root(&app)?)
 }
 #[tauri::command]
+fn rename_save_slot(
+    app: tauri::AppHandle,
+    editor: State<'_, Mutex<WorldEditor>>,
+    slot_id: String,
+    expected_name: String,
+    name: String,
+) -> Result<(), String> {
+    editor
+        .lock()
+        .map_err(|_| "world state unavailable")?
+        .rename_save_slot(&save_root(&app)?, &slot_id, &expected_name, &name)
+}
+#[tauri::command]
 fn move_save_slot(
     app: tauri::AppHandle,
     slot_id: String,
@@ -874,12 +980,14 @@ fn save_world(
     app: tauri::AppHandle,
     construction_plans: Option<rosenfu_core::world::ConstructionPlans>,
     view_state: Option<rosenfu_core::world::ViewState>,
+    slot_id: Option<String>,
     editor: State<'_, Mutex<WorldEditor>>,
 ) -> Result<session::ManualSaveResult, String> {
-    editor
-        .lock()
-        .map_err(|_| "world state unavailable")?
-        .save_active_slot(&save_root(&app)?, construction_plans, view_state)
+    let mut editor = editor.lock().map_err(|_| "world state unavailable")?;
+    if let Some(slot_id) = slot_id {
+        editor.require_active_slot(&slot_id)?;
+    }
+    editor.save_active_slot(&save_root(&app)?, construction_plans, view_state)
 }
 fn main() {
     let mut editor = WorldEditor::new();
@@ -897,6 +1005,38 @@ fn main() {
         .manage(std::sync::Arc::new(delivery))
         .manage(Mutex::new(editor))
         .invoke_handler(tauri::generate_handler![
+            operation_commands::operation_snapshot,
+            operation_commands::standard_schedule_status,
+            operation_commands::apply_standard_schedule,
+            operation_commands::restore_simple_rail_schedule,
+            operation_commands::preview_standard_schedule_od,
+            operation_commands::preview_crossing_planning,
+            operation_commands::preview_fixed_od,
+            operation_commands::preview_observed_fixed_od,
+            operation_commands::preview_rail_journey_replay,
+            operation_commands::fixed_od_scenario,
+            operation_commands::set_fixed_od_scenario,
+            operation_commands::configure_bus_operation,
+            operation_commands::configure_operation_service,
+            operation_commands::preview_nominal_trainsets,
+            operation_commands::set_operation_clock,
+            operation_commands::advance_operation,
+            operation_commands::reset_operation,
+            road_transport_commands::replace_road_transport,
+            road_transport_commands::enable_road_qa_fixture,
+            road_transport_commands::install_native_road_pilot,
+            road_transport_commands::list_native_road_regions,
+            road_transport_commands::edit_native_pilot_bus,
+            road_transport_commands::preview_gameplay_ofm_bus,
+            road_transport_commands::preview_authored_tram_road_guide,
+            road_transport_commands::build_authored_street_tram,
+            road_transport_commands::put_gameplay_ofm_bus,
+            road_transport_commands::installed_seam_bus_options,
+            road_transport_commands::put_installed_seam_bus,
+            road_transport_commands::retain_installed_seam_tiles,
+            road_transport_commands::remove_gameplay_ofm_bus,
+            road_transport_commands::find_road_path,
+            road_transport_commands::edit_road_tram,
             engine_info,
             preview_service_path,
             create_service_path,
@@ -907,6 +1047,7 @@ fn main() {
             preview_route_membership,
             world_snapshot,
             ofm_world_token,
+            retained_road_view,
             stage_ofm_construction_plan,
             water_mask_requests,
             acquire_water_zone,
@@ -928,6 +1069,7 @@ fn main() {
             undo_world_edit,
             redo_world_edit,
             rename_station,
+            edit_station_walk_link,
             set_service_color,
             set_service_appearance,
             duplicate_service,
@@ -946,6 +1088,7 @@ fn main() {
             set_service_route_binding,
             list_save_slots,
             move_save_slot,
+            rename_save_slot,
             create_new_world,
             load_save_slot,
             save_world_as,

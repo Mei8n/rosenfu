@@ -890,3 +890,132 @@ fn redevelopment_respects_all_track_type_gradient_limits() {
         assert!(World::new(w.snapshot().clone()).is_ok());
     }
 }
+
+#[test]
+fn three_port_resource_is_the_same_when_stem_id_sorts_last() {
+    use AlignmentEndpoint::{End, Start};
+    let (mut world, owner, a, branch) = pair(1, 1, End, End);
+    let stem = end(
+        world
+            .build_alignment(owner, "stem".into(), vec![point(139.1), point(139.2)])
+            .unwrap(),
+        Start,
+    );
+    let mut draft = world.snapshot().clone();
+    // The stem comes last by ID, independent of connection order.
+    draft.alignments[1].points = vec![
+        GeoPoint {
+            latitude: 35.01,
+            longitude: 139.0,
+        },
+        point(139.099),
+        point(139.1),
+    ];
+    draft.alignment_connections = vec![
+        AlignmentConnection { a: stem, b: branch },
+        AlignmentConnection { a: stem, b: a },
+    ];
+    let w = World::new(draft.clone()).unwrap();
+    let lane = |endpoint| TrackLanePort {
+        endpoint,
+        lane_index: 0,
+    };
+    let expected =
+        [(a, stem), (stem, a), (branch, stem), (stem, branch)].map(|(from, to)| TrackMovement {
+            from: lane(from),
+            to: lane(to),
+            point: Some(TrackPointResource { a, b: branch }),
+        });
+    assert_eq!(w.alignment_lane_movements(), expected);
+    draft.alignment_connections.reverse();
+    draft.alignments.reverse();
+    for link in &mut draft.alignment_connections {
+        std::mem::swap(&mut link.a, &mut link.b);
+    }
+    assert_eq!(
+        World::new(draft).unwrap().alignment_lane_movements(),
+        expected
+    );
+}
+
+#[test]
+#[ignore = "manual native synthetic topology benchmark"]
+fn measure_layered_lane_movements() {
+    use sha2::{Digest, Sha256};
+    use std::{hint::black_box, time::Instant};
+    let (base, _, ..) = pair(1, 2, AlignmentEndpoint::End, AlignmentEndpoint::Start);
+    let original = base.snapshot();
+    for components in [50, 500, 2_500] {
+        let mut draft = original.clone();
+        draft.alignments.clear();
+        let owner = draft.companies[0].id;
+        for n in 0..components {
+            let y = 32.2 + (n / 100) as f64 * 0.015;
+            let x = 129.1 + (n % 100) as f64 * 0.16;
+            let join = GeoPoint {
+                latitude: y,
+                longitude: x,
+            };
+            let mut make = |east: bool, offset: f64, width| {
+                let id = AlignmentId(draft.next_id);
+                draft.next_id += 1;
+                let inside = GeoPoint {
+                    latitude: y,
+                    longitude: x + if east { 0.001 } else { -0.001 },
+                };
+                let outside = GeoPoint {
+                    latitude: y + offset,
+                    longitude: x + if east { 0.01 } else { -0.01 },
+                };
+                draft.alignments.push(Alignment {
+                    id,
+                    owner,
+                    name: format!("fixture {n}"),
+                    points: vec![join, inside, outside],
+                    anchor_indices: None,
+                    infrastructure: vec![SectionInfrastructure {
+                        track_count: width,
+                        level: InfrastructureLevel::Ground,
+                    }],
+                    vertical_profile: None,
+                    section_profiles: vec![],
+                    track_type: TrackType::Normal,
+                    design_speed_kmh: None,
+                });
+                end(id, AlignmentEndpoint::Start)
+            };
+            let a = make(false, 0., 1);
+            let b = make(true, 0., 1);
+            let c = (n % 5 == 0).then(|| make(true, 0.003, 2));
+            draft
+                .alignment_connections
+                .push(AlignmentConnection { a: b, b: a });
+            if let Some(c) = c {
+                draft
+                    .alignment_connections
+                    .push(AlignmentConnection { a: c, b: a });
+            }
+        }
+        draft.alignments.reverse();
+        draft.alignment_connections.reverse();
+        let world = World::new(draft).unwrap();
+        let canonical = world.alignment_lane_movements();
+        assert_eq!(canonical.len(), components * 2 + (components / 5) * 4);
+        let expected = Sha256::digest(serde_json::to_vec(&canonical).unwrap());
+        let mut durations = [std::time::Duration::ZERO; 7];
+        for duration in &mut durations {
+            let start = Instant::now();
+            let value = black_box(&world).alignment_lane_movements();
+            *duration = start.elapsed();
+            assert_eq!(value, canonical);
+        }
+        durations.sort_unstable();
+        eprintln!(
+            "alignments={} links={} movements={} median={:?} sha={expected:x}",
+            world.snapshot().alignments.len(),
+            world.snapshot().alignment_connections.len(),
+            canonical.len(),
+            durations[3]
+        );
+    }
+}

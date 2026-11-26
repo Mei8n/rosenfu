@@ -1,6 +1,6 @@
 import { positionTile, MAX_TILES } from "./map";
 import type { Camera } from "./map";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 export type BackgroundTile = { id: string; url: string; x: number; y: number; width: number; height: number };
 export type TileStatus = { loaded: number; failed: number; total: number };
@@ -13,16 +13,17 @@ export const GsiBackground=memo(function GsiBackground({ tiles, camera, width, h
   // At most one bounded layer of metadata, no prefetch or persistent/offline cache.
   const loadedTiles=useRef(new Map<string,BackgroundTile>());
   const currentTiles=useRef(tiles);currentTiles.current=tiles;
-  const currentTileIds = useRef(new Set<string>());
-  currentTileIds.current = new Set(tiles.map((tile) => tile.id));
+  // The request set changes only at the request cadence, not every camera frame.
+  const visibleIds=useMemo(()=>new Set(tiles.map(tile=>tile.id)),[tiles]);
+  const currentTileIds=useRef(visibleIds);currentTileIds.current=visibleIds;
+  const positioned=useMemo(()=>camera?tiles.map(tile=>positionTile(tile,camera)):tiles,[tiles,camera]);
   const [results, setResults] = useState<Record<string, "loaded" | "failed">>({});
   useEffect(() => {
-    const visible = new Set(tiles.map((tile) => tile.id));
     setResults((previous) => {
-      const retained = Object.entries(previous).filter(([id]) => visible.has(id));
+      const retained = Object.entries(previous).filter(([id]) => visibleIds.has(id));
       return retained.length === Object.keys(previous).length ? previous : Object.fromEntries(retained);
     });
-  }, [tiles]);
+  }, [visibleIds]);
   const reported=useRef<TileStatus|null>(null);
   useEffect(() => {
     const next={
@@ -33,12 +34,12 @@ export const GsiBackground=memo(function GsiBackground({ tiles, camera, width, h
     const previous=reported.current;
     if(!previous||previous.loaded!==next.loaded||previous.failed!==next.failed||previous.total!==next.total){reported.current=next;onStatus(next);}
   }, [results, tiles, onStatus]);
-  const settled=tiles.every(tile=>results[tile.id]!==undefined);
+  const settled=useMemo(()=>tiles.every(tile=>results[tile.id]!==undefined),[tiles,results]);
   useEffect(()=>{
     if(settled)for(const id of loadedTiles.current.keys())if(!currentTileIds.current.has(id))loadedTiles.current.delete(id);
   },[settled,tiles]);
   const fallback=!settled && camera ? [...loadedTiles.current.values()].filter(tile=>!currentTileIds.current.has(tile.id)).map(tile=>positionTile(tile,camera)) : [];
-  const rendered=[...fallback,...tiles];
+  const rendered=[...fallback,...positioned];
   function finish(id: string, status: "loaded" | "failed") {
     if (!currentTileIds.current.has(id)) return;
     if(status==="loaded"){

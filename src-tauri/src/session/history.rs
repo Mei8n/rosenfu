@@ -1,12 +1,20 @@
 //! Session-only, bounded chronological World transactions. Never serialized.
 use super::*;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 #[derive(Clone, Default)]
 pub(super) struct EditHistory {
-    undo: Vec<Arc<(WorldDraft, WorldDraft)>>,
-    redo: Vec<Arc<(WorldDraft, WorldDraft)>>,
+    undo: Vec<Arc<EditEntry>>,
+    redo: Vec<Arc<EditEntry>>,
     revision: u64,
+}
+struct EditEntry {
+    before: Arc<WorldDraft>,
+    after: Arc<WorldDraft>,
+    // Identity of the exact validated source, not its contents or edit revision.
+    // This does not keep the live camera or historical unsaved plans alive.
+    after_source: Weak<WorldDraft>,
+    guarded_service_path: Option<ServiceId>,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +27,12 @@ fn editable(mut world: WorldDraft) -> WorldDraft {
     world.construction_plans = None;
     world.view_state = None;
     world
+}
+fn editable_snapshot(draft: Arc<WorldDraft>) -> Arc<WorldDraft> {
+    if draft.construction_plans.is_none() && draft.view_state.is_none() {
+        return draft;
+    }
+    Arc::new(editable(draft.as_ref().clone()))
 }
 impl WorldEditor {
     pub fn world_edit_history(&self) -> WorldEditHistory {
@@ -34,16 +48,101 @@ impl WorldEditor {
         self.edit_history.revision = self.edit_history.revision.saturating_add(1);
     }
     /// One outer transaction supersedes any intermediate candidate transactions.
-    pub(super) fn commit_edit(&mut self, mut candidate: Self, final_edit: bool) {
-        let before = editable(self.snapshot());
-        let after = editable(candidate.snapshot());
+    pub(super) fn commit_edit(
+        &mut self,
+        mut candidate: Self,
+        final_edit: bool,
+    ) -> Result<(), String> {
+        candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
+        self.publish_reconciled_edit(candidate, final_edit)
+    }
+
+    /// Confirmed construction counts the actual final archive exactly once,
+    /// including the reconciled runtime/OD and Standard's source contract.
+    /// These guards run before clearing history, changing a revision or
+    /// publishing the draft. Standalone editors keep their existing checks.
+    pub(super) fn commit_construction_edit(&mut self, mut candidate: Self) -> Result<(), String> {
+        candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
+        self.check_standard_source_retained(&candidate.world)?;
+        rosenfu_storage::ensure_world_saveable(&candidate.world).map_err(|e| e.to_string())?;
+        self.publish_edit_history(candidate, true, None);
+        Ok(())
+    }
+
+    // Standard archives require a still-valid source and runtime. Validate the
+    // reconciled candidate, not the earlier input draft, before touching the
+    // live world or its history. Legacy edits retain their existing checks.
+    fn ensure_retained_standard(&self, candidate: &World) -> Result<(), String> {
+        self.check_standard_source_retained(candidate)?;
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.world.has_standard_timetable() {
+            rosenfu_storage::ensure_world_saveable(candidate).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn check_standard_source_retained(&self, candidate: &World) -> Result<(), String> {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.world.has_standard_timetable() {
+            if !candidate.has_standard_timetable()
+                || candidate.validate_retained_standard_timetable().is_err()
+            {
+                return Err("時間帯ダイヤの運行を維持できないため、変更していません。".into());
+            }
+        }
+        #[cfg(not(feature = "standard-periodic-rail"))]
+        let _ = candidate;
+        Ok(())
+    }
+
+    pub(super) fn publish_reconciled_edit(
+        &mut self,
+        candidate: Self,
+        final_edit: bool,
+    ) -> Result<(), String> {
+        self.publish_reconciled_edit_with_service_path(candidate, final_edit, None)
+    }
+    pub(super) fn publish_reconciled_edit_with_service_path(
+        &mut self,
+        candidate: Self,
+        final_edit: bool,
+        guarded_service_path: Option<ServiceId>,
+    ) -> Result<(), String> {
+        self.ensure_retained_standard(&candidate.world)?;
+        self.publish_edit_history(candidate, final_edit, guarded_service_path);
+        Ok(())
+    }
+
+    fn publish_edit_history(
+        &mut self,
+        mut candidate: Self,
+        final_edit: bool,
+        guarded_service_path: Option<ServiceId>,
+    ) {
+        let before_source = self.world.shared_snapshot();
+        let before = self
+            .edit_history
+            .undo
+            .last()
+            .filter(|e| e.after_source.ptr_eq(&Arc::downgrade(&before_source)))
+            .map(|e| Arc::clone(&e.after))
+            .unwrap_or_else(|| editable_snapshot(before_source));
+        let after_source = candidate.world.shared_snapshot();
+        let after = editable_snapshot(Arc::clone(&after_source));
         candidate.edit_history = self.edit_history.clone();
         if before != after {
             if final_edit {
                 candidate.clear_edit_history();
                 candidate.deleted_alignment = None;
             } else {
-                candidate.edit_history.undo.push(Arc::new((before, after)));
+                candidate.edit_history.undo.push(Arc::new(EditEntry {
+                    before,
+                    after,
+                    after_source: Arc::downgrade(&after_source),
+                    guarded_service_path,
+                }));
                 if candidate.edit_history.undo.len() > 50 {
                     candidate.edit_history.undo.remove(0);
                 }
@@ -66,12 +165,16 @@ impl WorldEditor {
         mut expected: WorldDraft,
         redo: bool,
     ) -> Result<WorldDraft, String> {
-        let current = editable(self.snapshot());
+        let current = editable_snapshot(self.world.shared_snapshot());
         // IPC omits the backend-only immutable evidence store. Reattach only
         // the current store for comparison, never change the claimed manifest.
         // The historical target below retains its own evidence, not this store.
         expected.runtime_road_evidence = current.runtime_road_evidence.clone();
-        if current != editable(expected.clone()) {
+        // The IPC draft is already owned; move the UI fields aside instead of
+        // cloning every alignment just to exclude them from the CAS check.
+        let construction_plans = expected.construction_plans.take();
+        let view_state = expected.view_state.take();
+        if current.as_ref() != &expected {
             return Err("ワールドが変更されています。最新の状態を確認してください。".into());
         }
         let entry = if redo {
@@ -82,21 +185,32 @@ impl WorldEditor {
         .ok_or("元に戻せる／やり直せる操作がありません。")?
         .clone();
         let (target, baseline) = if redo {
-            (&entry.1, &entry.0)
+            (&entry.after, &entry.before)
         } else {
-            (&entry.0, &entry.1)
+            (&entry.before, &entry.after)
         };
-        if &current != baseline {
+        if current.as_ref() != baseline.as_ref() {
             return Err("履歴の対象外でワールドが変更されたため復元できません。".into());
         }
-        let mut draft = target.clone();
+        let mut draft = target.as_ref().clone();
         // UI owns live plans and viewport. Validate them against restored IDs,
         // never overwrite them with an older saved or historical snapshot.
-        draft.construction_plans = expected.construction_plans;
-        draft.view_state = expected.view_state;
-        let restored = World::new(draft).map_err(|e| e.to_string())?;
+        draft.construction_plans = construction_plans;
+        draft.view_state = view_state;
+        let mut restored = World::new(draft).map_err(|e| e.to_string())?;
+        let rebuilt_operation = if let Some(service_id) = entry.guarded_service_path {
+            self.reconcile_service_path_edit(&mut restored, service_id)?
+        } else {
+            restored.retain_operation_from(&self.world);
+            restored.retain_fixed_od_scenario_from(&self.world);
+            false
+        };
+        self.check_standard_source_retained(&restored)?;
         rosenfu_storage::ensure_world_saveable(&restored).map_err(|e| e.to_string())?;
         self.world = restored;
+        if rebuilt_operation {
+            self.operation_tick = None;
+        }
         self.deleted_alignment = None;
         if redo {
             self.edit_history.redo.pop();
@@ -189,8 +303,21 @@ mod tests {
         assert_eq!(e.snapshot(), restored);
         assert_eq!(e.world_edit_history().revision, revision);
         assert_eq!(e.world_edit_history().redo_depth, 1);
-        e.redo_world_edit(restored).unwrap();
-        assert_eq!(e.snapshot().companies[0].name, "A");
+        let mut stale = restored.clone();
+        stale.companies[0].name = "stale claim".into();
+        assert_eq!(
+            e.redo_world_edit(stale).unwrap_err(),
+            "ワールドが変更されています。最新の状態を確認してください。"
+        );
+        assert_eq!(e.snapshot(), restored);
+        assert_eq!(e.world_edit_history().revision, revision);
+        assert_eq!(e.world_edit_history().redo_depth, 1);
+        let mut expected = restored;
+        expected.view_state.as_mut().unwrap().zoom = 14.;
+        let redone = e.redo_world_edit(expected.clone()).unwrap();
+        assert_eq!(redone.companies[0].name, "A");
+        assert_eq!(redone.construction_plans, expected.construction_plans);
+        assert_eq!(redone.view_state, expected.view_state);
     }
     #[test]
     fn world_history_chronology_identity_and_redo_invalidation() {
@@ -210,6 +337,58 @@ mod tests {
         e.rename_station(id, "C".into()).unwrap();
         assert_eq!(e.world_edit_history().redo_depth, 0);
     }
+    #[test]
+    fn consecutive_history_retains_the_exact_immutable_world() {
+        let mut editor = WorldEditor::new();
+        let original = editor.world.shared_snapshot();
+        editor.rename_company("A".into()).unwrap();
+        let first_edit = editor.world.shared_snapshot();
+        editor.rename_company("B".into()).unwrap();
+        let first = &editor.edit_history.undo[0];
+        let second = &editor.edit_history.undo[1];
+        assert!(Arc::ptr_eq(&first.before, &original));
+        assert!(Arc::ptr_eq(&first.after, &first_edit));
+        assert!(Arc::ptr_eq(&second.before, &first_edit));
+        assert_eq!(first_edit.companies[0].name, "A");
+        assert_eq!(editor.snapshot().companies[0].name, "B");
+        assert_eq!(
+            editor.undo_world_edit(editor.snapshot()).unwrap(),
+            *first_edit
+        );
+        assert_eq!(
+            editor.redo_world_edit(editor.snapshot()).unwrap().companies[0].name,
+            "B"
+        );
+    }
+
+    #[test]
+    fn history_with_ui_metadata_shares_only_the_exact_source_and_restores_live_view() {
+        let mut editor = WorldEditor::new();
+        let view = rosenfu_core::world::ViewState {
+            latitude: 35.68,
+            longitude: 139.7,
+            zoom: 13.0,
+        };
+        let mut draft = editor.snapshot();
+        draft.view_state = Some(view);
+        editor.world = World::new(draft).unwrap();
+        editor.rename_company("A".into()).unwrap();
+        let a = Arc::clone(&editor.edit_history.undo[0].after);
+        editor.rename_company("B".into()).unwrap();
+        assert!(Arc::ptr_eq(&a, &editor.edit_history.undo[1].before));
+        assert_eq!(a.view_state, None);
+        let mut changed_view = editor.snapshot();
+        changed_view.view_state.as_mut().unwrap().zoom += 1.0;
+        editor.world = World::new(changed_view).unwrap();
+        let b = Arc::clone(&editor.edit_history.undo[1].after);
+        editor.rename_company("C".into()).unwrap();
+        assert!(!Arc::ptr_eq(&b, &editor.edit_history.undo[2].before));
+        assert_eq!(b, editor.edit_history.undo[2].before);
+        let restored = editor.undo_world_edit(editor.snapshot()).unwrap();
+        assert_eq!(restored.companies[0].name, "B");
+        assert_eq!(restored.view_state.unwrap().zoom, 14.0);
+    }
+
     #[test]
     fn world_history_failure_noop_and_final_boundaries() {
         let mut e = WorldEditor::new();

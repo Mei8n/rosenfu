@@ -11,15 +11,15 @@ vi.mock('@tauri-apps/api/core',()=>({invoke:vi.fn(),isTauri:()=>true}));
 vi.mock('./useAutomaticRoad',()=>({useAutomaticRoad:()=>({status:'unavailable',ensureCurrent:async()=>({status:'unavailable',reason:'offline fixture'})})}));
 const world={next_id:'3',players:[{id:'1',name:'Player'}],companies:[{id:'2',owner:'1',name:'Railway'}],stations:[],alignments:[],routes:[],services:[],station_placements:[]};
 afterEach(()=>{cleanup();vi.resetAllMocks();vi.unstubAllGlobals();localStorage.clear();});
-async function start(preview:()=>Promise<unknown>){
+async function start(preview:(args:unknown)=>Promise<unknown>){
  const saved={...world,construction_plans:{...emptyConstructionPlans(),draftPoints:[{latitude:35.68,longitude:139.73},{latitude:35.68,longitude:139.75}]}};
  vi.stubGlobal('PointerEvent',MouseEvent);
- vi.mocked(invoke).mockImplementation(async command=>{
+ vi.mocked(invoke).mockImplementation(async (command,args)=>{
   if(command==='engine_info')return {name:'Rosenfu',version:'refusal-window-test'};
   if(command==='world_snapshot')return saved;
   if(command==='list_save_slots')return {active_slot_id:'test',slots:[]};
   if(command==='autosave_status')return {available:false};
-  if(command==='preview_construction_plan')return preview().then(()=>({validationError:null}),error=>({validationError:String(error)}));
+  if(command==='preview_construction_plan')return preview(args).then(()=>({validationError:null}),error=>({validationError:String(error)}));
   if(command==='save_world')return {saved:true};
   throw Error('unexpected '+command);
  });
@@ -50,14 +50,22 @@ test('finished plan hover displays current backend refusal without an extra pane
  fireEvent.pointerLeave(hit);expect(document.querySelectorAll('.construction-tooltip')).toHaveLength(0);
 });
 test('old cursor refusal cannot overwrite a newer accepted hovered plan',async()=>{
- let rejectOld:(reason:unknown)=>void=()=>{};let calls=0;
- const map=await start(()=>{calls++;return calls===1?new Promise((_,reject)=>{rejectOld=reject;}):Promise.resolve(world);});
+ let rejectCursor:(reason:unknown)=>void=()=>{};
+ const requests:unknown[]=[];
+ const map=await start(args=>{
+  requests.push(args);
+  // Let the restored plan settle before delaying the distinct cursor geometry.
+  return requests.length===2?new Promise((_,reject)=>{rejectCursor=reject;}):Promise.resolve(world);
+ });
+ await waitFor(()=>expect(requests).toHaveLength(1));
  await settledPointerMove(map,{clientX:360,clientY:130});
- await waitFor(()=>expect(calls).toBe(1));
+ await waitFor(()=>expect(requests).toHaveLength(2));
+ expect(requests[1]).not.toEqual(requests[0]);
  fireEvent.keyDown(document.body,{key:'Escape'});
  await settledPointerEnter(map.querySelector('.plan-hover-hit')!,{clientX:250,clientY:130});
- await act(async()=>rejectOld('古い水域拒否'));
- await waitFor(()=>expect(calls).toBe(2));await act(async()=>{});
+ await act(async()=>rejectCursor('古い水域拒否'));
+ await waitFor(()=>expect(requests).toHaveLength(3));
+ expect(requests[2]).toEqual(requests[0]);
  expect(document.querySelector('.plan-hover-tooltip')?.textContent).not.toContain('古い水域拒否');
  expect(document.querySelectorAll('.construction-tooltip')).toHaveLength(1);
 });

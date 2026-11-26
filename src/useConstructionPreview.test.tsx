@@ -84,6 +84,47 @@ test('disabling while native runs drops the latest queued candidate',async()=>{
  expect(invoke).toHaveBeenCalledTimes(1);expect(result.current).toBeNull();
 });
 
+test('returning to the exact in-flight shape before it settles needs only one native validation',async()=>{
+ let finish!:(value:unknown)=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>finish=resolve)).mockResolvedValue({repeat:true});
+ const world={},make=(last:number)=>({alignments:[{points:[0,last]}],stations:[],roads:[{revision:'road-1'}]});
+ const {rerender,result}=renderHook(({request})=>useConstructionPreview(world,request,4),{initialProps:{request:make(1)}});
+ await waitFor(()=>expect(finish).toBeTypeOf('function'));
+ rerender({request:make(2)});rerender({request:make(1)});
+ expect(result.current).toBeNull();
+ await act(async()=>finish({exact:true}));
+ expect(invoke).toHaveBeenCalledExactlyOnceWith('preview_construction_plan',make(1));
+ expect(result.current?.value).toEqual({exact:true});
+});
+
+test.each(['disabled','world','water'])('same shape is validated fresh after a %s scope transition',async(kind)=>{
+ let finish!:(value:unknown)=>void;
+ vi.mocked(invoke).mockImplementationOnce(()=>new Promise(resolve=>finish=resolve)).mockResolvedValue({fresh:true});
+ const world={},request={alignments:[{name:'A'}],stations:[]};
+ type Props={currentWorld:object;candidate:typeof request|null;revision:number};
+ const original:Props={currentWorld:world,candidate:request,revision:4};
+ const {rerender,result}=renderHook(({currentWorld,candidate,revision}:Props)=>useConstructionPreview(currentWorld,candidate,revision),{initialProps:original});
+ await waitFor(()=>expect(finish).toBeTypeOf('function'));
+ rerender(kind==='disabled'?{...original,candidate:null}:kind==='world'?{...original,currentWorld:{}}:{...original,revision:5});
+ rerender(original);
+ await act(async()=>finish({old:true}));
+ expect(invoke).toHaveBeenCalledTimes(2);
+ expect(result.current?.value).toEqual({fresh:true});
+});
+
+test('a settled result is not redisplayed when the same input is restored after disabling',async()=>{
+ let finish!:(value:unknown)=>void;
+ vi.mocked(invoke).mockResolvedValueOnce({old:true}).mockImplementationOnce(()=>new Promise(resolve=>finish=resolve));
+ const world={},request={alignments:[{name:'A'}],stations:[]};
+ const {rerender,result}=renderHook(({enabled})=>useConstructionPreview(world,enabled?request:null),{initialProps:{enabled:true}});
+ await waitFor(()=>expect(result.current?.value).toEqual({old:true}));
+ rerender({enabled:false});rerender({enabled:true});
+ expect(result.current).toBeNull();
+ expect(invoke).toHaveBeenCalledTimes(2);
+ await act(async()=>finish({fresh:true}));
+ expect(result.current?.value).toEqual({fresh:true});
+});
+
 test('unrelated rerenders with the same input arrays neither serialize nor restart validation',async()=>{
  const serialize=vi.fn(()=>[]);
  const alignments:unknown[]=[];

@@ -12,5 +12,6 @@ test.each(['road_assessments','preview_track_render_geometry','preview_track_mov
 test('snapshot worker releases the live editor before road and rail scans',()=>{
  const worker=source.split("async fn run_world_snapshot<T: Send + 'static>(")[1].split('// Keep the atomic editor transaction')[0];
  expect(worker.indexOf('spawn_blocking(move ||')).toBeLessThan(worker.indexOf('.lock()'));
- expect(worker.indexOf('.clone();')).toBeLessThan(worker.indexOf('operation(snapshot)'));
+ expect(worker).toContain('.track_render_preview_base();');
+ expect(worker.indexOf('.track_render_preview_base();')).toBeLessThan(worker.indexOf('operation(snapshot)'));
 });

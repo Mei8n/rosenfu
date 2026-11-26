@@ -4,9 +4,19 @@ use super::*;
 pub struct SaveSlotList {
     pub active_slot_id: Option<String>,
     pub slots: Vec<rosenfu_storage::SaveSlot>,
-    pub deleted_slots: Vec<rosenfu_storage::SaveSlot>,
+    pub deleted_slots: Vec<rosenfu_storage::ArchivedSaveSlot>,
 }
 impl WorldEditor {
+    pub fn rename_save_slot(
+        &self,
+        root: &Path,
+        id: &str,
+        expected_name: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        rosenfu_storage::rename_save_slot(root, id, expected_name, name).map_err(|e| e.to_string())
+    }
+
     pub fn list_save_slots(&self, root: &Path) -> Result<SaveSlotList, String> {
         Ok(SaveSlotList {
             active_slot_id: self.active_slot_id.clone(),
@@ -20,6 +30,8 @@ impl WorldEditor {
         // file identity after a successful archive, so autosave cannot recreate it.
         rosenfu_storage::move_save_slot(root, id, restore).map_err(|e| e.to_string())?;
         if !restore && self.active_slot_id.as_deref() == Some(id) {
+            self.fixed_od_token = super::operation::next_session_token();
+            self.operation_edit_revision = super::operation::next_session_token();
             self.active_slot_id = None;
             self.loaded_path = None;
             self.manual_version = None;
@@ -92,20 +104,17 @@ impl WorldEditor {
     }
     pub fn load_save_slot(&mut self, root: &Path, id: String) -> Result<WorldDraft, String> {
         let path = rosenfu_storage::save_slot_path(root, &id).map_err(|e| e.to_string())?;
-        let mut candidate = self.clone();
-        candidate.load(&path)?;
-        candidate.active_slot_id = Some(id);
-        *self = candidate;
+        let (world, version, company) = Self::read_saved_world(&path)?;
+        self.install_saved_world(world, company, &path, version);
+        self.active_slot_id = Some(id);
         Ok(self.snapshot())
     }
     pub fn load_slot_autosave(&mut self, root: &Path) -> Result<WorldDraft, String> {
         let id = self.active_slot_id.clone();
         let manual = self.active_save_path(root)?;
         let automatic = self.active_autosave_path(root)?;
-        let mut candidate = self.clone();
-        candidate.load_autosave(&automatic, &manual)?;
-        candidate.active_slot_id = id;
-        *self = candidate;
+        self.restore_saved_autosave(&automatic, &manual)?;
+        self.active_slot_id = id;
         Ok(self.snapshot())
     }
     pub fn save_world_as_slot(
@@ -115,6 +124,7 @@ impl WorldEditor {
         plans: Option<rosenfu_core::world::ConstructionPlans>,
         view: Option<rosenfu_core::world::ViewState>,
     ) -> Result<ManualSaveResult, String> {
+        self.advance_operation()?;
         let mut candidate = self.clone();
         let mut draft = candidate.snapshot();
         if let Some(plans) = plans {
@@ -124,12 +134,16 @@ impl WorldEditor {
             draft.view_state = Some(view);
         }
         candidate.world = World::new(draft).map_err(|e| e.to_string())?;
+        candidate.world.retain_operation_from(&self.world);
+        candidate.world.retain_fixed_od_scenario_from(&self.world);
         let (slot, version) = rosenfu_storage::create_save_slot(root, &name, &candidate.world)
             .map_err(|e| e.to_string())?;
         // Creation returned a validated, unique directory; derive without another fallible IO
         // step so a successful file publication cannot leave session identity behind.
         candidate.loaded_path = Some(root.join("saves").join(&slot.id).join("world.rosenfu.json"));
         candidate.active_slot_id = Some(slot.id);
+        // Saving this live world to a new destination does not replace its
+        // contents or invalidate an already mounted OD editor.
         candidate.manual_version = Some(version);
         candidate.manual_repair_allowed = false;
         #[cfg(test)]
@@ -178,6 +192,33 @@ mod tests {
         std::fs::read(path).unwrap()
     }
     #[test]
+    fn renaming_active_slot_keeps_unsaved_world_and_save_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let mut editor = WorldEditor::new();
+        editor
+            .save_world_as_slot(root.path(), "Before".into(), None, None)
+            .unwrap();
+        let id = editor.active_slot_id.clone().unwrap();
+        let path = editor.active_save_path(root.path()).unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+        editor.rename_company("unsaved company".into()).unwrap();
+        let before = editor.snapshot();
+        editor
+            .rename_save_slot(root.path(), &id, "Before", "After")
+            .unwrap();
+        assert_eq!(editor.snapshot(), before);
+        assert_eq!(editor.active_save_path(root.path()).unwrap(), path);
+        assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+        editor.save_active_slot(root.path(), None, None).unwrap();
+        assert_eq!(
+            editor.list_save_slots(root.path()).unwrap().slots[0].name,
+            "After"
+        );
+        let mut restored = WorldEditor::new();
+        assert_eq!(restored.load_save_slot(root.path(), id).unwrap(), before);
+    }
+
+    #[test]
     fn plan_only_autosave_survives_restart_without_touching_manual_save() {
         let root = tempfile::tempdir().unwrap();
         let mut editor = WorldEditor::new();
@@ -210,6 +251,57 @@ mod tests {
         assert!(restored.alignments.is_empty());
         assert_eq!(restarted.active_slot_id.as_deref(), Some(id.as_str()));
         assert_eq!(bytes(&manual), before);
+    }
+    #[test]
+    fn autosave_conflict_revokes_slot_authorization_until_rechecked() {
+        use rosenfu_core::world::ViewState;
+
+        let root = tempfile::tempdir().unwrap();
+        let mut editor = WorldEditor::new();
+        editor.save_active_slot(root.path(), None, None).unwrap();
+        let id = editor.active_slot_id.clone().unwrap();
+        let manual = editor.active_save_path(root.path()).unwrap();
+        let auto = editor.active_autosave_path(root.path()).unwrap();
+        let original_manual = bytes(&manual);
+        assert!(!editor.slot_autosave_status(root.path()).unwrap());
+
+        // Another normal editor publishes its recovery file after our check.
+        let mut other = WorldEditor::new();
+        other.load_save_slot(root.path(), id.clone()).unwrap();
+        other
+            .rename_company("recovery from second editor".into())
+            .unwrap();
+        other
+            .autosave_active_slot(root.path(), &id, None, None)
+            .unwrap();
+        let external = bytes(&auto);
+        let before = editor.snapshot();
+        let view = ViewState {
+            latitude: 35.0,
+            longitude: 139.0,
+            zoom: 14.0,
+        };
+        assert!(editor
+            .autosave_active_slot(root.path(), &id, None, Some(view))
+            .is_err());
+        assert_eq!(bytes(&auto), external);
+        assert_eq!(editor.snapshot(), before);
+
+        // The path returns to its old Missing baseline, but the failed
+        // authorization must not silently become valid again.
+        std::fs::remove_file(&auto).unwrap();
+        assert!(editor
+            .autosave_active_slot(root.path(), &id, None, Some(view))
+            .is_err());
+        assert!(!auto.exists());
+        assert_eq!(editor.snapshot(), before);
+
+        assert!(!editor.slot_autosave_status(root.path()).unwrap());
+        editor
+            .autosave_active_slot(root.path(), &id, None, Some(view))
+            .unwrap();
+        assert_eq!(editor.snapshot().view_state, Some(view));
+        assert_eq!(bytes(&manual), original_manual);
     }
     #[test]
     fn deleting_active_slot_preserves_edits_and_stops_autosave() {

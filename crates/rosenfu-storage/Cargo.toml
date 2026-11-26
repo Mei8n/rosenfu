@@ -10,3 +10,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 tempfile = "3"
 sha2 = "0.10"
 base64 = "=0.23.1"
+
+[features]
+periodic-world-qa = ["rosenfu-core/periodic-world-qa"]
+standard-periodic-rail = ["rosenfu-core/standard-periodic-rail"]

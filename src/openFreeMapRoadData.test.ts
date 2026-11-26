@@ -1,7 +1,13 @@
 import {describe,it,expect,vi} from 'vitest';
 import {PbfWriter} from 'pbf';
+import {snapOrdinaryBusVertex} from './ordinaryBusDraft';
 import {decodeOpenFreeMapRoadTile,parseRoadTileTemplate,roadTileBounds,createOpenFreeMapRoadRepository,roadFragmentIntersects,OFM_EVIDENCE_RULE} from './openFreeMapRoadData';
 function fixture(cls='service',brunnel?:string,subclass?:string,extra:Record<string,string|number|boolean>={}){const attrs={class:cls,...(brunnel?{brunnel}:{}),...(subclass?{subclass}:{}),...extra};const p=new PbfWriter();p.writeMessage(3,(_,l)=>{l.writeStringField(1,'transportation');l.writeVarintField(15,2);l.writeVarintField(5,4096);for(const [k,v]of Object.entries(attrs)){l.writeStringField(3,k);l.writeMessage(4,(_,w)=>typeof v==='number'?w.writeDoubleField(3,v):typeof v==='boolean'?w.writeBooleanField(7,v):w.writeStringField(1,v),null);}l.writeMessage(2,(_,f)=>{f.writeVarintField(1,99);f.writePackedVarint(2,Object.keys(attrs).flatMap((_,i)=>[i,i]));f.writeVarintField(3,2);f.writePackedVarint(4,[9,200,200,10,200,0]);},null);},null);return p.finish();}
+function mixedFordTile(){const p=new PbfWriter();p.writeMessage(3,(_,l)=>{l.writeStringField(1,'transportation');l.writeVarintField(15,2);l.writeVarintField(5,4096);
+  for(const k of ['class','brunnel'])l.writeStringField(3,k);
+  for(const v of ['minor','ford'])l.writeMessage(4,(_,p)=>p.writeStringField(1,v),null);
+  for(const [attrs,x] of [[[0,0,1,1],200],[[0,0],1600]] as const)l.writeMessage(2,(_,f)=>{f.writePackedVarint(2,[...attrs]);f.writeVarintField(3,2);f.writePackedVarint(4,[9,x,200,10,200,0]);},null);
+ },null);return p.finish();}
 function denseFixture(east:boolean){const p=new PbfWriter();p.writeMessage(3,(_,l)=>{l.writeStringField(1,'transportation');l.writeVarintField(15,2);l.writeVarintField(5,4096);l.writeStringField(3,'class');l.writeMessage(4,(_,v)=>v.writeStringField(1,'service'),null);for(let i=0;i<6000;i++)l.writeMessage(2,(_,f)=>{f.writePackedVarint(2,[0,0]);f.writeVarintField(3,2);f.writePackedVarint(4,i===5999?[9,(east?0:4090)*2,4000,10,40,0]:[9,200,200,10,200,0]);},null);},null);return p.finish();}
 
 const decode=(b:Uint8Array)=>decodeOpenFreeMapRoadTile(b,14552,6451,'20261101_080013_pt',1);
@@ -15,7 +21,27 @@ describe('OpenFreeMap road adapter',()=>{
  it('rejects nonfinite structures before exposing raw tile lines',async()=>{for(const attrs of ([{layer:'abc'},{layer:Infinity},{oneway:NaN},{oneway:Infinity}] as Record<string,string|number>[]))await expect(decode(fixture('service',undefined,undefined,attrs))).rejects.toThrow();});
  it('preserves raw one-way direction without inventing missing tags',async()=>{const s=await decode(fixture('service',undefined,undefined,{oneway:-1}));expect(s.tileLines[0].oneway).toBe(-1);expect(s.roads[0]).toHaveProperty('classification.oneway','-1');const unknown=await decode(fixture('service',undefined,undefined,{oneway:'reversible'}));expect(unknown.tileLines[0].oneway).toBe('reversible');});
  it('selects crossing and boundary-touch fragments without changing shape',()=>{const b={west:0,east:1,south:0,north:1};const p=(x:number,y:number)=>({longitude:x,latitude:y});expect(roadFragmentIntersects([p(-1,.5),p(2,.5)],b)).toBe(true);expect(roadFragmentIntersects([p(-1,0),p(2,0)],b)).toBe(true);expect(roadFragmentIntersects([p(-1,-.1),p(2,-.1)],b)).toBe(false);expect(roadFragmentIntersects([p(2,2),p(3,3)],b)).toBe(false);});
- it('rejects unknown brunnel instead of persisting ground-like null flags',async()=>{for(const brunnel of ['ford','unknown','yes','no'])await expect(decode(fixture('service',brunnel))).rejects.toThrow('地上とは判定できません');});
+ it('keeps a ford observable without losing ordinary roads in its tile or offering the ford as a bus anchor',async()=>{
+  const raw=mixedFordTile(),revision='20261101_080013_pt';
+  const fetcher=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?
+   JSON.stringify({maxzoom:14,tiles:[`https://tiles.openfreemap.org/planet/${revision}/{z}/{x}/{y}.pbf`]}):new Uint8Array(raw)));
+  const repo=createOpenFreeMapRoadRepository(fetcher as typeof fetch),b=roadTileBounds(14552,6451);
+  const s=await repo.load({west:b.west+.00005,east:b.east-.00005,south:b.south+.00005,north:b.north-.00005});
+  const [ford,ordinary]=s.tileLines;
+  expect([ford.brunnel,ordinary.brunnel]).toEqual(['ford',undefined]);
+  const snapshot=s.tileSnapshots[0],fordObservation=snapshot.roads.find(road=>road.id===ford.id)!;
+  expect(fordObservation).toMatchObject({bridge:'ford',tunnel:null});
+  expect(snapshot.bundle.roadWays![ford.id].structureUnsupported).toBe(true);
+  expect(snapshot.bundle.graph.edges.find(edge=>edge.osmWayId===ford.id)).toMatchObject({bridge:null,tunnel:null});
+  const asPoint=([longitude,latitude]:[number,number])=>({longitude,latitude});
+  const camera={latitude:35.68,longitude:139.76,zoom:20,width:900,height:600};
+  expect(snapOrdinaryBusVertex(s,asPoint(ordinary.coordinates[0]),camera,1).raw.feature).toBe(1);
+  expect(()=>snapOrdinaryBusVertex(s,asPoint(ford.coordinates[0]),camera,1)).toThrow('道路上の点');
+  const evidence=await repo.readTileEvidenceBatch([{revision,z:14,x:14552,y:6451,rawSha256:snapshot.bundle.sourceSha256,decoderRule:OFM_EVIDENCE_RULE}]);
+  expect(evidence.rawTiles[0].bytes).toEqual(raw);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+ });
+ it('rejects unknown brunnel instead of persisting ground-like null flags',async()=>{for(const brunnel of ['unknown','yes','no'])await expect(decode(fixture('service',brunnel))).rejects.toThrow('地上とは判定できません');});
  it('rejects present invalid tag types rather than treating them as missing',async()=>{for(const key of ['brunnel','layer','access','oneway','subclass'])await expect(decode(fixture('service',undefined,undefined,{[key]:true}))).rejects.toThrow('型が不正');await expect(decode(fixture('service',undefined,undefined,{brunnel:0}))).rejects.toThrow('型が不正');});
  it('rejects arbitrary provider URLs',()=>{expect(()=>parseRoadTileTemplate({tiles:['https://evil.example/{z}/{x}/{y}.pbf'],maxzoom:14})).toThrow();});
  it('loads/coalesces a tile and retains per-tile source identity',async()=>{const fetcher=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?JSON.stringify({tiles:['https://tiles.openfreemap.org/planet/20261101_080013_pt/{z}/{x}/{y}.pbf'],maxzoom:14}):new Uint8Array(fixture()),{status:200}));const r=createOpenFreeMapRoadRepository(fetcher as typeof fetch);const b=roadTileBounds(14552,6451);const q={west:b.west+.001,east:b.east-.001,south:b.south+.001,north:b.north-.001};const [a,c]=await Promise.all([r.load(q),r.load(q)]);expect(a.tileSnapshots).toHaveLength(1);expect(c.bundle.sourceSha256).toBe(a.bundle.sourceSha256);expect(fetcher).toHaveBeenCalledTimes(2);});
@@ -75,4 +101,115 @@ describe('OpenFreeMap road adapter',()=>{
   }finally{vi.useRealTimers();}
  });
 
+});
+
+it('observes a rectangle through the same raw provider without re-downloading its viewport cache cells',async()=>{
+ const raw=fixture(), f=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?
+  JSON.stringify({maxzoom:14,tiles:['https://tiles.openfreemap.org/planet/rev/{z}/{x}/{y}.pbf']}):new Uint8Array(raw)));
+ const repo=createOpenFreeMapRoadRepository(f as typeof fetch);
+ await repo.load({west:139.75,east:139.751,south:35.683,north:35.685});
+ const cells=[[14552,6451],[14552,6452],[14553,6451],[14553,6452]] as const;
+ const refs=await repo.observeTiles(cells,'rev');
+ expect(refs.map(r=>[r.x,r.y])).toEqual(cells);
+ const evidence=await repo.readTileEvidenceBatch(refs);
+ expect(evidence.bindings).toHaveLength(4); expect(evidence.rawTiles).toHaveLength(1);
+ expect(f).toHaveBeenCalledTimes(5); // metadata plus four unique raw tiles
+ await expect(repo.observeTiles(cells,'stale')).rejects.toThrow('版');
+ await expect(repo.observeTiles([cells[0],cells[0]],'rev')).rejects.toThrow('範囲');
+ expect(f).toHaveBeenCalledTimes(5);
+});
+
+it('requests the exact catalog revision despite live rollover, without admitting fallback bytes',async()=>{
+ const current='20261122_080013_pt',old='20261101_080013_pt';
+ const oldRaw=fixture('service'),latestRaw=fixture('primary');
+ const oldSha=(await decode(oldRaw)).bundle.sourceSha256;
+ let reply:'fallback'|'missing'|'exact'='fallback';
+ const f=vi.fn(async(url:unknown,_init?:RequestInit)=>{
+  if(String(url).endsWith('/planet'))return new Response(JSON.stringify({maxzoom:14,tiles:[`https://tiles.openfreemap.org/planet/${current}/{z}/{x}/{y}.pbf`]}));
+  if(String(url).includes('/'+old+'/'))return reply==='missing'?new Response(null,{status:404}):new Response(new Uint8Array(reply==='exact'?oldRaw:latestRaw));
+  return new Response(new Uint8Array(latestRaw));
+ });
+ const repository=createOpenFreeMapRoadRepository(f as typeof fetch);
+ await repository.load({west:139.75,east:139.751,south:35.68,north:35.681});
+ const pin={revision:old,z:14 as const,x:14552,y:6451,rawSha256:oldSha,decoderRule:OFM_EVIDENCE_RULE};
+ await expect(repository.readPinnedSeamTiles([pin])).rejects.toThrow('SHA-256');
+ reply='missing';await expect(repository.readPinnedSeamTiles([pin])).rejects.toThrow('404');
+ reply='exact';const exact=await repository.readPinnedSeamTiles([pin]);
+ expect(exact.rawTiles[0].bytes).toEqual(oldRaw);
+ expect(f).toHaveBeenLastCalledWith(`https://tiles.openfreemap.org/planet/${old}/14/14552/6451.pbf`,expect.objectContaining({redirect:'error'}));
+ await expect(repository.readTileEvidenceBatch([pin])).rejects.toThrow('取得済み');
+ expect(f.mock.calls.filter(([url])=>String(url).endsWith('/planet'))).toHaveLength(1);
+});
+
+const interiorOfTile=(x:number,y=6451)=>{
+ const b=roadTileBounds(x,y);
+ return {west:b.west+.001,east:b.east-.001,south:b.south+.001,north:b.north-.001};
+};
+
+it('keeps a revisited tile decoded across one full cache scan without redownloading or rebuilding it',async()=>{
+ const raw=fixture(), f=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?
+  JSON.stringify({maxzoom:14,tiles:['https://tiles.openfreemap.org/planet/rev/{z}/{x}/{y}.pbf']}):new Uint8Array(raw)));
+ const repo=createOpenFreeMapRoadRepository(f as typeof fetch),hot=14500,cold=14501;
+ const first=await repo.load(interiorOfTile(hot));
+ for(let x=cold;x<hot+64;x++)await repo.load(interiorOfTile(x));
+ expect(f).toHaveBeenCalledTimes(65);
+ const justUsed=await repo.load(interiorOfTile(hot));
+ expect(justUsed.tileSnapshots[0]).toBe(first.tileSnapshots[0]);
+ await repo.load(interiorOfTile(hot+64));
+ expect(f).toHaveBeenCalledTimes(66);
+ const again=await repo.load(interiorOfTile(hot));
+ expect(again.tileSnapshots[0]).toBe(first.tileSnapshots[0]);
+ expect(again.bundle.graphSha256).toBe(first.bundle.graphSha256);
+ expect(f).toHaveBeenCalledTimes(66);
+ await repo.load(interiorOfTile(cold));
+ expect(f).toHaveBeenCalledTimes(67);
+});
+
+it('keeps revisited raw bytes hot for exact evidence without changing decoded or raw identities',async()=>{
+ const raw=fixture(),f=vi.fn(async(url:unknown)=>new Response(String(url).endsWith('/planet')?
+  JSON.stringify({maxzoom:14,tiles:['https://tiles.openfreemap.org/planet/rev/{z}/{x}/{y}.pbf']}):new Uint8Array(raw)));
+ const repo=createOpenFreeMapRoadRepository(f as typeof fetch),hot=14500,cold=14501;
+ const first=await repo.load(interiorOfTile(hot));
+ const rawSha256=first.tileSnapshots[0].bundle.sourceSha256;
+ for(let x=cold;x<hot+16;x++)await repo.load(interiorOfTile(x));
+ await repo.load(interiorOfTile(hot));
+ await repo.load(interiorOfTile(hot+16));
+ expect(f).toHaveBeenCalledTimes(18);
+ const ref={revision:'rev',z:14 as const,x:hot,y:6451,rawSha256,decoderRule:OFM_EVIDENCE_RULE};
+ await expect(repo.readTileEvidenceBatch([ref])).resolves.toMatchObject({rawTiles:[{sha256:rawSha256,bytes:raw}]});
+ expect(f).toHaveBeenCalledTimes(18);
+ await expect(repo.readTileEvidenceBatch([{...ref,rawSha256:'0'.repeat(64)}])).rejects.toThrow('一致');
+ expect(f).toHaveBeenCalledTimes(18);
+ await repo.readTileEvidenceBatch([{...ref,x:cold}]);
+ expect(f).toHaveBeenCalledTimes(19);
+});
+
+it('retains provider backoff for a timed out read without converting HTTP refusals into timeouts',async()=>{
+ const {OpenFreeMapTimeoutCooldown}=await import('./openFreeMapRoadData');
+ vi.useFakeTimers();
+ try{
+  let attempt=0;
+  const f=vi.fn(async(url:unknown,init?:RequestInit)=>{
+   if(String(url).endsWith('/planet'))return new Response(JSON.stringify({maxzoom:14,tiles:['https://tiles.openfreemap.org/planet/rev/{z}/{x}/{y}.pbf']}));
+   if(++attempt===1)return new Promise<Response>((_,reject)=>init?.signal?.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError')),{once:true}));
+   if(attempt===2)return new Response(null,{status:404});
+   return new Response(new Uint8Array(fixture()));
+  });
+  const r=createOpenFreeMapRoadRepository(f as typeof fetch);
+  const read=()=>r.observeTiles([[14552,6451]],'rev');
+  const first=expect(read()).rejects.toMatchObject({name:'TimeoutError'});
+  await vi.advanceTimersByTimeAsync(20001);await first;
+  await expect(read()).rejects.toBeInstanceOf(OpenFreeMapTimeoutCooldown);
+  expect(f).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(60000);
+  await expect(read()).rejects.toThrow('404');
+  const backoff=await read().catch(e=>e);
+  expect(backoff).toBeInstanceOf(Error);
+  expect(backoff).not.toBeInstanceOf(OpenFreeMapTimeoutCooldown);
+  expect(backoff.message).toContain('再試行');
+  expect(f).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(60000);
+  await expect(read()).resolves.toMatchObject([{revision:'rev',x:14552,y:6451}]);
+  expect(f).toHaveBeenCalledTimes(4);
+ }finally{vi.useRealTimers();}
 });

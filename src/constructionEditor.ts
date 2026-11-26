@@ -43,7 +43,7 @@ export function constructionEditorReducer(state:ConstructionEditorState,action:C
   }
   case 'CLEAR_PLAN':return {...state,...clearedDraft,draftAnchorLevels:undefined,redoAnchorLevels:[],parkedPaths:state.parkedPaths.filter(path=>path.planId!==state.activePlanId)};
   case 'PARK_REFERENCE_PATH':return {...state,parkedPaths:[...state.parkedPaths,action.path]};
-  case 'START_PATH':return {...state,draftPoints:[action.point],redoPoints:[],draftFinished:false,draftExtension:action.extension??null,draftDestination:undefined,draftRedoDestination:undefined,draftJunctionSource:action.junction,startLevel:action.level,draftAnchorLevels:[action.level],redoAnchorLevels:[]};
+  case 'START_PATH':return {...state,draftEditedGeometry:undefined,draftPoints:[action.point],redoPoints:[],draftFinished:false,draftExtension:action.extension??null,draftDestination:undefined,draftRedoDestination:undefined,draftJunctionSource:action.junction,startLevel:action.level,draftAnchorLevels:[action.level],redoAnchorLevels:[]};
   case 'CLEAR_CONNECTIONS':return !state.draftJunctionSource&&!state.draftExtension&&!state.draftDestination&&!state.draftRedoDestination?state:{...state,draftJunctionSource:undefined,draftExtension:null,draftDestination:undefined,draftRedoDestination:undefined};
   case 'RESUME_PATH':return state.draftFinished?{...state,draftFinished:false}:state;
   case 'FINISH_PATH':return state.draftFinished?state:{...state,draftFinished:true};

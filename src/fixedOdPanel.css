@@ -1,0 +1,10 @@
+.fixed-od-panel { min-width:0; overflow-wrap:anywhere; }
+.fixed-od-panel fieldset,.fixed-od-panel fieldset label { display:grid; min-width:0; gap:5px; }
+.fixed-od-panel fieldset label { margin-bottom:4px; }
+.fixed-od-panel input,.fixed-od-panel select { min-width:0; box-sizing:border-box; width:100%; }
+.fixed-od-results { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; }
+.fixed-od-results dd { margin:0; font-variant-numeric:tabular-nums; text-align:right; }
+.fixed-od-paths { padding-left:1.6em; }
+.fixed-od-paths li { padding:5px 0; border-bottom:1px solid var(--edge); }
+.fixed-od-panel fieldset .fixed-od-transfer-toggle { display:flex; align-items:center; }
+.fixed-od-panel .fixed-od-transfer-toggle input { width:auto; }

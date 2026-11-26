@@ -125,7 +125,7 @@ fn versioned_network_chain_provenance_roundtrips_without_fabricated_way() {
     assert_eq!(decode(&bytes).unwrap(), network_world);
     let old = String::from_utf8(bytes)
         .unwrap()
-        .replace("\"schema_version\": 25", "\"schema_version\": 24");
+        .replace("\"schema_version\": 27", "\"schema_version\": 24");
     assert!(decode(old.as_bytes()).is_err());
 }
 

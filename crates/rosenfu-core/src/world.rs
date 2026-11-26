@@ -1,6 +1,6 @@
 //! Validated, renderer-independent construction data. Not a stable save format yet.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! id_type {
     ($($name:ident),+) => { $(
@@ -95,10 +95,34 @@ impl ViewState {
         }
     }
 }
+fn read_installed_seam_bus_routes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, crate::ofm_evidence::InstalledWestboundSeamRecipe>, D::Error> {
+    let routes = BTreeMap::deserialize(deserializer)?;
+    if routes.is_empty() {
+        return Err(serde::de::Error::custom(
+            "empty installed seam route capability",
+        ));
+    }
+    Ok(routes)
+}
 /// An editable candidate. Validate before applying or loading it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldDraft {
+    #[serde(default)]
+    pub road_transport: crate::road_transport::RoadTransport,
+    /// Exact immutable OFM path proof for each independently authored ordinary Bus route.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ofm_gameplay_bus_routes: BTreeMap<String, crate::ofm_evidence::BusPathBinding>,
+    /// Installed seam recipes use a separate, currently non-emittable save capability.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "read_installed_seam_bus_routes"
+    )]
+    pub ofm_installed_seam_bus_routes:
+        BTreeMap<String, crate::ofm_evidence::InstalledWestboundSeamRecipe>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_path_provenance: Vec<AlignmentRoadPathProvenance>,
     /// Runtime-only immutable raw evidence. Plain WorldDraft JSON is NOT a backup.
@@ -111,6 +135,8 @@ pub struct WorldDraft {
     pub road_snapshots: Vec<RoadSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub station_groups: Vec<StationGroup>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub station_walk_links: Vec<StationWalkLink>,
     /// Explicit infrastructure endpoint links, including supported three-port turnouts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alignment_connections: Vec<AlignmentConnection>,
@@ -161,11 +187,15 @@ mod decimal_counter {
 impl Default for WorldDraft {
     fn default() -> Self {
         Self {
+            road_transport: crate::road_transport::RoadTransport::default(),
+            ofm_gameplay_bus_routes: BTreeMap::new(),
+            ofm_installed_seam_bus_routes: BTreeMap::new(),
             road_path_provenance: vec![],
             runtime_road_evidence: crate::ofm_evidence::EvidenceStore::empty(),
             road_evidence_descriptors: vec![],
             road_snapshots: vec![],
             station_groups: vec![],
+            station_walk_links: vec![],
             alignment_connections: vec![],
             view_state: None,
             construction_plans: None,
@@ -194,6 +224,7 @@ pub enum WorldError {
     InvalidCoordinate,
     InvalidConstructionPlans,
     InvalidRoadSnapshot,
+    InvalidRoadTransport,
     InvalidRoadEvidence,
     InvalidViewState,
     InvalidAlignment,
@@ -204,6 +235,8 @@ pub enum WorldError {
     InvalidAlignmentDesignSpeed,
     InvalidRoutePath,
     InvalidServicePath,
+    TramTrackRequiresStop,
+    StationAtMixedTrackConnection,
     InvalidServiceAppearance,
     InvalidServiceRouteBinding,
     InvalidProvenance,
@@ -213,6 +246,7 @@ pub enum WorldError {
     StationOnGradient,
     StationFootprintOverlap,
     InvalidStationGroup,
+    InvalidStationWalkLink,
     SelfLoop,
     EmptyRoute,
     DisconnectedRoute,
@@ -225,6 +259,18 @@ pub enum WorldError {
 }
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if matches!(self, Self::InvalidStationWalkLink) {
+            return write!(f, "徒歩連絡は自社の別々の駅間（直線1 km以内・1〜60分）に、同じ方向を重複せず設定してください。");
+        }
+        if matches!(self, Self::InvalidRoadTransport) {
+            return write!(f,"道路交通の参照が不整合です。併用軌道の関連付けを外してから線路を延伸・変更・撤去してください。");
+        }
+        if matches!(self, Self::TramTrackRequiresStop) {
+            return write!(f, "普通列車はトラム専用線を通れません。トラムとして運行するには、通過ではなくトラムのホームを停車駅に指定してください。");
+        }
+        if matches!(self, Self::StationAtMixedTrackConnection) {
+            return write!(f, "トラム専用線と鉄道線の接続点には駅を設置できません。接続点から離れた場所に設置してください。");
+        }
         if matches!(self, Self::StationOnGradient) {
             return write!(f,"ホーム全長が平坦な場所に駅を設置してください。勾配やその境界に重なるホームは設置できません。");
         }
@@ -237,6 +283,9 @@ impl std::fmt::Display for WorldError {
         if matches!(self, Self::InsufficientTurnoutSpace) {
             return write!(f, "分岐・単複線の合流に必要な空間がありません。接続位置をホームから離すか、前後の区間を長くしてください。");
         }
+        if matches!(self, Self::InvalidRoadTransport) {
+            return write!(f,"道路交通の参照が不整合です。併用軌道の関連付けを外してから線路を延伸・変更・撤去してください。");
+        }
         if matches!(self, Self::InvalidServiceRouteBinding) {
             return write!(f, "既存系統の経路が割り当てた路線に含まれなくなるため変更できません。路線と系統は変更していません。");
         }
@@ -248,13 +297,30 @@ impl std::error::Error for WorldError {}
 /// Only valid snapshots can enter the running world.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct World {
-    data: WorldDraft,
+    data: std::sync::Arc<WorldDraft>,
+    operation: Option<WorldOperation>,
+    fixed_od_scenario: Option<FixedOdScenario>,
 }
 impl World {
     pub fn new(data: WorldDraft) -> Result<Self, WorldError> {
         data.validate()?;
-        Ok(Self { data })
+        Ok(Self {
+            data: data.into(),
+            operation: None,
+            fixed_od_scenario: None,
+        })
     }
+    /// Restore a saved snapshot with its separately decoded evidence. Attaching
+    /// the store does not rewrite the saved descriptors; validation must match
+    /// them to the evidence before the draft can become a running world.
+    pub fn from_saved_draft(
+        mut data: WorldDraft,
+        store: crate::ofm_evidence::EvidenceStore,
+    ) -> Result<Self, WorldError> {
+        data.runtime_road_evidence = store;
+        Self::new(data)
+    }
+
     /// UI JSON omits runtime evidence. Preserve the CURRENT table and reject
     /// manifest changes; explicit evidence attachment uses a different validated API.
     /// Returns a replacement without modifying the current world on any failure.
@@ -272,11 +338,11 @@ impl World {
     }
     fn insert(&mut self, insert: impl FnOnce(&mut WorldDraft, u64)) -> Result<u64, WorldError> {
         let id = self.data.next_id;
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         candidate.next_id = id.checked_add(1).ok_or(WorldError::IdExhausted)?;
         insert(&mut candidate, id);
         candidate.validate()?;
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(id)
     }
     pub fn add_player(&mut self, name: String) -> Result<PlayerId, WorldError> {
@@ -319,6 +385,62 @@ impl World {
     pub fn snapshot(&self) -> &WorldDraft {
         &self.data
     }
+    /// Update only the local editor metadata of an already valid world.
+    /// Reuse whole-world validation for supplied metadata, including its
+    /// parked path references to retained evidence and the shared path cap.
+    /// Omitted metadata preserves the stored value. Validation precedes
+    /// mutation. Geometry, road evidence, operation and demand stay untouched.
+    pub fn update_save_metadata(
+        &mut self,
+        plans: Option<ConstructionPlans>,
+        view: Option<ViewState>,
+    ) -> Result<(), WorldError> {
+        if let Some(view) = view {
+            view.validate()?;
+        }
+        if let Some(plans) = &plans {
+            plans.validate()?;
+            self.data.validate_parked_road_paths(Some(plans))?;
+        }
+        let view = view.filter(|new| {
+            !self.data.view_state.is_some_and(|old| {
+                old.latitude.to_bits() == new.latitude.to_bits()
+                    && old.longitude.to_bits() == new.longitude.to_bits()
+                    && old.zoom.to_bits() == new.zoom.to_bits()
+            })
+        });
+        if plans.is_none() && view.is_none() {
+            return Ok(());
+        }
+        let data = self.data_mut();
+        // Preserve supplied plan data exactly: e.g. signed zero in a fraction
+        // compares equal as f64 but may serialize to different bytes.
+        if let Some(plans) = plans {
+            data.construction_plans = Some(plans);
+        }
+        if let Some(view) = view {
+            data.view_state = Some(view);
+        }
+        Ok(())
+    }
+    /// Retain exactly this immutable snapshot without deep-copying map assets.
+    /// Validated replacements publish a new allocation; scoped mutations are
+    /// copy-on-write. Operation clock and scenario state are held separately.
+    pub fn shared_snapshot(&self) -> std::sync::Arc<WorldDraft> {
+        self.data.clone()
+    }
+    /// Base for validating a read-only geometry preview. Share the committed
+    /// map and retained road evidence without capturing running simulations.
+    pub fn geometry_preview_base(&self) -> Self {
+        Self {
+            data: self.shared_snapshot(),
+            operation: None,
+            fixed_od_scenario: None,
+        }
+    }
+    fn data_mut(&mut self) -> &mut WorldDraft {
+        std::sync::Arc::make_mut(&mut self.data)
+    }
     /// Atomic candidate replacement: failures leave the live state unchanged.
     pub fn replace(&mut self, mut candidate: WorldDraft) -> Result<(), WorldError> {
         // Explicit alignment removal drops only its derived range records; source
@@ -334,10 +456,11 @@ impl World {
         }
         macro_rules! existing_only {
             ($field:ident) => {
+                let existing: BTreeSet<_> = self.data.$field.iter().map(|entry| entry.id).collect();
                 if candidate
                     .$field
                     .iter()
-                    .any(|entry| !self.data.$field.iter().any(|old| old.id == entry.id))
+                    .any(|entry| !existing.contains(&entry.id))
                 {
                     return Err(WorldError::UnallocatedId);
                 }
@@ -349,7 +472,7 @@ impl World {
         existing_only!(routes);
         existing_only!(services);
         existing_only!(alignments);
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
 }
@@ -410,7 +533,11 @@ impl WorldDraft {
         ids(self.services.iter().map(|x| x.id.0), "service")?;
         ids(self.alignments.iter().map(|x| x.id.0), "alignment")?;
         self.validate_alignments()?;
+        self.road_transport
+            .validate_world(self)
+            .map_err(|_| WorldError::InvalidRoadTransport)?;
         self.validate_station_groups()?;
+        self.validate_station_walk_links()?;
         self.validate_alignment_connections()?;
         let maximum_id = self
             .players
@@ -467,7 +594,11 @@ impl WorldDraft {
         }
         // All references and platform footprints are valid by this point. Check
         // derived turnout geometry before any candidate snapshot is committed.
-        let geometry_world = World { data: self.clone() };
+        let geometry_world = World {
+            data: self.clone().into(),
+            operation: None,
+            fixed_od_scenario: None,
+        };
         geometry_world.validate_turnout_geometry()?;
         self.validate_service_paths()?;
         self.validate_service_route_bindings()?;
@@ -495,14 +626,54 @@ impl WorldDraft {
 mod alignment_connections;
 pub use alignment_connections::{AlignmentConnection, AlignmentEndpointRef};
 mod alignment;
+mod fixed_od_scenario;
 pub use alignment::{
     Alignment, AlignmentEndpoint, GeoPoint, InfrastructureLevel, SectionInfrastructure,
     StationPlacement, TrackType,
 };
+pub use fixed_od_scenario::FixedOdScenario;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_keeps_membership_ids_and_rejects_reintroducing_a_missing_id_atomically() {
+        let mut world = World::default();
+        let player = world.add_player("p".into()).unwrap();
+        let owner = world.add_company(player, "c".into()).unwrap();
+        for (name, latitude) in [("a", 35.0), ("b", 35.1)] {
+            world
+                .build_alignment(
+                    owner,
+                    name.into(),
+                    vec![
+                        GeoPoint {
+                            latitude,
+                            longitude: 139.0,
+                        },
+                        GeoPoint {
+                            latitude,
+                            longitude: 139.01,
+                        },
+                    ],
+                )
+                .unwrap();
+        }
+        let mut reordered = world.snapshot().clone();
+        reordered.alignments.reverse();
+        world.replace(reordered.clone()).unwrap();
+        let removed = reordered.alignments.remove(0);
+        world.replace(reordered.clone()).unwrap();
+        let mut stale = reordered.clone();
+        stale.alignments.push(removed);
+        // The counter and IDs are structurally valid, but replacement may not
+        // resurrect an alignment absent from the current world.
+        stale.validate().unwrap();
+        assert_eq!(world.replace(stale), Err(WorldError::UnallocatedId));
+        assert_eq!(world.snapshot(), &reordered);
+    }
+
     fn sample() -> WorldDraft {
         let mut w = World::default();
         let p = w.add_player("Player".into()).unwrap();
@@ -661,7 +832,9 @@ mod construction_plans;
 pub use construction_plans::{ConstructionJunctionSource, ConstructionPlans};
 
 mod station_groups;
+mod station_walk_links;
 pub use station_groups::StationGroup;
+pub use station_walk_links::StationWalkLink;
 
 mod service_route_bindings;
 pub use service_route_bindings::{ServiceRouteBinding, ServiceRouteBindingKind};
@@ -701,3 +874,16 @@ pub use road_path::AlignmentRoadPathProvenance;
 mod water_fine;
 mod water_national;
 pub use water_fine::{water_mask_requests, ConstructionWaterModel, WaterMaskRequest};
+
+mod operation_adapter;
+#[cfg(feature = "periodic-world-qa")]
+pub use operation_adapter::periodic_qa;
+pub use operation_adapter::{
+    BusOperationConfig, LiveBusMarker, LiveRailMarker, OperationServiceConfig, VehicleViewport,
+    WorldOperation, WorldOperationSave,
+};
+
+mod planned_crossing_delay;
+pub use planned_crossing_delay::{
+    PlannedCrossingDelay, PlannedCrossingDelayError, PlannedCrossingDelayPreview,
+};

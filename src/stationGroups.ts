@@ -13,14 +13,38 @@ function order(a:StationFootprint,b:StationFootprint){return Number(a.planned)-N
 /** Saved built groups are authoritative. Only a new planned footprint joins by intersection. */
 export function stationGroupViews(footprints:StationFootprint[],saved:StationGroup[]=[]):StationGroupView[]{
  const parent=footprints.map((_,i)=>i);
- const root=(i:number):number=>parent[i]===i?i:root(parent[i]);
+ const root=(i:number):number=>{
+  while(parent[i]!==i){parent[i]=parent[parent[i]];i=parent[i];}
+  return i;
+ };
  const join=(a:number,b:number)=>{parent[root(b)]=root(a);};
  const savedGroup=new Map(saved.flatMap(g=>g.members.map(id=>[id,g.station_id] as const)));
- footprints.forEach((a,i)=>footprints.slice(i+1).forEach((b,j)=>{
-  if(a.owner!==b.owner)return;
-  if(savedGroup.has(a.id)&&savedGroup.get(a.id)===savedGroup.get(b.id)||((a.planned||b.planned)&&a.lineId!==b.lineId&&footprintsIntersect(a.polygon,b.polygon)))join(i,i+j+1);
- }));
+ // Saved membership is exact and owner-scoped. Built/built geometry never
+ // creates a group, so there is no need to enumerate those pairs.
+ const byOwner=new Map<string,Map<string,number>>();
+ const planned:number[]=[];
+ footprints.forEach((footprint,i)=>{
+  if(footprint.planned)planned.push(i);
+  const group=savedGroup.get(footprint.id);
+  if(group===undefined)return;
+  let byGroup=byOwner.get(footprint.owner);
+  if(!byGroup){byGroup=new Map();byOwner.set(footprint.owner,byGroup);}
+  const first=byGroup.get(group);
+  if(first===undefined)byGroup.set(group,i);
+  else join(first,i);
+ });
+ for(const i of planned){
+  const a=footprints[i];
+  footprints.forEach((b,j)=>{
+   if(j===i||(b.planned&&j<i)||a.owner!==b.owner||a.lineId===b.lineId)return;
+   if(footprintsIntersect(a.polygon,b.polygon))join(i,j);
+  });
+ }
  const groups=new Map<number,StationFootprint[]>();
- footprints.forEach((p,i)=>{const key=root(i);groups.set(key,[...(groups.get(key)??[]),p]);});
+ footprints.forEach((p,i)=>{
+  const key=root(i),members=groups.get(key);
+  if(members)members.push(p);
+  else groups.set(key,[p]);
+ });
  return [...groups.values()].map(members=>{members.sort(order);return {id:members[0].id,name:members[0].name,members};});
 }

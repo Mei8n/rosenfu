@@ -1,5 +1,6 @@
 import {useMemo} from 'react';
-import {project,type Camera} from './map';
+import {project,viewBounds,type Camera} from './map';
+import {createTrackViewportIndex,intersectsTrackView,trackBounds} from './trackViewport';
 import type {GeoPoint} from './alignment';
 import type {HeightAlignment} from './BuiltAnchorHeight';
 import type {SectionInfrastructure} from './sectionInfrastructure';
@@ -40,18 +41,25 @@ export function plannedSlopeBoundaries(plans:Planned[]):Boundary[]{
   return result;
  });
 }
+function distinctBoundaries(marks:Boundary[]){
+ const seen=new Set<string>();
+ return marks.flatMap((mark,index)=>{
+  const key=JSON.stringify([mark.point,mark.height]);if(seen.has(key))return [];seen.add(key);
+  return [{...mark,index,points:[mark.point]}];
+ });
+}
 /** Screen-sized white-backed marks remain legible on map/track backgrounds.
  * User requested both boundaries (TW uses middle-of-ramp directional marks). */
-export function SlopeBoundaryMarkers({lines,plans,camera,scale}:{lines:HeightAlignment[];plans:Planned[];camera:Camera;scale:number}){
- const built=useMemo(()=>builtSlopeBoundaries(lines),[lines]);
- const planned=useMemo(()=>plannedSlopeBoundaries(plans),[plans]);
- const seen=new Set<string>();
- const marks=[...built,...planned].filter(mark=>{
-  const key=JSON.stringify([mark.point,mark.height,mark.planned]);if(seen.has(key))return false;seen.add(key);return true;
- });
- return <g pointerEvents="none" className="slope-boundary-markers">{marks.map((mark,i)=>{
-  const p=project(mark.point.latitude,mark.point.longitude,camera),height=Number(mark.height.toFixed(1));
-  return <g key={i} data-slope-boundary={mark.kind} data-planned={mark.planned} transform={`translate(${p.x} ${p.y}) scale(${1/scale})`} aria-label={`スロープ端点 ${height} m`}>
+export function SlopeBoundaryMarkers({lines,plans,camera,scale,mapSize}:{lines:HeightAlignment[];plans:Planned[];camera:Camera;scale:number;mapSize:{width:number;height:number}}){
+ const builtIndex=useMemo(()=>createTrackViewportIndex(distinctBoundaries(builtSlopeBoundaries(lines)),'display'),[lines]);
+ const planned=useMemo(()=>distinctBoundaries(plannedSlopeBoundaries(plans)),[plans]);
+ // These fixed-size numerical labels may extend beyond an off-screen point.
+ // Keep a generous screen-space guard band for text, its outline and markers.
+ const view=useMemo(()=>viewBounds(camera,mapSize,384/scale),[camera,mapSize,scale]);
+ const marks=useMemo(()=>[...builtIndex.visible(view),...planned.filter(mark=>intersectsTrackView(trackBounds(mark.points),view))],[builtIndex,planned,view]);
+ return <g pointerEvents="none" className="slope-boundary-markers">{marks.map(mark=>{
+ const p=project(mark.point.latitude,mark.point.longitude,camera),height=Number(mark.height.toFixed(1));
+  return <g key={`${mark.planned}:${mark.index}`} data-slope-boundary={mark.kind} data-planned={mark.planned} transform={`translate(${p.x} ${p.y}) scale(${1/scale})`} aria-label={`スロープ端点 ${height} m`}>
    <path d="M -6 5 L 0 -5 L 6 5 Z" fill="white" stroke={mark.planned?'#1579b8':'#724c22'} strokeWidth="2" strokeDasharray={mark.planned?'2 1':undefined}/>
    <text x="9" y="-6" fontSize="11" fontWeight="600" fill={mark.planned?'#1579b8':'#724c22'} stroke="white" strokeWidth="3" paintOrder="stroke">{height>0?'+':''}{height} m</text>
   </g>;
