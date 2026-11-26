@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {LEVEL_LABELS} from './sectionInfrastructure';
 // @vitest-environment jsdom
 import React from "react";
@@ -90,7 +91,7 @@ test('native cursor preview carries per-anchor heights without building',async()
  const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
  vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?Promise.resolve(empty):original(command,args));
  await act(async()=>{fireEvent.click(map,{clientX:100,clientY:100});});fireEvent.click(screen.getByRole('button',{name:LEVEL_LABELS.elevated}));
- fireEvent.pointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
+ await settledPointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',expect.objectContaining({alignments:expect.arrayContaining([expect.objectContaining({anchorLevels:['ground','elevated']})])})));
  expect(vi.mocked(invoke).mock.calls.some(([command])=>command==='build_plan'||command==='build_alignment')).toBe(false);
 });

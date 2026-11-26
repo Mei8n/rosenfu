@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {replyToCommandOnce} from './testInvoke';
 import {settledMapClick} from './testMapClick';
 import {panMap} from './mapTestNavigation';
@@ -86,7 +87,7 @@ test("line-constrained station previews then commits metric platform dimensions"
   fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
   expect(screen.queryByLabelText("新しい駅名")).toBeNull();expect(screen.queryByLabelText("幅 (m)")).toBeNull();
   fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"12"}});
-  fireEvent.pointerMove(map,{clientX:250,clientY:150});
+  await settledPointerMove(map,{clientX:250,clientY:150});
   expect(map.querySelector(".station-platform")).toBeTruthy();
   expect(invoke).not.toHaveBeenCalledWith("place_station_on_alignment",expect.anything());
   replyToCommandOnce('build_plan',{...placed,station_placements:[{...placed.station_placements[0],length_m:240}]});
@@ -177,7 +178,7 @@ test("low-zoom endpoint previews use the full-platform corrected center",async()
  const map=await start(built);fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
  fireEvent.change(screen.getByLabelText("駅の長さ"),{target:{value:"12"}});
  for(const position of [0,1]){
-  const hover=project(alignment.points[position].latitude,alignment.points[position].longitude,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
+  const hover=project(alignment.points[position].latitude,alignment.points[position].longitude,DEFAULT_CAMERA);await settledPointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
   const preview=map.querySelector("path.station-placement-preview")!;
   expect(map.querySelector("circle.station-platform")).toBeNull();
   const polygon=stationPolygon(alignment.points,position,240,12);
@@ -190,7 +191,7 @@ test("reference name is automatic and does not place or rename until confirmed",
  fireEvent.click(screen.getByRole("tab",{name:"建設"}));fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
  const pack={format:"rosenfu-reference-stations",version:1,dataset:{id:"names",revision:"1",source:"local fixture",license:"test",bounds:{west:139,east:140,south:35,north:36}},stations:[{osmType:"node",osmId:"1",name:"参考中央",latitude:35.67504,longitude:139.756,kind:"station"}]};
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:500,text:()=>Promise.resolve(JSON.stringify(pack))}]}});await screen.findByText("names / 1 / 1件");
- const hover=project(35.67504,139.756,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
+ const hover=project(35.67504,139.756,DEFAULT_CAMERA);await settledPointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});
  expect(await screen.findByText("参考中央",{selector:"strong"})).toBeTruthy();expect((screen.getByLabelText("選択駅の名前") as HTMLInputElement).value).toBe("新駅");expect(vi.mocked(invoke).mock.calls.some(([command])=>command==="place_station_on_alignment"||command==="rename_station")).toBe(false);
  vi.mocked(invoke).mockResolvedValueOnce(placed);await settledMapClick(map,{clientX:hover.x/2,clientY:hover.y/2});
  fireEvent.click(screen.getByRole("button",{name:"計画を着工"}));await waitFor(()=>expect(invoke).toHaveBeenCalledWith("build_plan",expect.objectContaining({stations:[expect.objectContaining({name:"参考中央"})]})));
@@ -201,7 +202,7 @@ test("reference name distance uses corrected platform center at both alignment e
  const half=120/alignmentLength(alignment.points),startPoint=pointOnAlignment(alignment.points,half),endPoint=pointOnAlignment(alignment.points,1-half);
  const pack={format:"rosenfu-reference-stations",version:1,dataset:{id:"endpoint-names",revision:"1",source:"test",license:"test",bounds:{west:139,east:140,south:35,north:36}},stations:[{osmType:"node",osmId:"1",name:"始端中心",...startPoint,kind:"station"},{osmType:"node",osmId:"2",name:"終端中心",...endPoint,kind:"station"}]};
  fireEvent.change(screen.getByLabelText("参照駅JSON"),{target:{files:[{size:1000,text:()=>Promise.resolve(JSON.stringify(pack))}]}});await screen.findByText("endpoint-names / 1 / 2件");
- for(const [position,name] of [["0","始端中心"],["100","終端中心"]]){const point=alignment.points[position==="0"?0:1],hover=project(point.latitude,point.longitude,DEFAULT_CAMERA);fireEvent.pointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});expect(await screen.findByText(name as string,{selector:"strong"})).toBeTruthy();expect(screen.getByText(/約0m・直線距離/)).toBeTruthy();}
+ for(const [position,name] of [["0","始端中心"],["100","終端中心"]]){const point=alignment.points[position==="0"?0:1],hover=project(point.latitude,point.longitude,DEFAULT_CAMERA);await settledPointerMove(map,{clientX:hover.x/2,clientY:hover.y/2});expect(await screen.findByText(name as string,{selector:"strong"})).toBeTruthy();expect(screen.getByText(/約0m・直線距離/)).toBeTruthy();}
 });
 
 
@@ -237,7 +238,7 @@ test("double clicking an existing endpoint does not duplicate it; one point cann
 test("returning near the endpoint snaps in CSS pixels without a foldback anchor",async()=>{
  const map=await start();
  await settledMapClick(map,{clientX:180,clientY:130,detail:1});await settledMapClick(map,{clientX:300,clientY:170,detail:1});
- fireEvent.pointerMove(map,{clientX:350,clientY:180});fireEvent.pointerMove(map,{clientX:296,clientY:168});
+ await settledPointerMove(map,{clientX:350,clientY:180});await settledPointerMove(map,{clientX:296,clientY:168});
  await settledMapClick(map,{clientX:296,clientY:168,detail:1});
  expect(map.querySelectorAll(".draft-anchor")).toHaveLength(2);
  await settledMapClick(map,{clientX:296,clientY:168,detail:2});

@@ -7,7 +7,8 @@ type Job={scope:Scope;key:string;settle:(error:string|null,value:unknown)=>void}
 export function useConstructionPreview(world:unknown,request:{alignments:unknown[];stations:unknown[];roads?:unknown[]}|null,waterRevision=0){
  const roads=request?.roads;
  const roadKey=useMemo(()=>JSON.stringify(roads??[]),[roads]);
- const key=request?`{"alignments":${JSON.stringify(request.alignments)},"stations":${JSON.stringify(request.stations)},"roads":${roadKey}}`:null;
+ const hasRequest=request!==null,alignments=request?.alignments,stations=request?.stations;
+ const key=useMemo(()=>hasRequest?`{"alignments":${JSON.stringify(alignments)},"stations":${JSON.stringify(stations)},"roads":${roadKey}}`:null,[hasRequest,alignments,stations,roadKey]);
  const [state,setState]=useState<{scope:Scope;key:string;error:string|null;value:unknown}|null>(null);
  const scope=useRef<Scope|null>(null);
  const running=useRef<Job|null>(null),queued=useRef<Job|null>(null);

@@ -474,6 +474,11 @@ fn assess_connected_road_crossings(
         })
         .collect();
     result.roads_ready = true;
+    // Positions are finite and non-negative, so their IEEE bits have numeric
+    // ordering. Query a conservative window, then apply the original exact
+    // duplicate predicate. Keep indices so insertion order and chosen IDs stay unchanged.
+    let mut crossing_positions: std::collections::BTreeMap<u64, Vec<usize>> =
+        std::collections::BTreeMap::new();
     let mut cursor = 0.;
     for (i, pair) in alignment.points.windows(2).enumerate() {
         let (a, b) = (pair[0], pair[1]);
@@ -535,12 +540,27 @@ fn assess_connected_road_crossings(
                     continue;
                 }
                 // Duplicate mapped ways and source vertices produce one physical asset.
-                if !result.crossings.iter().any(|c| {
-                    (c.road_id == road.id
-                        || !(c.road_id.starts_with("ofm:") && road.id.starts_with("ofm:")))
-                        && metres(c.point, point) < 0.01
-                        && (c.position - position).abs() * total < 0.01
-                }) {
+                // Twice the exact tolerance plus rounding padding is a broad
+                // phase only; the physical 1 cm checks below remain authoritative.
+                let radius = 0.02 / total + 4.0 * f64::EPSILON;
+                let low = (position - radius).max(0.0).to_bits();
+                let high = (position + radius).to_bits();
+                if !crossing_positions
+                    .range(low..=high)
+                    .flat_map(|(_, indices)| indices)
+                    .any(|&index| {
+                        let c = &result.crossings[index];
+                        // Reject distant positions before string checks and geodesic distance.
+                        (c.position - position).abs() * total < 0.01
+                            && (c.road_id == road.id
+                                || !(c.road_id.starts_with("ofm:") && road.id.starts_with("ofm:")))
+                            && metres(c.point, point) < 0.01
+                    })
+                {
+                    crossing_positions
+                        .entry(position.to_bits())
+                        .or_default()
+                        .push(result.crossings.len());
                     result.crossings.push(AutomaticCrossing {
                         road_id: road.id.clone(),
                         point,

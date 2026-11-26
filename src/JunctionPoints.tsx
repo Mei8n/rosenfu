@@ -1,4 +1,4 @@
-import {useMemo} from 'react';
+import {memo,useMemo} from 'react';
 import {MAP_VIEWBOX,project,type Camera} from './map';
 import {firstByKey} from './mapLookupIndex';
 import {createTrackViewportIndex,trackViewport} from './trackViewport';
@@ -8,7 +8,7 @@ type Endpoint={alignment_id:string;endpoint:'start'|'end'};
 type Line={id:string;name?:string;points:GeoPoint[]};
 type Link={a:Endpoint;b:Endpoint};
 const key=(p:Endpoint)=>p.alignment_id+':'+p.endpoint;
-export function JunctionPoints({lines,connections,camera,mapSize=MAP_VIEWBOX,selectable,selected,onSelectionChange,isPointerSelectionSuppressed}:{lines:Line[];connections:Link[];camera:Camera;mapSize?:{width:number;height:number};selectable:boolean;selected:string|null;onSelectionChange:(id:string|null)=>void;isPointerSelectionSuppressed?:()=>boolean}){
+export const JunctionPoints=memo(function JunctionPoints({lines,connections,camera,mapSize=MAP_VIEWBOX,selectable,selected,onSelectionChange,isPointerSelectionSuppressed}:{lines:Line[];connections:Link[];camera:Camera;mapSize?:{width:number;height:number};selectable:boolean;selected:string|null;onSelectionChange:(id:string|null)=>void;isPointerSelectionSuppressed?:()=>boolean}){
  const junctions=useMemo(()=>{
   if(!connections.length)return null;
   const graph=new Map<string,Set<string>>(),ends=new Map<string,Endpoint>();
@@ -48,4 +48,4 @@ export function JunctionPoints({lines,connections,camera,mapSize=MAP_VIEWBOX,sel
    {active&&<text x={p.x+10} y={p.y-10} fontSize="12" fill="#244f65">分岐ポイント{label?`：${label}`:''}</text>}
   </g>;
  })}</g>;
-}
+});

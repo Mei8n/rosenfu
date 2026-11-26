@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
 import {afterEach,expect,test,vi} from "vitest";
@@ -40,7 +41,7 @@ test("crossing preview reports actual distance without inventing passenger data"
  const map=screen.getByRole("img",{name:"駅配置用OpenStreetMap"});
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
  fireEvent.click(screen.getByRole("tab",{name:"駅設置"}));
- fireEvent.pointerMove(map,{clientX:250,clientY:150});
+ await settledPointerMove(map,{clientX:250,clientY:150});
  const tooltip=screen.getByText("交差駅から 0.00 km").closest(".construction-tooltip");
  expect(tooltip).not.toBeNull();
  expect(within(tooltip as HTMLElement).queryByText(/乗客/)).toBeNull();

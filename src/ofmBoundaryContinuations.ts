@@ -8,7 +8,7 @@ const classes=new Set(['primary','secondary','tertiary','minor','service']);
 const lat=(y:number)=>Math.atan(Math.sinh(Math.PI*(1-2*y/16384)))*180/Math.PI;
 const dist=(a:P,b:P)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
 const length=(p:P[])=>p.slice(1).reduce((s,q,i)=>s+dist(q,p[i]),0);
-function eligible(l:TileRoadLine){return (l.oneway===undefined||[0,1,-1].includes(l.oneway as number))&&classes.has(l.class)&&!l.brunnel&&(l.layer===undefined||l.layer===0)&&(l.level===undefined||/^[+-]?0(?:\.0+)?$/.test(l.level));}
+function eligible(l:TileRoadLine){return (l.oneway===undefined||(typeof l.oneway==='number'&&[0,1,-1].includes(l.oneway)))&&classes.has(l.class)&&!l.brunnel&&(l.layer===undefined||l.layer===0)&&(l.level===undefined||/^[+-]?0(?:\.0+)?$/.test(l.level));}
 function same(a:TileRoadLine,b:TileRoadLine){return a.access===b.access&&a.class===b.class&&a.subclass===b.subclass&&a.brunnel===b.brunnel&&a.layer===b.layer&&a.level===b.level&&a.oneway===b.oneway;}
 /** One monotonic boundary passage only; loops/re-entry and corner cases refused. */
 function strip(points:P[],axis:number,seam:number):P[]|undefined{

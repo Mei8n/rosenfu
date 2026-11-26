@@ -139,6 +139,7 @@ impl WorldEditor {
 
     /// UI previews receive descriptors but not raw evidence. Reattach only the
     /// current immutable table, rejecting changed or stale manifests.
+    #[cfg(test)]
     pub fn world_for_ui_preview(&self, draft: WorldDraft) -> Result<World, String> {
         self.world
             .replace_retaining_road_evidence(draft)

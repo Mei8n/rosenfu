@@ -1,5 +1,5 @@
 import {describe,it,expect,vi} from 'vitest';
-import {createRoadRepository,parseRoadResponse,ROAD_LIMITS,roadBoundsKey} from './automaticRoadData';
+import {createRoadRepository,parseRoadResponse,ROAD_LIMITS,roadBoundsKey,roadTileSnapshots,type RoadSnapshot} from './automaticRoadData';
 const bounds={west:139,south:35,east:139.01,north:35.01};
 const empty={osm3s:{timestamp_osm_base:'2026-11-15T00:00:00Z'},elements:[]};
 const way={type:'way',id:10,nodes:[1,2],geometry:[{lat:35.004,lon:138.999},{lat:35.004,lon:139.011}],tags:{highway:'residential',layer:'1',bridge:'yes'}};
@@ -43,4 +43,16 @@ describe('automatic road reference acquisition',()=>{
   const repo=createRoadRepository(vi.fn(async()=>new Response('',{status:429})));
   await expect(repo.load(bounds)).rejects.toThrow('429');
  });
+});
+
+it('tile selection retains the original evidence snapshot and excludes non-tile providers',async()=>{
+ const overpass=await parseRoadResponse(empty,bounds,1);
+ const tile:RoadSnapshot={...overpass,tileLines:[],coverageVerified:false};
+ const selected=roadTileSnapshots({...overpass,tileSnapshots:[overpass,tile]});
+ expect(selected).toHaveLength(1);
+ expect(selected[0]).toBe(tile);
+ expect(selected[0].bundle).toBe(tile.bundle);
+ expect(selected[0].coverageVerified).toBe(false);
+ expect(roadTileSnapshots(overpass)).toEqual([]);
+ expect(roadTileSnapshots(undefined)).toEqual([]);
 });

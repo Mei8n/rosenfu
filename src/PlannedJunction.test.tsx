@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 import {LEVEL_LABELS} from './sectionInfrastructure';
 // @vitest-environment jsdom
@@ -39,7 +40,7 @@ async function start(snapshot: unknown = empty) {
 test('midline click creates planned exact source without mutating built track, then sends atomic source snapshot',async()=>{
  const source={id:'3',owner:'2',name:'本線',track_type:'normal',points:[unproject(100,300),unproject(900,300)],anchor_indices:[0,1]};
  const map=await start({...empty,next_id:'4',alignments:[source]});
- await settledMapClick(map,{clientX:200,clientY:151});fireEvent.pointerMove(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});
+ await settledMapClick(map,{clientX:200,clientY:151});await settledPointerMove(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});await settledMapClick(map,{clientX:300,clientY:170});
  expect(map.querySelectorAll('[data-alignment-id]')).toHaveLength(1);
  // Hover may issue an additional read-only preview; no mutation is allowed.
  expect(vi.mocked(invoke).mock.calls.map(([c])=>c).filter(command=>command!=='preview_construction_plan')).toEqual(['engine_info','world_snapshot','water_mask_requests','list_save_slots','autosave_status']);
@@ -75,7 +76,7 @@ test('successful branch construction clears history and cannot be undone or repl
 test('branch hover marks the exact allowed connection before click and clears when drawing starts',async()=>{
  const source={id:'3',owner:'2',name:'本線',track_type:'normal',points:[unproject(100,300),unproject(900,300)],anchor_indices:[0,1]};
  const map=await start({...empty,next_id:'4',alignments:[source]});
- fireEvent.pointerMove(map,{clientX:200,clientY:152});
+ await settledPointerMove(map,{clientX:200,clientY:152});
  const ring=map.querySelector('.junction-snap-ring')!;expect(ring).toBeTruthy();
  expect(Number(ring.getAttribute('cy'))).toBeCloseTo(300,6);
  expect(map.querySelector('.junction-snap-preview')?.textContent).toBe('ここから分岐');

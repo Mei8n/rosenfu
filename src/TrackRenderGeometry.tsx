@@ -1,5 +1,6 @@
+import {timeConstructionIPC} from './constructionTiming';
 import {TrackStroke} from './TrackStroke';
-import {useEffect,useMemo,useRef,useState} from 'react';
+import {memo,useEffect,useMemo,useRef,useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {MAP_VIEWBOX,project,type Camera} from './map';
 import {firstByKey} from './mapLookupIndex';
@@ -22,7 +23,7 @@ export function useTrackRenderGeometry(world:unknown,enabled:boolean,epoch=0){
    queue.active=true;
    void (async()=>{
     try{
-     const value=await invoke<TrackRenderGeometry>('preview_track_render_geometry',{world});
+     const value=await timeConstructionIPC('preview_track_render_geometry',()=>invoke<TrackRenderGeometry>('preview_track_render_geometry',{world}));
      if(!Array.isArray(value?.lanes)||!Array.isArray(value?.movements))throw Error('描画データが不正です');
      if(alive)setState({world,epoch,value,error:null});
     }catch(error){
@@ -42,7 +43,7 @@ export function useTrackRenderGeometry(world:unknown,enabled:boolean,epoch=0){
  },[world,enabled,epoch]);
  return enabled&&state&&state.world===world&&state.epoch===epoch?state:{world,epoch,value:null,error:null};
 }
-export function TrackGeometryLayer({geometry,camera,lines,selectedId,mapSize=MAP_VIEWBOX}:{geometry:TrackRenderGeometry;camera:Camera;lines:{id:string;infrastructure?:SectionInfrastructure[]}[];selectedId:string;mapSize?:{width:number;height:number}}){
+export const TrackGeometryLayer=memo(function TrackGeometryLayer({geometry,camera,lines,selectedId,mapSize=MAP_VIEWBOX}:{geometry:TrackRenderGeometry;camera:Camera;lines:{id:string;infrastructure?:SectionInfrastructure[]}[];selectedId:string;mapSize?:{width:number;height:number}}){
  const byId=useMemo(()=>firstByKey(lines,line=>line.id),[lines]);
  const indexed=useMemo(()=>{
   const index=<T extends {points:GeoPoint[]}>(items:readonly T[])=>createTrackViewportIndex(items.map((item,index)=>({item,index,points:item.points})));
@@ -56,4 +57,4 @@ export function TrackGeometryLayer({geometry,camera,lines,selectedId,mapSize=MAP
   return <TrackStroke key={index} data-physical-alignment={lane.alignment_id} data-lane-index={lane.lane_index} d={path(lane.points)} className={selectedId===lane.alignment_id?'alignment-path alignment-selected':'alignment-path'} style={{strokeDasharray:infrastructure?.level.startsWith('underground')?'5 4':undefined,opacity:1}}/>;
  })}{indexed.movements.visible(bounds).map(({item,index})=><TrackStroke key={'movement'+index} data-track-movement={index} d={path(item.points)} className="alignment-path turnout-lane"/>)}
  {indexed.internal.visible(bounds).map(({item,index})=><TrackStroke key={'internal'+index} data-internal-track-movement={index} d={path(item.points)} className="alignment-path turnout-lane"/>)}</g>;
-}
+});

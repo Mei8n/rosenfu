@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {replyToCommandOnce} from './testInvoke';
 import {settledMapClick} from './testMapClick';
 import {LEVEL_LABELS} from './sectionInfrastructure';
@@ -342,7 +343,7 @@ test("section infrastructure survives plan switching Undo Redo save reload and b
  const level=(value:keyof typeof LEVEL_LABELS)=>screen.getByRole('button',{name:LEVEL_LABELS[value]});
  fireEvent.change(count(),{target:{value:'2'}});fireEvent.click(level('elevated'));
  await settledMapClick(map,{clientX:120,clientY:100});
- fireEvent.pointerMove(map,{clientX:200,clientY:100});
+ await settledPointerMove(map,{clientX:200,clientY:100});
  expect(map.querySelector('.candidate-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
  await settledMapClick(map,{clientX:200,clientY:100});await settledMapClick(map,{clientX:200,clientY:100});
  expect(map.querySelector('.confirmed-draft')?.getAttribute('d')?.match(/M/g)).toHaveLength(2);

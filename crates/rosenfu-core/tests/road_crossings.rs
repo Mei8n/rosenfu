@@ -806,3 +806,69 @@ fn measure_connected_alignment_geography() {
         );
     }
 }
+
+#[test]
+fn indexed_duplicate_search_keeps_legacy_tolerance_ids_and_repeated_track_positions() {
+    fn distance(a: GeoPoint, b: GeoPoint) -> f64 {
+        let x = (a.longitude - b.longitude).to_radians()
+            * ((a.latitude + b.latitude) / 2.0).to_radians().cos();
+        6371000.0 * x.hypot((a.latitude - b.latitude).to_radians())
+    }
+    let (w, id) = world();
+    for folded in [false, true] {
+        let mut line = w
+            .snapshot()
+            .alignments
+            .iter()
+            .find(|a| a.id == id)
+            .unwrap()
+            .clone();
+        if folded {
+            line.points.push(line.points[0]);
+        }
+        for reverse in [false, true] {
+            let mut data = snapshot();
+            data.roads = (0..200)
+                .map(|i| {
+                    let mut r = road();
+                    r.id = if i % 3 == 0 {
+                        format!("ofm:{i}")
+                    } else {
+                        format!("way/{i}")
+                    };
+                    // Include coincident ways, points within 1 cm, and points beyond it.
+                    let x = (i / 4) as f64 * 0.00001 + [0.0, 0.0, 0.00000005, 0.0000002][i % 4];
+                    r.points = vec![point(x, -0.01), point(x, 0.01)];
+                    r
+                })
+                .collect();
+            if reverse {
+                data.roads.reverse();
+            }
+            let mut legacy: Vec<AutomaticCrossing> = vec![];
+            // Obtain each way's geometry independently, then use the previous
+            // full-scan duplicate rule as an oracle for the indexed broad phase.
+            for r in &data.roads {
+                let mut single = data.clone();
+                single.roads = vec![r.clone()];
+                for crossing in assessment(&line, single).crossings {
+                    if !legacy.iter().any(|c| {
+                        (c.road_id == crossing.road_id
+                            || !(c.road_id.starts_with("ofm:")
+                                && crossing.road_id.starts_with("ofm:")))
+                            && distance(c.point, crossing.point) < 0.01
+                            && (c.position - crossing.position).abs() * line.length_m() < 0.01
+                    }) {
+                        legacy.push(crossing);
+                    }
+                }
+            }
+            legacy.sort_by(|a, b| {
+                a.position
+                    .total_cmp(&b.position)
+                    .then_with(|| a.road_id.cmp(&b.road_id))
+            });
+            assert_eq!(assessment(&line, data).crossings, legacy);
+        }
+    }
+}

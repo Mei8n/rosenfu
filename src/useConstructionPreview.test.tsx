@@ -124,3 +124,17 @@ test('a settled result is not redisplayed when the same input is restored after 
  await act(async()=>finish({fresh:true}));
  expect(result.current?.value).toEqual({fresh:true});
 });
+
+test('unrelated rerenders with the same input arrays neither serialize nor restart validation',async()=>{
+ const serialize=vi.fn(()=>[]);
+ const alignments:unknown[]=[];
+ Object.defineProperty(alignments,'toJSON',{value:serialize});
+ const stations:unknown[]=[],world={};
+ vi.mocked(invoke).mockResolvedValue({ok:true});
+ const {rerender,result}=renderHook(()=>useConstructionPreview(world,{alignments,stations}));
+ await waitFor(()=>expect(result.current?.value).toEqual({ok:true}));
+ serialize.mockClear();vi.mocked(invoke).mockClear();
+ for(let i=0;i<10;i++)rerender();
+ expect(serialize).not.toHaveBeenCalled();
+ expect(invoke).not.toHaveBeenCalled();
+});
