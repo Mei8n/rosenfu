@@ -1,3 +1,4 @@
+import { resolveSeamEndpoint } from "./resolveSeamEndpoint";
 import {OFM_EVIDENCE_RULE,type OpenFreeMapEvidenceRequest} from "./openFreeMapRoadData";
 import {InstalledSeamBusPanel,type AcquireSeamBusArgs,type InstallSeamBusArgs} from "./InstalledSeamBusPanel";
 import {StationWalkLinks,type StationWalkEdit,type StationWalkLink} from "./StationWalkLinks";
@@ -859,7 +860,7 @@ export function App() {
   const [seamExtensionKey,setSeamExtensionKey]=useState("");
   const [seamDestinationKey,setSeamDestinationKey]=useState("");
   const [seamFocusKey,setSeamFocusKey]=useState("");
-  const seamEndpoint=(key:string)=>alignments.flatMap(alignment=>(["start","end"] as const).map(endpoint=>({key:alignment.id+":"+endpoint,alignment,endpoint,point:endpoint==="start"?alignment.points[0]:alignment.points.at(-1)!}))).find(candidate=>candidate.key===key);
+  const seamEndpoint=(key:string)=>resolveSeamEndpoint(alignmentsById,key);
   const seamExtension=seamEndpoint(seamExtensionKey),seamDestination=seamEndpoint(seamDestinationKey);
   const seamFocusedEndpoint=seamEndpoint(seamFocusKey)||seamExtension||seamDestination;
   const seamEndpointLevel=(candidate:NonNullable<ReturnType<typeof seamEndpoint>>)=>{const index=candidate.endpoint==="start"?0:(candidate.alignment.anchor_indices?.length??2)-1;const height=builtAnchorHeight(candidate.alignment,index);const levels:SectionInfrastructure["level"][]=['underground_3','underground_2','underground','ground','elevated','elevated_2','elevated_3'];const level=levels.find((_,i)=>Math.abs((i-3)*6-height)<1e-6);if(!level)throw Error('接続端点の高さを6m段階で指定できません。');return level;};
@@ -966,6 +967,7 @@ export function App() {
   const stationJoinOrigin=stationJoinPreview?(world?.stations.find(s=>s.id===stationJoinPreview.id)??plannedStations.find(s=>s.id===stationJoinPreview.id)?.point):undefined;
   const stationPreview=activeTool==="stations"&&mapMode==="place"&&!dragging&&!stationSelection?.error?stationSelection?.target?.polygon??[]:[];
   const previewCenter=stationSelection?.target?.center??null;
+  const previewStationNames=useMemo(()=>[...(world?.stations.map(s=>s.name)??[]),...plannedStations.map(s=>s.name)],[world?.stations,plannedStations]);
   useEffect(()=>{if(!referenceCopy.active)discardPlanStations(-1);},[referenceCopy.active]);
   const graphNodesById=useMemo(()=>new Map(graphBundle?.graph.nodes.map(node=>[node.osmId,node])??[]),[graphBundle]);
   useEffect(()=>{referenceCopy.clearHover();},[camera]);
@@ -1199,7 +1201,11 @@ export function App() {
     return [...routes.map(route=>"路線: "+route.name),...services.map(service=>"系統: "+service.name),
       ...(world?.station_walk_links?.some(link=>link.from===id||link.to===id)?["駅間の徒歩連絡"]:[])].join(" / ");
   }
-  function selectStation(id: string) {
+  const clearTrackSelection=useCallback(()=>{
+    setAlignmentId("");setSelectedPlanPath(null);setTrackDeleteConfirm(false);setJunctionSelection(null);
+  },[]);
+
+  const selectStation=useCallback((id:string)=>{
     if (busyRef.current||roadMapFrom!==null||roadPlayerMapPick) return;
     if ((mainTab === "routes" || mainTab === "services") && routeMapSelect.current) {
       if (!enabled || !stationsById.has(id)) return;
@@ -1212,7 +1218,7 @@ export function App() {
     setSelected(id); setEditStationName(stationsById.get(id)?.name ?? ""); setPendingStation(null); setPendingDelete(null);
     const placement = stationPlacementById.get(id);
     setEditLength(String(placement?.length_m ?? 200)); setEditWidth(String(placement?.width_m ?? 12)); setPanelCollapsed(false);
-  }
+  },[roadMapFrom,roadPlayerMapPick,mainTab,enabled,stationsById,routeMapPick,cancelRouteMapPick,clearTrackSelection,stationSettingsDirty,selected,stationPlacementById]);
   function beginStationNameEdit(){
     if(!enabled || busyRef.current || !selectedStation)return;
     stationNameInput.current?.focus();stationNameInput.current?.select();
@@ -1871,10 +1877,6 @@ export function App() {
     const after={points,geometry,redo:[],anchorLevels:[...levels,nextLevel],redoAnchorLevels:[],extension:draftExtension,destination:targetRef,redoDestination:undefined};
     if(!destination&&nativeTramGuide&&roadDrawingBundle===automaticRoad.snapshot?.bundle)storeTramRoadSnap(end,bindTramRoadSnap(automaticRoad.snapshot,result.roadSnap));
     applyAnchorEdit(activePathId,after);setAnchorUndo(history=>[...history,{kind:'point' as const,id:activePathId,before,after}].slice(-50));setAnchorRedo([]);setDraftFinished(!!targetRef||roadFinishAfterPlacement.current||finishPendingPlacement.current);roadFinishAfterPlacement.current=false;finishPendingPlacement.current=false;setHoverPoint(null);setError('');roadDrawing.cancel();
-  }
-
-  function clearTrackSelection() {
-    setAlignmentId("");setSelectedPlanPath(null);setTrackDeleteConfirm(false);setJunctionSelection(null);
   }
 
   function clearStationSelection() {
@@ -2914,7 +2916,7 @@ export function App() {
           <section role="tabpanel" id="panel-delete" aria-labelledby="tab-delete" hidden={activeTool!=="delete"} />
           <section className="station-editor" role="tabpanel" id="panel-stations" aria-labelledby="tab-stations" hidden={activeTool !== "stations"}>
 
-            <div hidden><StationNamePreview pack={referencePack} repository={referenceRepository} point={stationPreview.length>=4?previewCenter:null} existingNames={[...(world?.stations.map(s=>s.name)??[]),...plannedStations.map(s=>s.name)]}/></div>
+            <div hidden><StationNamePreview pack={referencePack} repository={referenceRepository} point={stationPreview.length>=4?previewCenter:null} existingNames={previewStationNames}/></div>
 
 
 
@@ -2928,7 +2930,7 @@ export function App() {
           </section>
           </div>
           <section id="workspace-panel-stations" role="tabpanel" className="station-directory" aria-labelledby="workspace-tab-stations" hidden={activeTool !== "station-management"}>
-            <StationDirectory key={worldEpoch} stations={world?.stations??[]} groups={world?.station_groups} routes={world?.routes??[]} paths={world?.route_paths} placements={world?.station_placements} selected={selected} onSelect={selectStation}/>
+            <StationDirectory key={worldEpoch} stations={world?.stations} groups={world?.station_groups} routes={world?.routes} paths={world?.route_paths} placements={world?.station_placements} selected={selected} onSelect={selectStation}/>
           </section>
           <section className="station-inspector" aria-label="選択した駅" hidden={activeTool !== "station-management"}>
             {selectedStation && <div className="equipment-editor"><h4>駅の詳細</h4><div className="station-detail-name"><strong onDoubleClick={beginStationNameEdit}>{selectedStation.name}</strong><button ref={stationNameEditButton} type="button" className="secondary" disabled={!enabled} aria-label="選択駅の名前を編集" onClick={beginStationNameEdit} title="駅名を変更">✎</button></div>
