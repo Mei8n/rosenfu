@@ -2,6 +2,9 @@
 use super::ZonePin;
 use std::sync::OnceLock;
 
+pub const PROVIDER_REVISION: &str = "2026-11-25";
+const AUDITED_ZONE_COUNT: usize = 41;
+
 /// All verified pins. Hashes record observed bytes, not an author signature.
 pub fn pins() -> Result<&'static [ZonePin], String> {
     static PINS: OnceLock<Result<Vec<ZonePin>, String>> = OnceLock::new();
@@ -9,13 +12,13 @@ pub fn pins() -> Result<&'static [ZonePin], String> {
         let pins: Vec<ZonePin> = serde_json::from_str(include_str!("registry.json"))
             .map_err(|e| format!("water registry: {e}"))?;
         let mut ids = std::collections::BTreeSet::new();
-        if pins.len() != 45 {
-            return Err("water registry must contain 45 audited zones".into());
+        if pins.len() != AUDITED_ZONE_COUNT {
+            return Err("water registry must contain 41 audited zones".into());
         }
         for pin in &pins {
             pin.validate()
                 .map_err(|e| format!("water registry {}: {e:?}", pin.zone_id))?;
-            if pin.provider_revision != "2026-11-13" || !ids.insert(&pin.zone_id) {
+            if pin.provider_revision != PROVIDER_REVISION || !ids.insert(&pin.zone_id) {
                 return Err("water registry version or duplicate zone".into());
             }
         }
@@ -171,7 +174,7 @@ mod tests {
     #[test]
     fn registry_validates_all_pins_and_projection() {
         let all = pins().unwrap();
-        assert_eq!(all.len(), 45);
+        assert_eq!(all.len(), AUDITED_ZONE_COUNT);
         for pin in all {
             let b = bounds(pin);
             assert!(intersecting(b)

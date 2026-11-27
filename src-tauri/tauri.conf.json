@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Rosenfu",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "identifier": "io.github.mei8n.rosenfu",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -15,7 +15,7 @@
         "title": "Rosenfu",
         "width": 960,
         "height": 640,
-        "userAgent": "Rosenfu/0.2.2 (+https://github.com/mei8n/rosenfu)"
+        "userAgent": "Rosenfu/0.2.3 (+https://github.com/mei8n/rosenfu)"
       }
     ],
     "security": {

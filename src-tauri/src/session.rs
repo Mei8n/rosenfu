@@ -2808,7 +2808,7 @@ mod tests {
         // Acquired model data is session state, never silently embedded in schema 25.
         assert!(!std::fs::read_to_string(path)
             .unwrap()
-            .contains("2026-11-13"));
+            .contains(rosenfu_core::water_zone::registry::PROVIDER_REVISION));
     }
     fn pending_token(editor: &mut WorldEditor, path: &Path) -> String {
         let result = editor.request_manual_save(path, None, None).unwrap();
