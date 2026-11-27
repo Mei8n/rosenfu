@@ -1,0 +1,32 @@
+{
+  "format": "rosenfu-world",
+  "schema_version": 26,
+  "world": {
+    "road_transport": {
+      "evidence": [],
+      "nodes": [],
+      "edges": [],
+      "bus_stops": [],
+      "bus_routes": [],
+      "tram_sections": []
+    },
+    "source_records": [],
+    "alignment_provenance": [],
+    "service_paths": [],
+    "service_route_bindings": [],
+    "route_paths": [],
+    "alignments": [],
+    "station_placements": [],
+    "next_id": "1",
+    "players": [],
+    "companies": [],
+    "stations": [],
+    "routes": [],
+    "services": []
+  },
+  "road_evidence": {
+    "raw_blobs": [],
+    "bindings": []
+  },
+  "operation": null
+}

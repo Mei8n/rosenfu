@@ -15,7 +15,7 @@ impl World {
         if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
             return Err(WorldError::InvalidAlignment);
         }
-        let mut draft = self.data.clone();
+        let mut draft = self.snapshot().clone();
         let original_points = draft
             .alignments
             .iter()
@@ -146,7 +146,7 @@ impl World {
         id: AlignmentId,
         anchor: usize,
     ) -> Result<AlignmentId, WorldError> {
-        let mut draft = self.data.clone();
+        let mut draft = self.snapshot().clone();
         let index = draft
             .alignments
             .iter()

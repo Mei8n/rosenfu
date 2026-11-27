@@ -41,8 +41,57 @@ fn same_points(a: &[GeoPoint], b: &[GeoPoint]) -> bool {
         })
 }
 impl WorldDraft {
-    pub(super) fn validate_road_path_provenance(&self) -> Result<(), WorldError> {
-        let plan_paths = self.construction_plans.as_ref().map_or(0, |p| {
+    /// A writer must select the new save envelope before emitting this proof.
+    /// Inspect parked descriptors, too, even though the current authoring
+    /// transaction doesn't let a street-tram preview become a parked plan.
+    pub fn carries_street_tram_proof(&self) -> bool {
+        self.has_road_descriptor(PathDescriptor::carries_street_tram_proof)
+    }
+
+    pub fn carries_adjacent_street_tram_proof(&self) -> bool {
+        self.has_road_descriptor(PathDescriptor::carries_adjacent_street_tram_proof)
+    }
+
+    pub fn carries_fractional_bus_proof(&self) -> bool {
+        self.ofm_gameplay_bus_routes
+            .values()
+            .any(|binding| binding.same_atom_stops.is_some())
+    }
+
+    pub fn carries_chain_street_tram_proof(&self) -> bool {
+        self.has_road_descriptor(PathDescriptor::carries_chain_street_tram_proof)
+    }
+
+    pub fn carries_general_fractional_bus_proof(&self) -> bool {
+        self.ofm_gameplay_bus_routes
+            .values()
+            .any(|binding| binding.fractional_terminals.is_some())
+    }
+
+    pub fn carries_general_fractional_bus_stops_proof(&self) -> bool {
+        self.ofm_gameplay_bus_routes.values().any(|binding| {
+            binding.fractional_terminals.is_some() && !binding.interior_stops.is_empty()
+        })
+    }
+
+    fn has_road_descriptor(&self, check: fn(&PathDescriptor) -> bool) -> bool {
+        self.road_path_provenance
+            .iter()
+            .any(|range| check(&range.path))
+            || self.construction_plans.as_ref().is_some_and(|p| {
+                p.parked_paths
+                    .iter()
+                    .any(|path| path.ofm_path.as_ref().is_some_and(check))
+            })
+    }
+
+    /// Saved parked paths share the budget and immutable source evidence of
+    /// the already-built paths. Used by both whole-world and metadata edits.
+    pub(super) fn validate_parked_road_paths(
+        &self,
+        plans: Option<&ConstructionPlans>,
+    ) -> Result<(), WorldError> {
+        let plan_paths = plans.map_or(0, |p| {
             p.parked_paths
                 .iter()
                 .filter(|p| p.ofm_path.is_some())
@@ -51,11 +100,12 @@ impl WorldDraft {
         if self.road_path_provenance.len() + plan_paths > MAX_PATHS {
             return Err(WorldError::InvalidRoadEvidence);
         }
-        if let Some(plans) = &self.construction_plans {
+        if let Some(plans) = plans {
             for p in &plans.parked_paths {
                 if let Some(path) = &p.ofm_path {
                     let actual = generated(&self.runtime_road_evidence, path)?;
-                    if p.reference.is_some()
+                    if path.carries_street_tram_proof()
+                        || p.reference.is_some()
                         || p.edited_geometry.is_some()
                         || !same_points(&p.points, &actual)
                         || !same_points(&p.line, &actual)
@@ -65,6 +115,11 @@ impl WorldDraft {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub(super) fn validate_road_path_provenance(&self) -> Result<(), WorldError> {
+        self.validate_parked_road_paths(self.construction_plans.as_ref())?;
         let mut ranges: std::collections::BTreeMap<AlignmentId, Vec<(usize, usize)>> =
             std::collections::BTreeMap::new();
         for p in &self.alignment_provenance {
@@ -88,6 +143,16 @@ impl WorldDraft {
                 || p.from_position < 0.
                 || p.to_position > 1.
                 || p.from_position >= p.to_position
+            {
+                return Err(WorldError::InvalidProvenance);
+            }
+            if p.path.carries_street_tram_proof()
+                && (a.track_type != TrackType::Tram
+                    || a.vertical_profile.is_some()
+                    || !a.section_profiles.is_empty()
+                    || a.effective_infrastructure()
+                        .iter()
+                        .any(|s| s.level != InfrastructureLevel::Ground))
             {
                 return Err(WorldError::InvalidProvenance);
             }
@@ -187,6 +252,124 @@ impl WorldDraft {
     }
 }
 impl World {
+    fn can_mix_fractional_with_street_tram(&self) -> bool {
+        self.operation()
+            .is_none_or(|op| op.runtime.admission_model() as u32 == 2)
+    }
+
+    /// Test the saved capability before doing a preview search or a write.
+    pub fn can_author_fractional_bus(&self) -> bool {
+        #[cfg(feature = "standard-periodic-rail")]
+        if self.has_standard_timetable() {
+            return false;
+        }
+        let data = self.snapshot();
+        !data.carries_adjacent_street_tram_proof()
+            && !data.carries_chain_street_tram_proof()
+            && (!data.carries_street_tram_proof() || self.can_mix_fractional_with_street_tram())
+            && !self
+                .operation()
+                .is_some_and(|op| op.runtime.admission_model() as u32 > 7)
+    }
+
+    pub fn can_author_general_fractional_bus(&self) -> bool {
+        self.can_mix_fractional_with_street_tram()
+    }
+
+    pub fn can_author_street_tram_with_bus_capabilities(
+        &self,
+        guide: crate::ofm_evidence::AuthoredTramProof<'_>,
+    ) -> bool {
+        use crate::ofm_evidence::AuthoredTramProof;
+        let data = self.snapshot();
+        let fixed = self.can_mix_fractional_with_street_tram();
+        match guide {
+            AuthoredTramProof::SingleOrAdjacent(guide) => {
+                (!data.carries_general_fractional_bus_proof() || fixed)
+                    && (!data.carries_fractional_bus_proof()
+                        || (guide.adjacent_end.is_none()
+                            && !data.carries_adjacent_street_tram_proof()
+                            && !data.carries_chain_street_tram_proof()
+                            && self.can_author_fractional_bus()))
+            }
+            AuthoredTramProof::Chain(_) => !data.carries_fractional_bus_proof() && fixed,
+        }
+    }
+
+    /// Only installed evidence authority can bypass the generic draft replacer's
+    /// evidence-change guard. This stages one immutable attachment, never a
+    /// route, and leaves the live World unchanged on error.
+    pub fn candidate_with_installed_seam_evidence(
+        &self,
+        catalog_key: &str,
+        raw: Vec<RawEvidence>,
+    ) -> Result<Self, WorldError> {
+        if self.operation().is_some() || !self.snapshot().ofm_installed_seam_bus_routes.is_empty() {
+            return Err(WorldError::InvalidRoadEvidence);
+        }
+        let current = self.snapshot();
+        let store = crate::ofm_evidence::stage_installed_seam_tiles(
+            &current.runtime_road_evidence,
+            catalog_key,
+            raw,
+        )
+        .map_err(|_| WorldError::InvalidRoadEvidence)?;
+        let mut candidate = self.clone();
+        candidate.data = current.clone().with_road_evidence(store)?.into();
+        Ok(candidate)
+    }
+
+    /// An ordinary OFM Bus edit owns only its addressed raw tiles and the
+    /// route reconstructed from it. Never permits arbitrary draft replacement.
+    pub fn candidate_with_gameplay_ofm_bus(
+        &self,
+        owner: CompanyId,
+        route_id: String,
+        name: String,
+        path: crate::ofm_evidence::BusPathBinding,
+        cached: Vec<(RawEvidence, TileBinding)>,
+    ) -> Result<Self, crate::road_transport::RoadTransportError> {
+        if (path.fractional_terminals.is_some() && !self.can_author_general_fractional_bus())
+            || (path.same_atom_stops.is_some() && !self.can_author_fractional_bus())
+        {
+            return Err(crate::road_transport::RoadTransportError::InvalidData);
+        }
+        let mut candidate = self.clone();
+        candidate.data = self
+            .snapshot()
+            .clone()
+            .admit_gameplay_ofm_bus_tiles(&path, cached)?
+            .put_ofm_gameplay_bus(owner, route_id, name, path)?
+            .into();
+        candidate
+            .data
+            .validate()
+            .map_err(|_| crate::road_transport::RoadTransportError::InvalidData)?;
+        Ok(candidate)
+    }
+}
+
+impl World {
+    /// Return a detached candidate containing the single tile and its exact
+    /// street-tram derivation. The editor uses this only with its ordinary
+    /// construction transaction and can discard it on any later rejection.
+    pub fn staged_street_tram_for_construction<'a>(
+        &self,
+        guide: impl Into<crate::ofm_evidence::AuthoredTramProof<'a>>,
+        cached: Vec<(RawEvidence, TileBinding)>,
+    ) -> Result<(Self, crate::ofm_evidence::DerivedPath), crate::road_transport::RoadTransportError>
+    {
+        let draft = self.snapshot();
+        let guide = guide.into();
+        if !self.can_author_street_tram_with_bus_capabilities(guide) {
+            return Err(crate::road_transport::RoadTransportError::InvalidData);
+        }
+        let (draft, path) = draft.clone().stage_authored_street_tram(guide, cached)?;
+        let mut candidate = self.clone();
+        candidate.data = draft.into();
+        Ok((candidate, path))
+    }
+
     /// Park light plans and raw evidence in one candidate. Supplied preview points
     /// are replaced by regenerated backend points, not promoted to trusted geometry.
     pub fn stage_ofm_construction_plans(
@@ -208,7 +391,7 @@ impl World {
         let store = self
             .data
             .runtime_road_evidence
-            .with_additions(raw, bindings)
+            .with_pinned_additions(raw, bindings)
             .map_err(|_| WorldError::InvalidRoadEvidence)?;
         for p in &mut plans.parked_paths {
             if let Some(path) = &p.ofm_path {
@@ -220,12 +403,12 @@ impl World {
                 p.line = points;
             }
         }
-        let mut draft = self.data.clone();
+        let mut draft = self.snapshot().clone();
         draft.road_evidence_descriptors = store.descriptors();
         draft.runtime_road_evidence = store;
         draft.construction_plans = Some(plans);
         draft.validate()?;
-        self.data = draft;
+        self.data = draft.into();
         Ok(())
     }
     pub fn build_alignment_from_road_path(
@@ -240,7 +423,7 @@ impl World {
         let mut candidate = self.clone();
         let id = candidate.build_alignment_typed(owner, name, points, track_type)?;
         candidate
-            .data
+            .data_mut()
             .road_path_provenance
             .push(AlignmentRoadPathProvenance {
                 alignment_id: id,
@@ -263,6 +446,9 @@ impl World {
         endpoint: AlignmentEndpoint,
         mut path: PathDescriptor,
     ) -> Result<(), WorldError> {
+        if path.carries_street_tram_proof() {
+            return Err(WorldError::ProvenanceEditUnsupported);
+        }
         let points = generated(&self.data.runtime_road_evidence, &path)?;
         let count = points.len() - 1;
         let old = self
@@ -294,7 +480,7 @@ impl World {
             }
         };
         candidate
-            .data
+            .data_mut()
             .road_path_provenance
             .push(AlignmentRoadPathProvenance {
                 alignment_id: id,

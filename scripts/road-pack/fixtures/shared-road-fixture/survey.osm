@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="rosenfu-synthetic-test">
+  <node id="1" lon="139.002" lat="35.01"/>
+  <node id="2" lon="139.005" lat="35.01"/>
+  <node id="3" lon="139.009" lat="35.01"/>
+  <node id="4" lon="139.015" lat="35.01"/>
+  <node id="5" lon="139.015" lat="35.015"/>
+  <node id="6" lon="139.009" lat="35.01"/>
+  <node id="7" lon="139.009" lat="35.017"/>
+  <node id="8" lon="139.002" lat="35.012"/>
+  <node id="9" lon="139.005" lat="35.012"><tag k="barrier" v="gate"/></node>
+  <node id="11" lon="139.01" lat="35.012"/>
+  <node id="12" lon="139.015" lat="35.012"/>
+  <node id="13" lon="138.998" lat="35.017"/>
+  <node id="14" lon="139.003" lat="35.017"/>
+  <node id="15" lon="139.011" lat="35.017"/>
+  <node id="16" lon="139.015" lat="35.017"/>
+  <node id="17" lon="139.013" lat="35.004"/>
+  <node id="18" lon="139.016" lat="35.004"/>
+  <node id="19" lon="139.013" lat="35.006"/>
+  <node id="20" lon="139.016" lat="35.006"/>
+  <way id="101" version="7">
+    <nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/>
+    <tag k="highway" v="residential"/><tag k="oneway" v="yes"/><tag k="bus" v="yes"/>
+  </way>
+  <way id="102" version="3">
+    <nd ref="4"/><nd ref="5"/><tag k="highway" v="unclassified"/><tag k="oneway" v="no"/>
+    <tag k="bus" v="designated"/><tag k="tram" v="yes"/>
+  </way>
+  <way id="103" version="4">
+    <nd ref="6"/><nd ref="7"/><tag k="highway" v="residential"/><tag k="oneway" v="-1"/>
+    <tag k="bus" v="yes"/><tag k="tram" v="no"/>
+  </way>
+  <way id="104" version="1">
+    <nd ref="8"/><nd ref="9"/><tag k="highway" v="residential"/><tag k="oneway" v="no"/><tag k="bus" v="yes"/>
+  </way>
+  <way id="105" version="1">
+    <nd ref="11"/><nd ref="12"/><tag k="highway" v="residential"/><tag k="oneway" v="no"/>
+    <tag k="bus" v="yes"/><tag k="bus:conditional" v="no @ (08:00-10:00)"/>
+  </way>
+  <way id="106" version="1">
+    <nd ref="13"/><nd ref="14"/><tag k="highway" v="residential"/><tag k="oneway" v="no"/><tag k="bus" v="yes"/>
+  </way>
+  <way id="107" version="1">
+    <nd ref="15"/><nd ref="16"/><tag k="highway" v="residential"/><tag k="oneway" v="no"/><tag k="bus" v="yes"/>
+  </way>
+  <way id="108" version="1">
+    <nd ref="17"/><nd ref="18"/><tag k="highway" v="residential"/><tag k="oneway" v="no"/><tag k="bus" v="yes"/>
+    <tag k="access" v="private"/>
+  </way>
+  <way id="109" version="1">
+    <nd ref="19"/><nd ref="20"/><tag k="highway" v="residential"/><tag k="oneway" v="no"/><tag k="bus" v="yes"/>
+    <tag k="bridge" v="yes"/>
+  </way>
+  <relation id="501">
+    <member type="way" ref="107" role="from"/><member type="node" ref="16" role="via"/>
+    <member type="way" ref="108" role="to"/><tag k="type" v="restriction:bus"/><tag k="restriction:bus" v="no_left_turn"/>
+  </relation>
+</osm>

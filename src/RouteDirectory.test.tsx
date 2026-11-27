@@ -38,3 +38,41 @@ test('rename cancel and blank draft never write',()=>{
  expect((screen.getByRole('button',{name:'保存'}) as HTMLButtonElement).disabled).toBe(true);
  fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(rename).not.toHaveBeenCalled();expect(screen.queryByRole('textbox')).toBeNull();expect(dirty).toHaveBeenLastCalledWith(false);expect(dirty).toHaveBeenCalledWith(true);
 });
+
+test('route search is normalized and never exposes internal identifiers',()=>{
+ const onChoose=vi.fn();
+ const {container}=render(<RouteDirectory world={{routes:[{id:'private-route-id',name:'Express',start:'station-secret'}]}} enabled selected={null} onChoose={onChoose}/>);
+ fireEvent.change(screen.getByLabelText('路線を探す'),{target:{value:'ＥＸＰＲＥＳＳ'}});
+ fireEvent.click(screen.getByRole('button',{name:'編集: Express'}));expect(onChoose).toHaveBeenCalledWith('private-route-id');
+ expect(container.textContent).not.toContain('private-route-id');
+ fireEvent.change(screen.getByLabelText('路線を探す'),{target:{value:'なし'}});
+ expect(screen.getByText('一致する路線がありません')).toBeTruthy();
+});
+
+test('one physical length serves multiple route rows/searches and updates on changed geometry',()=>{
+ const read=vi.fn(()=>points);
+ const r2={...route,id:'second',name:'支線'};
+ const recorded={...world,routes:[route,r2],alignments:[{id:'l',get points(){return read();}}],
+  route_paths:[world.route_paths[0],{...world.route_paths[0],route_id:r2.id}]};
+ const props={selected:null,enabled:true,onChoose:vi.fn()};
+ const {rerender}=render(<RouteDirectory {...props} world={recorded}/>);
+ expect(read).toHaveBeenCalledTimes(1);
+ fireEvent.change(screen.getByLabelText('路線を探す'),{target:{value:'支線'}});
+ expect(read).toHaveBeenCalledTimes(1);
+ expect(screen.getByRole('table').textContent).toContain('km');
+ rerender(<RouteDirectory {...props} world={{...recorded,alignments:[]}}/>);
+ expect(screen.getByRole('table').textContent).toContain('—');
+ expect(screen.getByRole('table').textContent).not.toContain('km');
+});
+
+test('connected route index preserves reverse-link membership and first duplicate lookup',()=>{
+ const a={id:'l',points};
+ const b={id:'m',points:[points[2],{latitude:35.02,longitude:139.02}]};
+ const link={a:{alignment_id:'l',endpoint:'end' as const},b:{alignment_id:'m',endpoint:'start' as const}};
+ const connected={...world,alignments:[a,{...a,points:[]},b],
+  station_placements:[world.station_placements[0],{station_id:'a',alignment_id:'m',position:.99},{station_id:'b',alignment_id:'m',position:.9}],
+  alignment_connections:[{a:link.b,b:link.a}],
+  route_paths:[{route_id:'r',segments:[{kind:'connected_alignments' as const,from:'a',to:'b',connections:[link]}]},world.route_paths[0]]};
+ expect(routeLength(route,connected)).toBeCloseTo(alignmentLength(points)*.9+alignmentLength(b.points)*.9);
+ expect(routeLength(route,{...connected,alignment_connections:[]})).toBeNull();
+});

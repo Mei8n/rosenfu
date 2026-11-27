@@ -1,0 +1,40 @@
+/* Names and actions first; measured information stays in quiet, aligned columns. */
+.workbench .network-directory { min-width:0; gap:8px; }
+.directory-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.directory-total,.directory-note { color:var(--muted); font-size:var(--ui-font,12px); }
+.directory-search { display:grid; gap:4px; color:var(--muted); font-size:var(--ui-font,12px); }
+.directory-search input { min-width:0; width:100%; box-sizing:border-box; }
+.workbench .network-directory table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:var(--ui-font,12px); }
+.workbench .network-directory th,.workbench .network-directory td { padding:5px 3px; text-align:left; vertical-align:middle; }
+.workbench .network-directory thead { color:var(--muted); border-bottom:1px solid var(--edge); }
+.workbench .network-directory tbody tr { border-bottom:1px solid var(--edge); }
+.workbench .network-directory tbody th { font-weight:normal; }
+.workbench .network-directory th:first-child { width:50%; }
+.workbench .route-directory th:first-child { width:70%; }
+.workbench .network-directory .route-choice { display:flex; align-items:center; gap:5px; width:100%; min-width:0; border:0; border-radius:0; background:transparent; padding:6px 4px; overflow-wrap:anywhere; }
+.workbench .network-directory .route-choice:hover { background:var(--surface-alt); }
+.workbench .network-directory .route-choice.selected { background:var(--surface-alt); box-shadow:inset 3px 0 var(--accent,#3684ac); }
+.workbench .network-directory .route-choice span { min-width:0; }
+.workbench .network-directory td { font-variant-numeric:tabular-nums; color:var(--muted); }
+.network-directory form { display:flex; flex-wrap:wrap; gap:4px; }
+.network-directory form input { min-width:0; width:100%; }
+.saved-route-stations { margin:8px 0; padding-left:24px; border-left:2px solid var(--edge); }
+.saved-route-stations li { padding:4px 0; overflow-wrap:anywhere; }
+
+.route-directory-name{display:flex;align-items:center;gap:4px}
+.route-directory-name>.route-choice{flex:1;min-width:0}
+.route-directory-name>.secondary{flex:none;padding:4px 6px;background:transparent}
+
+.directory-search select { min-width:0; width:100%; box-sizing:border-box; }
+.service-directory-routes { display:block; color:var(--muted); margin-top:2px; }
+.route-via-actions { display:inline-flex; gap:4px; margin-inline-start:6px; }
+
+.route-station-search ul { max-height:12rem; overflow:auto; list-style:none; margin:0; padding:0; }
+.route-station-search li + li { margin-top:4px; }
+.route-station-search li button { width:100%; text-align:start; }
+.route-station-search small { margin-inline-start:5px; }
+.route-station-search li:has(.route-station-locate) { display:flex; gap:4px; align-items:stretch; }
+.route-station-search li .route-station-locate { width:auto; flex-shrink:0; }
+.service-directory-group-toggle { display:flex; gap:.45em; align-items:center; margin-block:.4em; }
+.service-directory-group th { font-size:.95em; border-top:1px solid currentColor; }
+.service-directory-group th small { font-weight:normal; margin-inline-start:.35em; }

@@ -352,6 +352,7 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 .workbench .workspace-tabs button[aria-selected="true"] { background:var(--accent); }
 .workbench .construction-tabs { grid-template-columns:repeat(2,1fr); position:static; }
 .workbench .construction-tabs[hidden] { display:none; }
+.workbench .construction-tabs kbd { margin-inline-start:.4em; font:inherit; font-size:.8em; opacity:.75; }
 .workbench .side-panel { width:min(var(--panel-width),calc(100vw - 120px)); }
 .workbench .map-panel { left:min(var(--panel-width),calc(100vw - 120px)); }
 .panel-resizer { position:absolute; top:0; bottom:0; left:calc(min(var(--panel-width),100vw - 120px) - 4px); width:8px; z-index:12; cursor:col-resize; touch-action:none; }
@@ -567,15 +568,20 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 
 /* Map legibility: neutral built infrastructure, blue plans, red refusals.
    Screen-space widths remain readable without widening the hit targets. */
-.workbench .rail-casing { fill:none; stroke:#fffefa; stroke-width:calc(var(--rail-width) * .6px + 3.2px); stroke-linecap:butt; stroke-linejoin:round; vector-effect:non-scaling-stroke; pointer-events:none; }
-.workbench .alignment-path { stroke:#414a4d; stroke-width:calc(var(--rail-width) * .6px + 1px); vector-effect:non-scaling-stroke; }
+.workbench .rail-casing { fill:none; stroke:#fffefa; stroke-width:var(--map-track-casing); stroke-linecap:butt; stroke-linejoin:round; vector-effect:non-scaling-stroke; pointer-events:none; }
+.workbench .alignment-path { stroke:#414a4d; stroke-width:var(--map-track-width); vector-effect:non-scaling-stroke; }
 .workbench .route-base .alignment-path { stroke:#858b8d; }
 .workbench .alignment-path.alignment-selected { stroke:#c17c0b; }
-.workbench .draft-path { stroke:#187cb2; stroke-width:calc(var(--rail-width) * .6px + 1px); stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:7 3; vector-effect:non-scaling-stroke; }
-.workbench .draft-path.candidate-draft,.workbench .draft-path.road-drawing-preview,.workbench .draft-path.reference-copy-preview,.workbench .draft-path.anchor-drag-preview { stroke:#087ca0; stroke-width:calc(var(--rail-width) * .6px + 1px); stroke-dasharray:none; }
+.workbench .draft-path { stroke:#187cb2; stroke-width:var(--map-track-width); stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:7 3; vector-effect:non-scaling-stroke; }
+.workbench .draft-path.candidate-draft,.workbench .draft-path.road-drawing-preview,.workbench .draft-path.reference-copy-preview,.workbench .draft-path.anchor-drag-preview { stroke:#087ca0; stroke-width:var(--map-track-width); stroke-dasharray:none; }
 .workbench .inactive-plan .draft-path { stroke:#7a858b; }
 .workbench .draft-path.track-explicit-selection { stroke:#c17c0b; }
 .workbench .draft-path.invalid-candidate { stroke:#c43d45; stroke-dasharray:4 3; }
+
+/* Only the active tram road-follow tool uses this guide palette. */
+.reference-graph-road.tram-road-guide-overlay { stroke:#298746; }
+.workbench .draft-path.tram-road-guide-preview:not(.invalid-candidate) { stroke:#1a7c43; }
+.track-focus-marker.tram-road-guide-marker[data-allowed="true"] { fill:#1a7c43; }
 
 /* Keep the placing panel's inline size independent of the open disclosure.
    max-content let the speed row resize/recenter the entire toolbar. */
@@ -584,3 +590,7 @@ button.danger { color: #f2b5a6; border-color: #89594f; }
 }
 .workbench .track-construction-toolbar .height-controls { flex-wrap:wrap; }
 .workbench .track-construction-toolbar .speed-input { min-width:0; flex-wrap:wrap; }
+
+/* Labels and station rims share the map's screen-space sizing. Platform polygons retain real size. */
+.workbench .station-marker text,.workbench .planned-station text { font-size:var(--station-label-size); stroke-width:3px; vector-effect:non-scaling-stroke; }
+.workbench .station-dot,.workbench .station-platform { vector-effect:non-scaling-stroke; }

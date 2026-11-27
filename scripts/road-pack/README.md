@@ -229,3 +229,176 @@ node cache remain inside the same own-work budget; no source data is sent elsewh
 Extraction/shutdown has a two-hour default deadline; error, timeout or parent
 interruption terminates and joins the child before temporary-directory cleanup.
 No index is published on failure.
+
+## Native road region projection (offline candidate only)
+
+One source can serve different consumers without treating a map line as
+permission to drive. Run the existing v1 pack producer for crossing/reference
+geometry and `build_native_region.py` for the directed bus/tram candidate from
+the **same exact raw OSM XML**, coverage polygon, and revision:
+
+```sh
+cd scripts/road-pack
+f=fixtures/shared-road-fixture
+python3 build_native_region.py "$f/survey.osm" --coverage "$f/coverage.json" \
+  --policy "$f/policy.json" --output /tmp/rosenfu-native-shared-road.json
+python3 -m unittest test_build_native_region
+```
+
+The example is synthetic, never real-road authority. The build checks hashes
+from the supplied region policy, not the truth or completeness of that policy.
+Use a separately verified full regional source (including nodes, ways and
+restriction relations, not a v1 crossing pack or generalized OpenFreeMap
+tiles). Review origin/revision/bounds against its source, rights and updates
+before any real artifact can be approved. This tool makes no network requests
+and does not change the crossing pack format or production provider.
+
+For this initial narrow profile, only complete interior residential and
+unclassified ways with explicit `oneway=yes|no|-1` are considered. A region mode
+and explicit `bus` or `tram=yes|designated` are both necessary; missing
+permission remains unknown, and general denials, unsupported tags or structures,
+tagged nodes, and affected restriction members exclude movement. Geometry comes
+from ordered source node IDs, not proximity or a guessed junction at tile
+seams. Unshared same-way continuation is derived; an actual shared junction
+needs an explicit reviewed directed movement. Boarding positions are reviewed
+per region once, not registered per bus route. Nothing here performs a legal
+assessment of bus service or tram construction on the source roads.
+
+The output uses the existing native candidate format 1. It cannot activate
+real routes by itself: a release still needs an independent data review and
+a digest pin in the native registry, which this tool never touches. The initial
+fixture's three boarding positions permit different routes from one region;
+the same graph cannot be widened by a save or frontend request. Source refresh
+or loading more than one region in a world is outside this increment.
+
+### Opt-in simulated simple junctions
+
+The default stays strict, including byte-identical existing output. A separate
+gameplay policy can generate movements once per **region**, not per play route.
+It does not make a legal-turn determination or establish actual operator access.
+
+First independently verify that the exact extraction has **every incident raw
+way** (including ways this projection would otherwise discard) and **every
+potentially applicable mapped restriction relation with all its members** across
+the entire candidate bounds. A polygon, a clipped or filtered tile, a local
+coordinate match, and a lack of restriction rows do not establish this. Keep
+the extraction method and evidence with the review. If completeness is not
+affirmative, omit the opt-in and keep the junction closed to implicit turns.
+
+Record the independently reviewed regional attestation in a separate JSON file:
+
+- format 1; `source_sha256`, `coverage_sha256`, `revision`, and `bounds` must bind
+  the exact existing policy values;
+- `incident_ways_complete` and `restriction_relations_complete` must both be
+  literal `true`.
+
+Add the attestation's own byte digest as `simulated_junctions_sha256` to the
+region policy and pass `--junction-coverage PATH` along with the existing
+inputs. Neither input alone opts in. The generator checks the binding, not the
+truth of the independently reviewed attestation. Never use a fictional or
+unverifiable attestation to register a real asset.
+
+For this policy, only genuine, nondegenerate three-arm raw nodes on wholly
+interior eligible at-grade ways can emit automatic turns. Degree-two and more
+complex multiway joins remain strict, including coincident IDs that are not
+actually the same node. An affected restriction relation, barrier, unsupported
+or conditional tag/structure, duplicate or overlapping arm, or unknown mode
+on any arm blocks automatic turns for the applicable junction/mode. No
+U-turn or travel against the directed way order is added. The unchanged native
+gate still checks the explicit per-mode ordered movements, including on
+restore. Ordinary tram vertical limits and actual street rules are not
+certified by this topology policy.
+
+The candidate asset marks its origin `[Rosenfu simulated turns]`; the build
+receipt identifies `simulated-simple-at-grade-v1` and the attestation digest.
+No file is added to the native pin registry automatically.
+
+### Independent opt-in for in-game bus stops
+
+A regional policy may independently set `"allows_player_bus_stops": true`.
+The generator then emits the same field in the native digest-pinned asset and
+in the build receipt. A missing or explicit false value leaves the field absent
+and does not change the candidate bytes. Non-boolean values are rejected.
+
+This is a gameplay option to choose stops on already approved, directed bus
+edges. It creates no real stops, does not grant mode access, and never adds
+routing transitions. The simulated-junction policy does not enable player stop
+placement, and player stop placement does not enable simulated junctions.
+
+### Opt-in Japanese local-street bus simulation
+
+`--bus-profile-coverage <certificate.json>` is a separate, offline option.
+The region policy must list its exact SHA-256 as `simulated_bus_profile_sha256`
+and enable the bus mode. The certificate is a format-1 JSON document with
+`profile: "jp-local-simulated-bus-v1"`, `country: "JP"`, and the exact same
+`source_sha256`, `coverage_sha256`, `revision`, and `bounds` as the region policy.
+It must affirm `raw_way_access_and_direction_tags_complete`,
+`raw_node_tags_complete`, `incident_ways_complete`, and
+`restriction_relations_complete`. The raw XML must carry matching snapshot
+revision metadata. This is an operator attestation, not evidence created by the
+command; a clipped map response or a v1 crossing pack alone does not qualify.
+
+The simulator accepts only supported ground `residential` and `unclassified`
+ways. Explicit `oneway=yes|-1|no` is respected. On these simple street types
+only, an omitted oneway tag yields two simulated travel directions, and an
+omitted bus tag can allow **simulated bus use**. Explicit denials, variants such
+as conditional/directional restrictions, unrecognized tags or structures,
+unsupported surfaces, tagged nodes and applicable restriction relations stay
+excluded. Exact `source` is accepted as attribution metadata only. The data
+does not establish legal access, public ownership, road clearance, or actual
+bus service; native candidate origin explicitly labels the simulation.
+Tram eligibility and direction keep the original strict rules.
+
+The profile can continue an eligible bus along the **same raw way** through a
+fully covered, unambiguous three-arm junction with supported bus arms. It can
+also continue straight through a simple four-arm junction when exactly two
+supported original ways both pass through the same raw node. All four arms
+must be distinct and separated by at least 30°, and each same-way pair
+must deviate from straight by at most 30°. Each local arm must stay strictly
+inside the source certificate's coverage polygon. An arm beyond the playable
+rectangle but inside that polygon may count only as evidence: no road edges
+are emitted because of it. Split, ambiguous, and tagged or restricted
+approaches remain excluded. The profile adds no U-turns or
+turns between different ways. The existing, separately opted-in
+simple-junction policy still needs explicit mode tags on every arm for its
+separate turn derivation. Existing policies and candidate bytes are unchanged
+when the bus profile is not selected. No production pin is created.
+
+Tag sources: [OSM Japan road conventions](https://wiki.openstreetmap.org/wiki/Japan_tagging),
+[OSM oneway conventions](https://wiki.openstreetmap.org/wiki/Key:oneway),
+and [OSM access fallback caveats](https://wiki.openstreetmap.org/wiki/Default_access_restrictions).
+
+### Reusable source stage from a dated OSM PBF
+
+`capture_osm_parent.py` is the operator entry point for preparing the raw
+native-region input. Use the same verified dated public PBF when preparing
+geometry for the crossing pack; do not feed crossing v1 or vector tiles back
+into the native authority path. No downloader, source substitution or
+certification runs as part of this command.
+
+```sh
+python3 scripts/road-pack/capture_osm_parent.py /path/to/region-dated.osm.pbf \
+  --sha256 "$VERIFIED_PARENT_SHA" --halo "$WEST,$SOUTH,$EAST,$NORTH" \
+  --inner "$INNER_WEST,$INNER_SOUTH,$INNER_EAST,$INNER_NORTH" \
+  --out-dir /path/to/new-private-stage
+```
+
+The command requires the same optional PyOsmium 4.3.2 as the crossing PBF
+tooling. The exact dated parent digest is checked before and after bounded
+stream scans; it retains original way node order, all selected raw tags, and
+same-parent restriction dependencies, without a full-parent coordinate index.
+`receipt.json` is written last and binds `halo.staging.osm` to the original
+parent hash, observed replication revision, both bounds, and missing/unknown
+scope diagnostics. A directory without this receipt or with mismatching bytes
+is not a reusable stage. Original object versions are retained; contributor
+metadata fields are not.
+
+The existing `build_native_region.py` consumes `halo.staging.osm` directly:
+use the same XML SHA and revision in its independently reviewed policy and
+coverage. The local synthetic pipeline test invokes both commands with the
+unmodified intermediate XML and checks the directed candidate. No gameplay
+certificate or production pin is created by the source stage; its receipt
+explicitly makes neither claim. It covers observed ways incident on raw halo
+nodes in that parent and may miss an outside-to-outside crossing with no halo
+node. Therefore use the existing geometric PBF extraction for certified
+crossing cells; do not give this node-seeded stage crossing completeness.

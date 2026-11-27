@@ -24,7 +24,7 @@ export function constructionRoadBounds(paths:readonly {line:GeoPoint[]}[],fallba
 export function savedRoadSnapshot(snapshot:RoadSnapshot):SavedRoadSnapshot {
  const {source,sourceSha256}=snapshot.bundle;
  const knownTokyo=ROAD_PACK_RELEASE?.manifestSha256===TOKYO_MANIFEST&&source.source===TOKYO_SOURCE&&sourceSha256===TOKYO_SHA&&source.sourceDate==='2026-11-14T21:20:41Z'&&contains({west:139.68,south:35.6,east:139.8,north:35.72},snapshot.bounds);
- return {revision:source.sourceDate??(snapshot.bundle.graph.dataset.id.startsWith('ofm-tiles/')?snapshot.bundle.graph.dataset.revision:''),source:source.source,source_url:source.source,source_sha256:sourceSha256,attribution:source.attribution,license:source.license,coverage_verified:(snapshot as RoadSnapshot & {coverageVerified?:boolean}).coverageVerified??knownTokyo,road_coverage:[{...snapshot.bounds}],roads:snapshot.roads};
+ return {revision:source.sourceDate??(snapshot.bundle.graph.dataset.id.startsWith('ofm-tiles/')?snapshot.bundle.graph.dataset.revision:''),source:source.source,source_url:source.source,source_sha256:sourceSha256,attribution:source.attribution,license:source.license,coverage_verified:snapshot.coverageVerified??knownTokyo,road_coverage:[{...snapshot.bounds}],roads:snapshot.roads};
 }
 const sameVersion=(a:SavedRoadSnapshot,b:SavedRoadSnapshot)=>a.revision===b.revision&&a.source===b.source&&a.source_url===b.source_url&&a.source_sha256===b.source_sha256&&a.attribution===b.attribution&&a.license===b.license;
 const shape=(r:RoadWay)=>JSON.stringify([r.points,r.layer,r.level,r.bridge,r.tunnel,r.classification?[r.classification.class,r.classification.subclass,r.classification.access,r.classification.oneway??null]:null]);

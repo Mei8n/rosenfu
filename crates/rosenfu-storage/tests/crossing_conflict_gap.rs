@@ -1,0 +1,1073 @@
+#[allow(dead_code, unused_imports)]
+#[path = "../../../src-tauri/src/session.rs"]
+mod session;
+use rosenfu_core::operation::{Timetable, TrainState, Vehicle};
+use rosenfu_core::world::{InfrastructureLevel, OperationServiceConfig, RouteSegment, World};
+use session::{PlannedAlignment, WorldEditor};
+
+const CENTER: [f64; 2] = [139.55, 35.7]; // Inland Musashino area; geometry is fictitious.
+fn plan(name: &str, points: [[f64; 2]; 2], level: InfrastructureLevel) -> PlannedAlignment {
+    serde_json::from_value(serde_json::json!({
+        "name":name,"points":points.map(|p|serde_json::json!({"longitude":p[0],"latitude":p[1]})),
+        "trackType":"normal","infrastructure":{"track_count":1,"level":level},"stations":[]
+    }))
+    .unwrap()
+}
+fn fixture(crosses: bool, elevated: bool) -> (World, [OperationServiceConfig; 2]) {
+    let [x, y] = CENTER;
+    let level = if elevated {
+        InfrastructureLevel::Elevated
+    } else {
+        InfrastructureLevel::Ground
+    };
+    let dy = 0.01 * y.to_radians().cos();
+    let b = if crosses {
+        [[x, y - dy], [x, y + dy]]
+    } else {
+        [[x - 0.01, y + 0.007], [x + 0.01, y + 0.007]]
+    };
+    let draft = WorldEditor::new()
+        .build_construction_plan(
+            vec![
+                plan(
+                    "EW",
+                    [[x - 0.01, y], [x + 0.01, y]],
+                    InfrastructureLevel::Ground,
+                ),
+                plan("NS or control", b, level),
+            ],
+            vec![],
+        )
+        .expect("native session ordinary construction accepts both separate alignments");
+    assert_eq!(draft.alignments.len(), 2);
+    assert!(draft.alignment_connections.is_empty());
+    let ids = draft
+        .alignments
+        .iter()
+        .map(|line| line.id)
+        .collect::<Vec<_>>();
+    let owner = draft.companies[0].id;
+    let mut world = World::new(draft).unwrap();
+    let configs = std::array::from_fn(|i| {
+        let id = ids[i];
+        let a = world
+            .place_station_on_alignment(owner, format!("S{i}"), id, 0.1, 80., 10.)
+            .unwrap();
+        let b = world
+            .place_station_on_alignment(owner, format!("T{i}"), id, 0.9, 80., 10.)
+            .unwrap();
+        let segments = vec![RouteSegment::Alignment {
+            alignment_id: id,
+            from: a,
+            to: b,
+        }];
+        let preview = world.preview_service_path(a, segments.clone()).unwrap();
+        let service_id = world
+            .add_service_path(
+                owner,
+                format!("Service {i}"),
+                a,
+                segments,
+                preview
+                    .occurrences
+                    .iter()
+                    .map(|o| o.reference.clone())
+                    .collect(),
+            )
+            .unwrap();
+        OperationServiceConfig {
+            service_id,
+            timetable: Timetable {
+                first_departure_ms: 0,
+                last_departure_ms: 0,
+                headway_ms: 60000,
+            },
+            vehicle: Vehicle {
+                max_speed_kmh: 72.,
+                acceleration_mps2: 1.,
+                braking_mps2: 1.,
+                length_m: 40.,
+            },
+            dwell_ms: 10000,
+        }
+    });
+    (world, configs)
+}
+fn departure(crosses: bool, elevated: bool) -> (usize, usize) {
+    let (mut w, configs) = fixture(crosses, elevated);
+    if crosses {
+        let (a, b) = (&w.snapshot().alignments[0], &w.snapshot().alignments[1]);
+        let (p, q) = (a.point_at(0.5), b.point_at(0.5));
+        assert!(
+            (p.latitude - q.latitude).abs() < 1e-10 && (p.longitude - q.longitude).abs() < 1e-10
+        );
+        assert_eq!(
+            a.height_at_position_m(0.5) == b.height_at_position_m(0.5),
+            !elevated
+        );
+        assert!((a.length_m() - b.length_m()).abs() < 0.01); // Equal approach times at equal speeds.
+    }
+    w.configure_operation(configs.to_vec()).unwrap();
+    w.operation_mut()
+        .unwrap()
+        .runtime
+        .advance_to(0, 100)
+        .unwrap();
+    let counts = |w: &World| {
+        let trains = w.operation().unwrap().runtime.trains();
+        let states = trains.map(|t| &t.state).collect::<Vec<_>>();
+        (
+            states
+                .iter()
+                .filter(|s| matches!(s, TrainState::Moving { .. }))
+                .count(),
+            states
+                .iter()
+                .filter(|s| matches!(s, TrainState::Waiting { .. }))
+                .count(),
+        )
+    };
+    let before = counts(&w);
+    let mut reload = rosenfu_storage::decode(&rosenfu_storage::encode(&w).unwrap()).unwrap();
+    assert_eq!(counts(&reload), before);
+    if crosses && !elevated && before == (1, 1) {
+        let runtime = &w.operation().unwrap().runtime;
+        let waiting = runtime
+            .trains()
+            .find(|t| matches!(t.state, TrainState::Waiting { .. }))
+            .unwrap()
+            .key
+            .clone();
+        let released = runtime
+            .trains()
+            .find_map(|t| match t.state {
+                TrainState::Moving { release_ms, .. } => Some(release_ms),
+                _ => None,
+            })
+            .unwrap();
+        for editor in [&mut w, &mut reload] {
+            let rt = &mut editor.operation_mut().unwrap().runtime;
+            rt.advance_to(released - 1, 100).unwrap();
+            assert!(matches!(
+                rt.trains().find(|t| t.key == waiting).unwrap().state,
+                TrainState::Waiting { .. }
+            ));
+            rt.advance_to(released, 100).unwrap();
+            let delayed = rt.trains().find(|t| t.key == waiting).unwrap();
+            assert!(
+                matches!(delayed.state,TrainState::Moving{entered_ms,..} if entered_ms==released)
+            );
+            assert_eq!(delayed.delay_ms, released);
+        }
+        assert_eq!(w.operation_save(), reload.operation_save());
+    }
+
+    println!("crosses={crosses} elevated={elevated} moving_waiting={before:?}");
+    before
+}
+#[test]
+fn parallel_and_grade_separated_are_nonconflicting_controls() {
+    assert_eq!(departure(false, false), (2, 0));
+    assert_eq!(departure(true, true), (2, 0));
+}
+#[test]
+fn planar_crossing_should_serialize_at_simultaneous_departure() {
+    assert_eq!(departure(true, false), (1, 1));
+}
+#[test]
+fn pre_crossing_runtime_is_accepted_byte_exact_without_changing_active_locks() {
+    use rosenfu_core::operation::OperationRuntime;
+    let (mut w, configs) = fixture(true, false);
+    let prior_specs = configs
+        .iter()
+        .map(|c| w.compile_operation(c).unwrap())
+        .collect();
+    w.configure_operation(configs.to_vec()).unwrap();
+    w.operation_mut().unwrap().runtime = OperationRuntime::new(prior_specs).unwrap();
+    w.operation_mut()
+        .unwrap()
+        .runtime
+        .advance_to(0, 100)
+        .unwrap();
+    let prior = rosenfu_storage::encode(&w).unwrap();
+    let reread = rosenfu_storage::decode(&prior).unwrap();
+    assert_eq!(reread.operation_save(), w.operation_save());
+    assert_eq!(rosenfu_storage::encode(&reread).unwrap(), prior);
+    assert_eq!(
+        reread
+            .operation()
+            .unwrap()
+            .runtime
+            .trains()
+            .filter(|t| matches!(t.state, TrainState::Moving { .. }))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn served_platform_near_crossing_rejects_new_configuration_atomically() {
+    use rosenfu_core::operation::OperationError;
+    let (mut w, configs) = fixture(true, false);
+    w.configure_operation(configs.to_vec()).unwrap();
+    let before = w.operation_save();
+    let rail = &w.snapshot().alignments[0];
+    let (id, owner) = (rail.id, rail.owner);
+    let from = w
+        .place_station_on_alignment(owner, "Near".into(), id, 0.50, 80., 10.)
+        .unwrap();
+    let to = w
+        .snapshot()
+        .station_placements
+        .iter()
+        .find(|p| p.alignment_id == id && p.position == 0.9)
+        .unwrap()
+        .station_id;
+    let segments = vec![RouteSegment::Alignment {
+        alignment_id: id,
+        from,
+        to,
+    }];
+    let preview = w.preview_service_path(from, segments.clone()).unwrap();
+    let service_id = w
+        .add_service_path(
+            owner,
+            "Near crossing".into(),
+            from,
+            segments,
+            preview
+                .occurrences
+                .iter()
+                .map(|o| o.reference.clone())
+                .collect(),
+        )
+        .unwrap();
+    assert_eq!(
+        w.configure_operation(vec![
+            OperationServiceConfig {
+                service_id,
+                ..configs[0].clone()
+            },
+            configs[1].clone()
+        ]),
+        Err(OperationError::CrossingPlatform)
+    );
+    assert_eq!(w.operation_save(), before);
+}
+
+#[test]
+fn saved_crossing_marker_rejects_partially_or_fully_stripped_locks() {
+    let (mut w, configs) = fixture(true, false);
+    w.configure_operation(configs.to_vec()).unwrap();
+    let saved = w.operation_save().unwrap();
+    assert!(saved.crossing_reservations);
+    let mut forged: serde_json::Value =
+        serde_json::from_slice(&rosenfu_storage::encode(&w).unwrap()).unwrap();
+    forged.as_object_mut().unwrap().remove("fixed_od_scenario");
+    forged["schema_version"] = 26.into();
+    assert!(rosenfu_storage::decode(&serde_json::to_vec(&forged).unwrap()).is_err());
+
+    for all in [false, true] {
+        let mut bad = saved.clone();
+        let resources = bad
+            .runtime
+            .services
+            .iter_mut()
+            .flat_map(|s| &mut s.legs)
+            .flat_map(|l| &mut l.sections)
+            .map(|s| &mut s.resources);
+        let mut removed = false;
+        for list in resources {
+            if let Some(i) = list.iter().position(|r| r.starts_with("rail:crossing:")) {
+                list.remove(i);
+                removed = true;
+                if !all {
+                    break;
+                }
+            }
+        }
+        assert!(removed);
+        assert!(w.restore_operation(Some(bad)).is_err());
+        assert_eq!(w.operation_save().unwrap(), saved);
+    }
+}
+
+#[test]
+fn runtime_crossing_delay_is_not_part_of_planned_fixed_od() {
+    let run = |elevated| {
+        let (mut world, configs) = fixture(true, elevated);
+        world.configure_operation(configs.to_vec()).unwrap();
+        let first = world.operation().unwrap().runtime.passenger_offers();
+        let arrivals = world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(600_000, 128)
+            .unwrap()
+            .arrivals;
+        let runtime = &world.operation().unwrap().runtime;
+        assert_eq!(runtime.passenger_offers(), first);
+        let service = configs
+            .iter()
+            .map(|c| c.service_id.0.to_string())
+            .max()
+            .unwrap();
+        let offer = first
+            .iter()
+            .find(|offer| offer.service_id == service && offer.sequence == 0)
+            .unwrap();
+        let delayed = arrivals
+            .iter()
+            .find(|a| a.train.service_id == service && a.station_id == offer.to)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.rosenfu.json");
+        rosenfu_storage::save_world(&path, &world).unwrap();
+        let mut editor = WorldEditor::new();
+        editor.load(&path).unwrap();
+        let od = editor
+            .preview_fixed_od(offer.from.clone(), offer.to.clone(), Some(100.), Some(80.))
+            .unwrap();
+        let path = od.rail.first().unwrap();
+        println!("elevated={elevated} runtime_arrival_ms={} accumulated_delay_ms={} planned_ride_s={} planned_wait_s={} allocated_trips={}", delayed.at_ms, delayed.delay_ms, path.time.ride_seconds, path.time.wait_seconds, path.trips);
+        (od, delayed.at_ms, delayed.delay_ms)
+    };
+    let (ground, ground_arrival, ground_delay) = run(false);
+    let (separated, separated_arrival, separated_delay) = run(true);
+    assert_ne!(ground_delay, separated_delay);
+    assert_eq!(ground_arrival - separated_arrival, ground_delay);
+    assert_eq!(separated_delay, 0);
+    assert_eq!(ground, separated);
+}
+
+#[test]
+fn independent_replay_observes_delays_without_changing_plans_or_saves() {
+    use rosenfu_core::operation::PassengerReplayError;
+    for elevated in [false, true] {
+        let (mut world, configs) = fixture(true, elevated);
+        world.configure_operation(configs.to_vec()).unwrap();
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1_000, 100)
+            .unwrap();
+        let bytes = rosenfu_storage::encode(&world).unwrap();
+        let restored = rosenfu_storage::decode(&bytes).unwrap();
+        let runtime = &world.operation().unwrap().runtime;
+        let plans = runtime.passenger_offers();
+        let replay = runtime.preview_passenger_replay(600_000, 128).unwrap();
+        assert_eq!(
+            replay,
+            restored
+                .operation()
+                .unwrap()
+                .runtime
+                .preview_passenger_replay(600_000, 128)
+                .unwrap()
+        );
+        assert_eq!(plans, runtime.passenger_offers());
+        assert_eq!(rosenfu_storage::encode(&restored).unwrap(), bytes);
+        assert_eq!(rosenfu_storage::encode(&world).unwrap(), bytes);
+        let partial = runtime.preview_passenger_replay(600_000, 1).unwrap();
+        assert!(!partial.complete);
+        assert!(partial.observed_until_ms < partial.requested_until_ms);
+        assert_eq!(
+            runtime.preview_passenger_replay(3_601_001, 128),
+            Err(PassengerReplayError::OutsideBudget)
+        );
+        assert_eq!(
+            runtime.preview_passenger_replay(600_000, 0),
+            Err(PassengerReplayError::OutsideBudget)
+        );
+        assert!(replay.complete);
+        assert_eq!(replay.observed_from_ms, 1_000);
+        assert!(replay
+            .completed_legs
+            .iter()
+            .any(|leg| leg.entered_ms < replay.observed_from_ms));
+        let service = configs
+            .iter()
+            .map(|c| c.service_id.0.to_string())
+            .max()
+            .unwrap();
+        let leg = replay
+            .completed_legs
+            .iter()
+            .find(|l| l.train.service_id == service && l.sequence == 0)
+            .unwrap();
+        let offer = plans
+            .iter()
+            .find(|o| o.service_id == service && o.sequence == 0)
+            .unwrap();
+        assert_eq!((&leg.from, &leg.to), (&offer.from, &offer.to));
+        assert_eq!(leg.entered_ms, leg.cumulative_reservation_wait_ms);
+        assert_eq!(leg.entered_ms == 0, elevated);
+        assert!(
+            ((leg.arrived_ms - leg.entered_ms) as f64 / 1000. - offer.ride_seconds).abs() < 1e-9
+        );
+        println!(
+            "elevated={elevated} enter_ms={} arrival_ms={} cumulative_wait_ms={}",
+            leg.entered_ms, leg.arrived_ms, leg.cumulative_reservation_wait_ms
+        );
+    }
+}
+
+#[test]
+fn native_journey_replay_respects_real_occupancy_and_does_not_replace_planned_od() {
+    let preview = |elevated| {
+        let (mut world, configs) = fixture(true, elevated);
+        world.configure_operation(configs.to_vec()).unwrap();
+        let service = configs
+            .iter()
+            .map(|c| c.service_id.0.to_string())
+            .max()
+            .unwrap();
+        let offers = world.operation().unwrap().runtime.passenger_offers();
+        let leg = offers
+            .iter()
+            .find(|o| o.service_id == service && o.sequence == 0)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.rosenfu.json");
+        rosenfu_storage::save_world(&path, &world).unwrap();
+        let mut editor = WorldEditor::new();
+        editor.load(&path).unwrap();
+        let before = serde_json::to_value(editor.operation_snapshot()).unwrap();
+        let planned = editor
+            .preview_fixed_od(leg.from.clone(), leg.to.clone(), Some(100.), Some(80.))
+            .unwrap();
+        let result = editor
+            .preview_rail_journey_replay(&leg.from, &leg.to)
+            .unwrap();
+        let disk_before = std::fs::read(&path).unwrap();
+        let observed = editor
+            .preview_observed_fixed_od(leg.from.clone(), leg.to.clone(), Some(100.), Some(130.))
+            .unwrap();
+        assert_eq!(observed.itinerary.as_ref(), Some(&result));
+        assert!((observed.rail_trips + observed.alternative_trips - 100.).abs() < 1e-12);
+        assert!(editor
+            .preview_observed_fixed_od(
+                "bus:unsupported".into(),
+                leg.to.clone(),
+                Some(100.),
+                Some(130.)
+            )
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), disk_before);
+        assert_eq!(
+            serde_json::to_value(editor.operation_snapshot()).unwrap(),
+            before
+        );
+        assert_eq!(
+            editor
+                .preview_fixed_od(leg.from.clone(), leg.to.clone(), Some(100.), Some(80.))
+                .unwrap(),
+            planned
+        );
+        assert!(editor
+            .preview_rail_journey_replay("missing", &leg.to)
+            .is_err());
+        (planned, result, observed)
+    };
+    let (plan_ground, ground, observed_ground) = preview(false);
+    let (plan_elevated, elevated, observed_elevated) = preview(true);
+    assert!(observed_ground.rail_trips < 50.);
+    assert!(observed_elevated.rail_trips > 50.);
+    assert_eq!(plan_ground, plan_elevated);
+    assert_eq!(ground.arrival_ms, Some(186_480));
+    assert_eq!(elevated.arrival_ms, Some(92_240));
+    assert_eq!(
+        (ground.platform_wait_ms, elevated.platform_wait_ms),
+        (94_240, 0)
+    );
+    assert_eq!((ground.onboard_ms, elevated.onboard_ms), (92_240, 92_240));
+}
+
+#[test]
+fn live_crossing_wait_labels_follow_a_real_reservation_and_survive_reload() {
+    for elevated in [false, true] {
+        let (mut world, configs) = fixture(true, elevated);
+        world.configure_operation(configs.to_vec()).unwrap();
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1_000, 128)
+            .unwrap();
+        let before = rosenfu_storage::encode(&world).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("source.rosenfu");
+        rosenfu_storage::save_world(&file, &world).unwrap();
+        let mut editor = WorldEditor::new();
+        editor.load(&file).unwrap();
+        let wire = serde_json::to_value(editor.operation_snapshot()).unwrap();
+        let rows = wire["trains"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let causes: Vec<_> = rows
+            .iter()
+            .filter_map(|row| row.get("waiting_for"))
+            .collect();
+        if elevated {
+            assert!(causes.is_empty());
+        } else {
+            assert_eq!(causes, [&serde_json::json!("crossing")]);
+            assert_eq!(
+                rows.iter()
+                    .find(|row| row.get("waiting_for").is_some())
+                    .unwrap()["state"]["state"],
+                "waiting"
+            );
+        }
+        editor.save(&file).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        let release_ms = world
+            .operation()
+            .unwrap()
+            .runtime
+            .trains()
+            .find_map(|row| {
+                if let rosenfu_core::operation::TrainState::Moving { release_ms, .. } = row.state {
+                    Some(release_ms)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(release_ms, 128)
+            .unwrap();
+        let released_file = dir.path().join("released.rosenfu");
+        rosenfu_storage::save_world(&released_file, &world).unwrap();
+        editor.load(&released_file).unwrap();
+        let released = editor.operation_snapshot();
+        assert!(released.trains.iter().all(|row| row.waiting_for.is_none()));
+        if !elevated {
+            assert!(released.trains.iter().any(|row| {
+                matches!(row.state, rosenfu_core::operation::TrainState::Moving { entered_ms, .. } if entered_ms == release_ms)
+                    && row.delay_ms == release_ms
+            }));
+        }
+    }
+}
+
+#[test]
+fn matched_crossing_allocates_actual_wait_once_and_keeps_post_departure_unknown() {
+    use rosenfu_core::demand::{ChoiceWeights, ObservedFixedOdStatus};
+
+    const TRIPS: f64 = 100.;
+    const ALTERNATIVE_S: f64 = 130.;
+    const DEPARTURE_MS: u64 = 5_000;
+    const READY_BEFORE_MS: u64 = 1_000;
+    const READY_DURING_WAIT_MS: u64 = 6_000;
+    const RIDE_MS: u64 = 92_240;
+    const CROSSING_WAIT_MS: u64 = 94_240;
+    let dir = tempfile::tempdir().unwrap();
+    let mut outputs = Vec::new();
+    for elevated in [false, true] {
+        let (mut world, mut configs) = fixture(true, elevated);
+        for config in &mut configs {
+            config.timetable.first_departure_ms = DEPARTURE_MS;
+            config.timetable.last_departure_ms = DEPARTURE_MS;
+        }
+        world.configure_operation(configs.to_vec()).unwrap();
+        let service = configs
+            .iter()
+            .map(|config| config.service_id.0.to_string())
+            .max()
+            .unwrap();
+        let offer = world
+            .operation()
+            .unwrap()
+            .runtime
+            .passenger_offers()
+            .into_iter()
+            .find(|o| o.service_id == service && o.sequence == 0)
+            .unwrap();
+        let planned = |editor: &WorldEditor| {
+            editor
+                .preview_fixed_od(
+                    offer.from.clone(),
+                    offer.to.clone(),
+                    Some(TRIPS),
+                    Some(ALTERNATIVE_S),
+                )
+                .unwrap()
+        };
+        let measured = |editor: &WorldEditor| {
+            editor
+                .preview_observed_fixed_od(
+                    offer.from.clone(),
+                    offer.to.clone(),
+                    Some(TRIPS),
+                    Some(ALTERNATIVE_S),
+                )
+                .unwrap()
+        };
+        let read_world = |world: &World, filename: &str| {
+            let path = dir.path().join(filename);
+            rosenfu_storage::save_world(&path, world).unwrap();
+            let mut editor = WorldEditor::new();
+            editor.load(&path).unwrap();
+            (editor, path)
+        };
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(READY_BEFORE_MS, 128)
+            .unwrap();
+        let (editor, _) = read_world(
+            &world,
+            if elevated {
+                "before-elevated.rosenfu"
+            } else {
+                "before-planar.rosenfu"
+            },
+        );
+        let planned_now = planned(&editor);
+        let observed_before = measured(&editor);
+        assert_eq!(observed_before.status, ObservedFixedOdStatus::Reached);
+        assert_eq!(observed_before.unresolved_trips, 0.);
+        assert!(
+            (observed_before.rail_trips + observed_before.alternative_trips - TRIPS).abs() < 1e-12
+        );
+        let it = observed_before.itinerary.as_ref().unwrap();
+        let extra = if elevated { 0 } else { CROSSING_WAIT_MS };
+        let expected_departure = DEPARTURE_MS + extra;
+        let expected_platform_wait = expected_departure - READY_BEFORE_MS;
+        assert_eq!(it.ready_ms, READY_BEFORE_MS);
+        assert_eq!(it.platform_wait_ms, expected_platform_wait);
+        assert_eq!(it.onboard_ms, RIDE_MS);
+        assert_eq!(it.arrival_ms, Some(expected_departure + RIDE_MS));
+        let [ride] = it.rides.as_slice() else {
+            panic!("expected the one overlapping service");
+        };
+        assert_eq!(&ride.service_id, &service);
+        assert_eq!(ride.departed_ms, expected_departure);
+        assert_eq!(
+            it.arrival_ms.unwrap() - it.ready_ms,
+            it.platform_wait_ms + it.onboard_ms
+        );
+        let weights = ChoiceWeights::default();
+        let exact_cost = expected_platform_wait as f64 / 1_000. * weights.wait
+            + RIDE_MS as f64 / 1_000. * weights.ride;
+        assert!((observed_before.generalized_rail_seconds.unwrap() - exact_cost).abs() < 1e-9);
+
+        // Same request after scheduled departure, with a saved live queue in
+        // the planar case and a non-boardable moving train in the elevated control.
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(READY_DURING_WAIT_MS, 128)
+            .unwrap();
+        let (mut reader, file) = read_world(
+            &world,
+            if elevated {
+                "during-elevated.rosenfu"
+            } else {
+                "during-planar.rosenfu"
+            },
+        );
+        assert_eq!(planned(&reader), planned_now);
+        let live_bytes = std::fs::read(&file).unwrap();
+        let live_view = serde_json::to_value(reader.operation_snapshot()).unwrap();
+        let result = measured(&reader);
+        let mut reload = WorldEditor::new();
+        reload.load(&file).unwrap();
+        assert_eq!(measured(&reload), result);
+        let reopened_view = serde_json::to_value(reload.operation_snapshot()).unwrap();
+        assert_eq!(reopened_view["now_ms"], live_view["now_ms"]);
+        assert_eq!(reopened_view["trains"], live_view["trains"]);
+        assert_ne!(
+            reopened_view["configuration_token"],
+            live_view["configuration_token"]
+        );
+        assert_eq!(
+            serde_json::to_value(reader.operation_snapshot()).unwrap(),
+            live_view
+        );
+        reader.save(&file).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), live_bytes);
+
+        let during_it = result.itinerary.as_ref().unwrap();
+        assert_eq!(during_it.ready_ms, READY_DURING_WAIT_MS);
+        let row = live_view["trains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"]["service_id"] == service)
+            .unwrap();
+        if elevated {
+            assert!(row.get("waiting_for").is_none());
+            assert_eq!(result.status, ObservedFixedOdStatus::NoArrivalWithinWindow);
+            assert_eq!(
+                during_it.observed_until_ms,
+                READY_DURING_WAIT_MS + 30 * 60_000
+            );
+            assert_eq!(during_it.arrival_ms, None);
+            assert!(during_it.rides.is_empty());
+            assert_eq!(result.unresolved_trips, TRIPS);
+            assert_eq!(result.rail_trips + result.alternative_trips, 0.);
+            assert_eq!(result.generalized_rail_seconds, None);
+        } else {
+            assert_eq!(row["waiting_for"], "crossing");
+            assert_eq!(result.status, ObservedFixedOdStatus::Reached);
+            assert_eq!(during_it.rides, it.rides);
+            assert_eq!(
+                during_it.platform_wait_ms,
+                expected_departure - READY_DURING_WAIT_MS
+            );
+            assert_eq!(during_it.onboard_ms, RIDE_MS);
+            assert_eq!(result.unresolved_trips, 0.);
+        }
+        let scheduled_path = &planned_now.rail[0];
+        assert_eq!(scheduled_path.time.wait_seconds, 30.);
+        assert_eq!(scheduled_path.time.ride_seconds, RIDE_MS as f64 / 1_000.);
+        println!("elevated={elevated}: planned wait/ride={}/{}s rail_trips={:.6}; observed wait/ride={}/{}s rail_trips={:.6}; after-departure status={:?} unresolved={}",
+            scheduled_path.time.wait_seconds, scheduled_path.time.ride_seconds, scheduled_path.trips,
+            it.platform_wait_ms as f64 / 1_000., it.onboard_ms as f64 / 1_000., observed_before.rail_trips,
+            result.status, result.unresolved_trips);
+        outputs.push((planned_now, observed_before));
+    }
+    let [(ground_planned, ground_observed), (elevated_planned, elevated_observed)] =
+        outputs.as_slice()
+    else {
+        unreachable!()
+    };
+    assert_eq!(ground_planned, elevated_planned);
+    assert!(ground_observed.rail_trips < elevated_observed.rail_trips);
+    let cost_delta = ground_observed.generalized_rail_seconds.unwrap()
+        - elevated_observed.generalized_rail_seconds.unwrap();
+    let expected_delta = CROSSING_WAIT_MS as f64 / 1_000. * ChoiceWeights::default().wait;
+    assert!((cost_delta - expected_delta).abs() < 1e-9);
+}
+
+#[test]
+fn recurring_planar_crossing_preview_is_separate_from_live_delay_and_save() {
+    use rosenfu_core::operation::OperationRuntime;
+    use rosenfu_core::world::PlannedCrossingDelayError;
+
+    let out = tempfile::tempdir().unwrap();
+    for (crosses, elevated) in [(true, false), (true, true), (false, false)] {
+        let (mut world, mut configs) = fixture(crosses, elevated);
+        for config in &mut configs {
+            config.timetable.last_departure_ms = 3_599_999;
+            config.timetable.headway_ms = 600_000;
+        }
+        assert!(world
+            .preview_planned_crossing_delay(0)
+            .unwrap()
+            .estimates
+            .is_empty());
+        world.configure_operation(vec![configs[0].clone()]).unwrap();
+        assert!(world
+            .preview_planned_crossing_delay(0)
+            .unwrap()
+            .estimates
+            .is_empty());
+        world.configure_operation(configs.to_vec()).unwrap();
+        let current = world.operation_save().unwrap();
+        // Legitimate older runtime had the same pair of operating services
+        // but no extra flat-crossing lock. It still restores without inventing a reading.
+        if crosses && !elevated {
+            let mut former = current.clone();
+            let mut specs = former.runtime.services.clone();
+            for section in specs
+                .iter_mut()
+                .flat_map(|s| &mut s.legs)
+                .flat_map(|leg| &mut leg.sections)
+            {
+                section
+                    .resources
+                    .retain(|r| !r.starts_with("rail:crossing:"));
+            }
+            former.crossing_reservations = false;
+            former.runtime = OperationRuntime::new(specs).unwrap().save();
+            world.restore_operation(Some(former)).unwrap();
+            assert!(world
+                .preview_planned_crossing_delay(0)
+                .unwrap()
+                .estimates
+                .is_empty());
+            world.restore_operation(Some(current)).unwrap();
+        }
+        assert!(world
+            .preview_planned_crossing_delay(3_600_000)
+            .unwrap()
+            .estimates
+            .is_empty());
+        assert_eq!(
+            world.preview_planned_crossing_delay(u64::MAX),
+            Err(PlannedCrossingDelayError::WindowOverflow)
+        );
+
+        world
+            .operation_mut()
+            .unwrap()
+            .runtime
+            .advance_to(1, 128)
+            .unwrap();
+        let runtime = &world.operation().unwrap().runtime;
+        let offers = runtime.passenger_offers();
+        let ordinary = offers
+            .iter()
+            .filter(|offer| offer.sequence == 0)
+            .max_by_key(|offer| &offer.service_id)
+            .unwrap();
+        let bytes = rosenfu_storage::encode(&world).unwrap();
+        let path = out.path().join("nominal-plan.rosenfu");
+        rosenfu_storage::save_world(&path, &world).unwrap();
+        let mut editor = WorldEditor::new();
+        editor.load(&path).unwrap();
+        let planned = || {
+            editor
+                .preview_fixed_od(
+                    ordinary.from.clone(),
+                    ordinary.to.clone(),
+                    Some(100.),
+                    Some(130.),
+                )
+                .unwrap()
+        };
+        let observed = || {
+            editor
+                .preview_observed_fixed_od(
+                    ordinary.from.clone(),
+                    ordinary.to.clone(),
+                    Some(100.),
+                    Some(130.),
+                )
+                .unwrap()
+        };
+        let before = (planned(), observed());
+
+        let estimate = world.preview_planned_crossing_delay(0).unwrap();
+        let reopened = rosenfu_storage::decode(&bytes).unwrap();
+        assert_eq!(
+            reopened.preview_planned_crossing_delay(0).unwrap(),
+            estimate
+        );
+        assert_eq!(rosenfu_storage::encode(&world).unwrap(), bytes);
+        assert_eq!(rosenfu_storage::encode(&reopened).unwrap(), bytes);
+        assert_eq!(planned(), before.0);
+        assert_eq!(observed(), before.1);
+
+        assert!(estimate.incomplete_crossings.is_empty());
+        if crosses && !elevated {
+            assert_eq!(estimate.estimates.len(), 4);
+            let mut approaches = std::collections::BTreeSet::new();
+            for row in &estimate.estimates {
+                assert!(row.alignment_ids.contains(&row.approach_alignment_id));
+                assert!(approaches.insert((row.approach_alignment_id, row.towards_alignment_end)));
+                assert_eq!(row.scheduled_passages, [6, 12]);
+                assert_eq!(row.requested_utilization, 0.6);
+                assert!((row.estimated_delay_seconds_per_train - 24.0).abs() < 1e-9);
+            }
+            // The live crossing wait is greater, not replaced by or compounded
+            // with the 24-second one-hour proxy.
+            assert!(before.1.itinerary.as_ref().unwrap().platform_wait_ms > 24_000);
+        } else {
+            assert!(estimate.estimates.is_empty());
+        }
+        println!("crosses={crosses} elevated={elevated} estimate={estimate:?}");
+    }
+
+    let (mut one_time, configs) = fixture(true, false);
+    one_time.configure_operation(configs.to_vec()).unwrap();
+    let one_time = one_time.preview_planned_crossing_delay(0).unwrap();
+    assert!(one_time.estimates.is_empty());
+    assert_eq!(one_time.sparse_crossings.len(), 1);
+    assert!(one_time.incomplete_crossings.is_empty());
+}
+
+#[test]
+fn nominal_crossing_passages_follow_absolute_crossing_hour_not_start_cohort() {
+    const HOUR: u64 = 3_600_000;
+    let (mut world, mut configs) = fixture(true, false);
+    for config in &mut configs {
+        config.timetable = Timetable {
+            first_departure_ms: HOUR - 130_000,
+            last_departure_ms: HOUR - 70_000,
+            headway_ms: 60_000,
+        };
+        // A real scheduled turnaround is longer than the rear-clear time;
+        // neither return crosses in the scheduled starts' hour.
+        config.dwell_ms = 180_000;
+    }
+    world.configure_operation(configs.to_vec()).unwrap();
+    let before = world.preview_planned_crossing_delay(0).unwrap();
+    let after = world.preview_planned_crossing_delay(HOUR).unwrap();
+    assert!(before.incomplete_crossings.is_empty());
+    assert!(after.incomplete_crossings.is_empty());
+    for (outward, estimate) in [(true, &before), (false, &after)] {
+        assert_eq!(estimate.estimates.len(), 2);
+        for approach in &estimate.estimates {
+            assert_eq!(approach.towards_alignment_end, outward);
+            assert_eq!(approach.scheduled_passages, [2, 2]);
+        }
+    }
+
+    // A boundary five seconds after the first departure would wrongly omit the
+    // first event if starts, not passage offsets, were used. Both cross before
+    // the next hour closes because the start window is translated by the
+    // no-stop elapsed to the marker.
+    let just_after_starts = HOUR - 60_000;
+    let encompassing = world
+        .preview_planned_crossing_delay(just_after_starts - 65_000)
+        .unwrap();
+    assert_eq!(encompassing.estimates.len(), 4);
+    assert!(encompassing
+        .estimates
+        .iter()
+        .all(|row| row.scheduled_passages == [2, 4]));
+    println!("before={before:?}, after={after:?}, earlier-start window={encompassing:?}");
+}
+
+#[test]
+fn nominal_crossing_preview_does_not_invent_coordinates_for_unproved_profile() {
+    let (mut world, mut configs) = fixture(true, false);
+    let edge = &world.snapshot().alignments[0];
+    let (alignment, owner) = (edge.id, edge.owner);
+    // A pass-through station splits the operations profile into two sections;
+    // proof for that profile is explicitly outside the single-section slice.
+    world
+        .place_station_on_alignment(owner, "Pass through".into(), alignment, 0.25, 80., 10.)
+        .unwrap();
+    for config in &mut configs {
+        config.timetable.headway_ms = 600_000;
+        config.timetable.last_departure_ms = 3_599_999;
+    }
+    world.configure_operation(configs.to_vec()).unwrap();
+    let preview = world.preview_planned_crossing_delay(0).unwrap();
+    assert!(preview.estimates.is_empty());
+    assert_eq!(preview.incomplete_crossings.len(), 1);
+    assert!(preview.incomplete_crossings[0].contains(&alignment.0));
+}
+
+#[test]
+fn planning_inspector_revision_and_decimal_window_are_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("planning.rosenfu");
+    let mut editor = WorldEditor::new();
+    let original = editor.operation_snapshot().configuration_token.clone();
+    let unavailable = serde_json::to_value(
+        editor
+            .preview_crossing_planning(&original, "9007199254740993")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(unavailable["start_ms"], "9007199254740993");
+    assert_eq!(unavailable["end_ms"], "9007199258340993");
+    assert_eq!(unavailable["available"], false);
+    for invalid in ["-1", "010", "+10", "10.5", "18446744073709551615"] {
+        assert!(editor
+            .preview_crossing_planning(&original, invalid)
+            .is_err());
+    }
+    let (mut world, mut configs) = fixture(true, false);
+    for config in &mut configs {
+        config.timetable.headway_ms = 600_000;
+        config.timetable.last_departure_ms = 3_599_999;
+    }
+    world.configure_operation(configs.to_vec()).unwrap();
+    world
+        .operation_mut()
+        .unwrap()
+        .runtime
+        .advance_to(1, 128)
+        .unwrap();
+    rosenfu_storage::save_world(&path, &world).unwrap();
+    let original_bytes = std::fs::read(&path).unwrap();
+    editor.load(&path).unwrap();
+    assert!(editor.preview_crossing_planning(&original, "0").is_err());
+    let before = serde_json::to_value(editor.operation_snapshot()).unwrap();
+    let current = before["configuration_token"].as_str().unwrap();
+    let preview =
+        serde_json::to_value(editor.preview_crossing_planning(current, "0").unwrap()).unwrap();
+    assert_eq!(preview["configuration_token"], current);
+    assert_eq!(preview["start_ms"], "0");
+    assert_eq!(preview["end_ms"], "3600000");
+    assert_eq!(preview["available"], true);
+    assert_eq!(preview["estimate_count"], 4);
+    assert_eq!(
+        preview["estimates"][0]["scheduled_passages"],
+        serde_json::json!([6, 12])
+    );
+    assert!(preview["estimates"][0]["approach_alignment_id"].is_string());
+    assert_eq!(preview["incomplete_count"], 0);
+    assert_eq!(preview["sparse_count"], 0);
+    assert_eq!(
+        serde_json::to_value(editor.operation_snapshot()).unwrap(),
+        before
+    );
+    editor.save(&path).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+    editor.load(&path).unwrap();
+    assert!(editor.preview_crossing_planning(current, "0").is_err());
+}
+
+#[test]
+fn configured_crossing_inspector_excludes_still_running_old_timetable_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("planning-handoff.rosenfu");
+    let (mut world, mut configs) = fixture(true, false);
+    for config in &mut configs {
+        config.timetable.headway_ms = 600_000;
+        config.timetable.last_departure_ms = 3_599_999;
+    }
+    world.configure_operation(configs.to_vec()).unwrap();
+    world
+        .operation_mut()
+        .unwrap()
+        .runtime
+        .advance_to(1, 128)
+        .unwrap();
+    rosenfu_storage::save_world(&path, &world).unwrap();
+    let mut editor = WorldEditor::new();
+    editor.load(&path).unwrap();
+    let before = editor.operation_snapshot();
+    let config = &configs[0];
+    let after = editor
+        .configure_operation_service(
+            config.service_id,
+            Timetable {
+                first_departure_ms: 120_000,
+                last_departure_ms: 3_599_999,
+                headway_ms: 300_000,
+            },
+            config.vehicle.clone(),
+            config.dwell_ms,
+            &before.timetable_edit_token,
+        )
+        .unwrap();
+    assert!(after.rail_timetable_handoff_in_progress);
+    assert_eq!(after.trains, before.trains);
+
+    // The old t=0 train still exists, but this read is the configured
+    // timetable's scenario, not a mix of old/new departures actually run.
+    assert!(editor
+        .preview_crossing_planning(&before.configuration_token, "0")
+        .is_err());
+    let view = serde_json::to_value(
+        editor
+            .preview_crossing_planning(&after.configuration_token, "0")
+            .unwrap(),
+    )
+    .unwrap();
+    let changed_alignment = world.snapshot().alignments[0].id.0.to_string();
+    for row in view["estimates"].as_array().unwrap() {
+        let expected = if row["approach_alignment_id"] == changed_alignment {
+            serde_json::json!([12, 12])
+        } else {
+            serde_json::json!([6, 24])
+        };
+        assert_eq!(row["scheduled_passages"], expected);
+    }
+    assert_eq!(view["estimate_count"], 4);
+    assert_eq!(editor.operation_snapshot().trains, before.trains);
+}

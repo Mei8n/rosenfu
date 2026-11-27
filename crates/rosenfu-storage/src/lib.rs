@@ -1,16 +1,112 @@
 //! Provisional alpha JSON storage. One authoritative writer per save path is required.
 mod evidence;
-use evidence::EvidenceEnvelope;
+mod road_coverage;
+pub use road_coverage::{read_road_coverage, RoadCoverage, TileBounds};
+#[cfg(feature = "periodic-world-qa")]
+pub mod periodic_qa;
+use evidence::{BorrowedEvidenceEnvelope, EvidenceEnvelope};
 use rosenfu_core::world::{World, WorldDraft, WorldError};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{self, DeserializeSeed, IntoDeserializer, MapAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 pub const FORMAT: &str = "rosenfu-world";
-pub const SCHEMA_VERSION: u64 = 25;
+pub const SCHEMA_VERSION: u64 = 27;
+// Use a separate outer tag only for the new mixed capability. Older readers
+// classify unsupported outer schemas as non-repairable, unlike a known
+// schema whose unfamiliar runtime merely appears invalid.
+const MIXED_STANDARD_BUS_SCHEMA: u64 = 28;
+// Pre-tram clients must reject these BEFORE typed fields are decoded, even
+// during autosave recovery. A standard-enabled save must not appear safe to an
+// otherwise new client built without the standard-periodic-rail capability.
+const STREET_TRAM_SCHEMA: u64 = 29;
+const STREET_TRAM_STANDARD_SCHEMA: u64 = 30;
+// Previous single-cell street-tram readers must not interpret a new
+// adjacent proof as repairable corruption, even if shipped independently.
+const ADJACENT_TRAM_SCHEMA: u64 = 31;
+const ADJACENT_TRAM_STANDARD_SCHEMA: u64 = 32;
+// Unknown rail motion must not be treated as repairable data by old readers.
+const CONNECTED_TERMINAL_NECK_SCHEMA: u64 = 33;
+// 31–33 are independently reserved by adjacent Tram and terminal return.
+// Fractional Bus here is standalone/classic; mixed capabilities need a
+// separate explicit envelope, not a version number that hides a downgrade.
+const FRACTIONAL_BUS_SCHEMA: u64 = 34;
+// One combined envelope. New profiles require independently admitted
+// payload capabilities; the label never enables gameplay by itself.
+const COMBINED_CAPABILITIES_SCHEMA: u64 = 35;
+// A separate schema so an older client detects this as unavailable capability
+// rather than treating a proof-bearing world as recoverable corruption.
+const INSTALLED_SEAM_BUS_SCHEMA: u64 = 36;
+const INSTALLED_SEAM_BUS_ROUTES: &str = "ofm_installed_seam_bus_routes";
+const FRACTIONAL_BUS_STREET_TRAM_PROFILE: &[&str] = &[
+    "fractional_bus_same_ground_atom_v1",
+    "street_tram_single_cell_v1",
+];
+const CLASSIC_BUS_NECK_PROFILE: &[&str] = &["classic_bus_run_v1", "rail_terminal_neck_v1"];
+const STREET_TRAM_CHAIN_PROFILE: &[&str] = &["street_tram_chain_v1"];
+const GENERAL_FRACTIONAL_BUS_PROFILE: &[&str] = &["fractional_bus_ground_route_v1"];
+const GENERAL_FRAC_STOPS: &str = "fractional_bus_ground_stops_v1";
+const GENERAL_FRAC_ROUTE: &str = "fractional_bus_ground_route_v1";
+const STREET_TRAM_SINGLE: &str = "street_tram_single_cell_v1";
+const STREET_TRAM_ADJACENT: &str = "street_tram_adjacent_cells_v1";
+const STREET_TRAM_CHAIN: &str = "street_tram_chain_v1";
+const STANDARD_DAILY: &str = "standard_daily_v1";
+const MAX_COMBINED_PROFILE_NAMES: usize = 4;
+const STANDARD_CHAIN_PROFILE: &[&str] = &[STREET_TRAM_CHAIN, STANDARD_DAILY];
+const GENERAL_FRAC_PROFILES: [[&[&str]; 4]; 2] = [
+    [
+        GENERAL_FRACTIONAL_BUS_PROFILE,
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_SINGLE],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_ADJACENT],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_CHAIN],
+    ],
+    [
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS],
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_SINGLE],
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_ADJACENT],
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_CHAIN],
+    ],
+];
+const STANDARD_GENERAL_FRAC_PROFILES: [[&[&str]; 4]; 2] = [
+    [
+        &[GENERAL_FRAC_ROUTE, STANDARD_DAILY],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_SINGLE, STANDARD_DAILY],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_ADJACENT, STANDARD_DAILY],
+        &[GENERAL_FRAC_ROUTE, STREET_TRAM_CHAIN, STANDARD_DAILY],
+    ],
+    [
+        &[GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STANDARD_DAILY],
+        &[
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_SINGLE,
+            STANDARD_DAILY,
+        ],
+        &[
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_ADJACENT,
+            STANDARD_DAILY,
+        ],
+        &[
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_CHAIN,
+            STANDARD_DAILY,
+        ],
+    ],
+];
+pub const GENERAL_FRACTIONAL_BUS_STOPS_SUPPORTED: bool = true;
+/// The codec checks the distinct multi-atom, evidence-derived Bus proof.
+pub const GENERAL_FRACTIONAL_BUS_SUPPORTED: bool = true;
+/// The codec has an explicit, checked profile for typed cardinal-chain proof.
+pub const STREET_TRAM_CHAIN_SAVE_ENABLED: bool = true;
 pub const MAX_SAVE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -74,13 +170,455 @@ impl From<WorldError> for StorageError {
     }
 }
 
+fn current_wire_schema(version: u64) -> bool {
+    matches!(
+        version,
+        SCHEMA_VERSION
+            | STREET_TRAM_SCHEMA
+            | ADJACENT_TRAM_SCHEMA
+            | CONNECTED_TERMINAL_NECK_SCHEMA
+            | FRACTIONAL_BUS_SCHEMA
+            | COMBINED_CAPABILITIES_SCHEMA
+            | INSTALLED_SEAM_BUS_SCHEMA
+    ) || (cfg!(feature = "standard-periodic-rail")
+        && matches!(
+            version,
+            MIXED_STANDARD_BUS_SCHEMA | STREET_TRAM_STANDARD_SCHEMA | ADJACENT_TRAM_STANDARD_SCHEMA
+        ))
+}
+
+fn check_terminal_neck_envelope(
+    version: u64,
+    has_neck: bool,
+    conflicts: bool,
+    with_classic_bus: bool,
+) -> Result<(), StorageError> {
+    let declared = if with_classic_bus {
+        version == COMBINED_CAPABILITIES_SCHEMA
+    } else {
+        version == CONNECTED_TERMINAL_NECK_SCHEMA
+    };
+    if declared != has_neck || (has_neck && conflicts) {
+        return Err(StorageError::UnsupportedVersion(
+            CONNECTED_TERMINAL_NECK_SCHEMA,
+        ));
+    }
+    Ok(())
+}
+
+fn check_fractional_envelope(
+    version: u64,
+    fractional: bool,
+    street: bool,
+    adjacent: bool,
+    standard: bool,
+    runtime: Option<u64>,
+) -> Result<(), StorageError> {
+    let expected = if street && !adjacent {
+        COMBINED_CAPABILITIES_SCHEMA
+    } else {
+        FRACTIONAL_BUS_SCHEMA
+    };
+    if !fractional {
+        if matches!(version, FRACTIONAL_BUS_SCHEMA) {
+            return Err(StorageError::UnsupportedVersion(version));
+        }
+    } else if version != expected
+        || adjacent
+        || standard
+        || runtime.is_some_and(|format| format > 7 || (street && format != 2))
+    {
+        return Err(StorageError::UnsupportedVersion(expected));
+    }
+    Ok(())
+}
+
+fn check_typed_fractional_envelope(
+    version: u64,
+    draft: &WorldDraft,
+    operation: Option<&rosenfu_core::world::WorldOperationSave>,
+) -> Result<(), StorageError> {
+    let standard = {
+        #[cfg(feature = "standard-periodic-rail")]
+        {
+            operation.is_some_and(|op| op.has_standard_timetable())
+        }
+        #[cfg(not(feature = "standard-periodic-rail"))]
+        {
+            false
+        }
+    };
+    if draft.carries_general_fractional_bus_proof() {
+        return if version == COMBINED_CAPABILITIES_SCHEMA
+            && combined_profile(draft, operation)
+                .is_some_and(|p| p.first() == Some(&GENERAL_FRAC_ROUTE))
+        {
+            Ok(())
+        } else {
+            Err(StorageError::UnsupportedVersion(
+                COMBINED_CAPABILITIES_SCHEMA,
+            ))
+        };
+    }
+    let fractional = draft.carries_fractional_bus_proof();
+    check_fractional_envelope(
+        version,
+        fractional,
+        fractional && draft.carries_street_tram_proof(),
+        fractional
+            && (draft.carries_adjacent_street_tram_proof()
+                || draft.carries_chain_street_tram_proof()),
+        standard,
+        operation.map(|op| u64::from(op.runtime.format)),
+    )
+}
+
+/// A declared profile is checked against the persisted, validated
+/// capabilities, never used to infer missing proofs or opt in to a runtime.
+fn combined_profile(
+    draft: &WorldDraft,
+    operation: Option<&rosenfu_core::world::WorldOperationSave>,
+) -> Option<&'static [&'static str]> {
+    #[cfg(feature = "standard-periodic-rail")]
+    let standard = operation.is_some_and(|op| op.has_standard_timetable());
+    #[cfg(not(feature = "standard-periodic-rail"))]
+    let standard = false;
+    let fractional = draft.carries_fractional_bus_proof();
+    let general = draft.carries_general_fractional_bus_proof();
+    let street = draft.carries_street_tram_proof();
+    let chain = draft.carries_chain_street_tram_proof();
+    if operation.is_some_and(|op| op.has_connected_terminal_neck_with_independent_classic_bus())
+        && !fractional
+        && !general
+        && !street
+    {
+        return Some(CLASSIC_BUS_NECK_PROFILE);
+    }
+    if operation.is_some_and(|op| op.runtime.format != 2) {
+        return None;
+    }
+    if general {
+        let transit = if chain {
+            3
+        } else if draft.carries_adjacent_street_tram_proof() {
+            2
+        } else {
+            usize::from(street)
+        };
+        let profiles = if standard {
+            &STANDARD_GENERAL_FRAC_PROFILES
+        } else {
+            &GENERAL_FRAC_PROFILES
+        };
+        return Some(
+            profiles[usize::from(draft.carries_general_fractional_bus_stops_proof())][transit],
+        );
+    }
+    if standard {
+        return (chain && !fractional).then_some(STANDARD_CHAIN_PROFILE);
+    }
+    match (fractional, street, chain) {
+        (false, _, true) => Some(STREET_TRAM_CHAIN_PROFILE),
+        (true, true, false) if !draft.carries_adjacent_street_tram_proof() => {
+            Some(FRACTIONAL_BUS_STREET_TRAM_PROFILE)
+        }
+        _ => None,
+    }
+}
+
+fn known_combined_profile(declared: &[String]) -> bool {
+    let standard_profiles = cfg!(feature = "standard-periodic-rail")
+        .then_some(
+            std::iter::once(STANDARD_CHAIN_PROFILE)
+                .chain(STANDARD_GENERAL_FRAC_PROFILES.into_iter().flatten()),
+        )
+        .into_iter()
+        .flatten();
+    declared.len() <= MAX_COMBINED_PROFILE_NAMES
+        && [
+            FRACTIONAL_BUS_STREET_TRAM_PROFILE,
+            CLASSIC_BUS_NECK_PROFILE,
+            STREET_TRAM_CHAIN_PROFILE,
+        ]
+        .into_iter()
+        .chain(GENERAL_FRAC_PROFILES.into_iter().flatten())
+        .chain(standard_profiles)
+        .any(|expected| {
+            declared
+                .iter()
+                .map(String::as_str)
+                .eq(expected.iter().copied())
+        })
+}
+
+fn check_combined_profile(
+    version: u64,
+    declared: Option<&[String]>,
+    expected: Option<&[&str]>,
+) -> Result<(), StorageError> {
+    let matches = match (version, declared, expected) {
+        (COMBINED_CAPABILITIES_SCHEMA, Some(declared), Some(expected)) => {
+            known_combined_profile(declared)
+                && declared
+                    .iter()
+                    .map(String::as_str)
+                    .eq(expected.iter().copied())
+        }
+        (COMBINED_CAPABILITIES_SCHEMA, _, _) => false,
+        (_, None, None) => true,
+        _ => false,
+    };
+    if !matches {
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
+    }
+    Ok(())
+}
+
+fn present_combined_profile<'de, D: Deserializer<'de>>(
+    input: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    // Value fallback is not permitted to pick a last-wins capability field.
+    // This typed path also rejects explicit null rather than treating it as
+    // the absence of an old-shape optional field.
+    Vec::<String>::deserialize(input).map(Some)
+}
+
+fn typed_terminal_neck_conflicts(
+    draft: &WorldDraft,
+    operation: &rosenfu_core::world::WorldOperationSave,
+) -> bool {
+    #[cfg(feature = "standard-periodic-rail")]
+    if operation.has_standard_timetable() {
+        return true;
+    }
+    draft.carries_fractional_bus_proof()
+        || draft.carries_general_fractional_bus_proof()
+        || (!operation.bus_configs.is_empty()
+            && !operation.has_connected_terminal_neck_with_independent_classic_bus())
+        || operation.crossing_reservations
+        || operation.parallel_join_lanes
+        || draft.carries_street_tram_proof()
+        || draft.carries_adjacent_street_tram_proof()
+}
+
+fn wire_schema(
+    draft: &WorldDraft,
+    operation: Option<&rosenfu_core::world::WorldOperationSave>,
+) -> u64 {
+    if !draft.ofm_installed_seam_bus_routes.is_empty() {
+        return INSTALLED_SEAM_BUS_SCHEMA;
+    }
+    if draft.carries_chain_street_tram_proof()
+        || draft.carries_general_fractional_bus_proof()
+        || combined_profile(draft, operation).is_some()
+    {
+        return COMBINED_CAPABILITIES_SCHEMA;
+    }
+    if operation.is_some_and(|op| op.has_connected_terminal_neck()) {
+        return CONNECTED_TERMINAL_NECK_SCHEMA;
+    }
+    if draft.carries_fractional_bus_proof() {
+        return FRACTIONAL_BUS_SCHEMA;
+    }
+    if draft.carries_adjacent_street_tram_proof() {
+        #[cfg(feature = "standard-periodic-rail")]
+        if operation.is_some_and(|op| op.has_standard_timetable()) {
+            return ADJACENT_TRAM_STANDARD_SCHEMA;
+        }
+        return ADJACENT_TRAM_SCHEMA;
+    }
+    if draft.carries_street_tram_proof() {
+        #[cfg(feature = "standard-periodic-rail")]
+        if operation.is_some_and(|op| op.has_standard_timetable()) {
+            return STREET_TRAM_STANDARD_SCHEMA;
+        }
+        return STREET_TRAM_SCHEMA;
+    }
+    #[cfg(feature = "standard-periodic-rail")]
+    if operation.is_some_and(|op| op.has_standard_timetable() && !op.bus_configs.is_empty()) {
+        return MIXED_STANDARD_BUS_SCHEMA;
+    }
+    SCHEMA_VERSION
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SaveDocument {
+struct SaveDocument<W = WorldDraft> {
     format: String,
     schema_version: u64,
-    world: WorldDraft,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_combined_profile"
+    )]
+    capabilities: Option<Vec<String>>,
+    world: W,
     road_evidence: EvidenceEnvelope,
+    operation: Option<rosenfu_core::world::WorldOperationSave>,
+    #[serde(default)]
+    fixed_od_scenario: Option<rosenfu_core::world::FixedOdScenario>,
+}
+
+// Serde may skip unknown values when decoding a typed struct. Unlike its
+// Value parser, that skip need not enforce numeric range or recursion limits.
+// Walk every value with the normal JSON parser, without building a DOM.
+struct CheckedJson;
+
+impl<'de> Deserialize<'de> for CheckedJson {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Check;
+
+        impl<'de> Visitor<'de> for Check {
+            type Value = CheckedJson;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a valid JSON value")
+            }
+
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(CheckedJson)
+            }
+
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                while seq.next_element::<CheckedJson>()?.is_some() {}
+                Ok(CheckedJson)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<CheckedJson, CheckedJson>()?.is_some() {}
+                Ok(CheckedJson)
+            }
+        }
+
+        deserializer.deserialize_any(Check)
+    }
+}
+
+// The low-allocation path must check object shape and required fields before
+// trusting defaults in WorldDraft. A failed typed parse is retried through the
+// Value path, preserving legacy diagnostics and last-wins duplicate handling.
+struct CurrentSave(SaveDocument<RequiredWorldDraft>);
+
+impl<'de> Deserialize<'de> for CurrentSave {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct CurrentSaveVisitor;
+
+        impl<'de> Visitor<'de> for CurrentSaveVisitor {
+            type Value = CurrentSave;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a current Rosenfu save object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                let save = SaveDocument::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                if !current_wire_schema(save.schema_version) || save.format != FORMAT {
+                    return Err(de::Error::custom("not a current Rosenfu save"));
+                }
+                Ok(CurrentSave(save))
+            }
+        }
+
+        deserializer.deserialize_map(CurrentSaveVisitor)
+    }
+}
+
+const REQUIRED_WORLD_ARRAYS: [&str; 5] = [
+    "route_paths",
+    "service_paths",
+    "service_route_bindings",
+    "source_records",
+    "alignment_provenance",
+];
+
+struct RequiredWorldDraft(WorldDraft);
+impl From<RequiredWorldDraft> for WorldDraft {
+    fn from(draft: RequiredWorldDraft) -> Self {
+        draft.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RequiredWorldDraft {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct WorldVisitor;
+
+        impl<'de> Visitor<'de> for WorldVisitor {
+            type Value = RequiredWorldDraft;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a world object with explicit path and provenance arrays")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                struct RequiredFields<'a, A> {
+                    map: A,
+                    found: &'a mut [bool; REQUIRED_WORLD_ARRAYS.len()],
+                }
+
+                impl<'de, A: MapAccess<'de>> MapAccess<'de> for RequiredFields<'_, A> {
+                    type Error = A::Error;
+
+                    fn next_key_seed<K: DeserializeSeed<'de>>(
+                        &mut self,
+                        seed: K,
+                    ) -> Result<Option<K::Value>, Self::Error> {
+                        let Some(key) = self.map.next_key::<String>()? else {
+                            return Ok(None);
+                        };
+                        if let Some(index) = REQUIRED_WORLD_ARRAYS.iter().position(|&f| f == key) {
+                            self.found[index] = true;
+                        }
+                        seed.deserialize(key.into_deserializer()).map(Some)
+                    }
+
+                    fn next_value_seed<V: DeserializeSeed<'de>>(
+                        &mut self,
+                        seed: V,
+                    ) -> Result<V::Value, Self::Error> {
+                        self.map.next_value_seed(seed)
+                    }
+                }
+
+                let mut found = [false; REQUIRED_WORLD_ARRAYS.len()];
+                let draft = WorldDraft::deserialize(de::value::MapAccessDeserializer::new(
+                    RequiredFields {
+                        map,
+                        found: &mut found,
+                    },
+                ))?;
+                for (present, field) in found.into_iter().zip(REQUIRED_WORLD_ARRAYS) {
+                    if !present {
+                        return Err(de::Error::missing_field(field));
+                    }
+                }
+                Ok(RequiredWorldDraft(draft))
+            }
+        }
+
+        deserializer.deserialize_map(WorldVisitor)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,12 +631,59 @@ pub enum SaveOutcome {
     },
 }
 
+// A parsed document owns its deserialized fields and never borrows the
+// bounded input buffer. Keep restoration separate from parsing so file
+// loaders can drop that buffer before rebuilding evidence and runtime state.
+enum ParsedSave {
+    Current(Box<SaveDocument<RequiredWorldDraft>>),
+    Compatibility(serde_json::Value),
+}
+
+impl ParsedSave {
+    fn parse(bytes: &[u8]) -> Result<Self, StorageError> {
+        if bytes.len() > MAX_SAVE_BYTES {
+            return Err(StorageError::TooLarge);
+        }
+        if let Ok(CurrentSave(document)) = serde_json::from_slice(bytes) {
+            if serde_json::from_slice::<CheckedJson>(bytes).is_ok() {
+                return Ok(Self::Current(Box::new(document)));
+            }
+        }
+        Ok(Self::Compatibility(serde_json::from_slice(bytes)?))
+    }
+
+    fn restore(self) -> Result<World, StorageError> {
+        match self {
+            Self::Current(document) => {
+                let version = document.schema_version;
+                restore_document(*document, version)
+            }
+            Self::Compatibility(value) => decode_document(value),
+        }
+    }
+}
+
 /// Parse the format/version first, then deserialize and validate the world.
 pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
-    if bytes.len() > MAX_SAVE_BYTES {
-        return Err(StorageError::TooLarge);
-    }
-    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    ParsedSave::parse(bytes)?.restore()
+}
+
+fn value_carries_descriptor_marker(
+    data: &serde_json::Value,
+    marker: impl Fn(&serde_json::Value) -> bool,
+) -> bool {
+    // Only inspect the two reachable descriptor shapes, not arbitrary JSON.
+    // A bad point or malformed tramGuide in a downgraded envelope still
+    // signals a newer capability, and is not permission to replace the file.
+    data["road_path_provenance"]
+        .as_array()
+        .is_some_and(|proofs| proofs.iter().any(|p| marker(&p["path"])))
+        || data["construction_plans"]["parkedPaths"]
+            .as_array()
+            .is_some_and(|paths| paths.iter().any(|p| marker(&p["ofmPath"])))
+}
+
+fn decode_document(value: serde_json::Value) -> Result<World, StorageError> {
     let format = value
         .get("format")
         .and_then(|v| v.as_str())
@@ -110,8 +695,103 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or(StorageError::InvalidHeader)?;
-    if version != SCHEMA_VERSION {
+    if version != 26 && !current_wire_schema(version) {
         return Err(StorageError::UnsupportedVersion(version));
+    }
+    // Schema 36 is typed-only: never take JSON's last duplicate or ignore
+    // new fields via legacy compatibility.
+    if version == INSTALLED_SEAM_BUS_SCHEMA
+        || value["world"].get(INSTALLED_SEAM_BUS_ROUTES).is_some()
+    {
+        return Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA));
+    }
+    // Combined files must use the exact typed grammar. If this parser is
+    // reached, the label or declaration was attached to malformed typed
+    // data (possibly duplicate fields); never interpret that as repairable.
+    if version == COMBINED_CAPABILITIES_SCHEMA || value.get("capabilities").is_some() {
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
+    }
+    let data = &value["world"];
+    // Recognize reserved proof fields so an early build never treats them as
+    // permission to repair/overwrite under a downgraded standalone label.
+    // Recognition is not support: only an admitted typed profile can load.
+    if value_carries_descriptor_marker(data, |path| {
+        path.get("tramChainGuide").is_some()
+            || path["algorithm"].as_str() == Some("ofm_ground_tram_chain_v1")
+    }) || data["ofm_gameplay_bus_routes"]
+        .as_object()
+        .is_some_and(|routes| {
+            routes
+                .values()
+                .any(|proof| proof.get("fractionalTerminals").is_some())
+        })
+    {
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
+    }
+    let op = &value["operation"];
+    let fractional = data["ofm_gameplay_bus_routes"]
+        .as_object()
+        .is_some_and(|routes| routes.values().any(|b| b.get("sameAtomStops").is_some()));
+    let street = || {
+        value_carries_descriptor_marker(data, |path| {
+            path.get("tramGuide").is_some()
+                || path["method"].as_str() == Some("ofm_authored_street_tram_v1")
+        })
+    };
+    let adjacent = || {
+        value_carries_descriptor_marker(data, |path| {
+            path["tramGuide"].get("adjacentEnd").is_some()
+                || path["algorithm"].as_str() == Some("ofm_ground_tram_adjacent_v2")
+        })
+    };
+    let standard = op.get("standard_timetable").is_some_and(|v| !v.is_null());
+    let runtime_format = op["runtime"]["format"].as_u64();
+    check_fractional_envelope(
+        version,
+        fractional,
+        fractional && street(),
+        fractional && adjacent(),
+        standard,
+        runtime_format,
+    )?;
+    let neck_format =
+        u64::from(rosenfu_core::world::WorldOperationSave::CONNECTED_TERMINAL_NECK_FORMAT);
+    let has_neck = runtime_format == Some(neck_format);
+    if has_neck || version == CONNECTED_TERMINAL_NECK_SCHEMA {
+        let conflicts = fractional
+            || street()
+            || adjacent()
+            || standard
+            || op["bus_configs"].as_array().is_some_and(|v| !v.is_empty())
+            || op["crossing_reservations"].as_bool() == Some(true)
+            || op["parallel_join_lanes"].as_bool() == Some(true);
+        check_terminal_neck_envelope(version, has_neck, conflicts, false)?;
+    }
+    if version < ADJACENT_TRAM_SCHEMA && adjacent() {
+        return Err(StorageError::UnsupportedVersion(ADJACENT_TRAM_SCHEMA));
+    }
+    if version < STREET_TRAM_SCHEMA && street() {
+        return Err(StorageError::UnsupportedVersion(STREET_TRAM_SCHEMA));
+    }
+    if matches!(version, STREET_TRAM_SCHEMA | ADJACENT_TRAM_SCHEMA)
+        && value["operation"]
+            .get("standard_timetable")
+            .is_some_and(|v| !v.is_null())
+    {
+        return Err(StorageError::UnsupportedVersion(
+            if version == ADJACENT_TRAM_SCHEMA {
+                ADJACENT_TRAM_STANDARD_SCHEMA
+            } else {
+                STREET_TRAM_STANDARD_SCHEMA
+            },
+        ));
+    }
+    if version == 26 && value.get("fixed_od_scenario").is_some() {
+        return Err(StorageError::InvalidHeader);
     }
     let data = value.get("world").ok_or(StorageError::InvalidHeader)?;
     if data.get("tracks").is_some()
@@ -158,22 +838,151 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
     {
         return Err(StorageError::LegacyFormat);
     }
-    for field in [
-        "route_paths",
-        "service_paths",
-        "service_route_bindings",
-        "source_records",
-        "alignment_provenance",
-    ] {
+    for field in REQUIRED_WORLD_ARRAYS {
         if !data.get(field).is_some_and(|v| v.is_array()) {
             return Err(StorageError::InvalidHeader);
         }
     }
-    let mut document: SaveDocument = serde_json::from_value(value)?;
-    let store = document.road_evidence.restore()?;
-    document.world.restore_road_evidence(store)?;
-    let world = World::new(document.world)?;
-    ensure_world_saveable(&world)?;
+    let document: SaveDocument = serde_json::from_value(value)?;
+    restore_document(document, version)
+}
+
+fn check_installed_seam_profile(
+    version: u64,
+    declared_capabilities: bool,
+    draft: &WorldDraft,
+    operation: Option<&rosenfu_core::world::WorldOperationSave>,
+    has_demand: bool,
+) -> Result<(), StorageError> {
+    let has_recipe = !draft.ofm_installed_seam_bus_routes.is_empty();
+    if version != INSTALLED_SEAM_BUS_SCHEMA && !has_recipe {
+        return Ok(());
+    }
+    #[cfg(feature = "standard-periodic-rail")]
+    if operation.is_some_and(|op| op.has_standard_timetable()) {
+        return Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA));
+    }
+    if version != INSTALLED_SEAM_BUS_SCHEMA
+        || draft.ofm_installed_seam_bus_routes.len() != 1
+        || declared_capabilities
+        || has_demand
+        || !draft.road_transport.tram_sections.is_empty()
+        || draft.carries_street_tram_proof()
+        || draft.carries_chain_street_tram_proof()
+        || draft.carries_adjacent_street_tram_proof()
+        || operation.is_some_and(|o| {
+            o.invalidated
+                || o.runtime.format != 2
+                || !o.configs.is_empty()
+                || o.crossing_reservations
+                || o.parallel_join_lanes
+        })
+    {
+        return Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA));
+    }
+    Ok(())
+}
+
+fn restore_document<W: Into<WorldDraft>>(
+    document: SaveDocument<W>,
+    version: u64,
+) -> Result<World, StorageError> {
+    let draft = document.world.into();
+    check_installed_seam_profile(
+        version,
+        document.capabilities.is_some(),
+        &draft,
+        document.operation.as_ref(),
+        document.fixed_od_scenario.is_some(),
+    )?;
+    if version == INSTALLED_SEAM_BUS_SCHEMA {
+        // A release with missing installed authority must not permit normal
+        // overwrite/recovery. Also fail closed on corrupt or forged projection
+        // and on any operation save that cannot be recompiled against it.
+        let unavailable = |_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA);
+        let store = document.road_evidence.restore(false).map_err(unavailable)?;
+        let mut world = World::from_saved_draft(draft, store)
+            .map_err(|_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))?;
+        world
+            .restore_operation(document.operation)
+            .map_err(|_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))?;
+        validate_save_footprint(&save_document(&world))?;
+        return Ok(world);
+    }
+    check_combined_profile(
+        version,
+        document.capabilities.as_deref(),
+        combined_profile(&draft, document.operation.as_ref()),
+    )?;
+    check_typed_fractional_envelope(version, &draft, document.operation.as_ref())?;
+    let neck = document
+        .operation
+        .as_ref()
+        .filter(|op| op.has_connected_terminal_neck());
+    check_terminal_neck_envelope(
+        version,
+        neck.is_some(),
+        neck.is_some_and(|op| typed_terminal_neck_conflicts(&draft, op)),
+        neck.is_some_and(|op| op.has_connected_terminal_neck_with_independent_classic_bus()),
+    )?;
+    let expected = wire_schema(&draft, document.operation.as_ref());
+    if version < ADJACENT_TRAM_SCHEMA && expected >= ADJACENT_TRAM_SCHEMA {
+        return Err(StorageError::UnsupportedVersion(ADJACENT_TRAM_SCHEMA));
+    }
+    if version < STREET_TRAM_SCHEMA && expected >= STREET_TRAM_SCHEMA {
+        return Err(StorageError::UnsupportedVersion(STREET_TRAM_SCHEMA));
+    }
+    #[cfg(feature = "standard-periodic-rail")]
+    if (version, expected) == (STREET_TRAM_SCHEMA, STREET_TRAM_STANDARD_SCHEMA)
+        || (version, expected) == (ADJACENT_TRAM_SCHEMA, ADJACENT_TRAM_STANDARD_SCHEMA)
+    {
+        return Err(StorageError::UnsupportedVersion(expected));
+    }
+    // Schema 26 predates runtime formats after v2 and the newer rail reservations. Keep that ingress
+    // closed even when the current schema supports newer runtime formats.
+    if version == 26
+        && document.operation.as_ref().is_some_and(|operation| {
+            operation.runtime.format != 2
+                || operation.crossing_reservations
+                || operation.parallel_join_lanes
+        })
+    {
+        return Err(StorageError::InvalidHeader);
+    }
+    #[cfg(feature = "standard-periodic-rail")]
+    if version == 26
+        && document
+            .operation
+            .as_ref()
+            .is_some_and(|o| o.has_standard_timetable())
+    {
+        return Err(StorageError::InvalidHeader);
+    }
+    if version != 26 && expected != version {
+        return Err(StorageError::InvalidHeader);
+    }
+    if version == 26 && !draft.ofm_gameplay_bus_routes.is_empty() {
+        return Err(StorageError::InvalidHeader);
+    }
+    if version == 26
+        && draft.road_transport.bus_stops.iter().any(|stop| {
+            stop.location_kind == rosenfu_core::road_transport::BusStopLocationKind::PlayerCreated
+        })
+    {
+        return Err(StorageError::InvalidHeader);
+    }
+    let store = document.road_evidence.restore(version == 26)?;
+    let mut world = World::from_saved_draft(draft, store)?;
+    world
+        .restore_operation(document.operation)
+        .map_err(|_| StorageError::InvalidHeader)?;
+    world
+        .restore_fixed_od_scenario(document.fixed_od_scenario)
+        .map_err(|_| StorageError::InvalidHeader)?;
+    // The draft was validated above. Restoring operation and demand only
+    // changes World state outside the draft. The canonical size check still
+    // uses the complete document, including those restored fields.
+    validate_save_footprint(&save_document(&world))?;
     Ok(world)
 }
 
@@ -181,60 +990,223 @@ pub fn decode(bytes: &[u8]) -> Result<World, StorageError> {
 struct BorrowedSaveDocument<'a> {
     format: &'static str,
     schema_version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<&'static [&'static str]>,
     world: &'a WorldDraft,
-    road_evidence: EvidenceEnvelope,
+    road_evidence: BorrowedEvidenceEnvelope<'a>,
+    operation: Option<rosenfu_core::world::WorldOperationSave>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fixed_od_scenario: Option<&'a rosenfu_core::world::FixedOdScenario>,
 }
 
-struct BoundedCounter {
+/// Keep byte-budget failures distinct from actual disk/stream errors.
+struct BoundedWriter<W> {
+    inner: W,
     count: usize,
+    limit: usize,
+    limit_hit: bool,
 }
-impl Write for BoundedCounter {
+impl<W: Write> BoundedWriter<W> {
+    fn new(inner: W, limit: usize) -> Self {
+        Self {
+            inner,
+            count: 0,
+            limit,
+            limit_hit: false,
+        }
+    }
+}
+impl<W: Write> Write for BoundedWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > MAX_SAVE_BYTES.saturating_sub(self.count) {
+        if bytes.len() > self.limit.saturating_sub(self.count) {
+            self.limit_hit = true;
             return Err(io::Error::other("save size limit"));
         }
-        self.count += bytes.len();
-        Ok(bytes.len())
+        let written = self.inner.write(bytes)?;
+        self.count += written;
+        Ok(written)
     }
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        self.inner.flush()
     }
 }
 
-/// Validate and count the actual pretty-printed save without allocating its output.
-pub fn ensure_world_saveable(world: &World) -> Result<(), StorageError> {
+struct HashingWriter<W> {
+    inner: W,
+    digest: Sha256,
+}
+impl<W: Write> HashingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            digest: Sha256::new(),
+        }
+    }
+    fn version(self) -> FileVersion {
+        FileVersion::Present(self.digest.finalize().into())
+    }
+}
+impl<W: Write> Write for HashingWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(bytes)?;
+        self.digest.update(&bytes[..written]);
+        Ok(written)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn checked_save_document(world: &World) -> Result<BorrowedSaveDocument<'_>, StorageError> {
     world.snapshot().validate()?;
-    let document = BorrowedSaveDocument {
+    #[cfg(feature = "standard-periodic-rail")]
+    if world.has_standard_timetable() && world.operation().is_some_and(|o| o.invalidated) {
+        // The normal loader cannot reopen a periodic source whose exact
+        // physical specification no longer exists. Never write such a file.
+        return Err(StorageError::InvalidHeader);
+    }
+    let document = save_document(world);
+    check_installed_seam_profile(
+        document.schema_version,
+        document.capabilities.is_some(),
+        document.world,
+        document.operation.as_ref(),
+        document.fixed_od_scenario.is_some(),
+    )?;
+    if document.schema_version == INSTALLED_SEAM_BUS_SCHEMA {
+        let mut checked = World::new(world.snapshot().clone())
+            .map_err(|_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))?;
+        checked
+            .restore_operation(document.operation.clone())
+            .map_err(|_| StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))?;
+    }
+    if document.schema_version == COMBINED_CAPABILITIES_SCHEMA && document.capabilities.is_none() {
+        return Err(StorageError::UnsupportedVersion(
+            COMBINED_CAPABILITIES_SCHEMA,
+        ));
+    }
+    check_typed_fractional_envelope(
+        document.schema_version,
+        document.world,
+        document.operation.as_ref(),
+    )?;
+    if document
+        .operation
+        .as_ref()
+        .filter(|op| op.has_connected_terminal_neck())
+        .is_some_and(|op| typed_terminal_neck_conflicts(document.world, op))
+    {
+        return Err(StorageError::UnsupportedVersion(
+            CONNECTED_TERMINAL_NECK_SCHEMA,
+        ));
+    }
+    Ok(document)
+}
+
+fn save_document(world: &World) -> BorrowedSaveDocument<'_> {
+    let data = world.snapshot();
+    let operation = world.operation_save();
+    BorrowedSaveDocument {
         format: FORMAT,
-        schema_version: SCHEMA_VERSION,
-        world: world.snapshot(),
-        road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
+        schema_version: wire_schema(data, operation.as_ref()),
+        capabilities: combined_profile(data, operation.as_ref()),
+        world: data,
+        road_evidence: BorrowedEvidenceEnvelope::from_store(&data.runtime_road_evidence),
+        operation,
+        fixed_od_scenario: world.fixed_od_scenario(),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SaveLayout {
+    Pretty,
+    Compact,
+}
+
+/// Keep the old wire bytes whenever they fit. Only a measured wire-size
+/// limit, not a serialization or disk failure, can choose compact JSON.
+fn prefer_pretty_save<T>(
+    mut attempt: impl FnMut(SaveLayout) -> Result<T, StorageError>,
+) -> Result<T, StorageError> {
+    match attempt(SaveLayout::Pretty) {
+        Err(StorageError::TooLarge) => attempt(SaveLayout::Compact),
+        result => result,
+    }
+}
+
+fn write_bounded_save<W: Write>(
+    document: &BorrowedSaveDocument<'_>,
+    writer: W,
+    limit: usize,
+    layout: SaveLayout,
+) -> Result<W, StorageError> {
+    let mut writer = BoundedWriter::new(writer, limit);
+    let written = match layout {
+        SaveLayout::Pretty => serde_json::to_writer_pretty(&mut writer, document),
+        SaveLayout::Compact => serde_json::to_writer(&mut writer, document),
     };
-    let mut counter = BoundedCounter { count: 0 };
-    serde_json::to_writer_pretty(&mut counter, &document).map_err(|e| {
-        if e.is_io() {
+    if let Err(error) = written {
+        return Err(if writer.limit_hit {
+            StorageError::TooLarge
+        } else if let Some(kind) = error.io_error_kind() {
+            StorageError::Io(io::Error::new(kind, error))
+        } else {
+            StorageError::Json(error)
+        });
+    }
+    // The wire format includes the final newline; it consumes budget too.
+    if let Err(error) = writer.write_all(b"\n") {
+        return Err(if writer.limit_hit {
             StorageError::TooLarge
         } else {
-            StorageError::Json(e)
-        }
-    })?;
-    counter
-        .write_all(b"\n")
-        .map_err(|_| StorageError::TooLarge)?;
+            error.into()
+        });
+    }
+    Ok(writer.inner)
+}
+
+fn validate_save_footprint(document: &BorrowedSaveDocument<'_>) -> Result<(), StorageError> {
+    // Admission only needs to know whether *some* supported wire layout fits.
+    // Pretty JSON adds whitespace to the same tokens, so anything that fits
+    // pretty necessarily fits compact. Count compact once: there is no reason
+    // to measure a pretty prefix on every large edit or reopen, and no output
+    // is written here. The actual encoder still prefers the old pretty bytes.
+    write_bounded_save(document, io::sink(), MAX_SAVE_BYTES, SaveLayout::Compact)?;
     Ok(())
 }
 
+/// Validate and count the actual save representation without allocating its output.
+pub fn ensure_world_saveable(world: &World) -> Result<(), StorageError> {
+    validate_save_footprint(&checked_save_document(world)?)
+}
+
 pub fn encode(world: &World) -> Result<Vec<u8>, StorageError> {
-    ensure_world_saveable(world)?;
-    let document = BorrowedSaveDocument {
-        format: FORMAT,
-        schema_version: SCHEMA_VERSION,
-        world: world.snapshot(),
-        road_evidence: EvidenceEnvelope::from_store(&world.snapshot().runtime_road_evidence),
-    };
-    let mut bytes = serde_json::to_vec_pretty(&document)?;
-    bytes.push(b'\n');
-    Ok(bytes)
+    let document = checked_save_document(world)?;
+    prefer_pretty_save(|layout| write_bounded_save(&document, Vec::new(), MAX_SAVE_BYTES, layout))
+}
+
+#[cfg(test)]
+#[test]
+fn bounded_write_matches_pretty_bytes_and_includes_final_newline() {
+    let world = World::default();
+    let document = checked_save_document(&world).unwrap();
+    let mut old_bytes = serde_json::to_vec_pretty(&document).unwrap();
+    old_bytes.push(b'\n');
+    let limit = old_bytes.len();
+    assert_eq!(
+        write_bounded_save(&document, Vec::new(), limit, SaveLayout::Pretty).unwrap(),
+        old_bytes
+    );
+    assert!(write_bounded_save(&document, io::sink(), limit, SaveLayout::Pretty).is_ok());
+    assert!(matches!(
+        write_bounded_save(&document, io::sink(), limit - 1, SaveLayout::Pretty),
+        Err(StorageError::TooLarge)
+    ));
+    assert!(matches!(
+        write_bounded_save(&document, Vec::new(), limit - 1, SaveLayout::Pretty),
+        Err(StorageError::TooLarge)
+    ));
+    assert_eq!(encode(&world).unwrap(), old_bytes);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -272,8 +1244,11 @@ pub fn load_world_with_version(
 ) -> Result<(World, FileVersion), StorageError> {
     let path = path.as_ref();
     regular_file_exists(path)?;
-    let bytes = read_bounded(path)?;
-    Ok((decode(&bytes)?, bytes_version(&bytes)))
+    let (parsed, version) = {
+        let bytes = read_bounded(path)?;
+        (ParsedSave::parse(&bytes)?, bytes_version(&bytes))
+    };
+    Ok((parsed.restore()?, version))
 }
 
 fn lock_save(path: &Path) -> Result<File, StorageError> {
@@ -315,7 +1290,8 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, StorageError> {
 pub fn load_world(path: impl AsRef<Path>) -> Result<World, StorageError> {
     let path = path.as_ref();
     regular_file_exists(path)?;
-    decode(&read_bounded(path)?)
+    let parsed = ParsedSave::parse(&read_bounded(path)?)?;
+    parsed.restore()
 }
 
 pub fn backup_path(path: impl AsRef<Path>) -> PathBuf {
@@ -324,15 +1300,118 @@ pub fn backup_path(path: impl AsRef<Path>) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn prepare_file(path: &Path, bytes: &[u8]) -> Result<NamedTempFile, StorageError> {
+fn temp_sibling(path: &Path) -> Result<NamedTempFile, StorageError> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let mut temp = NamedTempFile::new_in(parent)?;
+    Ok(NamedTempFile::new_in(parent)?)
+}
+
+fn prepare_file(path: &Path, bytes: &[u8]) -> Result<NamedTempFile, StorageError> {
+    let mut temp = temp_sibling(path)?;
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
     Ok(temp)
+}
+
+fn prepare_world_file(
+    path: &Path,
+    document: &BorrowedSaveDocument<'_>,
+) -> Result<(NamedTempFile, FileVersion), StorageError> {
+    prepare_world_file_bounded(path, document, MAX_SAVE_BYTES)
+}
+
+fn prepare_world_file_bounded(
+    path: &Path,
+    document: &BorrowedSaveDocument<'_>,
+    limit: usize,
+) -> Result<(NamedTempFile, FileVersion), StorageError> {
+    prefer_pretty_save(|layout| {
+        // Every attempt owns its sibling and digest. An oversized pretty
+        // sibling is discarded before compact starts; the live save/backup
+        // remains untouched until the selected bounded output is synchronized.
+        let mut temp = temp_sibling(path)?;
+        let version = {
+            let output = BufWriter::new(HashingWriter::new(temp.as_file_mut()));
+            let output = write_bounded_save(document, output, limit, layout)?;
+            output
+                .into_inner()
+                .map_err(|error| error.into_error())?
+                .version()
+        };
+        temp.as_file().sync_all()?;
+        Ok((temp, version))
+    })
+}
+
+fn prepare_backup_file(
+    path: &Path,
+    backup: &Path,
+    expected: &FileVersion,
+) -> Result<NamedTempFile, StorageError> {
+    // Copy and hash the same bytes eventually validated and published as backup.
+    // Reopening the temp uses its file identity rather than re-reading a live save.
+    let mut input = File::open(path)?.take((MAX_SAVE_BYTES + 1) as u64);
+    let mut temp = temp_sibling(backup)?;
+    let version = {
+        let output = BufWriter::new(HashingWriter::new(temp.as_file_mut()));
+        let mut checked = BoundedWriter::new(output, MAX_SAVE_BYTES);
+        if let Err(error) = io::copy(&mut input, &mut checked) {
+            return Err(if checked.limit_hit {
+                StorageError::TooLarge
+            } else {
+                error.into()
+            });
+        }
+        checked
+            .inner
+            .into_inner()
+            .map_err(|error| error.into_error())?
+            .version()
+    };
+    if version != *expected {
+        return Err(StorageError::FileChanged);
+    }
+    // Parse the copied bytes without holding a full Vec or generic DOM on
+    // the common path. The fallback reopens the exact same temp file identity.
+    let typed = parse_save_temp::<CurrentSave>(&temp)?;
+    let restored_typed = if let Some(CurrentSave(document)) = typed {
+        if parse_save_temp::<CheckedJson>(&temp)?.is_some() {
+            let version = document.schema_version;
+            restore_document(document, version)?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !restored_typed {
+        let value =
+            serde_json::from_reader(BufReader::new(temp.reopen()?)).map_err(save_reader_error)?;
+        decode_document(value)?;
+    }
+    temp.as_file().sync_all()?;
+    Ok(temp)
+}
+
+fn parse_save_temp<T: de::DeserializeOwned>(
+    temp: &NamedTempFile,
+) -> Result<Option<T>, StorageError> {
+    match serde_json::from_reader(BufReader::new(temp.reopen()?)) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.io_error_kind().is_some() => Err(save_reader_error(error)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn save_reader_error(error: serde_json::Error) -> StorageError {
+    if let Some(kind) = error.io_error_kind() {
+        StorageError::Io(io::Error::new(kind, error))
+    } else {
+        StorageError::Json(error)
+    }
 }
 
 fn persist(temp: NamedTempFile, path: &Path, replace: bool) -> Result<(), StorageError> {
@@ -375,26 +1454,22 @@ pub fn save_world_if_version(
     expected: &FileVersion,
 ) -> Result<(SaveOutcome, FileVersion), StorageError> {
     let path = path.as_ref();
-    let bytes = encode(world)?;
+    let document = checked_save_document(world)?;
     let _lock = lock_save(path)?;
     if file_version(path)? != *expected {
         return Err(StorageError::FileChanged);
     }
-    let new_version = bytes_version(&bytes);
+    // Slot moves share this lock. No temporary file should be created in
+    // the slot until the lock is held, or moved out from under cleanup.
+    let (new_file, new_version) = prepare_world_file(path, &document)?;
     if *expected == FileVersion::Missing {
-        persist(prepare_file(path, &bytes)?, path, false)?;
+        persist(new_file, path, false)?;
         return Ok((SaveOutcome::Created, new_version));
     }
-    let previous = read_bounded(path)?;
-    if bytes_version(&previous) != *expected {
-        return Err(StorageError::FileChanged);
-    }
-    decode(&previous)?;
     let backup = backup_path(path);
     let backup_exists = regular_file_exists(&backup)?;
     let backup_version = file_version(&backup)?;
-    let new_file = prepare_file(path, &bytes)?;
-    let backup_file = prepare_file(&backup, &previous)?;
+    let backup_file = prepare_backup_file(path, &backup, expected)?;
     if file_version(path)? != *expected || file_version(&backup)? != backup_version {
         return Err(StorageError::FileChanged);
     }
@@ -415,12 +1490,12 @@ pub fn replace_world_if_version(
     expected: &FileVersion,
 ) -> Result<(SaveOutcome, FileVersion), StorageError> {
     let path = path.as_ref();
-    let bytes = encode(world)?;
+    let document = checked_save_document(world)?;
     let _lock = lock_save(path)?;
     if file_version(path)? != *expected {
         return Err(StorageError::FileChanged);
     }
-    let prepared = prepare_file(path, &bytes)?;
+    let (prepared, new_version) = prepare_world_file(path, &document)?;
     if file_version(path)? != *expected {
         return Err(StorageError::FileChanged);
     }
@@ -432,26 +1507,872 @@ pub fn replace_world_if_version(
         } else {
             SaveOutcome::Created
         },
-        bytes_version(&bytes),
+        new_version,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_26_does_not_accept_player_created_road_stops() {
+        let mut data: serde_json::Value =
+            serde_json::from_slice(&encode(&World::default()).unwrap()).unwrap();
+        data["schema_version"] = 26.into();
+        assert!(decode(&serde_json::to_vec(&data).unwrap()).is_ok());
+        data["world"]["road_transport"] = serde_json::json!({
+            "nodes": [], "edges": [], "bus_routes": [], "tram_sections": [],
+            "bus_stops": [{
+                "id":"s", "owner":"1", "name":"Player stop", "edge_id":"candidate",
+                "position":0.4, "location_kind":"player_created"
+            }]
+        });
+        assert!(matches!(
+            decode(&serde_json::to_vec(&data).unwrap()),
+            Err(StorageError::InvalidHeader)
+        ));
+        data["schema_version"] = SCHEMA_VERSION.into();
+        assert!(matches!(
+            decode(&serde_json::to_vec(&data).unwrap()),
+            Err(StorageError::InvalidWorld(
+                rosenfu_core::world::WorldError::InvalidRoadTransport
+            ))
+        ));
+    }
+
+    #[test]
+    fn downgraded_fractional_bus_marker_is_never_repairable_corruption() {
+        let old = encode(&World::default()).unwrap();
+        let mut altered: serde_json::Value = serde_json::from_slice(&old).unwrap();
+        assert_eq!(encode(&decode(&old).unwrap()).unwrap(), old);
+        altered["world"]["ofm_gameplay_bus_routes"] =
+            serde_json::json!({"B1":{"sameAtomStops":null}});
+        assert!(matches!(
+            decode(&serde_json::to_vec(&altered).unwrap()),
+            Err(StorageError::UnsupportedVersion(FRACTIONAL_BUS_SCHEMA))
+        ));
+    }
+
+    #[test]
+    fn installed_seam_bus_recipe_is_not_repairable_under_any_old_header() {
+        let world = World::default();
+        let baseline = encode(&world).unwrap();
+        assert_eq!(encode(&decode(&baseline).unwrap()).unwrap(), baseline);
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("seam-world.json");
+        let mut wire: serde_json::Value = serde_json::from_slice(&baseline).unwrap();
+        for schema in [
+            26,
+            SCHEMA_VERSION,
+            COMBINED_CAPABILITIES_SCHEMA,
+            INSTALLED_SEAM_BUS_SCHEMA,
+        ] {
+            wire["schema_version"] = schema.into();
+            for routes in [
+                serde_json::json!({"B":{"version":1,"catalogKey":"example"}}),
+                serde_json::json!({}),
+                serde_json::Value::Null,
+            ] {
+                wire["world"][INSTALLED_SEAM_BUS_ROUTES] = routes;
+                let bytes = serde_json::to_vec(&wire).unwrap();
+                assert!(matches!(
+                    decode(&bytes),
+                    Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))
+                ));
+                std::fs::write(&path, &bytes).unwrap();
+                assert!(matches!(
+                    save_world(&path, &world),
+                    Err(StorageError::UnsupportedVersion(INSTALLED_SEAM_BUS_SCHEMA))
+                ));
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                assert!(!backup_path(&path).exists());
+            }
+        }
+    }
+
+    #[test]
+    fn fractional_bus_cannot_hide_an_incompatible_capability_under_34() {
+        let ordinary = World::default();
+        let baseline: serde_json::Value =
+            serde_json::from_slice(&encode(&ordinary).unwrap()).unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("world.json");
+        for (tram, operation) in [
+            (
+                serde_json::json!({"tramGuide":null}),
+                serde_json::Value::Null,
+            ),
+            (
+                serde_json::json!({"algorithm":"ofm_ground_tram_adjacent_v2"}),
+                serde_json::Value::Null,
+            ),
+            (
+                serde_json::Value::Null,
+                serde_json::json!({"standard_timetable":{}}),
+            ),
+            (
+                serde_json::Value::Null,
+                serde_json::json!({"runtime":{"format":8}}),
+            ),
+        ] {
+            let mut wire = baseline.clone();
+            wire["schema_version"] = FRACTIONAL_BUS_SCHEMA.into();
+            wire["world"]["ofm_gameplay_bus_routes"] =
+                serde_json::json!({"B":{"sameAtomStops":[250_000, 600_000]}});
+            if !tram.is_null() {
+                wire["world"]["road_path_provenance"] = serde_json::json!([{"path":tram.clone()}]);
+            }
+            wire["operation"] = operation;
+            let expected = if tram.get("tramGuide").is_some() {
+                COMBINED_CAPABILITIES_SCHEMA
+            } else {
+                FRACTIONAL_BUS_SCHEMA
+            };
+            let invalid = serde_json::to_vec(&wire).unwrap();
+            assert!(matches!(
+                decode(&invalid),
+                Err(StorageError::UnsupportedVersion(version)) if version == expected
+            ));
+            std::fs::write(&path, &invalid).unwrap();
+            assert!(matches!(
+                save_world(&path, &ordinary),
+                Err(StorageError::UnsupportedVersion(version)) if version == expected
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), invalid);
+        }
+    }
+
+    #[test]
+    fn neither_standalone_envelope_can_disguise_a_neck_and_fractional_bus() {
+        let baseline: serde_json::Value =
+            serde_json::from_slice(&encode(&World::default()).unwrap()).unwrap();
+        for version in [
+            SCHEMA_VERSION,
+            CONNECTED_TERMINAL_NECK_SCHEMA,
+            FRACTIONAL_BUS_SCHEMA,
+        ] {
+            let mut malicious = baseline.clone();
+            malicious["schema_version"] = version.into();
+            malicious["operation"] = serde_json::json!({"runtime":{"format":8}});
+            malicious["world"]["ofm_gameplay_bus_routes"] =
+                serde_json::json!({"B":{"sameAtomStops":[250_000, 600_000]}});
+            assert!(matches!(
+                decode(&serde_json::to_vec(&malicious).unwrap()),
+                Err(StorageError::UnsupportedVersion(FRACTIONAL_BUS_SCHEMA))
+            ));
+        }
+    }
+
+    #[test]
+    fn combined_profile_rejects_duplicate_unknown_and_downgraded_declarations() {
+        let exact = FRACTIONAL_BUS_STREET_TRAM_PROFILE
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect::<Vec<_>>();
+        let expect = Some(FRACTIONAL_BUS_STREET_TRAM_PROFILE);
+        assert!(check_combined_profile(COMBINED_CAPABILITIES_SCHEMA, Some(&exact), expect).is_ok());
+        assert!(check_combined_profile(SCHEMA_VERSION, None, None).is_ok());
+        let complete =
+            [GENERAL_FRAC_ROUTE, GENERAL_FRAC_STOPS, STREET_TRAM_CHAIN].map(str::to_owned);
+        assert!(known_combined_profile(&complete));
+        let standard = [
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_CHAIN,
+            STANDARD_DAILY,
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            known_combined_profile(&standard),
+            cfg!(feature = "standard-periodic-rail")
+        );
+        let mut reordered = standard.clone();
+        reordered.swap(2, 3);
+        assert!(!known_combined_profile(&reordered));
+        assert!(!known_combined_profile(
+            &[STANDARD_DAILY, "rail_terminal_neck_v1"].map(str::to_owned)
+        ));
+        let extra = [
+            GENERAL_FRAC_ROUTE,
+            GENERAL_FRAC_STOPS,
+            STREET_TRAM_CHAIN,
+            "extra_v1",
+        ]
+        .map(str::to_owned);
+        assert!(!known_combined_profile(&extra));
+        for labels in [
+            None,
+            Some(vec![]),
+            Some(vec![exact[0].clone(), exact[0].clone()]),
+            Some(vec![exact[1].clone(), exact[0].clone()]),
+            Some(vec![exact[0].clone(), "street_tram_chain_v1".into()]),
+        ] {
+            assert!(matches!(
+                check_combined_profile(COMBINED_CAPABILITIES_SCHEMA, labels.as_deref(), expect),
+                Err(StorageError::UnsupportedVersion(
+                    COMBINED_CAPABILITIES_SCHEMA
+                ))
+            ));
+        }
+        assert!(matches!(
+            check_combined_profile(SCHEMA_VERSION, Some(&exact), None),
+            Err(StorageError::UnsupportedVersion(
+                COMBINED_CAPABILITIES_SCHEMA
+            ))
+        ));
+
+        let world = World::default();
+        let old = encode(&world).unwrap();
+        let mut forged: serde_json::Value = serde_json::from_slice(&old).unwrap();
+        forged["capabilities"] = serde_json::json!(exact);
+        // An ordinary file cannot acquire a proof by changing its header.
+        for version in [SCHEMA_VERSION, COMBINED_CAPABILITIES_SCHEMA] {
+            forged["schema_version"] = version.into();
+            let bytes = serde_json::to_vec(&forged).unwrap();
+            assert!(matches!(
+                decode(&bytes),
+                Err(StorageError::UnsupportedVersion(
+                    COMBINED_CAPABILITIES_SCHEMA
+                ))
+            ));
+        }
+        assert_eq!(encode(&decode(&old).unwrap()).unwrap(), old);
+        for (path, proof) in [
+            (
+                serde_json::json!({"tramChainGuide":null}),
+                serde_json::Value::Null,
+            ),
+            (
+                serde_json::Value::Null,
+                serde_json::json!({"fractionalTerminals":null}),
+            ),
+        ] {
+            let mut downgraded: serde_json::Value = serde_json::from_slice(&old).unwrap();
+            if !path.is_null() {
+                downgraded["world"]["road_path_provenance"] = serde_json::json!([{"path":path}]);
+            }
+            if !proof.is_null() {
+                downgraded["world"]["ofm_gameplay_bus_routes"] = serde_json::json!({"B":proof});
+            }
+            assert!(matches!(
+                decode(&serde_json::to_vec(&downgraded).unwrap()),
+                Err(StorageError::UnsupportedVersion(
+                    COMBINED_CAPABILITIES_SCHEMA
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn mixed_fractional_schema_requires_both_independent_capabilities_and_fixed_clock() {
+        let version = COMBINED_CAPABILITIES_SCHEMA;
+        assert!(check_fractional_envelope(version, true, true, false, false, None).is_ok());
+        assert!(check_fractional_envelope(version, true, true, false, false, Some(2)).is_ok());
+        for cases in [
+            (true, false, false, false, Some(2)),
+            (true, true, true, false, Some(2)),
+            (true, true, false, true, Some(2)),
+            (true, true, false, false, Some(4)),
+            (true, true, false, false, Some(8)),
+        ] {
+            let (bus, street, adjacent, standard, clock) = cases;
+            assert!(matches!(
+                check_fractional_envelope(version, bus, street, adjacent, standard, clock),
+                Err(StorageError::UnsupportedVersion(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn downgraded_street_tram_markers_cannot_be_mistaken_for_repairable_corruption() {
+        let before = encode(&World::default()).unwrap();
+        let old: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        assert_eq!(old["schema_version"], SCHEMA_VERSION);
+        assert_eq!(encode(&decode(&before).unwrap()).unwrap(), before);
+        for version in [26, SCHEMA_VERSION, MIXED_STANDARD_BUS_SCHEMA] {
+            for parked in [false, true] {
+                let mut data = old.clone();
+                data["schema_version"] = version.into();
+                let marker = serde_json::json!({"tramGuide": null});
+                if parked {
+                    data["world"]["construction_plans"] =
+                        serde_json::json!({"parkedPaths":[{"ofmPath":marker}]});
+                } else {
+                    data["world"]["road_path_provenance"] = serde_json::json!([{"path":marker}]);
+                }
+                let expected = if version == MIXED_STANDARD_BUS_SCHEMA
+                    && !cfg!(feature = "standard-periodic-rail")
+                {
+                    version
+                } else {
+                    STREET_TRAM_SCHEMA
+                };
+                assert!(matches!(
+                    decode(&serde_json::to_vec(&data).unwrap()),
+                    Err(StorageError::UnsupportedVersion(v)) if v == expected
+                ));
+            }
+        }
+        for version in [
+            SCHEMA_VERSION,
+            STREET_TRAM_SCHEMA,
+            STREET_TRAM_STANDARD_SCHEMA,
+        ] {
+            for parked in [false, true] {
+                let mut data = old.clone();
+                data["schema_version"] = version.into();
+                let marker = serde_json::json!({"tramGuide":{"adjacentEnd":null}});
+                if parked {
+                    data["world"]["construction_plans"] =
+                        serde_json::json!({"parkedPaths":[{"ofmPath":marker}]});
+                } else {
+                    data["world"]["road_path_provenance"] = serde_json::json!([{"path":marker}]);
+                }
+                let expected = if version == STREET_TRAM_STANDARD_SCHEMA
+                    && !cfg!(feature = "standard-periodic-rail")
+                {
+                    version
+                } else {
+                    ADJACENT_TRAM_SCHEMA
+                };
+                assert!(matches!(
+                    decode(&serde_json::to_vec(&data).unwrap()),
+                    Err(StorageError::UnsupportedVersion(v)) if v == expected
+                ));
+            }
+        }
+        let mut forged = old;
+        for (normal, standard) in [
+            (STREET_TRAM_SCHEMA, STREET_TRAM_STANDARD_SCHEMA),
+            (ADJACENT_TRAM_SCHEMA, ADJACENT_TRAM_STANDARD_SCHEMA),
+        ] {
+            for version in [normal, standard] {
+                forged["schema_version"] = version.into();
+                let result = decode(&serde_json::to_vec(&forged).unwrap());
+                if version == standard && !cfg!(feature = "standard-periodic-rail") {
+                    assert!(matches!(
+                        result,
+                        Err(StorageError::UnsupportedVersion(v)) if v == standard
+                    ));
+                } else {
+                    assert!(matches!(result, Err(StorageError::InvalidHeader)));
+                }
+            }
+            forged["schema_version"] = normal.into();
+            let mut disguised = forged.clone();
+            disguised["operation"] = serde_json::json!({"standard_timetable":{}});
+            assert!(matches!(
+                decode(&serde_json::to_vec(&disguised).unwrap()),
+                Err(StorageError::UnsupportedVersion(v)) if v == standard
+            ));
+        }
+    }
+
+    #[test]
+    fn file_reopen_preserves_street_tram_header_and_downgrade_diagnostics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("schema-diagnostics.rosenfu");
+        let base = serde_json::from_slice::<serde_json::Value>(&encode(&World::default()).unwrap())
+            .unwrap();
+        let mut cases = vec![];
+        for (ordinary, standard) in [
+            (STREET_TRAM_SCHEMA, STREET_TRAM_STANDARD_SCHEMA),
+            (ADJACENT_TRAM_SCHEMA, ADJACENT_TRAM_STANDARD_SCHEMA),
+        ] {
+            let mut overspecified = base.clone();
+            overspecified["schema_version"] = ordinary.into();
+            overspecified["operation"] = serde_json::json!({ "standard_timetable": {} });
+            cases.push((overspecified, Some(standard)));
+            for label in [ordinary, standard] {
+                // A newer label alone does not make an ordinary save valid.
+                let mut mislabeled = base.clone();
+                mislabeled["schema_version"] = label.into();
+                let unsupported = (label == standard && !cfg!(feature = "standard-periodic-rail"))
+                    .then_some(standard);
+                cases.push((mislabeled, unsupported));
+            }
+        }
+        let mut downgraded = base;
+        downgraded["world"]["road_path_provenance"] =
+            serde_json::json!([{ "path": { "tramGuide": { "adjacentEnd": null } } }]);
+        cases.push((downgraded, Some(ADJACENT_TRAM_SCHEMA)));
+        for (document, unsupported) in cases {
+            let bytes = serde_json::to_vec(&document).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            for result in [
+                decode(&bytes),
+                load_world(&path),
+                load_world_with_version(&path).map(|(world, _)| world),
+            ] {
+                match unsupported {
+                    Some(expected) => assert!(matches!(
+                        result,
+                        Err(StorageError::UnsupportedVersion(actual)) if actual == expected
+                    )),
+                    None => assert!(matches!(result, Err(StorageError::InvalidHeader))),
+                }
+            }
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(!backup_path(&path).exists());
+        }
+    }
+
+    #[test]
+    fn typed_save_and_value_fallback_agree_on_shape_and_wire_bytes() {
+        let mut world = World::default();
+        world.add_player("test / 駅".into()).unwrap();
+        let bytes = encode(&world).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let CurrentSave(typed) = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            encode(&restore_document(typed, SCHEMA_VERSION).unwrap()).unwrap(),
+            bytes
+        );
+
+        let same = |data: &[u8]| {
+            let original = serde_json::from_slice(data)
+                .map_err(StorageError::Json)
+                .and_then(decode_document);
+            match (decode(data), original) {
+                (Ok(a), Ok(b)) => {
+                    assert_eq!(a, b);
+                    assert_eq!(encode(&a).unwrap(), encode(&b).unwrap());
+                }
+                (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
+                result => panic!("decoder disagreement: {result:?}"),
+            }
+        };
+        same(&bytes);
+        same(&serde_json::to_vec(&value).unwrap());
+        same(&[bytes.as_slice(), b" \n\r\t"].concat());
+        same(&[bytes.as_slice(), b"null"].concat());
+        same(&bytes[..bytes.len() - 3]);
+        same(b"[]");
+        same(b"null");
+        let name = String::from_utf8(bytes.clone()).unwrap();
+        // Prior Value-based loads accepted duplicates, with the last value
+        // winning. Do not broaden or change that behavior on rewrite.
+        same(
+            name.replacen(
+                r#""schema_version": 27,"#,
+                r#""schema_version": "discard", "schema_version": 27,"#,
+                1,
+            )
+            .as_bytes(),
+        );
+        same(
+            name.replacen(r#""name":"#, r#""name": false, "name":"#, 1)
+                .as_bytes(),
+        );
+        same(
+            name.replacen(r#""route_paths":"#, r#""route_\u0070aths":"#, 1)
+                .as_bytes(),
+        );
+        let mut cases = vec![];
+        for key in REQUIRED_WORLD_ARRAYS {
+            let mut missing = value.clone();
+            missing["world"].as_object_mut().unwrap().remove(key);
+            cases.push(missing);
+            let mut wrong_type = value.clone();
+            wrong_type["world"][key] = serde_json::json!({"empty":true});
+            cases.push(wrong_type);
+        }
+        for (key, val) in [
+            ("schema_version", serde_json::json!(26)),
+            ("schema_version", serde_json::json!(28)),
+            ("schema_version", serde_json::json!(27.0)),
+            ("format", serde_json::json!("other")),
+            ("unrecognized", serde_json::json!(true)),
+            ("world", serde_json::json!([])),
+        ] {
+            let mut changed = value.clone();
+            changed[key] = val;
+            cases.push(changed);
+        }
+        let mut legacy = value.clone();
+        legacy["world"]["tracks"] = serde_json::json!([]);
+        cases.push(legacy);
+        let mut legacy_path = value.clone();
+        legacy_path["world"]["route_paths"] = serde_json::json!([{"segments":[{"kind":"track"}]}]);
+        cases.push(legacy_path);
+        let mut prior_with_future_field = value.clone();
+        prior_with_future_field["schema_version"] = serde_json::json!(26);
+        prior_with_future_field["fixed_od_scenario"] = serde_json::Value::Null;
+        cases.push(prior_with_future_field);
+        for changed in cases {
+            same(&serde_json::to_vec(&changed).unwrap());
+        }
+    }
+
+    #[test]
+    fn streaming_backup_preserves_exact_current_bytes_with_legacy_duplicate_handling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("duplicate.json");
+        let world = World::default();
+        let bytes = String::from_utf8(encode(&world).unwrap())
+            .unwrap()
+            .replacen(r#""format":"#, r#""format": null, "format":"#, 1)
+            .into_bytes();
+        assert!(serde_json::from_slice::<CurrentSave>(&bytes).is_err());
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(load_world(&path).unwrap(), world);
+        let prior = file_version(&path).unwrap();
+        save_world_if_version(&path, &world, &prior).unwrap();
+        assert_eq!(fs::read(backup_path(&path)).unwrap(), bytes);
+        assert_eq!(fs::read(&path).unwrap(), encode(&world).unwrap());
+    }
+
     #[test]
     fn no_clobber_preserves_a_file_created_after_preparation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("save.json");
-        let prepared = prepare_file(&path, b"new data").unwrap();
+        let world = World::default();
+        let document = checked_save_document(&world).unwrap();
+        let (prepared, _) = prepare_world_file(&path, &document).unwrap();
         fs::write(&path, b"other writer").unwrap();
         assert!(persist(prepared, &path, false).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"other writer");
+    }
+
+    #[test]
+    fn streaming_save_with_held_lock_leaves_no_sibling_or_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("save.json");
+        let world = World::default();
+        create_world(&path, &world).unwrap();
+        let version = file_version(&path).unwrap();
+        let lock = lock_save(&path).unwrap();
+        let siblings = || fs::read_dir(dir.path()).unwrap().count();
+        let before = siblings();
+        assert!(matches!(
+            save_world_if_version(&path, &world, &version),
+            Err(StorageError::Io(_))
+        ));
+        assert!(matches!(
+            replace_world_if_version(&path, &world, &version),
+            Err(StorageError::Io(_))
+        ));
+        assert_eq!(siblings(), before);
+        assert!(!backup_path(&path).exists());
+        assert_eq!(file_version(&path).unwrap(), version);
+        drop(lock);
+    }
+
+    #[test]
+    fn streaming_save_uses_the_slot_lock_before_touching_an_archived_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let world = World::default();
+        let (slot, version) =
+            slots::create_save_slot(root.path(), "Before archive", &world).unwrap();
+        let active = slots::save_slot_path(root.path(), &slot.id).unwrap();
+        slots::move_save_slot(root.path(), &slot.id, false).unwrap();
+        let archived = slots::save_slot_path(&root.path().join("deleted-saves"), &slot.id).unwrap();
+        let held = lock_save(&active).unwrap();
+
+        // Nonblocking lock contention, not NotFound from attempting to create
+        // a temporary file in the directory which has already moved away.
+        for result in [
+            save_world_if_version(&active, &world, &version),
+            replace_world_if_version(&active, &world, &version),
+        ] {
+            let Err(StorageError::Io(error)) = result else {
+                panic!("expected slot lock contention");
+            };
+            assert!(matches!(
+                error
+                    .get_ref()
+                    .and_then(|cause| cause.downcast_ref::<std::fs::TryLockError>()),
+                Some(std::fs::TryLockError::WouldBlock)
+            ));
+        }
+        drop(held);
+        assert_eq!(file_version(&archived).unwrap(), version);
+        assert!(!active.parent().unwrap().exists());
+        slots::move_save_slot(root.path(), &slot.id, true).unwrap();
+        assert_eq!(file_version(&active).unwrap(), version);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn streaming_save_rejects_a_symlink_backup_without_following_it() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("save.json");
+        let other = dir.path().join("other.json");
+        fs::write(&other, b"preserve this file").unwrap();
+        let world = World::default();
+        create_world(&path, &world).unwrap();
+        let version = file_version(&path).unwrap();
+        let backup = backup_path(&path);
+        symlink(&other, &backup).unwrap();
+        assert!(matches!(
+            save_world_if_version(&path, &world, &version),
+            Err(StorageError::NotRegularFile(ref rejected)) if *rejected == backup
+        ));
+        assert_eq!(fs::read(&other).unwrap(), b"preserve this file");
+        assert_eq!(fs::read_link(&backup).unwrap(), other);
+        assert_eq!(file_version(&path).unwrap(), version);
+    }
+
+    #[test]
+    fn compact_fallback_uses_one_bounded_representation_and_no_leftover_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bounded.json");
+        let mut world = World::default();
+        world.add_player("駅\n\" quoted".into()).unwrap();
+        let document = checked_save_document(&world).unwrap();
+        let mut expected = serde_json::to_vec(&document).unwrap();
+        expected.push(b'\n');
+        let limit = expected.len();
+        assert!(matches!(
+            write_bounded_save(&document, io::sink(), limit, SaveLayout::Pretty),
+            Err(StorageError::TooLarge)
+        ));
+        assert_eq!(
+            prefer_pretty_save(|layout| write_bounded_save(&document, Vec::new(), limit, layout))
+                .unwrap(),
+            expected
+        );
+        let (prepared, version) = prepare_world_file_bounded(&path, &document, limit).unwrap();
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(fs::read(prepared.path()).unwrap(), expected);
+        assert_eq!(version, bytes_version(&expected));
+        drop(prepared);
+        assert!(matches!(
+            prepare_world_file_bounded(&path, &document, limit - 1),
+            Err(StorageError::TooLarge)
+        ));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn exactly_16_mib_compact_save_reopens_and_keeps_exact_backups_and_cas() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capacity.json");
+        let mut world = World::default();
+        world.add_player("x".into()).unwrap();
+        let document = checked_save_document(&world).unwrap();
+        let padding = MAX_SAVE_BYTES - serde_json::to_vec(&document).unwrap().len() - 1;
+        let mut draft = world.snapshot().clone();
+        draft.players[0].name.push_str(&"x".repeat(padding));
+        world.replace(draft).unwrap();
+        assert!(matches!(
+            write_bounded_save(
+                &save_document(&world),
+                io::sink(),
+                MAX_SAVE_BYTES,
+                SaveLayout::Pretty
+            ),
+            Err(StorageError::TooLarge)
+        ));
+        ensure_world_saveable(&world).unwrap();
+        let canonical = encode(&world).unwrap();
+        assert_eq!(canonical.len(), MAX_SAVE_BYTES);
+        assert_eq!(canonical.last(), Some(&b'\n'));
+        let (_, initial) = create_world_if_version(&path, &world, &FileVersion::Missing).unwrap();
+        assert_eq!(initial, bytes_version(&canonical));
+        assert_eq!(fs::read(&path).unwrap(), canonical);
+        assert_eq!(
+            load_world_with_version(&path).unwrap(),
+            (world.clone(), initial.clone())
+        );
+
+        let mut draft = world.snapshot().clone();
+        draft.players[0].name.replace_range(..1, "y");
+        world.replace(draft).unwrap();
+        let (_, updated) = save_world_if_version(&path, &world, &initial).unwrap();
+        let backup = backup_path(&path);
+        assert_eq!(fs::read(&backup).unwrap(), canonical);
+        assert_eq!(
+            load_world(&backup).unwrap().snapshot().players[0]
+                .name
+                .as_bytes()[0],
+            b'x'
+        );
+        assert_eq!(file_version(&path).unwrap(), updated);
+        assert_ne!(updated, initial);
+        assert!(matches!(
+            save_world_if_version(&path, &world, &initial),
+            Err(StorageError::FileChanged)
+        ));
+        let sibling_count = fs::read_dir(dir.path()).unwrap().count();
+        let mut draft = world.snapshot().clone();
+        draft.players[0].name.push('z');
+        world.replace(draft).unwrap();
+        assert!(matches!(
+            ensure_world_saveable(&world),
+            Err(StorageError::TooLarge)
+        ));
+        assert!(matches!(encode(&world), Err(StorageError::TooLarge)));
+        assert!(matches!(
+            save_world_if_version(&path, &world, &updated),
+            Err(StorageError::TooLarge)
+        ));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), sibling_count);
+        assert_eq!(file_version(&path).unwrap(), updated);
+        assert_eq!(fs::read(&backup).unwrap(), canonical);
+    }
+
+    #[test]
+    fn compact_only_preflight_accepts_exactly_the_same_worlds_as_the_writer() {
+        let mut world = World::default();
+        world
+            .add_player("引用符 \"・改行\n・絵文字 🚃".into())
+            .unwrap();
+        let document = checked_save_document(&world).unwrap();
+        let pretty =
+            write_bounded_save(&document, Vec::new(), MAX_SAVE_BYTES, SaveLayout::Pretty).unwrap();
+        let compact =
+            write_bounded_save(&document, Vec::new(), MAX_SAVE_BYTES, SaveLayout::Compact).unwrap();
+        assert!(compact.len() < pretty.len());
+        for limit in [
+            compact.len() - 1,
+            compact.len(),
+            pretty.len() - 1,
+            pretty.len(),
+        ] {
+            let actual = write_bounded_save(&document, io::sink(), limit, SaveLayout::Compact);
+            let former = prefer_pretty_save(|layout| {
+                write_bounded_save(&document, io::sink(), limit, layout)
+            });
+            assert_eq!(actual.is_ok(), former.is_ok(), "limit {limit}");
+        }
+        assert_eq!(encode(&world).unwrap(), pretty);
+    }
+
+    #[test]
+    #[ignore = "manual synthetic storage-preflight comparison"]
+    fn measure_compact_storage_preflight() {
+        use rosenfu_core::world::{AlignmentId, GeoPoint};
+        use std::{hint::black_box, time::Instant};
+        let point = |longitude| GeoPoint {
+            latitude: 35.,
+            longitude,
+        };
+        let mut sample = World::default();
+        let player = sample.add_player("Benchmark".into()).unwrap();
+        let company = sample.add_company(player, "Benchmark".into()).unwrap();
+        sample
+            .build_alignment(company, "Track".into(), vec![point(139.), point(139.01)])
+            .unwrap();
+        let mut base = sample.snapshot().clone();
+        let prototype = base.alignments.pop().unwrap();
+        for count in [100, 1_000, 10_000] {
+            let mut draft = base.clone();
+            for _ in 0..count {
+                let mut row = prototype.clone();
+                row.id = AlignmentId(draft.next_id);
+                draft.next_id += 1;
+                draft.alignments.push(row);
+            }
+            let mut world = World::new(draft).unwrap();
+            // Keep a separate near-cap path at the largest fixture, proving
+            // that only the old probe attempted both layouts.
+            if count == 10_000 {
+                let compact = write_bounded_save(
+                    &save_document(&world),
+                    Vec::new(),
+                    MAX_SAVE_BYTES,
+                    SaveLayout::Compact,
+                )
+                .unwrap();
+                let mut draft = world.snapshot().clone();
+                draft.players[0]
+                    .name
+                    .push_str(&"x".repeat(MAX_SAVE_BYTES - compact.len()));
+                world.replace(draft).unwrap();
+            }
+            let document = checked_save_document(&world).unwrap();
+            let pretty_fits =
+                write_bounded_save(&document, io::sink(), MAX_SAVE_BYTES, SaveLayout::Pretty)
+                    .is_ok();
+            assert_eq!(pretty_fits, count < 10_000);
+            let former = || {
+                prefer_pretty_save(|layout| {
+                    write_bounded_save(black_box(&document), io::sink(), MAX_SAVE_BYTES, layout)
+                })
+            };
+            let current = || validate_save_footprint(black_box(&document));
+            assert_eq!(former().is_ok(), current().is_ok());
+            assert!(current().is_ok());
+            let mut samples = [Vec::new(), Vec::new()];
+            for run in 0..25 {
+                for arm in [run % 2, (run + 1) % 2] {
+                    let begin = Instant::now();
+                    if arm == 0 {
+                        former().unwrap();
+                    } else {
+                        current().unwrap();
+                    }
+                    samples[arm].push(begin.elapsed());
+                }
+            }
+            for sample in &mut samples {
+                sample.sort_unstable();
+            }
+            eprintln!(
+                "alignments={count} pretty_fits={pretty_fits}: former={:?}, compact={:?}",
+                samples[0][12], samples[1][12]
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_save_reports_disk_failure_separately_from_size_limit() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "fake disk failure",
+                ))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let world = World::default();
+        let document = checked_save_document(&world).unwrap();
+        let mut attempts = 0;
+        assert!(matches!(
+            prefer_pretty_save(|layout| {
+                attempts += 1;
+                write_bounded_save(&document, Broken, MAX_SAVE_BYTES, layout)
+            }),
+            Err(StorageError::Io(ref error)) if error.kind()==io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn streaming_save_matches_bytes_versions_and_exact_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.json");
+        let world = World::default();
+        let (_, first) = create_world_if_version(&path, &world, &FileVersion::Missing).unwrap();
+        assert_eq!(first, bytes_version(&encode(&world).unwrap()));
+        // Prior valid JSON may contain different harmless whitespace; backup
+        // must preserve the original file, not pretty-print a reconstruction.
+        let mut prior = fs::read(&path).unwrap();
+        prior.extend(b"  \n");
+        fs::write(&path, &prior).unwrap();
+        let prior_version = bytes_version(&prior);
+        let mut edited = world.clone();
+        edited.add_player("streaming check".to_owned()).unwrap();
+        let (_, current) = save_world_if_version(&path, &edited, &prior_version).unwrap();
+        assert_eq!(fs::read(backup_path(&path)).unwrap(), prior);
+        assert_eq!(fs::read(&path).unwrap(), encode(&edited).unwrap());
+        assert_eq!(file_version(&path).unwrap(), current);
+        assert!(matches!(
+            save_world_if_version(&path, &world, &prior_version),
+            Err(StorageError::FileChanged)
+        ));
     }
 }
 
 mod slots;
 pub use slots::{
-    create_save_slot, list_deleted_save_slots, list_save_slots, move_save_slot, save_slot_path,
-    SaveSlot,
+    create_save_slot, list_deleted_save_slots, list_save_slots, move_save_slot, rename_save_slot,
+    save_slot_path, ArchivedSaveSlot, SaveSlot,
 };

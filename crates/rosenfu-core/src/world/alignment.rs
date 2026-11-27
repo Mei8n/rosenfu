@@ -127,21 +127,36 @@ impl Alignment {
         self.points.windows(2).map(|p| distance(p[0], p[1])).sum()
     }
     pub fn point_at(&self, position: f64) -> GeoPoint {
-        let mut remaining = self.length_m() * position;
-        for pair in self.points.windows(2) {
-            let length = distance(pair[0], pair[1]);
-            if remaining <= length && length > 0.0 {
-                let t = remaining / length;
-                return GeoPoint {
-                    latitude: pair[0].latitude + (pair[1].latitude - pair[0].latitude) * t,
-                    longitude: pair[0].longitude + (pair[1].longitude - pair[0].longitude) * t,
-                };
-            }
-            remaining -= length;
-        }
-        *self.points.last().expect("validated alignment")
+        point_at_distances(
+            &self.points,
+            self.points.windows(2).map(|p| distance(p[0], p[1])),
+            self.length_m(),
+            position,
+        )
     }
 }
+// Shared interpolation keeps the same subtraction order for cached and uncached
+// sampling, including exact output coordinates at joins and sampled vertices.
+pub(super) fn point_at_distances(
+    points: &[GeoPoint],
+    lengths: impl Iterator<Item = f64>,
+    total: f64,
+    position: f64,
+) -> GeoPoint {
+    let mut remaining = total * position;
+    for (pair, length) in points.windows(2).zip(lengths) {
+        if remaining <= length && length > 0.0 {
+            let t = remaining / length;
+            return GeoPoint {
+                latitude: pair[0].latitude + (pair[1].latitude - pair[0].latitude) * t,
+                longitude: pair[0].longitude + (pair[1].longitude - pair[0].longitude) * t,
+            };
+        }
+        remaining -= length;
+    }
+    *points.last().expect("validated alignment")
+}
+
 impl WorldDraft {
     pub(super) fn validate_alignments(&self) -> Result<(), WorldError> {
         for a in &self.alignments {
@@ -218,33 +233,37 @@ impl WorldDraft {
                 return Err(WorldError::InvalidAlignment);
             }
         }
+        if self.station_placements.is_empty() {
+            return Ok(());
+        }
+        // WorldDraft::validate has already rejected duplicate alignment and
+        // station IDs. Resolve placements once by ID, not by rescanning the
+        // whole map for every platform. Keep validation in stored order.
+        let alignments: BTreeMap<_, _> = self.alignments.iter().map(|a| (a.id, a)).collect();
+        let stations: BTreeMap<_, _> = self.stations.iter().map(|s| (s.id, s)).collect();
         let mut placed = BTreeSet::new();
         for p in &self.station_placements {
-            let a = self
-                .alignments
-                .iter()
-                .find(|a| a.id == p.alignment_id)
+            let a = alignments
+                .get(&p.alignment_id)
                 .ok_or(WorldError::MissingReference("placement.alignment"))?;
-            let s = self
-                .stations
-                .iter()
-                .find(|s| s.id == p.station_id)
+            let s = stations
+                .get(&p.station_id)
                 .ok_or(WorldError::MissingReference("placement.station"))?;
-            let footprint_start = p.position - p.length_m / (2.0 * a.length_m());
-            let footprint_end = p.position + p.length_m / (2.0 * a.length_m());
-            if footprint_start.is_finite()
+            let length = a.length_m();
+            let footprint_start = p.position - p.length_m / (2.0 * length);
+            let footprint_end = p.position + p.length_m / (2.0 * length);
+            let flat = a.is_flat_over_position(footprint_start, footprint_end);
+            if !flat
+                && footprint_start.is_finite()
                 && footprint_end.is_finite()
                 && footprint_start >= -1e-9
                 && footprint_end <= 1. + 1e-9
                 && footprint_start <= footprint_end
-                && !a.is_flat_over_position(footprint_start, footprint_end)
             {
                 return Err(WorldError::StationOnGradient);
             }
-            if !a.is_flat_over_position(
-                p.position - p.length_m / (2.0 * a.length_m()),
-                p.position + p.length_m / (2.0 * a.length_m()),
-            ) || !placed.insert(p.station_id)
+            if !flat
+                || !placed.insert(p.station_id)
                 || a.owner != s.owner
                 || !p.position.is_finite()
                 || !(0.0..=1.0).contains(&p.position)
@@ -252,11 +271,11 @@ impl WorldDraft {
                 || !(20.0..=1000.0).contains(&p.length_m)
                 || !p.width_m.is_finite()
                 || !(4.0..=100.0).contains(&p.width_m)
-                || p.length_m > a.length_m() + 0.001
+                || p.length_m > length + 0.001
             {
                 return Err(WorldError::InvalidStationPlacement);
             }
-            let half = p.length_m / a.length_m() / 2.0;
+            let half = p.length_m / length / 2.0;
             if p.position < half - 1e-9 || p.position > 1.0 - half + 1e-9 {
                 return Err(WorldError::InvalidStationPlacement);
             }
@@ -305,7 +324,7 @@ impl World {
         {
             return Err(WorldError::InvalidAlignmentConnection);
         }
-        let mut data = self.data.clone();
+        let mut data = self.snapshot().clone();
         let alignment = data
             .alignments
             .iter_mut()
@@ -437,7 +456,7 @@ impl World {
         data.validate()?;
         data.preserve_extended_provenance(&self.data, alignment_id, prepend)?;
         data.preserve_service_traversals(&self.data)?;
-        self.data = data;
+        self.data = data.into();
         Ok(())
     }
 }
@@ -480,7 +499,7 @@ impl World {
         id: AlignmentId,
         speed: f64,
     ) -> Result<(), WorldError> {
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         let alignment = candidate
             .alignments
             .iter_mut()
@@ -577,7 +596,7 @@ impl World {
         length_m: f64,
         width_m: f64,
     ) -> Result<(), WorldError> {
-        let mut data = self.data.clone();
+        let mut data = self.snapshot().clone();
         let placement = data
             .station_placements
             .iter_mut()
@@ -684,5 +703,46 @@ mod tests {
         let mut d = w.snapshot().clone();
         d.stations[0].latitude += 0.001;
         assert!(w.replace(d).is_err());
+    }
+}
+
+#[cfg(test)]
+mod cached_sampling_tests {
+    use super::*;
+    #[test]
+    fn cached_distances_preserve_point_at_coordinates_exactly() {
+        let mut world = World::default();
+        let player = world.add_player("P".into()).unwrap();
+        let company = world.add_company(player, "C".into()).unwrap();
+        let points = (0..128)
+            .map(|i| GeoPoint {
+                longitude: 139.0 + i as f64 * 0.0001,
+                latitude: 35.0 + (i as f64 * 0.03).sin() * 0.0001,
+            })
+            .collect();
+        world
+            .build_alignment(company, "Curved".into(), points)
+            .unwrap();
+        let alignment = &world.snapshot().alignments[0];
+        let distances: Vec<_> = alignment
+            .points
+            .windows(2)
+            .map(|p| distance(p[0], p[1]))
+            .collect();
+        let total = distances.iter().sum();
+        for position in (0..=256)
+            .map(|i| i as f64 / 256.0)
+            .chain([-0.00001, 1.00001])
+        {
+            assert_eq!(
+                point_at_distances(
+                    &alignment.points,
+                    distances.iter().copied(),
+                    total,
+                    position
+                ),
+                alignment.point_at(position)
+            );
+        }
     }
 }

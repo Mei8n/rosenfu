@@ -14,7 +14,7 @@ export const initialServiceSymbol=(name:string)=>{const first=new Intl.Segmenter
 export function ServiceBadge({color,shape='circle',symbol}:{color:string;shape?:ServiceSymbolShape;symbol:string}){
  return <span aria-hidden="true" className={'service-badge '+shape} style={{backgroundColor:color}}><span>{symbol}</span></span>;
 }
-export function ServiceAppearanceControls({color,serviceName='',appearance,enabled,onDirty,onSave,onSaveAppearance,onDuplicate}:{color:string|null;serviceName?:string;appearance?:{shape?:ServiceSymbolShape;symbol?:string|null};enabled:boolean;onDirty:(dirty:boolean)=>void;onSave?:(color:string,expectedColor:string|null)=>Promise<void>;onSaveAppearance?:(color:string,shape:ServiceSymbolShape,symbol:string)=>Promise<void>;onDuplicate:()=>Promise<void>}){
+export function ServiceAppearanceControls({color,serviceName='',appearance,enabled,onDirty,onSave,onSaveAppearance}:{color:string|null;serviceName?:string;appearance?:{shape?:ServiceSymbolShape;symbol?:string|null};enabled:boolean;onDirty:(dirty:boolean)=>void;onSave?:(color:string,expectedColor:string|null)=>Promise<void>;onSaveAppearance?:(color:string,shape:ServiceSymbolShape,symbol:string)=>Promise<void>}){
  const savedShape=appearance?.shape??'circle',savedSymbol=appearance?.symbol??initialServiceSymbol(serviceName);
  const [draft,setDraft]=useState(displayColor(color)),[shape,setShape]=useState<ServiceSymbolShape>(savedShape),[symbol,setSymbol]=useState(savedSymbol),[pending,setPending]=useState(false),[error,setError]=useState(''),[conflict,setConflict]=useState(false);
  const signature=JSON.stringify([color,savedShape,appearance?.symbol??null]);
@@ -34,8 +34,7 @@ export function ServiceAppearanceControls({color,serviceName='',appearance,enabl
  useEffect(()=>{onDirty(changed||conflict);},[changed,conflict,onDirty]);
  async function apply(){if(!enabled||busy.current||conflict||(!changed&&color!==null)||!valid)return;
   busy.current=true;setPending(true);setError('');try{if(onSaveAppearance)await onSaveAppearance(draft,shape,effectiveSymbol);else if(onSave)await onSave(draft,color);else throw Error("表示設定を保存できません。");}catch(e){setError(String(e));}finally{busy.current=false;setPending(false);}}
- async function duplicate(){if(!enabled||busy.current||changed||conflict)return;busy.current=true;setPending(true);setError('');try{await onDuplicate();}catch(e){setError(String(e));}finally{busy.current=false;setPending(false);}}
- return <section aria-label="系統の色と複製"><fieldset disabled={!enabled||pending}>
+ return <section aria-label="系統の表示設定"><fieldset disabled={!enabled||pending}>
   <div className="service-symbol-fields"><ServiceBadge color={/^#[0-9a-f]{6}$/i.test(draft)?draft:displayColor(color)} shape={shape} symbol={effectiveSymbol}/>
   <label>記号<input aria-label="系統記号" value={effectiveSymbol} autoComplete="off" onChange={e=>{setSymbolTouched(true);setSymbol(e.target.value);}}/></label>
   <div role="group" aria-label="系統記号の形">{([['circle','丸','●'],['square','四角','■'],['diamond','ひし形','◆']] as const).map(([value,label,glyph])=><button type="button" key={value} aria-label={'系統の形 '+label} aria-pressed={shape===value} onClick={()=>setShape(value)}>{glyph}</button>)}</div></div>
@@ -45,6 +44,5 @@ export function ServiceAppearanceControls({color,serviceName='',appearance,enabl
   <div className="service-color-presets" role="group" aria-label="系統色の候補">{PRESET_COLORS.map(([name,value])=><button key={value} type="button" className="service-color-swatch" style={{backgroundColor:value}} title={name+' '+value} aria-label={'系統色候補 '+name+' '+value} aria-pressed={draft===value} onClick={()=>setDraft(value)}/>)}</div>
   <button type="button" disabled={conflict||!valid||(!changed&&color!==null)} onClick={()=>void apply()}>{color===null?'色を設定':'色を適用'}</button>
   {(changed||conflict)&&<button type="button" className="secondary" onClick={reset}>色の変更を取り消す</button>}
-  <button type="button" className="secondary" disabled={changed||conflict} onClick={()=>void duplicate()}>系統を複製</button>
  </fieldset>{error&&<p role="alert">{error}</p>}</section>;
 }

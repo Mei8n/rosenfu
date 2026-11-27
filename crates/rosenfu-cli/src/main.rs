@@ -1,16 +1,59 @@
 use rosenfu_core::world::World;
-use std::{env, error::Error, ffi::OsString, io};
+use std::{env, error::Error, ffi::OsString, io, path::Path};
+
+mod road_proof;
+mod seam_authoring;
 
 fn usage() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "usage: rosenfu-cli [world new <path> | world inspect <path>]",
+        "usage: rosenfu-cli [world new <path> | world inspect <path> | world road-coverage <path> <min-x> <min-y> <max-x> <max-y> | world verify-road-proof <approved.json> <sha256> <capture.rosenfu> | world prepare-seam-catalog <approved.json> <approved-sha256> <west.pbf> <east.pbf> <reviewed-way.json> <new-candidate.json>]",
     )
 }
 fn run(args: Vec<OsString>) -> Result<(), Box<dyn Error>> {
     if args.is_empty() {
         println!("{}", serde_json::to_string(&rosenfu_core::engine_info())?);
         return Ok(());
+    }
+    if let [world, action, approved, digest, west, east, source, output] = args.as_slice() {
+        if world == "world" && action == "prepare-seam-catalog" {
+            return seam_authoring::prepare(
+                Path::new(approved),
+                digest.to_str().ok_or_else(usage)?,
+                [Path::new(west), Path::new(east)],
+                Path::new(source),
+                Path::new(output),
+            );
+        }
+    }
+    if let [world, action, approved, digest, capture] = args.as_slice() {
+        if world == "world" && action == "verify-road-proof" {
+            return road_proof::verify(
+                Path::new(approved),
+                digest.to_str().ok_or_else(usage)?,
+                Path::new(capture),
+            );
+        }
+    }
+    if let [world, action, path, min_x, min_y, max_x, max_y] = args.as_slice() {
+        if world == "world" && action == "road-coverage" {
+            let tile = |value: &OsString| {
+                value
+                    .to_str()
+                    .and_then(|text| text.parse::<u32>().ok())
+                    .ok_or_else(usage)
+            };
+            let bounds = rosenfu_storage::TileBounds::new(
+                tile(min_x)?,
+                tile(min_y)?,
+                tile(max_x)?,
+                tile(max_y)?,
+            )
+            .ok_or_else(usage)?;
+            let result = rosenfu_storage::read_road_coverage(Path::new(path), bounds)?;
+            println!("{}", serde_json::to_string(&result)?);
+            return Ok(());
+        }
     }
     if args.len() != 3 || args[0] != "world" {
         return Err(usage().into());

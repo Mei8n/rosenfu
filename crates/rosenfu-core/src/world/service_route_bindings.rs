@@ -303,7 +303,7 @@ impl World {
         {
             return Err(WorldError::InvalidServiceRouteBinding);
         }
-        let mut candidate = self.data.clone();
+        let mut candidate = self.snapshot().clone();
         candidate
             .service_route_bindings
             .retain(|row| row.service_id != service_id);
@@ -312,7 +312,7 @@ impl World {
             binding,
         });
         candidate.validate()?;
-        self.data = candidate;
+        self.data = candidate.into();
         Ok(())
     }
 }

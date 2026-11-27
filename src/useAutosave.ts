@@ -4,11 +4,11 @@ import type {ConstructionPlans} from "./constructionPlans";
 import { invoke } from "@tauri-apps/api/core";
 const AUTOSAVE_INTERVAL_MS=120000;
 type Permission="checking"|"failed"|"allowed";
-export function useAutosave({slotId,ready,dirty,world,constructionPlans,viewState,epoch,restoredEpoch=-1,busyRef,setBusy}:{slotId:string|null;ready:boolean;dirty:boolean;world:unknown;constructionPlans?:ConstructionPlans;viewState?:Camera;epoch:number;restoredEpoch?:number;busyRef:MutableRefObject<boolean>;setBusy:(busy:boolean)=>void}) {
+export function useAutosave({slotId,ready,dirty,continuous=false,world,constructionPlans,viewState,epoch,restoredEpoch=-1,busyRef,setBusy}:{slotId:string|null;ready:boolean;dirty:boolean;continuous?:boolean;world:unknown;constructionPlans?:ConstructionPlans;viewState?:Camera;epoch:number;restoredEpoch?:number;busyRef:MutableRefObject<boolean>;setBusy:(busy:boolean)=>void}) {
  const [message,setMessage]=useState("自動保存データを確認中…");const [available,setAvailable]=useState(false);
  const [permission,setPermission]=useState<Permission>("checking");const [retry,setRetry]=useState(0);
  const permissionRef=useRef<{epoch:number;mode:Permission}>({epoch:-1,mode:"checking"});
- const latest=useRef({slotId,ready,dirty,world,constructionPlans,viewState,epoch});latest.current={slotId,ready,dirty,world,constructionPlans,viewState,epoch};
+ const latest=useRef({slotId,ready,dirty,continuous,world,constructionPlans,viewState,epoch});latest.current={slotId,ready,dirty,continuous,world,constructionPlans,viewState,epoch};
  const saved=useRef<unknown>(null);const mounted=useRef(true);
  const restoredGrant=useRef<{epoch:number;retry:number}|null>(null);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
@@ -35,7 +35,7 @@ export function useAutosave({slotId,ready,dirty,world,constructionPlans,viewStat
   if(!ready||!slotId)return;
   const timer=setInterval(()=>{
    const current=latest.current;
-   if(!current.slotId||!current.ready||!current.dirty||!current.world||current.world===saved.current||busyRef.current||permissionRef.current.epoch!==current.epoch||permissionRef.current.mode!=="allowed")return;
+   if(!current.slotId||!current.ready||!current.dirty||!current.world||(!current.continuous&&current.world===saved.current)||busyRef.current||permissionRef.current.epoch!==current.epoch||permissionRef.current.mode!=="allowed")return;
    busyRef.current=true;setBusy(true);setMessage("自動保存中…");
    void (current.constructionPlans||current.viewState?invoke("autosave_world",{slotId:current.slotId,...(current.constructionPlans?{constructionPlans:current.constructionPlans}:{}),...(current.viewState?{viewState:current.viewState}:{})}):invoke("autosave_world",{slotId:current.slotId})).then(()=>{if(!mounted.current||latest.current.slotId!==current.slotId||latest.current.epoch!==current.epoch)return;saved.current=current.world;setAvailable(true);setMessage("自動保存しました（"+new Date().toLocaleTimeString()+"）。手動保存とは別のデータです。");}).catch(error=>{if(mounted.current&&latest.current.slotId===current.slotId&&latest.current.epoch===current.epoch){updatePermission("failed",current.epoch);setMessage("自動保存に失敗しました。データを再確認してから再開してください: "+(error instanceof Error?error.message:String(error)));}}).finally(()=>{busyRef.current=false;if(mounted.current)setBusy(false);});
   },AUTOSAVE_INTERVAL_MS);

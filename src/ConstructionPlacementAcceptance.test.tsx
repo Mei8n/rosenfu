@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {LEVEL_LABELS} from './sectionInfrastructure';
 // @vitest-environment jsdom
 import React from "react";
@@ -46,7 +47,7 @@ test('confirmed invalid hover cannot add the matching anchor',async()=>{
  const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
  vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?Promise.resolve({validationError:'試験の敷設不可'}):original(command,args));
  fireEvent.click(map,{clientX:100,clientY:100});
- fireEvent.pointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
+ await settledPointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
  await screen.findByText('敷設不可：試験の敷設不可');
  fireEvent.click(map,{clientX:300,clientY:100});
  expect(map.querySelectorAll('[data-anchor-index]').length).toBe(1);
@@ -56,7 +57,7 @@ test('preview transport failure requests retry without misreporting unbuildable'
  const map=await start();const original=vi.mocked(invoke).getMockImplementation()!;
  vi.mocked(invoke).mockImplementation((command,args)=>command==='preview_construction_plan'?Promise.reject(Error('offline')):original(command,args));
  fireEvent.click(map,{clientX:100,clientY:100});
- fireEvent.pointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
+ await settledPointerMove(map,{clientX:300,clientY:100,pointerId:1,pointerType:'mouse'});
  await waitFor(()=>expect(invoke).toHaveBeenCalledWith('preview_construction_plan',expect.anything()));
  await act(async()=>{});
  fireEvent.click(map,{clientX:300,clientY:100});
@@ -92,7 +93,7 @@ test('delayed valid double click adds the anchor and ends editing',async()=>{
  await screen.findByText('この位置に敷設できるか確認中…');
  await act(async()=>complete({validationError:null}));
  expect(map.querySelectorAll('[data-anchor-index]').length).toBe(2);
- fireEvent.pointerMove(map,{clientX:400,clientY:100,pointerId:1,pointerType:'mouse'});
+ await settledPointerMove(map,{clientX:400,clientY:100,pointerId:1,pointerType:'mouse'});
  expect(map.querySelector('.candidate-draft')).toBeNull();
 });
 test('construction cannot race a pending third-anchor verdict',async()=>{

@@ -1,0 +1,746 @@
+{
+  "baseline": "a72ef1f (Rust sources also identical on c92bd41)",
+  "branch": "dev/react-rendering-performance",
+  "rust": "1.100.0 / debug unoptimized",
+  "native_samples": 3,
+  "frontend_note": "React development/jsdom, IPC mocked, offline provider; no actual Tauri transport or network measurement",
+  "road_before": {
+    "20/100": {
+      "lines": 20,
+      "roads": 100,
+      "phases_ms": {
+        "build_with_roads": [
+          3.006,
+          2.833,
+          2.725
+        ],
+        "serialize_snapshot": [
+          0.931,
+          0.937,
+          0.82
+        ],
+        "post_commit_road_assessments": [
+          5.341,
+          4.356,
+          4.651
+        ]
+      }
+    },
+    "80/1000": {
+      "lines": 80,
+      "roads": 1000,
+      "phases_ms": {
+        "build_with_roads": [
+          27.817,
+          27.056,
+          26.229
+        ],
+        "serialize_snapshot": [
+          8.05,
+          7.395,
+          8.209
+        ],
+        "post_commit_road_assessments": [
+          1447.485,
+          1611.254,
+          1514.05
+        ]
+      }
+    },
+    "80/5000": {
+      "lines": 80,
+      "roads": 5000,
+      "phases_ms": {
+        "build_with_roads": [
+          141.057,
+          116.177,
+          113.157
+        ],
+        "serialize_snapshot": [
+          36.038,
+          31.758,
+          35.222
+        ],
+        "post_commit_road_assessments": [
+          32089.738,
+          31967.709,
+          32158.425
+        ]
+      }
+    }
+  },
+  "road_after": {
+    "20/100": {
+      "lines": 20,
+      "roads": 100,
+      "phases_ms": {
+        "build_with_roads": [
+          2.451,
+          2.66,
+          2.476
+        ],
+        "serialize_snapshot": [
+          0.829,
+          0.77,
+          0.789
+        ],
+        "post_commit_track_geometry": [
+          0.042,
+          0.035,
+          0.035
+        ],
+        "post_commit_road_assessments": [
+          2.724,
+          2.491,
+          2.475
+        ],
+        "serialize_road_assessments": [
+          8.251,
+          7.249,
+          7.202
+        ]
+      },
+      "assessment_bytes": 214456
+    },
+    "80/1000": {
+      "lines": 80,
+      "roads": 1000,
+      "phases_ms": {
+        "build_with_roads": [
+          23.483,
+          22.504,
+          23.061
+        ],
+        "serialize_snapshot": [
+          6.851,
+          6.44,
+          6.616
+        ],
+        "post_commit_track_geometry": [
+          0.127,
+          0.119,
+          0.119
+        ],
+        "post_commit_road_assessments": [
+          129.338,
+          125.464,
+          133.47
+        ],
+        "serialize_road_assessments": [
+          302.257,
+          290.012,
+          410.098
+        ]
+      },
+      "assessment_bytes": 8406404
+    },
+    "80/5000": {
+      "lines": 80,
+      "roads": 5000,
+      "phases_ms": {
+        "build_with_roads": [
+          123.121,
+          112.648,
+          108.184
+        ],
+        "serialize_snapshot": [
+          34.243,
+          29.36,
+          31.766
+        ],
+        "post_commit_track_geometry": [
+          0.14,
+          0.128,
+          0.147
+        ],
+        "post_commit_road_assessments": [
+          742.78,
+          661.699,
+          666.259
+        ],
+        "serialize_road_assessments": [
+          1599.64,
+          1486.146,
+          1489.131
+        ]
+      },
+      "assessment_bytes": 42770584
+    }
+  },
+  "reference_before": {
+    "false/64": {
+      "rail": false,
+      "points": 64,
+      "build_ms": [
+        2.522,
+        0.925,
+        0.817
+      ],
+      "validate_and_geometry_ms": [
+        0.534,
+        0.577,
+        0.553
+      ]
+    },
+    "false/2048": {
+      "rail": false,
+      "points": 2048,
+      "build_ms": [
+        17.322,
+        17.756,
+        17.036
+      ],
+      "validate_and_geometry_ms": [
+        506.372,
+        483.919,
+        548.45
+      ]
+    },
+    "false/4096": {
+      "rail": false,
+      "points": 4096,
+      "build_ms": [
+        36.634,
+        33.298,
+        35.05
+      ],
+      "validate_and_geometry_ms": [
+        2062.899,
+        2038.136,
+        2021.551
+      ]
+    },
+    "true/64": {
+      "rail": true,
+      "points": 64,
+      "build_ms": [
+        0.904,
+        0.762,
+        0.858
+      ],
+      "validate_and_geometry_ms": [
+        0.507,
+        0.481,
+        0.491
+      ]
+    },
+    "true/2048": {
+      "rail": true,
+      "points": 2048,
+      "build_ms": [
+        15.697,
+        17.037,
+        16.134
+      ],
+      "validate_and_geometry_ms": [
+        531.702,
+        505.858,
+        484.888
+      ]
+    },
+    "true/4096": {
+      "rail": true,
+      "points": 4096,
+      "build_ms": [
+        33.868,
+        32.896,
+        33.318
+      ],
+      "validate_and_geometry_ms": [
+        1949.938,
+        1959.508,
+        2005.706
+      ]
+    }
+  },
+  "reference_after": {
+    "false/64": {
+      "rail": false,
+      "points": 64,
+      "build_ms": [
+        3.22,
+        0.871,
+        0.767
+      ],
+      "validate_and_geometry_ms": [
+        0.156,
+        0.158,
+        0.141
+      ]
+    },
+    "false/2048": {
+      "rail": false,
+      "points": 2048,
+      "build_ms": [
+        15.766,
+        17.513,
+        16.857
+      ],
+      "validate_and_geometry_ms": [
+        92.219,
+        93.136,
+        88.469
+      ]
+    },
+    "false/4096": {
+      "rail": false,
+      "points": 4096,
+      "build_ms": [
+        32.879,
+        33.697,
+        32.542
+      ],
+      "validate_and_geometry_ms": [
+        351.276,
+        366.721,
+        374.216
+      ]
+    },
+    "true/64": {
+      "rail": true,
+      "points": 64,
+      "build_ms": [
+        1.173,
+        1.028,
+        0.923
+      ],
+      "validate_and_geometry_ms": [
+        0.152,
+        0.217,
+        0.151
+      ]
+    },
+    "true/2048": {
+      "rail": true,
+      "points": 2048,
+      "build_ms": [
+        16.451,
+        17.411,
+        17.295
+      ],
+      "validate_and_geometry_ms": [
+        89.355,
+        91.475,
+        90.61
+      ]
+    },
+    "true/4096": {
+      "rail": true,
+      "points": 4096,
+      "build_ms": [
+        33.655,
+        33.143,
+        32.813
+      ],
+      "validate_and_geometry_ms": [
+        382.989,
+        382.31,
+        368.714
+      ]
+    }
+  },
+  "frontend_before": {
+    "environment": "React development / jsdom; mocked IPC, offline provider",
+    "warmup": 1,
+    "samples": 3,
+    "report": [
+      {
+        "lineCount": 20,
+        "roadCount": 100,
+        "sample": 1,
+        "rootRenders": [
+          30.72318900000164,
+          31.067411000002267,
+          33.45429400000512,
+          28.529917000006208,
+          30.945991000001868
+        ],
+        "clickToObservedFrame": 235.34799599999997,
+        "phases": {}
+      },
+      {
+        "lineCount": 20,
+        "roadCount": 100,
+        "sample": 2,
+        "rootRenders": [
+          32.23800200000096,
+          30.70197199999575,
+          35.74131899999384,
+          30.39386699999386,
+          32.048686000006
+        ],
+        "clickToObservedFrame": 240.65012400000023,
+        "phases": {}
+      },
+      {
+        "lineCount": 20,
+        "roadCount": 100,
+        "sample": 3,
+        "rootRenders": [
+          31.519238999992467,
+          30.897508000001835,
+          32.67370099999653,
+          29.900518000001284,
+          29.522038000001885
+        ],
+        "clickToObservedFrame": 231.28729900000008,
+        "phases": {}
+      },
+      {
+        "lineCount": 80,
+        "roadCount": 5000,
+        "sample": 1,
+        "rootRenders": [
+          33.52776300000005,
+          30.749414000004435,
+          40.9320969999917,
+          50.850399999997535,
+          43.67989700000635
+        ],
+        "clickToObservedFrame": 345.98667099999966,
+        "phases": {}
+      },
+      {
+        "lineCount": 80,
+        "roadCount": 5000,
+        "sample": 2,
+        "rootRenders": [
+          34.40972799999781,
+          38.54826800002411,
+          41.982785999985936,
+          32.650680000003376,
+          37.363376999996945
+        ],
+        "clickToObservedFrame": 320.80562199999986,
+        "phases": {}
+      },
+      {
+        "lineCount": 80,
+        "roadCount": 5000,
+        "sample": 3,
+        "rootRenders": [
+          35.40438699999322,
+          32.858165000014196,
+          38.395860000005996,
+          30.671418999992056,
+          29.38512100001026
+        ],
+        "clickToObservedFrame": 285.546163,
+        "phases": {}
+      }
+    ]
+  },
+  "frontend_after": {
+    "environment": "React development / jsdom; mocked IPC, offline provider",
+    "warmup": 1,
+    "samples": 3,
+    "report": [
+      {
+        "lineCount": 20,
+        "roadCount": 100,
+        "sample": 1,
+        "rootRenders": [
+          31.817255000005844,
+          30.262358000002678,
+          34.08013600000004,
+          29.98801700000422,
+          14.508229000005485
+        ],
+        "clickToObservedFrame": 220.94619000000012,
+        "phases": {
+          "click-to-first-frame": [
+            139.62519799999973
+          ],
+          "perform": [
+            66.97171399999979
+          ],
+          "prepare": [
+            0.01242999999976746
+          ],
+          "road.ensureCurrent": [
+            66.5760180000002
+          ],
+          "react.render": [
+            31.817255000005844,
+            30.262358000002678,
+            34.08013600000004,
+            29.98801700000422
+          ],
+          "road.attachment": [
+            0.009094999999888387
+          ],
+          "ipc.build": [
+            0.036127000000306
+          ],
+          "world.apply-state": [
+            0.1684410000002572
+          ],
+          "world.schedule-to-layout": [
+            37.653875000000426
+          ],
+          "world.layout-to-frame": [
+            35.09934700000031
+          ],
+          "ipc.road_assessments": [
+            32.385628
+          ]
+        }
+      },
+      {
+        "lineCount": 20,
+        "roadCount": 100,
+        "sample": 2,
+        "rootRenders": [
+          32.278252000001885,
+          33.23916499999768,
+          32.187752000004366,
+          28.137418000000707,
+          27.965252999996665
+        ],
+        "clickToObservedFrame": 229.74914200000012,
+        "phases": {
+          "click-to-first-frame": [
+            137.28143200000022
+          ],
+          "perform": [
+            71.01379700000007
+          ],
+          "prepare": [
+            0.00797599999987142
+          ],
+          "road.ensureCurrent": [
+            70.56148600000006
+          ],
+          "react.render": [
+            32.278252000001885,
+            33.23916499999768,
+            32.187752000004366,
+            28.137418000000707
+          ],
+          "road.attachment": [
+            0.009873999999854277
+          ],
+          "ipc.build": [
+            0.03698399999984758
+          ],
+          "world.apply-state": [
+            0.2685900000001311
+          ],
+          "world.schedule-to-layout": [
+            35.24445400000013
+          ],
+          "world.layout-to-frame": [
+            31.240477000000283
+          ],
+          "ipc.road_assessments": [
+            29.663806999999906
+          ]
+        }
+      },
+      {
+        "lineCount": 20,
+        "roadCount": 100,
+        "sample": 3,
+        "rootRenders": [
+          30.937676999992618,
+          30.195644999996148,
+          30.3401710000021,
+          28.696490000001177,
+          28.570633000001635
+        ],
+        "clickToObservedFrame": 221.40636300000006,
+        "phases": {
+          "click-to-first-frame": [
+            129.46202300000004
+          ],
+          "perform": [
+            65.12058900000011
+          ],
+          "prepare": [
+            0.009028000000398606
+          ],
+          "road.ensureCurrent": [
+            64.77111599999989
+          ],
+          "react.render": [
+            30.937676999992618,
+            30.195644999996148,
+            30.3401710000021,
+            28.696490000001177
+          ],
+          "road.attachment": [
+            0.009939999999915017
+          ],
+          "ipc.build": [
+            0.029552999999850726
+          ],
+          "world.apply-state": [
+            0.17508700000007593
+          ],
+          "world.schedule-to-layout": [
+            32.73194999999987
+          ],
+          "world.layout-to-frame": [
+            31.736869000000297
+          ],
+          "ipc.road_assessments": [
+            30.145538000000215
+          ]
+        }
+      },
+      {
+        "lineCount": 80,
+        "roadCount": 5000,
+        "sample": 1,
+        "rootRenders": [
+          31.30009699999664,
+          30.724576999996316,
+          37.57451999999739,
+          27.9999050000024,
+          28.743682000011177
+        ],
+        "clickToObservedFrame": 272.8679920000004,
+        "phases": {
+          "click-to-first-frame": [
+            173.32310899999993
+          ],
+          "perform": [
+            66.50799600000028
+          ],
+          "prepare": [
+            0.029688999999962107
+          ],
+          "road.ensureCurrent": [
+            66.18992600000001
+          ],
+          "react.render": [
+            31.30009699999664,
+            30.724576999996316,
+            37.57451999999739,
+            27.9999050000024
+          ],
+          "road.attachment": [
+            0.009693999999399239
+          ],
+          "ipc.build": [
+            0.027145000000018626
+          ],
+          "world.apply-state": [
+            0.11674600000060309
+          ],
+          "world.schedule-to-layout": [
+            41.081953000000794
+          ],
+          "world.layout-to-frame": [
+            65.7112360000001
+          ],
+          "ipc.road_assessments": [
+            29.66179000000011
+          ]
+        }
+      },
+      {
+        "lineCount": 80,
+        "roadCount": 5000,
+        "sample": 2,
+        "rootRenders": [
+          30.310169000013047,
+          33.89201299999422,
+          36.24161600000298,
+          28.76119699999981,
+          28.371489999989535
+        ],
+        "clickToObservedFrame": 267.11081600000034,
+        "phases": {
+          "click-to-first-frame": [
+            173.6585610000002
+          ],
+          "perform": [
+            67.9732210000002
+          ],
+          "prepare": [
+            0.009610000000066066
+          ],
+          "road.ensureCurrent": [
+            67.67278199999964
+          ],
+          "react.render": [
+            30.310169000013047,
+            33.89201299999422,
+            36.24161600000298,
+            28.76119699999981
+          ],
+          "road.attachment": [
+            0.00920999999925698
+          ],
+          "ipc.build": [
+            0.04268499999943742
+          ],
+          "world.apply-state": [
+            0.12068200000067009
+          ],
+          "world.schedule-to-layout": [
+            43.25606299999981
+          ],
+          "world.layout-to-frame": [
+            62.49059699999998
+          ],
+          "ipc.road_assessments": [
+            30.386287999999695
+          ]
+        }
+      },
+      {
+        "lineCount": 80,
+        "roadCount": 5000,
+        "sample": 3,
+        "rootRenders": [
+          30.642273999979807,
+          29.561691999996583,
+          36.0945880000254,
+          28.429456000019854,
+          28.147746999993615
+        ],
+        "clickToObservedFrame": 264.08147800000006,
+        "phases": {
+          "click-to-first-frame": [
+            168.7464089999994
+          ],
+          "perform": [
+            64.02072599999974
+          ],
+          "prepare": [
+            0.00884799999948882
+          ],
+          "road.ensureCurrent": [
+            63.68993500000033
+          ],
+          "react.render": [
+            30.642273999979807,
+            29.561691999996583,
+            36.0945880000254,
+            28.429456000019854
+          ],
+          "road.attachment": [
+            0.008729000000130327
+          ],
+          "ipc.build": [
+            0.02695399999993242
+          ],
+          "world.apply-state": [
+            0.16553300000032323
+          ],
+          "world.schedule-to-layout": [
+            39.578606000000036
+          ],
+          "world.layout-to-frame": [
+            65.25612400000045
+          ],
+          "ipc.road_assessments": [
+            30.037924000000203
+          ]
+        }
+      }
+    ]
+  }
+}

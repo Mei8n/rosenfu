@@ -20,3 +20,25 @@ test("planned groups are derived after drag/delete and have deterministic names"
  expect(stationGroupViews([one,{...b,polygon:rect(4,4,1,1)}])).toHaveLength(2);
  expect(stationGroupViews([one])).toHaveLength(1);
 });
+
+test("saved grouping stays owner scoped and does not compare every built pair",()=>{
+ let ownerReads=0;
+ const count=1280;
+ const footprints=Array.from({length:count},(_,i):StationFootprint=>({
+  ...a,id:String(i),name:String(i),
+  get owner(){ownerReads++;return String(i%2);}
+ }));
+ const ids=footprints.map(p=>p.id);
+ const groups=stationGroupViews(footprints,[{station_id:"0",members:ids}]);
+ expect(groups.map(group=>[group.id,group.members.length])).toEqual([["0",640],["1",640]]);
+ expect(ownerReads).toBeLessThan(count*4);
+});
+
+test("an intersecting planned platform can join distinct saved groups without renaming either built canonical station first",()=>{
+ const builtNear={...a,id:"12",name:"既設２",lineId:"5",polygon:rect(-2,1,4,.3)};
+ const builtRemote={...a,id:"11",name:"別ホーム",lineId:"7",polygon:rect(8,8,1,1)};
+ const unaffected={...a,id:"13",name:"隣社",owner:"7"};
+ const saved=[{station_id:"10",members:["10","11","13"]}];
+ expect(stationGroupViews([builtRemote,unaffected,builtNear,a,b],saved).map(g=>[g.id,g.members.map(p=>p.id)]))
+  .toEqual([["10",["10","11","12","planned:1"]],["13",["13"]]]);
+});

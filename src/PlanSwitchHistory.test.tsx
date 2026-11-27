@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from "react";
@@ -49,7 +50,7 @@ test('switching preserves drag geometry Redo and does not automatically resume d
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(shape()).toBe(before);
  fireEvent.click(screen.getByRole('button',{name:'別の線路計画を追加'}));
  fireEvent.click(screen.getByRole('button',{name:/計画 1 を編集/}));
- fireEvent.pointerMove(map,{clientX:400,clientY:180});expect(shape()).toBe(before);
+ await settledPointerMove(map,{clientX:400,clientY:180});expect(shape()).toBe(before);
  fireEvent.keyDown(document.body,{key:'Z',ctrlKey:true,shiftKey:true});expect(shape()).toBe(moved);
  fireEvent.keyDown(document.body,{key:'z',ctrlKey:true});expect(shape()).toBe(before);
 });

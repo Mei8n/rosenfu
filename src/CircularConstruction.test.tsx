@@ -1,3 +1,4 @@
+import {settledPointerMove} from './testMapClick';
 import {settledMapClick} from './testMapClick';
 // @vitest-environment jsdom
 import React from 'react';
@@ -19,7 +20,7 @@ test('circular hover guide precedes saved geometry and undo/redo restores the pa
  render(<App/>);fireEvent.click(screen.getByRole('button',{name:'自作サンプル（オフライン）'}));await screen.findByText(/circle-test/);
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
- await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:250,clientY:130});fireEvent.pointerMove(map,{clientX:300,clientY:180});
+ await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:250,clientY:130});await settledPointerMove(map,{clientX:300,clientY:180});
  expect(map.querySelector('.curve-circle-guide')).not.toBeNull();
  await settledMapClick(map,{clientX:300,clientY:180});
  const preview=map.querySelector('.draft-path')!.getAttribute('d');
@@ -45,13 +46,13 @@ test('automatic straights and curves need no mode switch, use identical preview/
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
  await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:250,clientY:130});
- fireEvent.pointerMove(map,{clientX:330,clientY:134});
+ await settledPointerMove(map,{clientX:330,clientY:134});
  expect(map.querySelector('.curve-circle-guide')).toBeNull();
  expect(document.querySelector('.drawing-tooltip')?.textContent).toContain('80 km/h');
  await settledMapClick(map,{clientX:330,clientY:134});
  const anchor=map.querySelectorAll('.draft-anchor')[2];expect(Number(anchor.getAttribute('y'))+Number(anchor.getAttribute('height'))/2).toBeCloseTo(260,5);
  const straightPath=map.querySelector('.draft-path')!.getAttribute('d')!;
- fireEvent.pointerMove(map,{clientX:380,clientY:180});expect(map.querySelector('.curve-circle-guide')).toBeTruthy();
+ await settledPointerMove(map,{clientX:380,clientY:180});expect(map.querySelector('.curve-circle-guide')).toBeTruthy();
  expect(document.querySelector('.curve-speed-label')).toBeNull();
  await settledMapClick(map,{clientX:380,clientY:180});
  expect(map.querySelector('.draft-path')!.getAttribute('d')).toContain(straightPath);
@@ -77,21 +78,21 @@ test('outgoing tangent guide follows the preview endpoint and extends beyond the
  await settledMapClick(map,{clientX:250,clientY:130});
  expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(Number(guide()!.getAttribute('y2')),5);
  expect(guide()!.getAttribute('pointer-events')).toBe('none');
- fireEvent.pointerMove(map,{clientX:300,clientY:180});
+ await settledPointerMove(map,{clientX:300,clientY:180});
  expect(map.querySelector('.curve-circle-guide')).toBeTruthy();
  expect(Number(guide()!.getAttribute('x1'))).toBeCloseTo(600,5);
  expect(Number(guide()!.getAttribute('y1'))).toBeCloseTo(360,5);
  expect(Number(guide()!.getAttribute('x2'))).toBeCloseTo(600,4);
  expect(Number(guide()!.getAttribute('y2'))).toBeGreaterThan(600);
  const curvedGuide=guide()!.outerHTML;
- fireEvent.pointerMove(map,{clientX:320,clientY:160});
+ await settledPointerMove(map,{clientX:320,clientY:160});
  expect(guide()!.outerHTML).not.toBe(curvedGuide);
  const dx=Number(guide()!.getAttribute('x2'))-Number(guide()!.getAttribute('x1'));
  const dy=Number(guide()!.getAttribute('y2'))-Number(guide()!.getAttribute('y1'));
  expect(Math.hypot(dx,dy)).toBeGreaterThan(600);
  expect(Number(guide()!.getAttribute('x2'))>1000 || Number(guide()!.getAttribute('y2'))>600).toBe(true);
  // No invented forward direction for a refused curve.
- fireEvent.pointerMove(map,{clientX:220,clientY:190});
+ await settledPointerMove(map,{clientX:220,clientY:190});
  expect(map.querySelector('.invalid-candidate')).toBeTruthy();
  expect(guide()).toBeNull();
  await settledMapClick(map,{clientX:300,clientY:180});
@@ -119,13 +120,13 @@ test('Ctrl bypasses straight snapping until release, including stationary previe
  const map=screen.getByRole('img',{name:'駅配置用サンプル地図'});
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:500,bottom:300,width:500,height:300,toJSON:()=>({})});
  await settledMapClick(map,{clientX:180,clientY:130});await settledMapClick(map,{clientX:250,clientY:130});
- fireEvent.pointerMove(map,{clientX:330,clientY:134});
+ await settledPointerMove(map,{clientX:330,clientY:134});
  expect(map.querySelector('.curve-circle-guide')).toBeNull();
  fireEvent.keyDown(document.body,{key:'Control',ctrlKey:true});
  expect(map.querySelector('.curve-circle-guide')).not.toBeNull();
  fireEvent.keyUp(document.body,{key:'Control',ctrlKey:false});
  expect(map.querySelector('.curve-circle-guide')).toBeNull();
- fireEvent.pointerMove(map,{clientX:330,clientY:134,ctrlKey:true});
+ await settledPointerMove(map,{clientX:330,clientY:134,ctrlKey:true});
  expect(map.querySelector('.curve-circle-guide')).not.toBeNull();
  await settledMapClick(map,{clientX:330,clientY:134,ctrlKey:true});
  const anchor=map.querySelectorAll('.draft-anchor')[2];
@@ -151,7 +152,7 @@ test('tangent guide reaches past resized viewport edges at different zoom levels
  let width=1000,height=600;
  map.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:width,bottom:height,width,height,toJSON:()=>({})});
  await settledMapClick(map,{clientX:360,clientY:260});await settledMapClick(map,{clientX:500,clientY:260});
- fireEvent.pointerMove(map,{clientX:600,clientY:360});
+ await settledPointerMove(map,{clientX:600,clientY:360});
  for(const size of [{width:1920,height:400},{width:400,height:1200},{width:2560,height:1440}]){
    ({width,height}=size);
    await act(async()=>resize([{contentRect:size}]));
