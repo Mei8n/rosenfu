@@ -1,14 +1,20 @@
 # Fixed Japanese water-zone runtime
 
-The desktop uses the audited 2026-11-13 water-only registry, not whole mixed packs.
+The desktop uses the audited 2026-11-25 water-only registry, not whole mixed packs.
 Only regions intersecting the current camera, planned geometry, or existing track
 segments are requested. Existing track regions are needed because a small endpoint
 edit can trigger validation of its entire connected component. Separate segment
 bounds avoid downloading unrelated regions between distant disconnected lines.
-This is not an unconditional nationwide download.
+This is not an unconditional nationwide download. The 2026-11-13 URLs used
+by 0.2.2 stopped serving the sampled packs. The new registry uses the current
+provider layout; Iburi and Sorachi now use the Sapporo zone, and Kushiro and
+Okhotsk use the Tokachi zone, according to the upstream successor list. Outside
+registered fine grids the existing coarse rules still apply.
 
 Native HTTPS verifies the fixed host/version/path, header hash and grid layout,
-206 Content-Range, payload length/hash, padding and every RLE row. No arbitrary
+206 Content-Range, payload length/hash, padding and every RLE row. For compressed
+packs, only the pinned header’s two gzip members for water are fetched and
+expanded with bounded output before validating the decoded water. No arbitrary
 frontend URL is accepted. Two concurrent transfers, 30-second transfer deadlines,
 64 MiB bounded memory caches and existing IPC limits apply. Successful bytes are
 immutable; late installation can refresh current previews only after a fresh query.
@@ -30,7 +36,7 @@ basis, ODbL sources and hosting limitations are documented in
 [pinned-water-zone-reader.md](pinned-water-zone-reader.md). No TrainsWorld code or
 non-water mixed-pack layers are copied into this implementation.
 
-The save schema remains 25. Raw water bytes and provider revision are not embedded
+This water delivery fix does not change the save schema. Raw water bytes and provider revision are not embedded
 in saves. The app uses a fixed revision, but a future revision change may change
 validation of existing geometry; it must be disclosed. Actual GUI and 3 OS results
 must be checked for the published final commit before claiming readiness.

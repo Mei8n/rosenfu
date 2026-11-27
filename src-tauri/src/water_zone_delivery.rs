@@ -2,7 +2,8 @@
 //! Caller supplies audited immutable pins at startup, never pins/URLs from IPC.
 //! Cancellation rejects late results; a blocked socket is bounded by the remaining
 //! 30-second request deadline, not synchronously interrupted by the cancel flag.
-use rosenfu_core::water_zone::{acquisition::Acquisition, WaterZone, ZonePin};
+use rosenfu_core::water_zone::{WaterZone, ZonePin};
+use serde::Deserialize;
 use std::{
     collections::VecDeque,
     io::Read,
@@ -262,70 +263,185 @@ impl<T: Transport> WaterZoneDelivery<T> {
         {
             return Err(DeliveryError::Response);
         }
-        let mut acquisition =
-            Acquisition::new(pin.clone()).map_err(|_| DeliveryError::InvalidPin)?;
-        let request = acquisition
-            .begin(&bytes, Instant::now())
+        // Authenticate the complete header before using any offsets from it.
+        pin.verify_header_spec(&bytes)
             .map_err(|_| DeliveryError::Integrity)?;
+        let packed = PackedWater::from_header(&bytes, pin)?;
         drop(bytes);
         drop(header);
+        let expected_bytes = pin
+            .payload_length()
+            .map_err(|_| DeliveryError::InvalidPin)?;
+        let (start, end, total) = packed.as_ref().map_or(
+            (
+                pin.range_start,
+                pin.range_start + expected_bytes as u64,
+                pin.container_length,
+            ),
+            |p| (p.start, p.end, p.total),
+        );
+        let wire_bytes = usize::try_from(end - start).map_err(|_| DeliveryError::Limit)?;
+        let (_, url) = pin.urls().map_err(|_| DeliveryError::InvalidPin)?;
+        let range = format!("bytes={start}-{}", end - 1);
+        let expected_range = format!("bytes {start}-{}/{total}", end - 1);
         cancel.check(deadline)?;
         let mut response = self.transport.get(
-            &request.url,
-            Some(&request.range),
+            &url,
+            Some(&range),
             deadline.saturating_duration_since(Instant::now()),
         )?;
         cancel.check(deadline)?;
-        let expected_range = format!(
-            "bytes {}-{}/{}",
-            pin.range_start,
-            pin.range_start + request.expected_bytes as u64 - 1,
-            pin.container_length
-        );
         if response.status != 206
             || response.content_range.as_deref() != Some(&expected_range)
             || response
                 .content_length
-                .is_some_and(|n| n != request.expected_bytes as u64)
+                .is_some_and(|n| n != wire_bytes as u64)
         {
             return Err(DeliveryError::Response);
         }
-        read_chunks(
-            &mut *response.body,
-            request.expected_bytes,
-            cancel,
-            deadline,
-            |chunk| {
-                acquisition
-                    .push(request.token, chunk, Instant::now())
-                    .map_err(|_| DeliveryError::Integrity)
-            },
-        )?;
+        let mut payload = Vec::with_capacity(wire_bytes);
+        read_chunks(&mut *response.body, wire_bytes, cancel, deadline, |chunk| {
+            payload.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        if payload.len() != wire_bytes {
+            return Err(DeliveryError::Response);
+        }
+        if let Some(packed) = packed {
+            payload = packed.unpack(&payload, pin, cancel, deadline)?;
+        }
         cancel.check(deadline)?;
-        let zone = acquisition
-            .finish(
-                request.token,
-                response.status,
-                &expected_range,
-                Instant::now(),
-            )
-            .map_err(|_| DeliveryError::Integrity)?;
+        let zone = Arc::new(
+            WaterZone::decode(pin.clone(), &payload).map_err(|_| DeliveryError::Integrity)?,
+        );
         let mut cache = self.cache.lock().map_err(|_| DeliveryError::Busy)?;
         cancel.check(deadline)?;
         cache.retain(|e| e.id != id);
         while cache.len() >= 4
-            || cache.iter().map(|e| e.bytes).sum::<usize>() + request.expected_bytes > CACHE_LIMIT
+            || cache.iter().map(|e| e.bytes).sum::<usize>() + expected_bytes > CACHE_LIMIT
         {
             cache.pop_front();
         }
         cache.push_back(Entry {
             id: id.into(),
-            bytes: request.expected_bytes,
+            bytes: expected_bytes,
             zone: zone.clone(),
         });
         Ok(zone)
     }
 }
+// Published packs may store each array as a separate gzip member. Only
+// the two members holding water rows and runs are transferred or decoded.
+#[derive(Deserialize)]
+struct PackHeader {
+    bin_gz: Option<GzipIndex>,
+}
+#[derive(Deserialize)]
+struct GzipIndex {
+    size: u64,
+    parts: Vec<[u64; 3]>,
+}
+struct PackedWater {
+    start: u64,
+    end: u64,
+    total: u64,
+    row_wire_bytes: usize,
+    row_raw_bytes: usize,
+    run_raw_bytes: usize,
+}
+impl PackedWater {
+    fn from_header(bytes: &[u8], pin: &ZonePin) -> Result<Option<Self>, DeliveryError> {
+        let PackHeader { bin_gz } =
+            serde_json::from_slice(bytes).map_err(|_| DeliveryError::Integrity)?;
+        let Some(index) = bin_gz else { return Ok(None) };
+        if index.size != pin.container_length || index.parts.len() > 4096 {
+            return Err(DeliveryError::Integrity);
+        }
+        let row_bytes = (u64::from(pin.height) + 1) * 4;
+        let run_bytes = u64::from(pin.run_count) * 2;
+        let run_at = pin.range_start + row_bytes + u64::from(pin.run_padding);
+        let mut total = 0u64;
+        let mut last_raw = None;
+        let mut row_index = None;
+        for (i, &[raw, offset, length]) in index.parts.iter().enumerate() {
+            if (i == 0 && raw != 0)
+                || raw >= index.size
+                || last_raw.is_some_and(|last| last >= raw)
+                || offset != total
+                || length == 0
+            {
+                return Err(DeliveryError::Integrity);
+            }
+            if raw == pin.range_start {
+                row_index = Some(i);
+            }
+            last_raw = Some(raw);
+            total = total.checked_add(length).ok_or(DeliveryError::Limit)?;
+        }
+        let i = row_index.ok_or(DeliveryError::Integrity)?;
+        let [_, start, row_wire] = index.parts[i];
+        let &[raw, offset, len] = index.parts.get(i + 1).ok_or(DeliveryError::Integrity)?;
+        let end = offset.checked_add(len).ok_or(DeliveryError::Limit)?;
+        let run_end = index.parts.get(i + 2).map_or(index.size, |p| p[0]);
+        let run_extent = run_end
+            .checked_sub(run_at)
+            .ok_or(DeliveryError::Integrity)?;
+        if raw != run_at
+            || !(run_bytes..=run_bytes + 7).contains(&run_extent)
+            || end - start > 16 * 1024 * 1024
+        {
+            return Err(DeliveryError::Integrity);
+        }
+        Ok(Some(Self {
+            start,
+            end,
+            total,
+            row_wire_bytes: row_wire as usize,
+            row_raw_bytes: (row_bytes + u64::from(pin.run_padding)) as usize,
+            run_raw_bytes: run_extent as usize,
+        }))
+    }
+
+    fn unpack(
+        &self,
+        bytes: &[u8],
+        pin: &ZonePin,
+        cancel: &Cancellation,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, DeliveryError> {
+        fn member(
+            input: &[u8],
+            data_len: usize,
+            extent: usize,
+            cancel: &Cancellation,
+            deadline: Instant,
+        ) -> Result<Vec<u8>, DeliveryError> {
+            let mut gzip = flate2::bufread::GzDecoder::new(input);
+            let mut data = Vec::with_capacity(extent);
+            read_chunks(&mut gzip, extent, cancel, deadline, |chunk| {
+                data.extend_from_slice(chunk);
+                Ok(())
+            })?;
+            if !gzip.get_ref().is_empty()
+                || !(data_len..=extent).contains(&data.len())
+                || data[data_len..].iter().any(|&v| v != 0)
+            {
+                return Err(DeliveryError::Integrity);
+            }
+            Ok(data)
+        }
+        let (rows, runs) = bytes.split_at(self.row_wire_bytes);
+        let row_data = (pin.height as usize + 1) * 4;
+        let run_data = pin.run_count as usize * 2;
+        let mut raw = member(rows, row_data, self.row_raw_bytes, cancel, deadline)?;
+        raw.resize(self.row_raw_bytes, 0);
+        raw.extend_from_slice(
+            &member(runs, run_data, self.run_raw_bytes, cancel, deadline)?[..run_data],
+        );
+        Ok(raw)
+    }
+}
+
 fn read_chunks(
     reader: &mut dyn Read,
     limit: usize,
@@ -460,6 +576,58 @@ mod tests {
             d.acquire("../../other", &c),
             Err(DeliveryError::UnknownZone)
         ));
+    }
+    #[test]
+    fn gzip_delivery_reads_only_water_and_refuses_corrupt_members() {
+        use std::io::Write;
+        fn gzip(bytes: &[u8]) -> Vec<u8> {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(bytes).unwrap();
+            encoder.finish().unwrap()
+        }
+        let data = payload();
+        let rows = gzip(&data[..8]);
+        let runs = gzip(&data[8..]);
+        let good = [rows.as_slice(), runs.as_slice()].concat();
+        let start = 31;
+        let end = start + good.len();
+        let total = end + 20;
+        let header = format!(
+            r#"{}, "bin_gz":{{"size":200,"parts":[[0,0,{start}],[100,{start},{}],[108,{},{}],[112,{end},20]]}}}}"#,
+            std::str::from_utf8(&HEADER[..HEADER.len() - 1]).unwrap(),
+            rows.len(),
+            start + rows.len(),
+            runs.len(),
+        );
+        let mut pin = pin("test");
+        use sha2::{Digest, Sha256};
+        pin.header_sha256 = format!("{:x}", Sha256::digest(header.as_bytes()));
+        let range = format!("bytes {start}-{}/{total}", end - 1);
+        let mut corrupt = good.clone();
+        corrupt[0] ^= 1;
+        for (status, body, succeeds) in [(206, good, true), (206, corrupt, false)] {
+            let transport = Mock {
+                queue: Mutex::new(VecDeque::from([
+                    response(200, None, header.as_bytes().to_vec()),
+                    response(status, Some(&range), body),
+                ])),
+                urls: Mutex::new(Vec::new()),
+            };
+            let d = WaterZoneDelivery::new(vec![pin.clone()], transport).unwrap();
+            let actual = d.acquire("test", &Cancellation::default());
+            assert_eq!(actual.is_ok(), succeeds);
+            assert_eq!(
+                d.transport.urls.lock().unwrap()[1].1.as_deref(),
+                Some(format!("bytes={start}-{}", end - 1).as_str())
+            );
+            if let Ok(zone) = actual {
+                assert_eq!(
+                    zone.at(139.0003, 35.0001).unwrap(),
+                    rosenfu_core::water_zone::Cell::ModelWater
+                );
+            }
+        }
     }
     #[test]
     fn rejects_duplicate_invalid_registry_and_cancelled_cache_access() {
